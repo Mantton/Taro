@@ -1,0 +1,53 @@
+import std.io.Error
+import std.prelude.Optional
+import std.result.Result
+
+func maybeValue(_ value: int32) -> Optional[int32] {
+    if value > 0 {
+        return .some(value)
+    }
+
+    return .none
+}
+
+func resultValue(_ value: int32) -> Result[int32, Error] {
+    if value > 0 {
+        return .ok(value)
+    }
+
+    return .err(Error.invalidInput)
+}
+
+func invalidOperand() -> Optional[int32] {
+    return .some(1!)
+}
+
+func optionalInResultContext() -> Result[int32, Error] {
+    return .ok(maybeValue(1)!)
+}
+
+func resultInOptionalContext() -> Optional[int32] {
+    return .some(resultValue(1)!)
+}
+
+func resultErrorMismatch() -> Result[int32, string] {
+    return .ok(resultValue(1)!)
+}
+
+func invalidInDefer() -> Optional[int32] {
+    defer { let _ = maybeValue(1)! }
+    return .none
+}
+
+func invalidWithoutCompatibleReturn() {
+    let _ = maybeValue(1)!
+}
+
+func invalidAwaitPrecedence() async -> Result[int32, std.task.TaskError] {
+    let task = std.task.spawn(|| async {
+        return 1
+    })
+
+    let _ = await task.result()!
+    return .ok(0)
+}

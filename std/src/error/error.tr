@@ -1,0 +1,5 @@
+/// Interface for error values that can be rendered for humans.
+///
+/// This is intentionally namespaced under `std.error` to avoid colliding with
+/// concrete error enums like `std.io.Error`.
+public interface Error: std.fmt.Display {}

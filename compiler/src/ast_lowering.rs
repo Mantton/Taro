@@ -2061,6 +2061,9 @@ impl Actor<'_, '_> {
                 let lhs = self.lower_expression(lhs);
                 hir::ExpressionKind::Match(self.lower_optional_default(lhs, rhs, node.span))
             }
+            ast::ExpressionKind::Propagate(expr) => {
+                hir::ExpressionKind::Propagate(self.lower_expression(expr))
+            }
             ast::ExpressionKind::Closure(closure) => {
                 self.lower_closure_expression(closure, node.span)
             }
@@ -3135,7 +3138,8 @@ impl Actor<'_, '_> {
                 .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),
             ast::ExpressionKind::Unary(_, rhs)
             | ast::ExpressionKind::Reference(rhs, _)
-            | ast::ExpressionKind::Dereference(rhs) => {
+            | ast::ExpressionKind::Dereference(rhs)
+            | ast::ExpressionKind::Propagate(rhs) => {
                 self.find_outer_optional_unwrap(rhs, skip_id)
             }
             ast::ExpressionKind::Range(lhs, rhs, _) => self

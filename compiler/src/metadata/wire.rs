@@ -873,6 +873,7 @@ pub struct StdItemEntryWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StdItemWire {
     Optional,
+    Result,
     List,
     Set,
     Dictionary,
@@ -915,6 +916,10 @@ pub enum StdItemWire {
     OptionalSomeCtor,
     OptionalNoneVariant,
     OptionalNoneCtor,
+    ResultOkVariant,
+    ResultOkCtor,
+    ResultErrVariant,
+    ResultErrCtor,
     Task,
     PanicPayload,
     Make,
@@ -1479,6 +1484,7 @@ pub fn definition_kind_from_wire(v: &DefinitionKindWire) -> DefinitionKind {
 pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
     match v {
         hir::StdItem::Optional => StdItemWire::Optional,
+        hir::StdItem::Result => StdItemWire::Result,
         hir::StdItem::List => StdItemWire::List,
         hir::StdItem::Set => StdItemWire::Set,
         hir::StdItem::Dictionary => StdItemWire::Dictionary,
@@ -1521,6 +1527,10 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::OptionalSomeCtor => StdItemWire::OptionalSomeCtor,
         hir::StdItem::OptionalNoneVariant => StdItemWire::OptionalNoneVariant,
         hir::StdItem::OptionalNoneCtor => StdItemWire::OptionalNoneCtor,
+        hir::StdItem::ResultOkVariant => StdItemWire::ResultOkVariant,
+        hir::StdItem::ResultOkCtor => StdItemWire::ResultOkCtor,
+        hir::StdItem::ResultErrVariant => StdItemWire::ResultErrVariant,
+        hir::StdItem::ResultErrCtor => StdItemWire::ResultErrCtor,
         hir::StdItem::Task => StdItemWire::Task,
         hir::StdItem::PanicPayload => StdItemWire::PanicPayload,
         hir::StdItem::Make => StdItemWire::Make,
@@ -1531,6 +1541,7 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
 pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
     match v {
         StdItemWire::Optional => hir::StdItem::Optional,
+        StdItemWire::Result => hir::StdItem::Result,
         StdItemWire::List => hir::StdItem::List,
         StdItemWire::Set => hir::StdItem::Set,
         StdItemWire::Dictionary => hir::StdItem::Dictionary,
@@ -1573,6 +1584,10 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::OptionalSomeCtor => hir::StdItem::OptionalSomeCtor,
         StdItemWire::OptionalNoneVariant => hir::StdItem::OptionalNoneVariant,
         StdItemWire::OptionalNoneCtor => hir::StdItem::OptionalNoneCtor,
+        StdItemWire::ResultOkVariant => hir::StdItem::ResultOkVariant,
+        StdItemWire::ResultOkCtor => hir::StdItem::ResultOkCtor,
+        StdItemWire::ResultErrVariant => hir::StdItem::ResultErrVariant,
+        StdItemWire::ResultErrCtor => hir::StdItem::ResultErrCtor,
         StdItemWire::Task => hir::StdItem::Task,
         StdItemWire::PanicPayload => hir::StdItem::PanicPayload,
         StdItemWire::Make => hir::StdItem::Make,

@@ -22,7 +22,7 @@ From lowest to highest precedence:
 14. Factor: `*`, `/`, `%`
 15. Cast / Type Assertion: `as`, `as?`, `is`
 16. Prefix: `!`, `-`, `~`, `&`, `*`
-17. Postfix: `.`, `()`, `[]`, `?`, `?.`
+17. Postfix: `.`, `()`, `[]`, `!`, `?.`
 18. Primary
 
 ---
@@ -233,11 +233,20 @@ identity[string]
 Result[User, Error]
 ```
 
-### Optional Unwrap
+### Propagation
 
 ```taro
-optionalValue?      // Unwrap, propagates nil on failure
+optionalValue!      // Extract T from Optional[T], or return .none
+resultValue!        // Extract T from Result[T, E], or return .err(error)
 ```
+
+`expr!` is only valid for `Optional[T]` and `Result[T, E]`.
+
+- `Optional[T]!` requires the enclosing function, closure, or default-value provider to return `Optional[_]`.
+- `Result[T, E]!` requires the enclosing function, closure, or default-value provider to return `Result[_, E]`.
+- `Result` propagation requires an exact error-type match; it does not perform conversions.
+- `Optional` and `Result` do not mix. You cannot propagate an `Optional` from a `Result` context or vice versa.
+- To propagate an awaited value, write `(await expr)!`. `await expr!` is rejected on purpose because `await` keeps its existing precedence.
 
 ### Optional Chaining
 

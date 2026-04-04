@@ -183,7 +183,7 @@ Outside those blocks, they are regular identifiers.
 |----------|-------------|
 | `&&` | Logical AND |
 | `\|\|` | Logical OR |
-| `!` | Logical NOT |
+| `!` | Logical NOT when used as a prefix; propagation when used as a postfix on `Optional` or `Result` |
 
 ### Bitwise Operators
 
@@ -221,7 +221,6 @@ Outside those blocks, they are regular identifiers.
 | `..` | Exclusive range |
 | `..=` | Inclusive range |
 | `...` | Variadic parameter |
-| `?` | Optional unwrap |
 | `?.` | Optional chaining |
 | `??` | Nil coalescing |
 | `\|>` | Pipe operator |

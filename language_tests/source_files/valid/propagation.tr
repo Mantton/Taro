@@ -1,0 +1,170 @@
+import std.io.Error
+import std.prelude.Optional
+import std.result.Result
+
+func maybeStep(_ value: int32) -> Optional[int32] {
+    if value < 0 {
+        return .none
+    }
+
+    return .some(value + 1)
+}
+
+func nestedOptional(_ value: int32) -> Optional[int32] {
+    return .some(maybeStep(maybeStep(value)!)! + 10)
+}
+
+func closureOptional(_ value: int32) -> Optional[int32] {
+    let compute = || -> Optional[int32] {
+        let inner = maybeStep(value)!
+        return .some(inner * 2)
+    }
+
+    return compute()
+}
+
+func defaultOptionalSeed() -> Optional[int32] {
+    return .some(9)
+}
+
+func optionalDefaultProvider(_ value: Optional[int32] = .some(defaultOptionalSeed()!)) -> Optional[int32] {
+    return value
+}
+
+func defaultOptionalNoneSeed() -> Optional[int32] {
+    return .none
+}
+
+func optionalDefaultProviderEarlyReturn(
+    _ value: Optional[int32] = .some(defaultOptionalNoneSeed()!),
+) -> Optional[int32] {
+    return value
+}
+
+func checkedAdd(_ value: int32) -> Result[int32, Error] {
+    if value < 0 {
+        return .err(Error.invalidInput)
+    }
+
+    return .ok(value + 1)
+}
+
+func nestedResult(_ value: int32) -> Result[int32, Error] {
+    return .ok(checkedAdd(checkedAdd(value)!)! + 20)
+}
+
+func closureResult(_ value: int32) -> Result[int32, Error] {
+    let compute = || -> Result[int32, Error] {
+        let inner = checkedAdd(value)!
+        return .ok(inner * 3)
+    }
+
+    return compute()
+}
+
+func defaultResultSeed() -> Result[int32, Error] {
+    return .ok(11)
+}
+
+func resultDefaultProvider(_ value: Result[int32, Error] = .ok(defaultResultSeed()!)) -> Result[int32, Error] {
+    return value
+}
+
+func defaultResultErrSeed() -> Result[int32, Error] {
+    return .err(Error.permissionDenied)
+}
+
+func resultDefaultProviderEarlyReturn(
+    _ value: Result[int32, Error] = .ok(defaultResultErrSeed()!),
+) -> Result[int32, Error] {
+    return value
+}
+
+func acceptError[E: std.error.Error](_ err: E) {}
+
+func awaitTaskResult() async -> Result[int32, std.task.TaskError] {
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 5
+    })
+
+    let value = (await task.result())!
+    return .ok(value + 7)
+}
+
+func expectSome(_ value: Optional[int32], _ expected: int32, _ label: string) {
+    match value {
+        case .some(actual) => assert(actual == expected, label)
+        case .none => assert(false, label)
+    }
+}
+
+func expectOk[E](_ value: Result[int32, E], _ expected: int32, _ label: string) {
+    match value {
+        case .ok(actual) => assert(actual == expected, label)
+        case .err(_) => assert(false, label)
+    }
+}
+
+func main() async {
+    expectSome(nestedOptional(1), 13, "nested Optional propagation should unwrap both values")
+    match nestedOptional(-1) {
+        case .none => {}
+        case .some(_) => assert(false, "nested Optional propagation should return none early")
+    }
+
+    expectSome(closureOptional(4), 10, "closure Optional propagation should preserve the closure return context")
+    match closureOptional(-1) {
+        case .none => {}
+        case .some(_) => assert(false, "closure Optional propagation should return none early")
+    }
+    expectSome(optionalDefaultProvider(), 9, "default Optional provider should allow propagation")
+    match optionalDefaultProviderEarlyReturn() {
+        case .none => {}
+        case .some(_) => {
+            assert(false, "default Optional provider should return none when propagation fails")
+        }
+    }
+
+    expectOk(nestedResult(1), 23, "nested Result propagation should unwrap both ok values")
+    match nestedResult(-1) {
+        case .err(err) => {
+            assert(
+                std.sprintf("%v", err) == "invalid input",
+                "nested Result propagation should return the original error",
+            )
+        }
+        case .ok(_) => assert(false, "nested Result propagation should return err early")
+    }
+
+    expectOk(closureResult(3), 12, "closure Result propagation should preserve the closure return context")
+    match closureResult(-1) {
+        case .err(err) => {
+            assert(
+                std.sprintf("%v", err) == "invalid input",
+                "closure Result propagation should return the original error",
+            )
+        }
+        case .ok(_) => assert(false, "closure Result propagation should return err early")
+    }
+    expectOk(resultDefaultProvider(), 11, "default Result provider should allow propagation")
+    match resultDefaultProviderEarlyReturn() {
+        case .err(err) => {
+            assert(
+                std.sprintf("%v", err) == "permission denied",
+                "default Result provider should return the propagated error",
+            )
+        }
+        case .ok(_) => assert(false, "default Result provider should return err when propagation fails")
+    }
+
+    acceptError(Error.notFound)
+    assert(
+        std.sprintf("%v", Error.notFound) == "not found",
+        "std.io.Error should conform to std.error.Error",
+    )
+
+    expectOk(await awaitTaskResult(), 12, "awaited task result should propagate with postfix !")
+
+    std.print("PASS: propagation\n")
+}

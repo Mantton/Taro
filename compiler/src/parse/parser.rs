@@ -3310,6 +3310,14 @@ impl Parser {
                 continue;
             }
 
+            if self.eat(Token::Bang) {
+                let span = expr.span.to(self.hi_span());
+                let kind = ExpressionKind::Propagate(expr);
+                expr = self.build_expr(kind, span);
+                seen_type_arguments = false;
+                continue;
+            }
+
             expr = self.try_parse_struct_literal(expr)?;
             break;
         }
@@ -6587,6 +6595,45 @@ mod tests {
                 }
             }
             _ => panic!("Expected OptionalEvaluation"),
+        }
+    }
+
+    #[test]
+    fn test_propagate_simple() {
+        let expr = parse_expr_str("a!");
+        assert!(matches!(expr.kind, ExpressionKind::Propagate(_)));
+    }
+
+    #[test]
+    fn test_propagate_after_call() {
+        let expr = parse_expr_str("foo()!");
+        match &expr.kind {
+            ExpressionKind::Propagate(inner) => {
+                assert!(matches!(inner.kind, ExpressionKind::Call(_, _)));
+            }
+            _ => panic!("Expected Propagate"),
+        }
+    }
+
+    #[test]
+    fn test_propagate_nested() {
+        let expr = parse_expr_str("opt!!");
+        match &expr.kind {
+            ExpressionKind::Propagate(inner) => {
+                assert!(matches!(inner.kind, ExpressionKind::Propagate(_)));
+            }
+            _ => panic!("Expected Propagate"),
+        }
+    }
+
+    #[test]
+    fn test_propagate_after_parenthesized_await() {
+        let expr = parse_expr_str("(await task.result())!");
+        match &expr.kind {
+            ExpressionKind::Propagate(inner) => {
+                assert!(matches!(inner.kind, ExpressionKind::Parenthesis(_)));
+            }
+            _ => panic!("Expected Propagate"),
         }
     }
 

@@ -178,7 +178,9 @@ impl<'ctx> Checker<'ctx> {
                         Some(expr.span),
                     );
                 }
-                self.top_level_check(expr, Some(parameter_ty));
+                self.with_return_ty(Some(parameter_ty), || {
+                    self.top_level_check(expr, Some(parameter_ty));
+                });
             }
         }
 
@@ -861,6 +863,9 @@ impl<'ctx> Checker<'ctx> {
             }
             hir::ExpressionKind::UnsafeBlock(block) => {
                 self.synth_unsafe_block_expression(block, expectation, cs)
+            }
+            hir::ExpressionKind::Propagate(inner) => {
+                self.synth_propagate_expression(expression, inner, cs)
             }
             hir::ExpressionKind::StructLiteral(lit) => {
                 self.synth_struct_literal(expression, lit, cs)
@@ -1964,6 +1969,14 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
 
+        if matches!(inner.kind, hir::ExpressionKind::Propagate(_)) {
+            gcx.dcx().emit_error(
+                "use `(await expr)!` to propagate an awaited Optional or Result".into(),
+                Some(span),
+            );
+            return Ty::error(gcx);
+        }
+
         if self.defer_depth.get() > 0 {
             gcx.dcx().emit_error(
                 "`await` is not allowed inside a defer block".into(),
@@ -2009,6 +2022,100 @@ impl<'ctx> Checker<'ctx> {
 
         gcx.dcx()
             .emit_error("`await` expects an async call".into(), Some(span));
+        Ty::error(gcx)
+    }
+
+    fn synth_propagate_expression(
+        &self,
+        expression: &hir::Expression,
+        inner: &hir::Expression,
+        cs: &mut Cs<'ctx>,
+    ) -> Ty<'ctx> {
+        let gcx = self.gcx();
+
+        if self.defer_depth.get() > 0 {
+            gcx.dcx().emit_error(
+                "`!` is not allowed inside a defer block".into(),
+                Some(expression.span),
+            );
+            return Ty::error(gcx);
+        }
+
+        let operand_ty = self.synth(inner, cs);
+        if operand_ty.is_error() {
+            return Ty::error(gcx);
+        }
+        cs.solve_intermediate();
+
+        let operand_ty = cs.infer_cx.resolve_vars_if_possible(operand_ty);
+        let Some(return_ty) = self.return_ty.get() else {
+            gcx.dcx().emit_error(
+                "postfix `!` requires an enclosing Optional or Result return type".into(),
+                Some(expression.span),
+            );
+            return Ty::error(gcx);
+        };
+        let return_ty = cs.infer_cx.resolve_vars_if_possible(return_ty);
+
+        if let Some((_, inner_ty)) = self.optional_inner_type(operand_ty) {
+            if self.is_optional_type(return_ty) {
+                return inner_ty;
+            }
+
+            gcx.dcx().emit_error(
+                format!(
+                    "Optional propagation requires an enclosing Optional return type, found '{}'",
+                    return_ty.format(gcx)
+                )
+                .into(),
+                Some(expression.span),
+            );
+            return Ty::error(gcx);
+        }
+
+        if let Some((_, ok_ty, err_ty)) = self.result_inner_types(operand_ty) {
+            let Some((_, _, return_err_ty)) = self.result_inner_types(return_ty) else {
+                gcx.dcx().emit_error(
+                    format!(
+                        "Result propagation requires an enclosing Result return type, found '{}'",
+                        return_ty.format(gcx)
+                    )
+                    .into(),
+                    Some(expression.span),
+                );
+                return Ty::error(gcx);
+            };
+
+            let resolved_return_err = cs.infer_cx.resolve_vars_if_possible(return_err_ty);
+            let resolved_operand_err = cs.infer_cx.resolve_vars_if_possible(err_ty);
+            if !resolved_return_err.is_infer()
+                && !resolved_operand_err.is_infer()
+                && resolved_return_err != resolved_operand_err
+            {
+                gcx.dcx().emit_error(
+                    format!(
+                        "Result propagation requires matching error types, found '{}' and '{}'",
+                        resolved_operand_err.format(gcx),
+                        resolved_return_err.format(gcx)
+                    )
+                    .into(),
+                    Some(expression.span),
+                );
+                return Ty::error(gcx);
+            }
+
+            cs.equal(return_err_ty, err_ty, expression.span);
+            return ok_ty;
+        }
+
+        gcx.dcx().emit_error(
+            format!(
+                "postfix `!` requires an Optional or Result value, found '{}'",
+                operand_ty.format(gcx)
+            )
+            .into(),
+            Some(inner.span),
+        );
         Ty::error(gcx)
     }
 
@@ -5885,6 +5992,16 @@ impl<'ctx> Checker<'ctx> {
         def.id == opt_id
     }
 
+    fn is_result_type(&self, ty: Ty<'ctx>) -> bool {
+        let TyKind::Adt(def, _) = ty.kind() else {
+            return false;
+        };
+        let Some(result_id) = self.gcx().std_item_def(hir::StdItem::Result) else {
+            return false;
+        };
+        def.id == result_id
+    }
+
     fn task_inner_type(&self, ty: Ty<'ctx>) -> Option<Ty<'ctx>> {
         let TyKind::Adt(def, args) = ty.kind() else {
             return None;
@@ -6104,6 +6221,21 @@ impl<'ctx> Checker<'ctx> {
         }
         let inner = (*args.first()?).ty()?;
         Some((args, inner))
+    }
+
+    fn result_inner_types(
+        &self,
+        ty: Ty<'ctx>,
+    ) -> Option<(GenericArguments<'ctx>, Ty<'ctx>, Ty<'ctx>)> {
+        if !self.is_result_type(ty) {
+            return None;
+        }
+        let TyKind::Adt(_, args) = ty.kind() else {
+            return None;
+        };
+        let ok_ty = args.get(0)?.ty()?;
+        let err_ty = args.get(1)?.ty()?;
+        Some((args, ok_ty, err_ty))
     }
 
     fn mk_optional_type(&self, inner: Ty<'ctx>) -> (Ty<'ctx>, GenericArguments<'ctx>) {
@@ -6625,6 +6757,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 self.collect_expr(rhs, UseContext::Value);
             }
             hir::ExpressionKind::Unary(_, value)
+            | hir::ExpressionKind::Propagate(value)
             | hir::ExpressionKind::CastAs(value, _)
             | hir::ExpressionKind::CastAsTry(value, _)
             | hir::ExpressionKind::TypeIs(value, _) => {

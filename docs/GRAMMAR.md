@@ -571,13 +571,16 @@ keywords only inside computed-property accessor blocks.
                          | '(' <argument_list> ')'           /* call */
                          | '[' <expression> ']'              /* index */
                          | '[' <type_argument_list> ']'      /* specialization */
-                         | '?'                               /* optional unwrap */
+                         | '!'                               /* Optional/Result propagation */
                          | '?.' <identifier>                 /* optional chain */
 
 <argument_list>        ::= [ <argument> { ',' <argument> } [ ',' ] ]
 
 <argument>             ::= [ <label> ] <expression>
 ```
+
+Postfix `!` propagates only `Optional[T]` and `Result[T, E]`. `await` remains a
+prefix operator, so propagation of an awaited value is written as `(await expr)!`.
 
 ### Primary Expressions
 

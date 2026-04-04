@@ -126,6 +126,7 @@ struct FunctionLower<'ctx> {
         Option<FxHashMap<crate::hir::NodeID, (FieldIndex, crate::sema::models::CaptureKind)>>,
     /// Remaps source local node ids to synthetic parameter node ids.
     local_remap: Option<FxHashMap<crate::hir::NodeID, crate::hir::NodeID>>,
+    next_synthetic_local_raw: u32,
 }
 
 impl<'ctx> FunctionLower<'ctx> {
@@ -153,6 +154,7 @@ impl<'ctx> FunctionLower<'ctx> {
             nested_closures: Vec::new(),
             captures_map: None,
             local_remap: None,
+            next_synthetic_local_raw: u32::MAX,
         };
 
         lower.lower_params(node);
@@ -184,6 +186,7 @@ impl<'ctx> FunctionLower<'ctx> {
             nested_closures: Vec::new(),
             captures_map: None,
             local_remap: None,
+            next_synthetic_local_raw: u32::MAX,
         };
 
         let expr_id = lower.lower_expr(expr);
@@ -1064,6 +1067,9 @@ impl<'ctx> FunctionLower<'ctx> {
                 let block_id = self.lower_block(block);
                 ExprKind::Block(block_id)
             }
+            hir::ExpressionKind::Propagate(inner) => {
+                return self.lower_propagate_expr(expr, inner);
+            }
             hir::ExpressionKind::Dereference(inner) => {
                 let operand = self.lower_expr(inner);
                 ExprKind::Deref(operand)
@@ -1453,6 +1459,7 @@ impl<'ctx> FunctionLower<'ctx> {
             nested_closures: Vec::new(),
             captures_map,
             local_remap: None,
+            next_synthetic_local_raw: u32::MAX,
         };
 
         // Get the full signature (self pointer + explicit params)
@@ -1774,9 +1781,268 @@ impl<'ctx> FunctionLower<'ctx> {
         id
     }
 
+    fn lower_propagate_expr(&mut self, expr: &hir::Expression, inner: &hir::Expression) -> Expr<'ctx> {
+        let ty = self.results.node_type(expr.id);
+        let span = expr.span;
+        let scrutinee = self.lower_expr(inner);
+        let scrutinee_ty = self.results.node_type(inner.id);
+        let return_ty = self.gcx.function_body_output(self.func.id);
+        let never_ty = Ty::new(TyKind::Never, self.gcx);
+
+        let TyKind::Adt(scrutinee_def, scrutinee_args) = scrutinee_ty.kind() else {
+            unreachable!("propagate operand must be Optional or Result");
+        };
+        let enum_def = self.gcx.get_enum_definition(scrutinee_def.id);
+
+        let make_arm = |this: &mut Self,
+                        pattern: thir::Pattern<'ctx>,
+                        body: ExprId|
+         -> thir::ArmId {
+            let id = thir::ArmId::from_raw(this.func.arms.len() as u32);
+            this.func.arms.push(thir::Arm {
+                pattern: Box::new(pattern),
+                guard: None,
+                body,
+                span,
+            });
+            id
+        };
+
+        if Some(scrutinee_def.id) == self.gcx.std_item_def(hir::StdItem::Optional) {
+            let some_variant_def = self
+                .gcx
+                .std_item_def(hir::StdItem::OptionalSomeVariant)
+                .expect("Optional.some variant");
+            let none_variant_def = self
+                .gcx
+                .std_item_def(hir::StdItem::OptionalNoneVariant)
+                .expect("Optional.none variant");
+
+            let some_variant = enum_def
+                .variants
+                .iter()
+                .find(|variant| variant.def_id == some_variant_def)
+                .copied()
+                .expect("Optional.some variant in enum definition");
+            let none_variant = enum_def
+                .variants
+                .iter()
+                .find(|variant| variant.def_id == none_variant_def)
+                .copied()
+                .expect("Optional.none variant in enum definition");
+
+            let inner_ty = scrutinee_args
+                .get(0)
+                .copied()
+                .and_then(GenericArgument::ty)
+                .expect("Optional[T] inner type");
+            let binding_local = self.fresh_synthetic_local();
+            let binding_pattern = thir::Pattern {
+                ty: inner_ty,
+                span,
+                kind: thir::PatternKind::Binding {
+                    name: self.gcx.intern_symbol("__propagate_value"),
+                    local: binding_local,
+                    ty: inner_ty,
+                    mode: hir::BindingMode::ByValue,
+                },
+            };
+            let some_pattern = thir::Pattern {
+                ty: scrutinee_ty,
+                span,
+                kind: thir::PatternKind::Variant {
+                    definition: enum_def.adt_def,
+                    variant: some_variant,
+                    subpatterns: vec![thir::FieldPattern {
+                        index: FieldIndex::from_usize(0),
+                        pattern: binding_pattern,
+                    }],
+                },
+            };
+            let none_pattern = thir::Pattern {
+                ty: scrutinee_ty,
+                span,
+                kind: thir::PatternKind::Variant {
+                    definition: enum_def.adt_def,
+                    variant: none_variant,
+                    subpatterns: vec![],
+                },
+            };
+
+            let some_body = self.push_expr(ExprKind::Local(binding_local), inner_ty, span);
+            let none_value = self.push_expr(
+                ExprKind::Adt(thir::AdtExpression {
+                    definition: scrutinee_def,
+                    variant_index: Some(VariantIndex::from_usize(
+                        enum_def
+                            .variants
+                            .iter()
+                            .position(|variant| variant.def_id == none_variant.def_id)
+                            .expect("Optional.none index"),
+                    )),
+                    generic_args: match return_ty.kind() {
+                        TyKind::Adt(_, args) => args,
+                        _ => unreachable!("Optional propagation return type must be Optional"),
+                    },
+                    fields: vec![],
+                }),
+                return_ty,
+                span,
+            );
+            let none_body = self.push_expr(
+                ExprKind::Return {
+                    value: Some(none_value),
+                },
+                never_ty,
+                span,
+            );
+
+            let some_arm = make_arm(self, some_pattern, some_body);
+            let none_arm = make_arm(self, none_pattern, none_body);
+
+            return Expr {
+                kind: ExprKind::Match {
+                    scrutinee,
+                    arms: vec![some_arm, none_arm],
+                    binding_condition: false,
+                },
+                ty,
+                span,
+            };
+        }
+
+        let ok_variant_def = self
+            .gcx
+            .std_item_def(hir::StdItem::ResultOkVariant)
+            .expect("Result.ok variant");
+        let err_variant_def = self
+            .gcx
+            .std_item_def(hir::StdItem::ResultErrVariant)
+            .expect("Result.err variant");
+        let ok_variant = enum_def
+            .variants
+            .iter()
+            .find(|variant| variant.def_id == ok_variant_def)
+            .copied()
+            .expect("Result.ok variant in enum definition");
+        let err_variant = enum_def
+            .variants
+            .iter()
+            .find(|variant| variant.def_id == err_variant_def)
+            .copied()
+            .expect("Result.err variant in enum definition");
+
+        let ok_ty = scrutinee_args
+            .get(0)
+            .copied()
+            .and_then(GenericArgument::ty)
+            .expect("Result[T, E] ok type");
+        let err_ty = scrutinee_args
+            .get(1)
+            .copied()
+            .and_then(GenericArgument::ty)
+            .expect("Result[T, E] err type");
+        let ok_local = self.fresh_synthetic_local();
+        let err_local = self.fresh_synthetic_local();
+
+        let ok_pattern = thir::Pattern {
+            ty: scrutinee_ty,
+            span,
+            kind: thir::PatternKind::Variant {
+                definition: enum_def.adt_def,
+                variant: ok_variant,
+                subpatterns: vec![thir::FieldPattern {
+                    index: FieldIndex::from_usize(0),
+                    pattern: thir::Pattern {
+                        ty: ok_ty,
+                        span,
+                        kind: thir::PatternKind::Binding {
+                            name: self.gcx.intern_symbol("__propagate_value"),
+                            local: ok_local,
+                            ty: ok_ty,
+                            mode: hir::BindingMode::ByValue,
+                        },
+                    },
+                }],
+            },
+        };
+        let err_pattern = thir::Pattern {
+            ty: scrutinee_ty,
+            span,
+            kind: thir::PatternKind::Variant {
+                definition: enum_def.adt_def,
+                variant: err_variant,
+                subpatterns: vec![thir::FieldPattern {
+                    index: FieldIndex::from_usize(0),
+                    pattern: thir::Pattern {
+                        ty: err_ty,
+                        span,
+                        kind: thir::PatternKind::Binding {
+                            name: self.gcx.intern_symbol("__propagate_error"),
+                            local: err_local,
+                            ty: err_ty,
+                            mode: hir::BindingMode::ByValue,
+                        },
+                    },
+                }],
+            },
+        };
+
+        let ok_body = self.push_expr(ExprKind::Local(ok_local), ok_ty, span);
+        let return_args = match return_ty.kind() {
+            TyKind::Adt(_, args) => args,
+            _ => unreachable!("Result propagation return type must be Result"),
+        };
+        let err_value = self.push_expr(ExprKind::Local(err_local), err_ty, span);
+        let err_variant_index = enum_def
+            .variants
+            .iter()
+            .position(|variant| variant.def_id == err_variant.def_id)
+            .expect("Result.err index");
+        let return_err_value = self.push_expr(
+            ExprKind::Adt(thir::AdtExpression {
+                definition: scrutinee_def,
+                variant_index: Some(VariantIndex::from_usize(err_variant_index)),
+                generic_args: return_args,
+                fields: vec![thir::FieldExpression {
+                    index: FieldIndex::from_usize(0),
+                    expression: err_value,
+                }],
+            }),
+            return_ty,
+            span,
+        );
+        let err_body = self.push_expr(
+            ExprKind::Return {
+                value: Some(return_err_value),
+            },
+            never_ty,
+            span,
+        );
+
+        let ok_arm = make_arm(self, ok_pattern, ok_body);
+        let err_arm = make_arm(self, err_pattern, err_body);
+
+        Expr {
+            kind: ExprKind::Match {
+                scrutinee,
+                arms: vec![ok_arm, err_arm],
+                binding_condition: false,
+            },
+            ty,
+            span,
+        }
+    }
+
     fn push_stmt(&mut self, stmt: Stmt<'ctx>) -> StmtId {
         let id = StmtId::from_raw(self.func.stmts.len() as u32);
         self.func.stmts.push(stmt);
+        id
+    }
+
+    fn fresh_synthetic_local(&mut self) -> hir::NodeID {
+        let id = hir::NodeID::from_raw(self.next_synthetic_local_raw);
+        self.next_synthetic_local_raw = self.next_synthetic_local_raw.saturating_sub(1);
         id
     }
 }

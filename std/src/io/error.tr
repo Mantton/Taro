@@ -1,3 +1,5 @@
+import std.fmt.Display
+
 /// A platform-agnostic list of I/O error categories.
 ///
 /// Backends (std.sys.*) map OS-specific error codes into these variants.
@@ -23,3 +25,25 @@ public enum Error {
     /// OS-specific error code not currently classified.
     case unexpected(int32)
 }
+
+impl std.fmt.Display for Error {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .notFound => into.writeString("not found")
+            case .permissionDenied => into.writeString("permission denied")
+            case .alreadyExists => into.writeString("already exists")
+            case .invalidInput => into.writeString("invalid input")
+            case .interrupted => into.writeString("interrupted")
+            case .wouldBlock => into.writeString("would block")
+            case .timedOut => into.writeString("timed out")
+            case .brokenPipe => into.writeString("broken pipe")
+            case .unsupported => into.writeString("unsupported")
+            case .unexpected(code) => {
+                into.writeString("unexpected io error ")
+                (*code).display(into)
+            }
+        }
+    }
+}
+
+impl std.error.Error for Error {}

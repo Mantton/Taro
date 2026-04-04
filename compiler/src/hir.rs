@@ -729,6 +729,8 @@ pub enum ExpressionKind {
     Block(Block),
     /// unsafe { }
     UnsafeBlock(Block),
+    /// `expr!`
+    Propagate(Box<Expression>),
     /// `Foo { a: 1, b: 2 }`
     StructLiteral(StructLiteral),
     /// `|a, b| a + b` or `move |x| x`
@@ -933,6 +935,7 @@ pub enum PatternPath {
 pub enum StdItem {
     // Nominal types
     Optional,
+    Result,
     List,
     Set,
     Dictionary,
@@ -979,6 +982,10 @@ pub enum StdItem {
     OptionalSomeCtor,
     OptionalNoneVariant,
     OptionalNoneCtor,
+    ResultOkVariant,
+    ResultOkCtor,
+    ResultErrVariant,
+    ResultErrCtor,
 
     // Async
     Task,
@@ -992,6 +999,7 @@ impl StdItem {
     pub fn name_str(self) -> Option<&'static str> {
         match self {
             StdItem::Optional => Some("Optional"),
+            StdItem::Result => Some("Result"),
             StdItem::List => Some("List"),
             StdItem::Set => Some("Set"),
             StdItem::Dictionary => Some("Dictionary"),
@@ -1036,6 +1044,10 @@ impl StdItem {
             StdItem::OptionalSomeCtor => Some("OptionalSomeCtor"),
             StdItem::OptionalNoneVariant => Some("OptionalNoneVariant"),
             StdItem::OptionalNoneCtor => Some("OptionalNoneCtor"),
+            StdItem::ResultOkVariant => Some("ResultOkVariant"),
+            StdItem::ResultOkCtor => Some("ResultOkCtor"),
+            StdItem::ResultErrVariant => Some("ResultErrVariant"),
+            StdItem::ResultErrCtor => Some("ResultErrCtor"),
             StdItem::Make => None,
         }
     }
@@ -1043,6 +1055,7 @@ impl StdItem {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "Optional" => Some(Self::Optional),
+            "Result" => Some(Self::Result),
             "List" => Some(Self::List),
             "Set" => Some(Self::Set),
             "Dictionary" => Some(Self::Dictionary),
@@ -1089,7 +1102,7 @@ impl StdItem {
 
     pub fn expected_def_kind(self) -> Option<DefinitionKind> {
         match self {
-            StdItem::Optional => Some(DefinitionKind::Enum),
+            StdItem::Optional | StdItem::Result => Some(DefinitionKind::Enum),
             StdItem::List
             | StdItem::Set
             | StdItem::Dictionary
@@ -1130,7 +1143,10 @@ impl StdItem {
             | StdItem::BitNot
             | StdItem::PartialEq
             | StdItem::PartialOrd => Some(DefinitionKind::Interface),
-            StdItem::OptionalSomeVariant | StdItem::OptionalNoneVariant => {
+            StdItem::OptionalSomeVariant
+            | StdItem::OptionalNoneVariant
+            | StdItem::ResultOkVariant
+            | StdItem::ResultErrVariant => {
                 Some(DefinitionKind::Variant)
             }
             StdItem::OptionalSomeCtor => Some(DefinitionKind::VariantConstructor(
@@ -1139,6 +1155,11 @@ impl StdItem {
             StdItem::OptionalNoneCtor => Some(DefinitionKind::VariantConstructor(
                 crate::sema::resolve::models::VariantCtorKind::Constant,
             )),
+            StdItem::ResultOkCtor | StdItem::ResultErrCtor => Some(
+                DefinitionKind::VariantConstructor(
+                    crate::sema::resolve::models::VariantCtorKind::Function,
+                ),
+            ),
             StdItem::Make => None,
         }
     }
@@ -1147,6 +1168,7 @@ impl StdItem {
         matches!(
             self,
             StdItem::Optional
+                | StdItem::Result
                 | StdItem::List
                 | StdItem::Set
                 | StdItem::Dictionary
@@ -1191,11 +1213,16 @@ impl StdItem {
                 | StdItem::OptionalSomeCtor
                 | StdItem::OptionalNoneVariant
                 | StdItem::OptionalNoneCtor
+                | StdItem::ResultOkVariant
+                | StdItem::ResultOkCtor
+                | StdItem::ResultErrVariant
+                | StdItem::ResultErrCtor
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 45] = [
+    pub const ALL_REQUIRED: [StdItem; 50] = [
         StdItem::Optional,
+        StdItem::Result,
         StdItem::List,
         StdItem::Set,
         StdItem::Dictionary,
@@ -1240,6 +1267,10 @@ impl StdItem {
         StdItem::OptionalSomeCtor,
         StdItem::OptionalNoneVariant,
         StdItem::OptionalNoneCtor,
+        StdItem::ResultOkVariant,
+        StdItem::ResultOkCtor,
+        StdItem::ResultErrVariant,
+        StdItem::ResultErrCtor,
     ];
 
     pub const ALL_INTERFACES: [StdItem; 31] = [
@@ -2204,6 +2235,9 @@ pub fn walk_expression<V: HirVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::UnsafeBlock(block) => {
             try_visit!(visitor.visit_block(block));
+        }
+        ExpressionKind::Propagate(expression) => {
+            try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::StructLiteral(struct_literal) => {
             try_visit!(visitor.visit_resolved_path(&struct_literal.path));

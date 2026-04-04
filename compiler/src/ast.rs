@@ -481,6 +481,8 @@ pub enum ExpressionKind {
     Block(Block),
     /// unsafe { }
     UnsafeBlock(Block),
+    /// `expr!`
+    Propagate(Box<Expression>),
     /// `a?`
     OptionalUnwrap(Box<Expression>),
     ///
@@ -1727,6 +1729,9 @@ pub fn walk_expression<V: AstVisitor>(visitor: &mut V, node: &Expression) -> V::
         }
         ExpressionKind::UnsafeBlock(block) => {
             try_visit!(visitor.visit_block(block));
+        }
+        ExpressionKind::Propagate(expression) => {
+            try_visit!(visitor.visit_expression(expression));
         }
         ExpressionKind::OptionalUnwrap(expression) => {
             try_visit!(visitor.visit_expression(expression));

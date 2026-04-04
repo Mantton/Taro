@@ -83,6 +83,17 @@ pub fn collect_std_items(
                 had_error = true;
             }
         }
+        if let Some(entry) = registry.get(StdItem::Result) {
+            if let Some(enum_decl) = find_enum_by_def_id(package, output, entry.def_id) {
+                derive_result_variants(enum_decl, gcx, output, &mut registry, &mut had_error);
+            } else {
+                gcx.dcx().emit_error(
+                    "unable to locate Result enum for @lang item".into(),
+                    Some(entry.span),
+                );
+                had_error = true;
+            }
+        }
 
         let mut missing = Vec::new();
         for item in StdItem::ALL_REQUIRED {
@@ -436,6 +447,159 @@ fn derive_optional_variants(
         *had_error = true;
     }
     if !registry.insert(gcx, StdItem::OptionalNoneCtor, none_ctor_entry) {
+        *had_error = true;
+    }
+}
+
+fn derive_result_variants(
+    enum_def: &ast::Enum,
+    gcx: GlobalContext<'_>,
+    output: &ResolutionOutput<'_>,
+    registry: &mut StdItemRegistry,
+    had_error: &mut bool,
+) {
+    let mut ok_variant: Option<&ast::Variant> = None;
+    let mut err_variant: Option<&ast::Variant> = None;
+
+    for case in &enum_def.cases {
+        for variant in &case.variants {
+            if gcx.symbol_eq(variant.identifier.symbol, "ok") {
+                ok_variant = Some(variant);
+            } else if gcx.symbol_eq(variant.identifier.symbol, "err") {
+                err_variant = Some(variant);
+            }
+        }
+    }
+
+    let Some(ok_variant) = ok_variant else {
+        gcx.dcx()
+            .emit_error("Result is missing `ok` variant".into(), None);
+        *had_error = true;
+        return;
+    };
+    let Some(err_variant) = err_variant else {
+        gcx.dcx()
+            .emit_error("Result is missing `err` variant".into(), None);
+        *had_error = true;
+        return;
+    };
+
+    if !matches!(ok_variant.kind, ast::VariantKind::Tuple(_)) {
+        gcx.dcx().emit_error(
+            "Result.ok must be a tuple variant".into(),
+            Some(ok_variant.span),
+        );
+        *had_error = true;
+    }
+    if !matches!(err_variant.kind, ast::VariantKind::Tuple(_)) {
+        gcx.dcx().emit_error(
+            "Result.err must be a tuple variant".into(),
+            Some(err_variant.span),
+        );
+        *had_error = true;
+    }
+
+    let Some(ok_variant_id) = output.node_to_definition.get(&ok_variant.id) else {
+        gcx.dcx().emit_error(
+            "unable to resolve Result.ok variant definition".into(),
+            Some(ok_variant.span),
+        );
+        *had_error = true;
+        return;
+    };
+    let Some(err_variant_id) = output.node_to_definition.get(&err_variant.id) else {
+        gcx.dcx().emit_error(
+            "unable to resolve Result.err variant definition".into(),
+            Some(err_variant.span),
+        );
+        *had_error = true;
+        return;
+    };
+    let Some(ok_ctor_id) = output.node_to_definition.get(&ok_variant.ctor_id) else {
+        gcx.dcx().emit_error(
+            "unable to resolve Result.ok constructor definition".into(),
+            Some(ok_variant.span),
+        );
+        *had_error = true;
+        return;
+    };
+    let Some(err_ctor_id) = output.node_to_definition.get(&err_variant.ctor_id) else {
+        gcx.dcx().emit_error(
+            "unable to resolve Result.err constructor definition".into(),
+            Some(err_variant.span),
+        );
+        *had_error = true;
+        return;
+    };
+
+    if let Some(kind) = output.definition_to_kind.get(ok_variant_id) {
+        if *kind != DefinitionKind::Variant {
+            gcx.dcx().emit_error(
+                "Result.ok is not a variant definition".into(),
+                Some(ok_variant.span),
+            );
+            *had_error = true;
+        }
+    }
+    if let Some(kind) = output.definition_to_kind.get(err_variant_id) {
+        if *kind != DefinitionKind::Variant {
+            gcx.dcx().emit_error(
+                "Result.err is not a variant definition".into(),
+                Some(err_variant.span),
+            );
+            *had_error = true;
+        }
+    }
+    if let Some(kind) = output.definition_to_kind.get(ok_ctor_id) {
+        if *kind != DefinitionKind::VariantConstructor(VariantCtorKind::Function) {
+            gcx.dcx().emit_error(
+                "Result.ok constructor must be a function constructor".into(),
+                Some(ok_variant.span),
+            );
+            *had_error = true;
+        }
+    }
+    if let Some(kind) = output.definition_to_kind.get(err_ctor_id) {
+        if *kind != DefinitionKind::VariantConstructor(VariantCtorKind::Function) {
+            gcx.dcx().emit_error(
+                "Result.err constructor must be a function constructor".into(),
+                Some(err_variant.span),
+            );
+            *had_error = true;
+        }
+    }
+
+    let ok_variant_entry = StdItemEntry {
+        def_id: *ok_variant_id,
+        def_kind: DefinitionKind::Variant,
+        span: ok_variant.span,
+    };
+    let ok_ctor_entry = StdItemEntry {
+        def_id: *ok_ctor_id,
+        def_kind: DefinitionKind::VariantConstructor(VariantCtorKind::Function),
+        span: ok_variant.span,
+    };
+    let err_variant_entry = StdItemEntry {
+        def_id: *err_variant_id,
+        def_kind: DefinitionKind::Variant,
+        span: err_variant.span,
+    };
+    let err_ctor_entry = StdItemEntry {
+        def_id: *err_ctor_id,
+        def_kind: DefinitionKind::VariantConstructor(VariantCtorKind::Function),
+        span: err_variant.span,
+    };
+
+    if !registry.insert(gcx, StdItem::ResultOkVariant, ok_variant_entry) {
+        *had_error = true;
+    }
+    if !registry.insert(gcx, StdItem::ResultOkCtor, ok_ctor_entry) {
+        *had_error = true;
+    }
+    if !registry.insert(gcx, StdItem::ResultErrVariant, err_variant_entry) {
+        *had_error = true;
+    }
+    if !registry.insert(gcx, StdItem::ResultErrCtor, err_ctor_entry) {
         *had_error = true;
     }
 }

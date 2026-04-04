@@ -1,0 +1,28 @@
+error: postfix `!` requires an Optional or Result value, found 'int32'
+ -> language_tests/source_files/invalid/propagation.tr:22:17
+	    return .some(1!)
+	                 ^
+error: Optional propagation requires an enclosing Optional return type, found 'Result[int32, Error]'
+ -> language_tests/source_files/invalid/propagation.tr:26:15
+	    return .ok(maybeValue(1)!)
+	               ^^^^^^^^^^^^^^
+error: Result propagation requires an enclosing Result return type, found 'Optional[int32]'
+ -> language_tests/source_files/invalid/propagation.tr:30:17
+	    return .some(resultValue(1)!)
+	                 ^^^^^^^^^^^^^^^
+error: Result propagation requires matching error types, found 'Error' and 'string'
+ -> language_tests/source_files/invalid/propagation.tr:34:15
+	    return .ok(resultValue(1)!)
+	               ^^^^^^^^^^^^^^^
+error: `!` is not allowed inside a defer block
+ -> language_tests/source_files/invalid/propagation.tr:38:20
+	    defer { let _ = maybeValue(1)! }
+	                    ^^^^^^^^^^^^^^
+error: Optional propagation requires an enclosing Optional return type, found '()'
+ -> language_tests/source_files/invalid/propagation.tr:43:12
+	    let _ = maybeValue(1)!
+	            ^^^^^^^^^^^^^^
+error: use `(await expr)!` to propagate an awaited Optional or Result
+ -> language_tests/source_files/invalid/propagation.tr:51:12
+	    let _ = await task.result()!
+	            ^^^^^^^^^^^^^^^^^^^^

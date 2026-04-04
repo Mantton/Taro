@@ -60,4 +60,10 @@ let double = |x: int32| x * 2
 
 // Optional chaining
 let name = user?.profile?.name ?? "Unknown"
+
+// Result propagation
+func increment(_ input: Result[int32, std.io.Error]) -> Result[int32, std.io.Error] {
+    let value = input!
+    return .ok(value + 1)
+}
 ```

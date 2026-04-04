@@ -201,7 +201,7 @@ struct Point {
 }
 
 impl Point {
-    // Allows usage of Point(x: ..., y: ...)
+    // Static `new(...)` methods can also be called as `Point(...)`.
     func new(x: int32, y: int32) -> Point {
         return Point { x, y } // shorthand for { x: x, y: y }
     }
@@ -240,6 +240,33 @@ func process(msg: Message) {
 }
 ```
 
+**Optional / Result Propagation**
+
+Postfix `!` propagates `Optional[T]` and `Result[T, E]` values.
+
+- `Optional[T]!` extracts `T` or returns `.none` from the enclosing `Optional` context.
+- `Result[T, E]!` extracts `T` or returns `.err(error)` from the enclosing `Result` context.
+- Propagation only works within the same container family.
+- `Result` propagation requires an exact error-type match.
+- For awaited values, write `(await expr)!`.
+
+```rust
+func nextPort(raw: Optional[int32]) -> Optional[int32] {
+    let port = raw!
+    return .some(port + 1)
+}
+
+func readCount(input: Result[int32, std.io.Error]) -> Result[int32, std.io.Error] {
+    let count = input!
+    return .ok(count + 1)
+}
+
+func joinTask(task: std.task.Task[int32]) async -> Result[int32, std.task.TaskError] {
+    let value = (await task.result())!
+    return .ok(value)
+}
+```
+
 > [!NOTE]
 > Additional examples are available in the `examples` directory.
 
@@ -269,18 +296,6 @@ let p = Point {
     y: 20, // explicit comma required here if '}' is on next line
 }
 ```
-
-## Design and Naming
-
-Taro follows specific naming conventions for its standard library and core components:
-
-- **Functions & Methods**: camelCase (for example, `toString`, `makeIterator`).
-- **Types (Structs, Enums, Interfaces)**: PascalCase (for example, `String`, `Option`).
-- **Variables**: snake_case (for example, `local_var`, `index`).
-- **Constants**: SCREAMING_SNAKE_CASE (for example, `MAX_SIZE`).
-
-**Exceptions:**
-- **Intrinsics**: Intrinsic functions provided by the compiler are prefixed with `__intrinsic_` and use snake_case (for example, `__intrinsic_ptr_add`).
 
 ## Testing
 
@@ -463,13 +478,14 @@ my-package/
 
 The `package.toml` file must include a `[package]` section with a `name` field following the `<host>/<author>/<project>` convention.
 
-If the package is a library, you must specify the `kind` field.
+`kind` is optional and defaults to `executable`. Supported values are
+`library`, `executable`, and `both`.
 
 ```toml
 [package]
 name = "github.com/mantton/apple"
 version = "0.1.0"
-kind = "library" # Required for libraries, defaults to "binary"
+kind = "library"
 ```
 
 ## Architecture and Features

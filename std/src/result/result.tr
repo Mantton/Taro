@@ -7,6 +7,7 @@ import std.optional.Optional
 ///
 /// `Result[V, E]` represents either `.ok(value)` containing a success value,
 /// or `.err(error)` containing an error value.
+@lang("Result")
 public enum Result[Value, Error] {
     case ok(Value)
     case err(Error)

@@ -566,7 +566,7 @@ module.exports = grammar({
       prec.right(PREC.OR, seq($._expression, "??", $._expression)),
 
     try_expression: ($) =>
-      prec.left(PREC.CALL, seq($._expression, "?")),
+      prec.left(PREC.CALL, seq($._expression, "!")),
 
     deref_expression: ($) =>
       prec(PREC.MEMBER, seq($._expression, ".*")),
