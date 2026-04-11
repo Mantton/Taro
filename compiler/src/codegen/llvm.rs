@@ -31,7 +31,7 @@ use inkwell::{
         StructType,
     },
     values::{
-        BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue,
+        BasicMetadataValueEnum, BasicValue, BasicValueEnum, CallSiteValue, FunctionValue, IntValue,
         PointerValue,
     },
 };
@@ -51,6 +51,8 @@ const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
 const AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 24;
 const DEFAULT_INDIRECT_ARG_THRESHOLD_BYTES: u64 = 2048;
 const LARGE_AGGREGATE_MOVE_MEMMOVE_THRESHOLD_BYTES: u64 = 1024;
+const ENV_ARGC_GLOBAL_NAME: &str = "__taro_env_argc";
+const ENV_ARGV_GLOBAL_NAME: &str = "__taro_env_argv";
 
 fn target_is_aarch64(triple: &str) -> bool {
     matches!(triple.split('-').next(), Some("aarch64" | "arm64"))
@@ -238,6 +240,8 @@ struct Emitter<'llvm, 'gcx> {
     repeat_memset_min_bytes: u64,
     /// Current substitution context for monomorphization
     current_subst: GenericArguments<'gcx>,
+    env_argc_storage: Option<PointerValue<'llvm>>,
+    env_argv_storage: Option<PointerValue<'llvm>>,
 }
 
 #[derive(Clone, Copy)]
@@ -339,6 +343,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             repeat_memset_enabled,
             repeat_memset_min_bytes,
             current_subst: GenericArguments::empty(),
+            env_argc_storage: None,
+            env_argv_storage: None,
         }
     }
 
@@ -777,6 +783,78 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .is_some_and(|pkg| pkg.functions.contains_key(&def_id))
     }
 
+    fn env_globals_define_here(&self) -> bool {
+        !matches!(
+            self.gcx.config.kind,
+            crate::compile::config::PackageKind::Library
+        )
+    }
+
+    fn get_or_create_env_argc_global(&mut self) -> PointerValue<'llvm> {
+        if let Some(ptr) = self.env_argc_storage {
+            return ptr;
+        }
+
+        let global = self
+            .module
+            .get_global(ENV_ARGC_GLOBAL_NAME)
+            .unwrap_or_else(|| {
+                let global = self
+                    .module
+                    .add_global(self.usize_ty, None, ENV_ARGC_GLOBAL_NAME);
+                global.set_linkage(Linkage::External);
+                if self.env_globals_define_here() {
+                    global.set_initializer(&self.usize_ty.const_zero());
+                }
+                global
+            });
+        let ptr = global.as_pointer_value();
+        self.env_argc_storage = Some(ptr);
+        ptr
+    }
+
+    fn get_or_create_env_argv_global(&mut self) -> PointerValue<'llvm> {
+        if let Some(ptr) = self.env_argv_storage {
+            return ptr;
+        }
+
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let global = self
+            .module
+            .get_global(ENV_ARGV_GLOBAL_NAME)
+            .unwrap_or_else(|| {
+                let global = self.module.add_global(ptr_ty, None, ENV_ARGV_GLOBAL_NAME);
+                global.set_linkage(Linkage::External);
+                if self.env_globals_define_here() {
+                    global.set_initializer(&ptr_ty.const_null());
+                }
+                global
+            });
+        let ptr = global.as_pointer_value();
+        self.env_argv_storage = Some(ptr);
+        ptr
+    }
+
+    fn store_process_args_from_main(
+        &mut self,
+        builder: &Builder<'llvm>,
+        argc: IntValue<'llvm>,
+        argv: PointerValue<'llvm>,
+    ) {
+        let argc_global = self.get_or_create_env_argc_global();
+        let argv_global = self.get_or_create_env_argv_global();
+        let argc = if argc.get_type() == self.usize_ty {
+            argc
+        } else {
+            builder
+                .build_int_cast(argc, self.usize_ty, "argc_to_usize")
+                .unwrap()
+        };
+
+        builder.build_store(argc_global, argc).unwrap();
+        builder.build_store(argv_global, argv).unwrap();
+    }
+
     /// Emit the `taro_start` / `main` entry shim for a normal (non-test) binary.
     ///
     /// `taro_start` invokes the user's `main` function via an `invoke` instruction so
@@ -891,10 +969,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let _ = builder.build_unreachable().unwrap();
 
         // Provide a conventional `main` that forwards to `taro_start` for easier linking.
-        let main_fn = self.module.add_function("main", start_ty, None);
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let main_ty = i32_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false);
+        let main_fn = self.module.add_function("main", main_ty, None);
         let main_builder = self.context.create_builder();
         let main_bb = self.context.append_basic_block(main_fn, "entry");
         main_builder.position_at_end(main_bb);
+        let argc = main_fn
+            .get_nth_param(0)
+            .expect("main argc parameter missing")
+            .into_int_value();
+        let argv = main_fn
+            .get_nth_param(1)
+            .expect("main argv parameter missing")
+            .into_pointer_value();
+        self.get_or_create_env_argc_global();
+        self.get_or_create_env_argv_global();
+        self.store_process_args_from_main(&main_builder, argc, argv);
         let start_call = main_builder
             .build_call(start_fn, &[], "call_start")
             .unwrap();
@@ -1292,10 +1383,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         builder.build_return(Some(&exit_code)).unwrap();
 
         // Wrapper main()
-        let main_fn = self.module.add_function("main", start_ty, None);
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let main_ty = i32_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false);
+        let main_fn = self.module.add_function("main", main_ty, None);
         let main_bb = self.context.append_basic_block(main_fn, "entry");
         let mb = self.context.create_builder();
         mb.position_at_end(main_bb);
+        let argc = main_fn
+            .get_nth_param(0)
+            .expect("main argc parameter missing")
+            .into_int_value();
+        let argv = main_fn
+            .get_nth_param(1)
+            .expect("main argv parameter missing")
+            .into_pointer_value();
+        self.get_or_create_env_argc_global();
+        self.get_or_create_env_argv_global();
+        self.store_process_args_from_main(&mb, argc, argv);
         let ret = mb
             .build_call(start_fn, &[], "ret")
             .unwrap()
@@ -4077,6 +4181,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.lower_intrinsic_string_len(body, locals, args, destination)?;
                 Ok(true)
             }
+            "__intrinsic_env_argc" => {
+                self.lower_intrinsic_env_argc(body, locals, destination)?;
+                Ok(true)
+            }
+            "__intrinsic_env_argv" => {
+                self.lower_intrinsic_env_argv(body, locals, destination)?;
+                Ok(true)
+            }
             "__intrinsic_rune_from_u32_unchecked" => {
                 self.lower_intrinsic_rune_from_u32_unchecked(body, locals, args, destination)?;
                 Ok(true)
@@ -4347,6 +4459,37 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
             .into_int_value();
         self.store_place(destination, body, locals, len.as_basic_value_enum())
+    }
+
+    fn lower_intrinsic_env_argc(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let argc_global = self.get_or_create_env_argc_global();
+        let argc = self
+            .builder
+            .build_load(self.usize_ty, argc_global, "env_argc")
+            .unwrap()
+            .into_int_value();
+        self.store_place(destination, body, locals, argc.as_basic_value_enum())
+    }
+
+    fn lower_intrinsic_env_argv(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let argv_global = self.get_or_create_env_argv_global();
+        let argv = self
+            .builder
+            .build_load(ptr_ty, argv_global, "env_argv")
+            .unwrap()
+            .into_pointer_value();
+        self.store_place(destination, body, locals, argv.as_basic_value_enum())
     }
 
     fn lower_intrinsic_rune_from_u32_unchecked(

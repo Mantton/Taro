@@ -51,6 +51,7 @@ To compile and run a Taro program (script or package) using your locally built c
 
 ```bash
 python3 development/scripts/run_dist.py examples/hello.tr
+python3 development/scripts/run_dist.py examples/hello.tr foo bar
 ```
 
 To run a file's test suite instead, pass `--test`:
@@ -68,7 +69,10 @@ For a local repo `dist/` or any other portable/custom layout, set `TARO_HOME` ex
 ```bash
 export TARO_HOME=$(pwd)/dist
 taro build examples/hello.tr
+taro run examples/hello.tr -- foo bar
 ```
+
+When reading arguments in Taro, `std.env.argv()` / `std.env.args()` include `argv[0]`, which is the actual generated executable path for `taro run`.
 
 ### VS Code Extension
 

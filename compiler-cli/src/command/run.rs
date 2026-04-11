@@ -5,16 +5,20 @@ use compiler::error::ReportedError;
 use crate::{CommandLineArguments, command::build};
 
 pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+    let program_args = arguments.program_args.clone();
     let exe = build::run(arguments, true)?;
     let exe = exe.ok_or_else(|| {
         eprintln!("error: no executable was produced");
         ReportedError
     })?;
 
-    let status = Command::new(&exe).status().map_err(|e| {
-        eprintln!("error: failed to execute '{}': {}", exe.display(), e);
-        ReportedError
-    })?;
+    let status = Command::new(&exe)
+        .args(&program_args)
+        .status()
+        .map_err(|e| {
+            eprintln!("error: failed to execute '{}': {}", exe.display(), e);
+            ReportedError
+        })?;
 
     if status.success() {
         Ok(())

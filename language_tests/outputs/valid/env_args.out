@@ -1,0 +1,10 @@
+raw_count=3
+args_count=3
+arg0_non_empty=true
+arg1=alpha
+arg2=beta
+missing=true
+iter_0_non_empty=true
+iter_1=alpha
+iter_2=beta
+iterated=3

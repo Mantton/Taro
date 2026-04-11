@@ -12,6 +12,7 @@ mod test;
 
 pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
     validate_test_selection_flags(&arguments)?;
+    validate_program_args(&arguments)?;
 
     let _ = match arguments.command.as_str() {
         "build" => {
@@ -48,9 +49,24 @@ fn validate_test_selection_flags(arguments: &CommandLineArguments) -> CompileRes
     Ok(())
 }
 
+fn validate_program_args(arguments: &CommandLineArguments) -> CompileResult<()> {
+    if !arguments.has_program_args() {
+        return Ok(());
+    }
+
+    if arguments.command == "run" {
+        return Ok(());
+    }
+
+    eprintln!(
+        "error: trailing program arguments after '--' are only supported with the 'run' command"
+    );
+    Err(ReportedError)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_test_selection_flags;
+    use super::{validate_program_args, validate_test_selection_flags};
     use crate::CommandLineArguments;
     use clap::Parser;
 
@@ -72,5 +88,35 @@ mod tests {
     fn rejects_tag_for_non_test_command() {
         let args = CommandLineArguments::parse_from(["taro", "check", "std", "--tag", "smoke"]);
         assert!(validate_test_selection_flags(&args).is_err());
+    }
+
+    #[test]
+    fn allows_program_args_for_run_command() {
+        let args = CommandLineArguments::parse_from(["taro", "run", "std", "--", "foo", "bar"]);
+        assert!(validate_program_args(&args).is_ok());
+    }
+
+    #[test]
+    fn rejects_program_args_for_build_command() {
+        let args = CommandLineArguments::parse_from(["taro", "build", "std", "--", "foo"]);
+        assert!(validate_program_args(&args).is_err());
+    }
+
+    #[test]
+    fn rejects_program_args_for_check_command() {
+        let args = CommandLineArguments::parse_from(["taro", "check", "std", "--", "foo"]);
+        assert!(validate_program_args(&args).is_err());
+    }
+
+    #[test]
+    fn rejects_program_args_for_new_command() {
+        let args = CommandLineArguments::parse_from(["taro", "new", "std", "--", "foo"]);
+        assert!(validate_program_args(&args).is_err());
+    }
+
+    #[test]
+    fn rejects_program_args_for_test_command() {
+        let args = CommandLineArguments::parse_from(["taro", "test", "std", "--", "foo"]);
+        assert!(validate_program_args(&args).is_err());
     }
 }

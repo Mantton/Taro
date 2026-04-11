@@ -1,0 +1,37 @@
+// ARGS: alpha beta
+
+import std.env
+
+func main() {
+    let raw = std.env.argv()
+    let refined = std.env.args()
+    let indexed = std.env.args()
+    let iterable = std.env.args()
+
+    std.assert(raw.len() == 3 as usize, "raw argv count should include argv[0]")
+    std.assert(refined.len() == raw.len(), "refined args length should match raw argv length")
+    std.assert(refined.at(1) == "alpha", "first forwarded arg should round-trip")
+    std.assert(refined.at(2) == "beta", "second forwarded arg should round-trip")
+    std.assert(refined.get(99 as usize).isNone(), "out-of-range get should return none")
+    std.assert(!refined.at(0).isEmpty(), "argv[0] should be non-empty")
+
+    std.printf("raw_count=%d\n", raw.len())
+    std.printf("args_count=%d\n", refined.len())
+    std.printf("arg0_non_empty=%v\n", !refined.at(0).isEmpty())
+    std.printf("arg1=%s\n", refined.at(1))
+    std.printf("arg2=%s\n", refined.at(2))
+    std.printf("missing=%v\n", refined.get(99 as usize).isNone())
+
+    var iterated: usize = 0
+    for arg in iterable {
+        std.assert(indexed.at(iterated) == arg, "iterator should match indexed order")
+        if iterated == 0 {
+            std.printf("iter_0_non_empty=%v\n", !arg.isEmpty())
+        } else {
+            std.printf("iter_%d=%s\n", iterated, arg)
+        }
+        iterated += 1
+    }
+
+    std.printf("iterated=%d\n", iterated)
+}

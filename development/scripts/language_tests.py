@@ -2,6 +2,7 @@ import argparse
 import concurrent.futures
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -95,6 +96,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // TARGET: <triple>          — cross-compile for the given target triple
       // CHECK_ONLY                — compile with `taro check` (no run, no output compare)
       // TEST                      — run with `taro test` instead of `taro run`; passes if exit 0
+      // ARGS: <values...>         — forward runtime args to `taro run` after `--`
       // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
       // EXPECT_STDERR_CONTAINS: … — assert this substring appears in stderr
     """
@@ -102,6 +104,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "target": None,
         "check_only": False,
         "run_as_test": False,
+        "args": [],
         "expect_exit": None,
         "expect_stderr_contains": [],
     }
@@ -118,6 +121,9 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     result["check_only"] = True
                 elif line.startswith("// TEST"):
                     result["run_as_test"] = True
+                elif line.startswith("// ARGS:"):
+                    values = line[len("// ARGS:") :].strip()
+                    result["args"] = shlex.split(values)
                 elif line.startswith("// EXPECT_EXIT:"):
                     code = line[len("// EXPECT_EXIT:") :].strip()
                     try:
@@ -155,6 +161,7 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         target_triple = directives["target"]
         is_check_only = directives["check_only"]
         is_run_as_test = directives["run_as_test"]
+        program_args = directives["args"]
         expected_exit = directives["expect_exit"]
         expected_stderr_contains = directives["expect_stderr_contains"]
 
@@ -184,6 +191,16 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         # Add --target flag if specified in test file
         if target_triple:
             cmd.extend(["--target", target_triple])
+
+        if program_args:
+            if command != "run":
+                return (
+                    False,
+                    "ARGS directive only supports `taro run` tests",
+                    {"args": program_args, "command": command},
+                )
+            cmd.append("--")
+            cmd.extend(program_args)
 
         process_env = os.environ.copy()
         process_env["TARO_HOME"] = str(env.taro_home)

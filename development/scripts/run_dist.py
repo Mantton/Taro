@@ -13,7 +13,7 @@ or tests the `taro` executable from that distribution with the provided argument
 
 Usage:
     python3 development/scripts/run_dist.py <file_or_package> [args...]
-    python3 development/scripts/run_dist.py --test <file_or_package> [args...]
+    python3 development/scripts/run_dist.py --test <file_or_package>
 
 Flags:
     --test   Run `taro test` instead of `taro run`.
@@ -50,7 +50,17 @@ def main():
 
     # 3. Construct taro command
     taro_subcommand = "test" if use_test else "run"
-    cmd = [str(taro_bin), taro_subcommand] + raw_args
+    input_path = raw_args[0]
+    program_args = raw_args[1:]
+
+    if use_test and program_args:
+        print("Error: forwarding program arguments is only supported for run, not --test.")
+        sys.exit(1)
+
+    cmd = [str(taro_bin), taro_subcommand, input_path]
+    if program_args:
+        cmd.append("--")
+        cmd.extend(program_args)
 
     # 4. Environment setup
     env = os.environ.copy()

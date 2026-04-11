@@ -1,0 +1,7 @@
+//+cfg family("windows")
+
+import std.mem.Span
+
+func impArgv() -> Span[*const uint8] {
+    std.panic.todo("std.sys.env.argv not implemented on windows yet")
+}

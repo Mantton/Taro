@@ -61,6 +61,9 @@ pub struct CommandLineArguments {
     /// Refresh package.lock entries from current dependency sources.
     #[arg(long = "update-lock", conflicts_with = "locked")]
     pub update_lock: bool,
+    /// Program arguments forwarded to the compiled executable after `--`.
+    #[arg(last = true)]
+    pub program_args: Vec<String>,
 }
 
 impl CommandLineArguments {
@@ -122,6 +125,10 @@ impl CommandLineArguments {
             update_lock: self.update_lock,
             strict_env: ci_env_is_strict(),
         }
+    }
+
+    pub fn has_program_args(&self) -> bool {
+        !self.program_args.is_empty()
     }
 }
 
@@ -190,5 +197,36 @@ mod tests {
         let args = CommandLineArguments::parse_from(["taro", "build", "std", "--locked"]);
         assert!(args.locked);
         assert!(!args.update_lock);
+    }
+
+    #[test]
+    fn parses_run_program_args_after_double_dash() {
+        let args = CommandLineArguments::parse_from([
+            "taro",
+            "run",
+            "examples/hello.tr",
+            "--",
+            "foo",
+            "bar",
+        ]);
+
+        assert_eq!(args.command, "run");
+        assert_eq!(args.program_args, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn parses_empty_program_args_when_double_dash_is_last() {
+        let args = CommandLineArguments::parse_from(["taro", "run", "examples/hello.tr", "--"]);
+
+        assert_eq!(args.command, "run");
+        assert!(args.program_args.is_empty());
+    }
+
+    #[test]
+    fn parses_without_program_args() {
+        let args = CommandLineArguments::parse_from(["taro", "run", "examples/hello.tr"]);
+
+        assert_eq!(args.command, "run");
+        assert!(args.program_args.is_empty());
     }
 }
