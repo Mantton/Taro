@@ -1,0 +1,126 @@
+import std.path
+import std.path.posix
+import std.testing.{assertEqual, assertTrue, assertFalse, fail}
+
+func assertSome(_ value: string?, _ expected: string, _ message: string) {
+    match value {
+        case .some(actual) => assertEqual(actual, expected, message)
+        case .none => fail(message)
+    }
+}
+
+func assertNone(_ value: string?, _ message: string) {
+    assertTrue(value.isNone(), message)
+}
+
+// =====================================================================
+// std.path.posix — platform-independent, always '/'.
+// =====================================================================
+
+@test
+func testPosixSeparatorConstant() {
+    assertEqual(posix.SEPARATOR, "/", "posix.SEPARATOR is /")
+}
+
+@test
+func testPosixIsSeparator() {
+    assertTrue(posix.isSeparator(47), "'/' (47) is a separator")
+    assertFalse(posix.isSeparator(92), "'\\' (92) is not a posix separator")
+    assertFalse(posix.isSeparator(0), "NUL is not a separator")
+    assertFalse(posix.isSeparator(65), "'A' is not a separator")
+}
+
+@test
+func testPosixNormalizeSeparators() {
+    assertEqual(posix.normalizeSeparators("a//b///c"), "a/b/c", "collapses internal runs")
+    assertEqual(posix.normalizeSeparators("/"), "/", "single slash is preserved")
+    assertEqual(posix.normalizeSeparators("//"), "/", "double slash collapses to single")
+    assertEqual(posix.normalizeSeparators(""), "", "empty stays empty")
+    assertEqual(posix.normalizeSeparators("abc"), "abc", "no separators left unchanged")
+    assertEqual(posix.normalizeSeparators("/a/b"), "/a/b", "already-normalized input")
+    assertEqual(posix.normalizeSeparators("///a////b//"), "/a/b/", "mixed runs")
+}
+
+@test
+func testPosixIsAbsolute() {
+    assertTrue(posix.isAbsolute("/a"), "/a is absolute")
+    assertTrue(posix.isAbsolute("/"), "/ is absolute")
+    assertFalse(posix.isAbsolute("a"), "a is relative")
+    assertFalse(posix.isAbsolute(""), "empty is not absolute")
+    assertFalse(posix.isAbsolute("a/b"), "a/b is relative")
+}
+
+@test
+func testPosixJoin() {
+    assertEqual(posix.join("a", "b"), "a/b", "basic join inserts separator")
+    assertEqual(posix.join("a/", "b"), "a/b", "trailing slash on lhs not duplicated")
+    assertEqual(posix.join("a", "/b"), "a/b", "leading slash on rhs absorbed")
+    assertEqual(posix.join("", "b"), "b", "empty lhs returns rhs")
+    assertEqual(posix.join("a", ""), "a", "empty rhs returns lhs")
+    assertEqual(posix.join("a/", "/b"), "a/b", "dup separators collapse to one")
+    assertEqual(posix.join("/tmp", "file.txt"), "/tmp/file.txt", "absolute lhs preserved")
+    assertEqual(posix.join("", ""), "", "both empty")
+}
+
+@test
+func testPosixFileName() {
+    assertSome(posix.fileName("/tmp/file.txt"), "file.txt", "/tmp/file.txt")
+    assertSome(posix.fileName("/tmp/"), "tmp", "trailing slash stripped")
+    assertNone(posix.fileName("/"), "/ has no filename")
+    assertNone(posix.fileName(""), "empty has no filename")
+    assertSome(posix.fileName("file.txt"), "file.txt", "bare name is the filename")
+    assertSome(posix.fileName("a/b/c"), "c", "trailing segment of nested path")
+}
+
+@test
+func testPosixExtension() {
+    assertSome(posix.extension("file.txt"), "txt", "simple extension")
+    assertSome(posix.extension("archive.tar.gz"), "gz", "last-dot wins")
+    assertNone(posix.extension("file"), "no-dot file has no extension")
+    assertNone(posix.extension(".gitignore"), "leading-dot file has no extension")
+    assertNone(posix.extension(""), "empty has no extension")
+    assertNone(posix.extension("/"), "root has no extension")
+    assertSome(posix.extension("/tmp/file.txt"), "txt", "from final component")
+    assertNone(posix.extension("/tmp/.gitignore"), "hidden via absolute path")
+}
+
+@test
+func testPosixStem() {
+    assertSome(posix.stem("file.txt"), "file", "extension stripped")
+    assertSome(posix.stem("archive.tar.gz"), "archive.tar", "only last extension stripped")
+    assertSome(posix.stem(".gitignore"), ".gitignore", "leading-dot keeps full name")
+    assertSome(posix.stem("file"), "file", "no-dot file is its own stem")
+    assertSome(posix.stem("/tmp/file.txt"), "file", "from final component")
+    assertNone(posix.stem(""), "empty has no stem")
+    assertNone(posix.stem("/"), "root has no stem")
+}
+
+@test
+func testPosixParent() {
+    assertSome(posix.parent("/tmp/file.txt"), "/tmp", "parent of file in /tmp")
+    assertSome(posix.parent("/tmp"), "/", "parent of /tmp is /")
+    assertNone(posix.parent("/"), "root has no parent")
+    assertNone(posix.parent("file.txt"), "bare filename has no parent")
+    assertNone(posix.parent(""), "empty has no parent")
+    assertSome(posix.parent("/tmp/"), "/", "trailing slash handled")
+    assertSome(posix.parent("a/b/c"), "a/b", "nested relative path")
+}
+
+// =====================================================================
+// std.path (native) — on Unix this is POSIX. Spot-check a few to
+// confirm the facade is wired up; full semantics are exercised above.
+// =====================================================================
+
+@test
+@cfg(family("unix"))
+func testNativeMatchesPosixOnUnix() {
+    assertEqual(path.SEPARATOR, posix.SEPARATOR, "native SEPARATOR matches posix on unix")
+    assertTrue(path.isSeparator(47), "native isSeparator matches posix on unix")
+    assertEqual(path.normalizeSeparators("a//b"), "a/b", "native normalize on unix")
+    assertTrue(path.isAbsolute("/a"), "native isAbsolute on unix")
+    assertEqual(path.join("a", "b"), "a/b", "native join on unix")
+    assertSome(path.fileName("/tmp/file.txt"), "file.txt", "native fileName on unix")
+    assertSome(path.extension("file.txt"), "txt", "native extension on unix")
+    assertSome(path.stem("file.txt"), "file", "native stem on unix")
+    assertSome(path.parent("/tmp/file.txt"), "/tmp", "native parent on unix")
+}

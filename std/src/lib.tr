@@ -2,6 +2,7 @@ import std.ffi
 import std.error
 import std.io
 import std.fs
+import std.path
 import std.net
 import std.time
 import std.fmt

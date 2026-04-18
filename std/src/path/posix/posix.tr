@@ -1,0 +1,257 @@
+import std.optional.Optional
+import std.string.{stringLen, stringData}
+
+/// Platform-independent POSIX lexical path helpers.
+///
+/// Functions in this module always use '/' as the separator regardless of
+/// the host platform. Prefer these for serialized paths (URLs, manifests,
+/// archive entries) that must travel across platforms. For paths that
+/// should follow the host's native convention, use `std.path` instead.
+///
+/// This is *lexical* only: no filesystem queries, no symlink resolution,
+/// no `.`/`..` normalization, no `~` expansion, no Windows drive letters.
+
+/// The separator byte used by this module ('/').
+const SEPARATOR_BYTE: uint8 = 47
+
+/// The separator string used by this module ("/").
+public const SEPARATOR: string = "/"
+
+/// Returns true if `byte` is a path separator ('/').
+public func isSeparator(_ byte: uint8) -> bool {
+    byte == SEPARATOR_BYTE
+}
+
+/// Collapses runs of path separators in `path` to a single '/'. Leaves
+/// non-separator bytes unchanged. Does not resolve `.` or `..` components.
+///
+/// Examples:
+///   "a//b///c" -> "a/b/c"
+///   "/"        -> "/"
+///   "//"       -> "/"
+///   ""         -> ""
+public func normalizeSeparators(_ path: string) -> string {
+    let len = stringLen(path)
+    if len == 0 {
+        return ""
+    }
+
+    let src = stringData(path)
+    var out = ""
+    var i: usize = 0
+    while i < len {
+        let b = src.add(i).read()
+        if isSeparator(b) {
+            out = out.concat(SEPARATOR)
+            i += 1
+            while i < len && isSeparator(src.add(i).read()) {
+                i += 1
+            }
+        } else {
+            let start = i
+            while i < len && !isSeparator(src.add(i).read()) {
+                i += 1
+            }
+            out = out.concat(path.substring(start, i - start))
+        }
+    }
+    return out
+}
+
+/// Returns true if `path` begins with a '/'.
+public func isAbsolute(_ path: string) -> bool {
+    path.startsWith(SEPARATOR)
+}
+
+/// Lexically joins two path segments with a single '/' between them.
+///
+/// Notes:
+///   - Does not canonicalize or resolve `.`/`..`.
+///   - If `rhs` has a leading '/', it is treated as a trailing segment of
+///     `lhs`, not as a fresh absolute path.
+///
+/// Examples:
+///   join("a", "b")  -> "a/b"
+///   join("a/", "b") -> "a/b"
+///   join("a", "/b") -> "a/b"
+///   join("", "b")   -> "b"
+///   join("a", "")   -> "a"
+public func join(_ lhs: string, _ rhs: string) -> string {
+    if lhs.isEmpty() {
+        return rhs
+    }
+    if rhs.isEmpty() {
+        return lhs
+    }
+
+    let lhs_ends = lhs.endsWith(SEPARATOR)
+    let rhs_starts = rhs.startsWith(SEPARATOR)
+
+    if lhs_ends && rhs_starts {
+        return lhs.concat(rhs.substring(1, stringLen(rhs) - 1))
+    }
+    if !lhs_ends && !rhs_starts {
+        return lhs.concat(SEPARATOR).concat(rhs)
+    }
+    lhs.concat(rhs)
+}
+
+/// Returns the final path component of `path`, or `.none` when the path has
+/// no meaningful final component.
+///
+/// Examples:
+///   fileName("/tmp/file.txt") -> .some("file.txt")
+///   fileName("/tmp/")         -> .some("tmp")
+///   fileName("/")             -> .none
+///   fileName("")              -> .none
+public func fileName(_ path: string) -> string? {
+    let trimmed = trimTrailingSeparators(path)
+    let len = stringLen(trimmed)
+    if len == 0 {
+        return .none
+    }
+
+    match lastSeparatorIndex(trimmed) {
+        case .some(idx) => {
+            let start = idx + 1
+            return .some(trimmed.substring(start, len - start))
+        }
+        case .none => return .some(trimmed)
+    }
+}
+
+/// Returns the extension of the final path component (the bytes after the
+/// last `.`), or `.none` if the file has no non-leading dot.
+///
+/// Examples:
+///   extension("file.txt")       -> .some("txt")
+///   extension("archive.tar.gz") -> .some("gz")
+///   extension("file")           -> .none
+///   extension(".gitignore")     -> .none
+public func extension(_ path: string) -> string? {
+    match fileName(path) {
+        case .some(name) => {
+            match lastDotIndex(name) {
+                case .some(idx) => {
+                    if idx == 0 {
+                        return .none
+                    }
+                    let name_len = stringLen(name)
+                    let start = idx + 1
+                    return .some(name.substring(start, name_len - start))
+                }
+                case .none => return .none
+            }
+        }
+        case .none => return .none
+    }
+}
+
+/// Returns the file stem (the final path component with its extension
+/// removed), or `.none` when there is no file component.
+///
+/// Examples:
+///   stem("file.txt")       -> .some("file")
+///   stem("archive.tar.gz") -> .some("archive.tar")
+///   stem(".gitignore")     -> .some(".gitignore")
+public func stem(_ path: string) -> string? {
+    match fileName(path) {
+        case .some(name) => {
+            match lastDotIndex(name) {
+                case .some(idx) => {
+                    if idx == 0 {
+                        return .some(name)
+                    }
+                    return .some(name.substring(0, idx))
+                }
+                case .none => return .some(name)
+            }
+        }
+        case .none => return .none
+    }
+}
+
+/// Returns the parent directory of `path`, or `.none` when no parent exists.
+///
+/// Examples:
+///   parent("/tmp/file.txt") -> .some("/tmp")
+///   parent("/tmp")          -> .some("/")
+///   parent("/")             -> .none
+///   parent("file.txt")      -> .none
+public func parent(_ path: string) -> string? {
+    let len = stringLen(path)
+    if len == 0 {
+        return .none
+    }
+    if len == 1 && isAbsolute(path) {
+        return .none
+    }
+
+    let trimmed = trimTrailingSeparators(path)
+    let trimmed_len = stringLen(trimmed)
+    if trimmed_len == 0 {
+        return .none
+    }
+
+    match lastSeparatorIndex(trimmed) {
+        case .some(idx) => {
+            if idx == 0 {
+                return .some(SEPARATOR)
+            }
+            return .some(trimmed.substring(0, idx))
+        }
+        case .none => return .none
+    }
+}
+
+/// Returns the index of the last '/' in `s`, or `.none` if none is present.
+func lastSeparatorIndex(_ s: string) -> usize? {
+    let len = stringLen(s)
+    if len == 0 {
+        return .none
+    }
+    let data = stringData(s)
+    var i: usize = len
+    while i > 0 {
+        i -= 1
+        if isSeparator(data.add(i).read()) {
+            return .some(i)
+        }
+    }
+    return .none
+}
+
+/// Returns the index of the last '.' in `s`, or `.none` if none is present.
+func lastDotIndex(_ s: string) -> usize? {
+    let len = stringLen(s)
+    if len == 0 {
+        return .none
+    }
+    let data = stringData(s)
+    var i: usize = len
+    while i > 0 {
+        i -= 1
+        if data.add(i).read() == 46 { // '.'
+            return .some(i)
+        }
+    }
+    return .none
+}
+
+/// Removes any trailing '/' bytes from `s`. A string consisting only of
+/// separators is reduced to the empty string.
+func trimTrailingSeparators(_ s: string) -> string {
+    let len = stringLen(s)
+    if len == 0 {
+        return s
+    }
+    let data = stringData(s)
+    var end = len
+    while end > 0 && isSeparator(data.add(end - 1).read()) {
+        end -= 1
+    }
+    if end == len {
+        return s
+    }
+    s.substring(0, end)
+}
