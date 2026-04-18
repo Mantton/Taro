@@ -1,6 +1,5 @@
-//+cfg family("unix")
-
 import std.libc
+import std.sys.time.{MonotonicTime, RealtimeTime}
 
 const NANOS_PER_SEC_I64: int64 = 1000000000_i64
 
@@ -31,7 +30,7 @@ func convertRealtime(_ ts: std.libc.Timespec) -> RealtimeTime {
     }
 }
 
-func impMonotonicNow() -> MonotonicTime {
+public func monotonicNow() -> MonotonicTime {
     var ts = std.libc.Timespec {
         tv_sec: 0_i64,
         tv_nsec: 0_i64,
@@ -44,7 +43,7 @@ func impMonotonicNow() -> MonotonicTime {
     return convertMonotonic(ts)
 }
 
-func impRealtimeNow() -> RealtimeTime {
+public func realtimeNow() -> RealtimeTime {
     var ts = std.libc.Timespec {
         tv_sec: 0_i64,
         tv_nsec: 0_i64,

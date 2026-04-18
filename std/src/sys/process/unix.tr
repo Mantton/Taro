@@ -1,5 +1,0 @@
-//+cfg family("unix")
-
-func impExit(_ code: int32) -> ! {
-    std.libc.exit(code)
-}

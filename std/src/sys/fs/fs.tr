@@ -1,63 +1,13 @@
-import std.io.Error
-import std.result.Result
+@cfg(family("unix"))
+import std.sys.fs.unix.*
+
+@cfg(family("unix"))
+export std.sys.fs.unix.*
+
+@cfg(family("windows"))
+import std.sys.fs.windows.*
+
+@cfg(family("windows"))
+export std.sys.fs.windows.*
 
 public type RawFile = PlatformFile
-
-public func openReadOnly(_ path: string) -> Result[RawFile, Error] {
-    impOpenReadOnly(path)
-}
-
-public func createWrite(_ path: string) -> Result[RawFile, Error] {
-    impCreateWrite(path)
-}
-
-public func openWithOptions(
-    _ path: string,
-    _ read: bool,
-    _ write: bool,
-    _ append: bool,
-    _ create: bool,
-    _ truncate: bool,
-) -> Result[RawFile, Error] {
-    impOpenWithOptions(path, read, write, append, create, truncate)
-}
-
-public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
-    impSymlink(target, linkPath)
-}
-
-public func close(_ file: &mut RawFile) -> Result[(), Error] {
-    impClose(file)
-}
-
-public func read(_ file: &RawFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    impRead(file, buf, len)
-}
-
-public func write(_ file: &RawFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    impWrite(file, buf, len)
-}
-
-public func seek(_ file: &RawFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
-    impSeek(file, offset, whence)
-}
-
-public func intoAsyncStream(_ file: &mut RawFile) -> Result[std.sys.io.RawAsyncStream, Error] {
-    impIntoAsyncStream(file)
-}
-
-public func createDir(_ path: string) -> Result[(), Error] {
-    impCreateDir(path)
-}
-
-public func removeDir(_ path: string) -> Result[(), Error] {
-    impRemoveDir(path)
-}
-
-public func removeFile(_ path: string) -> Result[(), Error] {
-    impRemoveFile(path)
-}
-
-public func rename(_ from: string, _ to: string) -> Result[(), Error] {
-    impRename(from, to)
-}

@@ -1,7 +1,7 @@
 /// Platform-aware lexical path manipulation.
 ///
 /// Functions in this module use the host platform's native path conventions.
-/// On Unix this delegates to `std.path.posix`. Windows support (drive
+/// On Unix these are identical to `std.path.posix`. Windows support (drive
 /// letters, UNC, `\` as a separator) is not yet implemented.
 ///
 /// For paths that must travel across platforms unchanged — URLs, package
@@ -11,99 +11,24 @@
 /// This module performs *lexical* manipulation only: no filesystem queries,
 /// no symlink resolution, no `.`/`..` normalization, no `~` expansion.
 
-// =====================================================================
-// Unix: forward to std.path.posix.
-// =====================================================================
+@cfg(family("unix"))
+import std.path.posix.*
 
 @cfg(family("unix"))
-public const SEPARATOR: string = std.path.posix.SEPARATOR
-
-@cfg(family("unix"))
-public func isSeparator(_ byte: uint8) -> bool {
-    std.path.posix.isSeparator(byte)
-}
-
-@cfg(family("unix"))
-public func normalizeSeparators(_ path: string) -> string {
-    std.path.posix.normalizeSeparators(path)
-}
-
-@cfg(family("unix"))
-public func isAbsolute(_ path: string) -> bool {
-    std.path.posix.isAbsolute(path)
-}
-
-@cfg(family("unix"))
-public func join(_ lhs: string, _ rhs: string) -> string {
-    std.path.posix.join(lhs, rhs)
-}
-
-@cfg(family("unix"))
-public func fileName(_ path: string) -> string? {
-    std.path.posix.fileName(path)
-}
-
-@cfg(family("unix"))
-public func extension(_ path: string) -> string? {
-    std.path.posix.extension(path)
-}
-
-@cfg(family("unix"))
-public func stem(_ path: string) -> string? {
-    std.path.posix.stem(path)
-}
-
-@cfg(family("unix"))
-public func parent(_ path: string) -> string? {
-    std.path.posix.parent(path)
-}
-
-// =====================================================================
-// Windows: not yet implemented.
-// =====================================================================
-
-// Windows uses backslash as its separator. We leave this placeholder empty
-// until native Windows support is implemented; the stub functions below
-// panic with `std.panic.todo` so callers get a clear message.
-@cfg(family("windows"))
-public const SEPARATOR: string = ""
-
-@cfg(family("windows"))
-public func isSeparator(_ byte: uint8) -> bool {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+export std.path.posix.{
+    SEPARATOR,
+    isSeparator,
+    normalizeSeparators,
+    isAbsolute,
+    join,
+    fileName,
+    extension,
+    stem,
+    parent,
 }
 
 @cfg(family("windows"))
-public func normalizeSeparators(_ path: string) -> string {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
-}
+import std.path.windows.*
 
 @cfg(family("windows"))
-public func isAbsolute(_ path: string) -> bool {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
-}
-
-@cfg(family("windows"))
-public func join(_ lhs: string, _ rhs: string) -> string {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
-}
-
-@cfg(family("windows"))
-public func fileName(_ path: string) -> string? {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
-}
-
-@cfg(family("windows"))
-public func extension(_ path: string) -> string? {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
-}
-
-@cfg(family("windows"))
-public func stem(_ path: string) -> string? {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
-}
-
-@cfg(family("windows"))
-public func parent(_ path: string) -> string? {
-    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
-}
+export std.path.windows.*

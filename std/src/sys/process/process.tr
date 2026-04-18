@@ -1,3 +1,11 @@
-public func exit(_ code: int32) -> ! {
-    impExit(code)
-}
+@cfg(family("unix"))
+import std.sys.process.unix.*
+
+@cfg(family("unix"))
+export std.sys.process.unix.*
+
+@cfg(family("windows"))
+import std.sys.process.windows.*
+
+@cfg(family("windows"))
+export std.sys.process.windows.*

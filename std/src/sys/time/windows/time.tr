@@ -1,9 +1,9 @@
-//+cfg family("windows")
+import std.sys.time.{MonotonicTime, RealtimeTime}
 
-func impMonotonicNow() -> MonotonicTime {
+public func monotonicNow() -> MonotonicTime {
     std.panic.todo("std.sys.time.monotonicNow not implemented on windows yet")
 }
 
-func impRealtimeNow() -> RealtimeTime {
+public func realtimeNow() -> RealtimeTime {
     std.panic.todo("std.sys.time.realtimeNow not implemented on windows yet")
 }

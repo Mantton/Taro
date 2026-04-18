@@ -56,7 +56,7 @@ public func domainForAddress(_ address: SocketAddress) -> SocketDomain {
 public func socket(_ domain: SocketDomain, _ type_: SocketType) -> Result[RawSocket, Error] {
     let fd = std.libc.socket(socketDomainValue(domain), socketTypeValue(type_), 0)
     if fd < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
 
     let socket = RawSocket { fd }
@@ -81,7 +81,7 @@ public func bind(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), E
     let ptr = unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
     let res = std.libc.bind(socket.fd, ptr, len)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
@@ -95,7 +95,7 @@ public func bind(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), E
 public func listen(_ socket: &RawSocket, _ backlog: int32) -> Result[(), Error] {
     let res = std.libc.listen(socket.fd, backlog)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
@@ -111,7 +111,7 @@ public func connect(_ socket: &RawSocket, _ address: SocketAddress) -> Result[()
     let ptr = unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
     let res = std.libc.connect(socket.fd, ptr, len)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
@@ -129,7 +129,7 @@ public func accept(_ socket: &RawSocket) -> Result[(RawSocket, SocketAddress), E
     let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
     let childFd = std.libc.accept(socket.fd, ptr, lenPtr)
     if childFd < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
 
     let cloexecRes = setCloseOnExecFd(childFd)
@@ -166,7 +166,7 @@ public func close(_ socket: &mut RawSocket) -> Result[(), Error] {
 
     let res = std.libc.close(socket.fd)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     socket.fd = -1
     return .ok(())
@@ -181,7 +181,7 @@ public func close(_ socket: &mut RawSocket) -> Result[(), Error] {
 public func read(_ socket: &RawSocket, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.read(socket.fd, buf, len)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(res as usize)
 }
@@ -195,7 +195,7 @@ public func read(_ socket: &RawSocket, _ buf: *mut uint8, _ len: usize) -> Resul
 public func write(_ socket: &RawSocket, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(socket.fd, buf, len)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(res as usize)
 }
@@ -213,7 +213,7 @@ public func localAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
     let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
     let res = std.libc.getsockname(socket.fd, ptr, lenPtr)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return decodeSocketAddress(storage, len)
 }
@@ -231,7 +231,7 @@ public func peerAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
     let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
     let res = std.libc.getpeername(socket.fd, ptr, lenPtr)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return decodeSocketAddress(storage, len)
 }
@@ -252,7 +252,7 @@ public func sendTo(
     let addrPtr = unsafe { (&storage as *const [uint8; SOCKET_ADDRESS_STORAGE_LEN]) as *const uint8 }
     let res = std.libc.sendto(socket.fd, buf, len, 0, addrPtr, addrLen)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(res as usize)
 }
@@ -279,7 +279,7 @@ public func recvFrom(
     let lenPtr = unsafe { (&mut addrLen as *mut std.libc.socklen_t) }
     let res = std.libc.recvfrom(socket.fd, buf, len, 0, addrPtr, lenPtr)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
 
     let addressRes = decodeSocketAddress(storage, addrLen)
@@ -311,7 +311,7 @@ public func setReuseAddr(_ socket: &RawSocket, _ enabled: bool) -> Result[(), Er
         valueLen,
     )
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
@@ -345,7 +345,7 @@ public func socketError(_ socket: &RawSocket) -> Result[int32, Error] {
         lenPtr,
     )
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(value)
 }
@@ -389,13 +389,13 @@ func socketTypeValue(_ type_: SocketType) -> int32 {
 func setCloseOnExecFd(_ fd: int32) -> Result[(), Error] {
     let current = std.libc.fcntl(fd, std.libc.F_GETFD, 0)
     if current < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
 
     let updated = current | std.libc.FD_CLOEXEC
     let res = std.libc.fcntl(fd, std.libc.F_SETFD, updated)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }

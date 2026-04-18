@@ -164,7 +164,7 @@ public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddr
                 if code == 0 {
                     return .ok(())
                 }
-                return .err(std.sys.io.mapErrno(code))
+                return .err(std.sys.io.unix.mapErrno(code))
             }
             case .err(err) => return .err(err)
         }

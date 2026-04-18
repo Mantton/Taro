@@ -1,0 +1,70 @@
+import std.io.Error
+import std.result.Result
+import std.sys.sync.{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus}
+
+public func mapStatus(_ code: int32) -> Result[(), Error] {
+    if code == 0 {
+        return .ok(())
+    }
+    return .err(std.sys.io.windows.mapErrno(code))
+}
+
+public func channelCreate(_ elem_size: usize, _ capacity: usize, _ bounded: bool) -> Result[RawChannel, Error] {
+    std.panic.todo("std.sys.sync.channelCreate not implemented on windows yet")
+}
+
+public func channelDestroy(_ channel: RawChannel) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.channelDestroy not implemented on windows yet")
+}
+
+public func channelClose(_ channel: &RawChannel) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.channelClose not implemented on windows yet")
+}
+
+public func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.channelTrySend not implemented on windows yet")
+}
+
+public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
+    std.panic.todo("std.sys.sync.channelTryRecv not implemented on windows yet")
+}
+
+public func mutexCreate() -> Result[RawMutex, Error] {
+    std.panic.todo("std.sys.sync.mutexCreate not implemented on windows yet")
+}
+
+public func mutexDestroy(_ mutex: RawMutex) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.mutexDestroy not implemented on windows yet")
+}
+
+public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
+    std.panic.todo("std.sys.sync.mutexTryLock not implemented on windows yet")
+}
+
+public func mutexUnlock(_ mutex: &RawMutex) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.mutexUnlock not implemented on windows yet")
+}
+
+public func rwlockCreate() -> Result[RawRwLock, Error] {
+    std.panic.todo("std.sys.sync.rwlockCreate not implemented on windows yet")
+}
+
+public func rwlockDestroy(_ lock: RawRwLock) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.rwlockDestroy not implemented on windows yet")
+}
+
+public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
+    std.panic.todo("std.sys.sync.rwlockTryRead not implemented on windows yet")
+}
+
+public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
+    std.panic.todo("std.sys.sync.rwlockTryWrite not implemented on windows yet")
+}
+
+public func rwlockUnlockRead(_ lock: &RawRwLock) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.rwlockUnlockRead not implemented on windows yet")
+}
+
+public func rwlockUnlockWrite(_ lock: &RawRwLock) -> Result[(), Error] {
+    std.panic.todo("std.sys.sync.rwlockUnlockWrite not implemented on windows yet")
+}

@@ -1,0 +1,153 @@
+import std.io.Error
+import std.result.Result
+import std.sys.sync.{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus}
+
+extern "taro_rt" {
+    func __rt__sync_channel_create(_ elem_size: usize, _ capacity: usize, _ bounded: uint8) -> usize
+    func __rt__sync_channel_destroy(_ channel_id: usize) -> int32
+    func __rt__sync_channel_close(_ channel_id: usize) -> int32
+    func __rt__sync_channel_try_send(_ channel_id: usize, _ value_ptr: *const uint8) -> int32
+    func __rt__sync_channel_try_recv(_ channel_id: usize, _ out_ptr: *mut uint8) -> int32
+
+    func __rt__sync_mutex_create() -> usize
+    func __rt__sync_mutex_destroy(_ mutex_id: usize) -> int32
+    func __rt__sync_mutex_try_lock(_ mutex_id: usize) -> int32
+    func __rt__sync_mutex_unlock(_ mutex_id: usize) -> int32
+
+    func __rt__sync_rwlock_create() -> usize
+    func __rt__sync_rwlock_destroy(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_try_read(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_try_write(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_unlock_read(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_unlock_write(_ lock_id: usize) -> int32
+}
+
+@cfg(os("linux"))
+func errnoWouldBlock() -> int32 {
+    11
+}
+
+@cfg(os("macos"))
+func errnoWouldBlock() -> int32 {
+    35
+}
+
+func errnoBrokenPipe() -> int32 {
+    32
+}
+
+public func mapStatus(_ code: int32) -> Result[(), Error] {
+    if code == 0 {
+        return .ok(())
+    }
+    return .err(std.sys.io.unix.mapErrno(code))
+}
+
+public func channelCreate(_ elem_size: usize, _ capacity: usize, _ bounded: bool) -> Result[RawChannel, Error] {
+    if bounded && capacity == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    let boundedByte: uint8 = if bounded { 1_u8 } else { 0_u8 }
+    let id = __rt__sync_channel_create(elem_size, capacity, boundedByte)
+    if id == 0 {
+        return .err(Error.invalidInput)
+    }
+
+    return .ok(RawChannel { id })
+}
+
+public func channelDestroy(_ channel: RawChannel) -> Result[(), Error] {
+    mapStatus(__rt__sync_channel_destroy(channel.id))
+}
+
+public func channelClose(_ channel: &RawChannel) -> Result[(), Error] {
+    mapStatus(__rt__sync_channel_close(channel.id))
+}
+
+public func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
+    mapStatus(__rt__sync_channel_try_send(channel.id, value_ptr))
+}
+
+public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
+    let code = __rt__sync_channel_try_recv(channel.id, out_ptr)
+    if code == 0 {
+        return .ok(.value)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(.empty)
+    }
+    if code == errnoBrokenPipe() {
+        return .ok(.closed)
+    }
+    return .err(std.sys.io.unix.mapErrno(code))
+}
+
+public func mutexCreate() -> Result[RawMutex, Error] {
+    let id = __rt__sync_mutex_create()
+    if id == 0 {
+        return .err(Error.invalidInput)
+    }
+    return .ok(RawMutex { id })
+}
+
+public func mutexDestroy(_ mutex: RawMutex) -> Result[(), Error] {
+    mapStatus(__rt__sync_mutex_destroy(mutex.id))
+}
+
+public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
+    let code = __rt__sync_mutex_try_lock(mutex.id)
+    if code == 0 {
+        return .ok(true)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(false)
+    }
+    return .err(std.sys.io.unix.mapErrno(code))
+}
+
+public func mutexUnlock(_ mutex: &RawMutex) -> Result[(), Error] {
+    mapStatus(__rt__sync_mutex_unlock(mutex.id))
+}
+
+public func rwlockCreate() -> Result[RawRwLock, Error] {
+    let id = __rt__sync_rwlock_create()
+    if id == 0 {
+        return .err(Error.invalidInput)
+    }
+    return .ok(RawRwLock { id })
+}
+
+public func rwlockDestroy(_ lock: RawRwLock) -> Result[(), Error] {
+    mapStatus(__rt__sync_rwlock_destroy(lock.id))
+}
+
+public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
+    let code = __rt__sync_rwlock_try_read(lock.id)
+    if code == 0 {
+        return .ok(true)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(false)
+    }
+    return .err(std.sys.io.unix.mapErrno(code))
+}
+
+public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
+    let code = __rt__sync_rwlock_try_write(lock.id)
+    if code == 0 {
+        return .ok(true)
+    }
+    if code == errnoWouldBlock() {
+        return .ok(false)
+    }
+    return .err(std.sys.io.unix.mapErrno(code))
+}
+
+public func rwlockUnlockRead(_ lock: &RawRwLock) -> Result[(), Error] {
+    mapStatus(__rt__sync_rwlock_unlock_read(lock.id))
+}
+
+public func rwlockUnlockWrite(_ lock: &RawRwLock) -> Result[(), Error] {
+    mapStatus(__rt__sync_rwlock_unlock_write(lock.id))
+}

@@ -1,5 +1,3 @@
-//+cfg family("unix")
-
 public type size_t = usize
 public type ssize_t = isize
 public type clockid_t = int32
@@ -110,7 +108,7 @@ extern "C" {
         _ addrlen: socklen_t,
     ) -> ssize_t
     public func fcntl(_ fd: int32, _ cmd: int32, _ arg: int32) -> int32
-    
+
     // File system utilities
     public func mkdir(_ path: *const uint8, _ mode: int32) -> int32
     public func rmdir(_ path: *const uint8) -> int32

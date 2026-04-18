@@ -1,0 +1,33 @@
+public const SEPARATOR: string = ""
+
+public func isSeparator(_ byte: uint8) -> bool {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}
+
+public func normalizeSeparators(_ path: string) -> string {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}
+
+public func isAbsolute(_ path: string) -> bool {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}
+
+public func join(_ lhs: string, _ rhs: string) -> string {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}
+
+public func fileName(_ path: string) -> string? {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}
+
+public func extension(_ path: string) -> string? {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}
+
+public func stem(_ path: string) -> string? {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}
+
+public func parent(_ path: string) -> string? {
+    std.panic.todo("std.path native Windows support not implemented; use std.path.posix")
+}

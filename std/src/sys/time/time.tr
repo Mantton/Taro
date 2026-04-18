@@ -1,3 +1,14 @@
+@cfg(family("unix"))
+import std.sys.time.unix.*
+
+@cfg(family("unix"))
+export std.sys.time.unix.{monotonicNow, realtimeNow}
+
+@cfg(family("windows"))
+import std.sys.time.windows.*
+
+@cfg(family("windows"))
+export std.sys.time.windows.{monotonicNow, realtimeNow}
 
 public struct MonotonicTime {
     secs: uint64
@@ -27,12 +38,4 @@ impl RealtimeTime {
     public func subsecNanos(&self) -> uint32 {
         return self.nanos
     }
-}
-
-public func monotonicNow() -> MonotonicTime {
-    return impMonotonicNow()
-}
-
-public func realtimeNow() -> RealtimeTime {
-    return impRealtimeNow()
 }

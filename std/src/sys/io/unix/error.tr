@@ -1,5 +1,3 @@
-//+cfg family("unix")
-
 import std.io.Error
 import std.libc
 

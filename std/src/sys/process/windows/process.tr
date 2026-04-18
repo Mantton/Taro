@@ -1,5 +1,3 @@
-//+cfg family("windows")
-
-func impExit(_ code: int32) -> ! {
+public func exit(_ code: int32) -> ! {
     std.panic.todo("std.sys.process.exit not implemented on windows yet")
 }

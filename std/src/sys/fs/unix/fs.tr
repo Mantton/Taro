@@ -1,5 +1,3 @@
-//+cfg family("unix")
-
 import std.ffi.CString
 import std.io.Error
 import std.libc
@@ -17,15 +15,15 @@ public struct PlatformFile {
 const DEFAULT_FILE_MODE: int32 = 438
 const DEFAULT_DIR_MODE: int32 = 511
 
-func impOpenReadOnly(_ path: string) -> Result[PlatformFile, Error] {
+public func openReadOnly(_ path: string) -> Result[PlatformFile, Error] {
     openFile(path, true, false, false, false, false)
 }
 
-func impCreateWrite(_ path: string) -> Result[PlatformFile, Error] {
+public func createWrite(_ path: string) -> Result[PlatformFile, Error] {
     openFile(path, false, true, false, true, true)
 }
 
-func impOpenWithOptions(
+public func openWithOptions(
     _ path: string,
     _ read: bool,
     _ write: bool,
@@ -89,60 +87,60 @@ func openFile(
         __rt__open2(cpath.asPtr(), flags)
     }
     if fd < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
 
     return .ok(PlatformFile { fd })
 }
 
-func impSymlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
+public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
     let ctarget = CString.new(target)
     let clink = CString.new(linkPath)
     let res = std.libc.symlink(ctarget.asPtr(), clink.asPtr())
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
 
-func impClose(_ file: &mut PlatformFile) -> Result[(), Error] {
+public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
     if file.fd < 0 {
         return .ok(())
     }
 
     let res = std.libc.close(file.fd)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     file.fd = -1
     return .ok(())
 }
 
-func impRead(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
+public func read(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.read(file.fd, buf, len)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(res as usize)
 }
 
-func impWrite(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
+public func write(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(file.fd, buf, len)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(res as usize)
 }
 
-func impSeek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
+public func seek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
     let res = std.libc.lseek(file.fd, offset, whence)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(res)
 }
 
-func impIntoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
+public func intoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
     if file.fd < 0 {
         return .err(Error.invalidInput)
     }
@@ -152,39 +150,39 @@ func impIntoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsync
     std.sys.io.adoptFd(fd)
 }
 
-func impCreateDir(_ path: string) -> Result[(), Error] {
+public func createDir(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.mkdir(cpath.asPtr(), DEFAULT_DIR_MODE)
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
 
-func impRemoveDir(_ path: string) -> Result[(), Error] {
+public func removeDir(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.rmdir(cpath.asPtr())
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
 
-func impRemoveFile(_ path: string) -> Result[(), Error] {
+public func removeFile(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.unlink(cpath.asPtr())
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
 
-func impRename(_ from: string, _ to: string) -> Result[(), Error] {
+public func rename(_ from: string, _ to: string) -> Result[(), Error] {
     let cfrom = CString.new(from)
     let cto = CString.new(to)
     let res = std.libc.rename(cfrom.asPtr(), cto.asPtr())
     if res < 0 {
-        return .err(std.sys.io.lastError())
+        return .err(std.sys.io.unix.lastError())
     }
     return .ok(())
 }
