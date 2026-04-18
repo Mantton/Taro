@@ -29,7 +29,10 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             symbol: node.name,
         };
         let parent = self.tag(&name, node.id, DefinitionKind::Module);
-        self.resolver.record_visibility(parent, Visibility::Public);
+        match &node.module_decl {
+            Some(decl) => self.record_visibility(parent, decl.visibility),
+            None => self.resolver.record_visibility(parent, Visibility::Public),
+        }
         self.with_parent(parent, |this| ast::walk_module(this, node));
     }
     fn visit_declaration(&mut self, node: &ast::Declaration) -> Self::Result {

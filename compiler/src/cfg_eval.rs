@@ -9,9 +9,15 @@ fn filter_module(module: &mut ast::Module, target: &TargetInfo, gcx: GlobalConte
         filter_file(file, target, gcx);
     }
 
-    for submodule in &mut module.submodules {
+    retain_mut(&mut module.submodules, |submodule| {
+        if let Some(decl) = &submodule.module_decl {
+            if !should_include_attrs(&decl.attributes, target, gcx) {
+                return false;
+            }
+        }
         filter_module(submodule, target, gcx);
-    }
+        true
+    });
 }
 
 fn filter_file(file: &mut ast::File, target: &TargetInfo, gcx: GlobalContext<'_>) {

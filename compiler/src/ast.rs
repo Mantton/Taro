@@ -20,6 +20,18 @@ pub struct Module {
     pub name: Symbol,
     pub files: Vec<File>,
     pub submodules: Vec<Module>,
+    /// Optional `mod <name>` declaration attaching metadata (visibility,
+    /// attributes) to this implicit directory module. Absent for the root
+    /// module and for submodules that don't declare `mod` in any source file.
+    pub module_decl: Option<ModuleDecl>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleDecl {
+    pub name: Identifier,
+    pub visibility: Visibility,
+    pub attributes: AttributeList,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -8,7 +8,8 @@ use crate::{
         FunctionDeclarationKind, FunctionParameter, FunctionPrototype, FunctionSignature,
         GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
         GenericWhereClause, Generics, Identifier, IfExpression, Impl, Interface, Label, Literal,
-        Local, MapPair, MatchArm, MatchExpression, Mutability, Namespace, NamespaceDeclaration,
+        Local, MapPair, MatchArm, MatchExpression, ModuleDecl, Mutability, Namespace,
+        NamespaceDeclaration,
         NamespaceDeclarationKind, NodeID, Path, PathNode, PathSegment, Pattern,
         PatternBindingCondition, PatternKind, PatternPath, RequiredTypeConstraint, SelfKind,
         Statement, StatementKind, StaticVariable, Struct, StructLiteral, Type, TypeAlias,
@@ -41,7 +42,7 @@ pub fn parse_package(
     dcx: &DiagCtx,
 ) -> Result<ast::Package, ReportedError> {
     let next: NextNode = Default::default();
-    let root = parse_module(package.root, next, dcx)?;
+    let root = parse_module(package.root, next, dcx, true)?;
     Ok(ast::Package { root })
 }
 
@@ -49,38 +50,100 @@ fn parse_module(
     module: lexer::Module,
     next: NextNode,
     dcx: &DiagCtx,
+    is_root: bool,
 ) -> Result<ast::Module, ReportedError> {
     let name = Symbol::new(&module.name);
     let mut files = vec![];
     let mut submodules = vec![];
+    let mut module_decls: Vec<ModuleDecl> = vec![];
 
     for file in module.files {
-        let file = parse_file(file, next.clone(), dcx)?;
+        let (file, decls) = parse_file(file, next.clone(), dcx)?;
         files.push(file);
+        module_decls.extend(decls);
     }
 
     for module in module.submodules {
-        let module = parse_module(module, next.clone(), dcx)?;
+        let module = parse_module(module, next.clone(), dcx, false)?;
         submodules.push(module);
     }
+
+    let module_decl =
+        pick_module_decl(&module.name, is_root, module_decls, dcx).map_err(|_| ReportedError)?;
 
     Ok(ast::Module {
         id: next.borrow_mut().next(),
         name,
         files,
         submodules,
+        module_decl,
     })
+}
+
+fn pick_module_decl(
+    module_name: &str,
+    is_root: bool,
+    mut decls: Vec<ModuleDecl>,
+    dcx: &DiagCtx,
+) -> Result<Option<ModuleDecl>, ReportedError> {
+    if decls.is_empty() {
+        return Ok(None);
+    }
+
+    let mut had_error = false;
+
+    if is_root {
+        for decl in &decls {
+            dcx.emit_error(
+                ParserError::ModuleDeclInRoot.to_string(),
+                Some(decl.span),
+            );
+            had_error = true;
+        }
+        if had_error {
+            return Err(ReportedError);
+        }
+        return Ok(None);
+    }
+
+    let first = decls.remove(0);
+    for extra in &decls {
+        dcx.emit_error(
+            ParserError::DuplicateModuleDecl.to_string(),
+            Some(extra.span),
+        );
+        had_error = true;
+    }
+
+    let declared = first.name.symbol.as_str().to_string();
+    if declared != module_name {
+        dcx.emit_error(
+            ParserError::ModuleDeclNameMismatch {
+                declared,
+                expected: module_name.to_string(),
+            }
+            .to_string(),
+            Some(first.name.span),
+        );
+        had_error = true;
+    }
+
+    if had_error {
+        return Err(ReportedError);
+    }
+
+    Ok(Some(first))
 }
 
 fn parse_file(
     file: lexer::File,
     next: NextNode,
     dcx: &DiagCtx,
-) -> Result<ast::File, ReportedError> {
+) -> Result<(ast::File, Vec<ModuleDecl>), ReportedError> {
     let id = file.id;
     let parser = Parser::new(file, next.clone());
-    let declarations = match parser.parse() {
-        Ok(declarations) => declarations,
+    let (declarations, module_decls) = match parser.parse() {
+        Ok(items) => items,
         Err(errors) => {
             for err in errors {
                 dcx.emit_error(err.value.to_string(), Some(err.span));
@@ -89,7 +152,7 @@ fn parse_file(
         }
     };
 
-    Ok(ast::File { id, declarations })
+    Ok((ast::File { id, declarations }, module_decls))
 }
 
 type R<V> = Result<V, Spanned<ParserError>>;
@@ -118,11 +181,13 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse(mut self) -> Result<Vec<Declaration>, Vec<Spanned<ParserError>>> {
+    fn parse(
+        mut self,
+    ) -> Result<(Vec<Declaration>, Vec<ModuleDecl>), Vec<Spanned<ParserError>>> {
         let result = self.parse_module_declarations();
         match result {
             Ok(_) if !self.errors.is_empty() => return Err(self.errors),
-            Ok(declarations) => return Ok(declarations),
+            Ok(items) => return Ok(items),
             Err(error) => {
                 self.errors.push(error);
                 return Err(self.errors);
@@ -452,14 +517,16 @@ impl Parser {
         }
     }
 
-    fn parse_module_declarations(&mut self) -> R<Vec<Declaration>> {
+    fn parse_module_declarations(&mut self) -> R<(Vec<Declaration>, Vec<ModuleDecl>)> {
         let mut items = vec![];
+        let mut module_decls = vec![];
         loop {
             if self.is_at_end() {
                 break;
             }
-            match self.parse_declaration() {
-                Ok(Some(item)) => items.push(item),
+            match self.parse_top_level_item() {
+                Ok(Some(TopLevelItem::Decl(d))) => items.push(d),
+                Ok(Some(TopLevelItem::Module(m))) => module_decls.push(m),
                 Ok(None) => {
                     // No declaration matched, but we might not be at EOF if there are trailing invalid tokens
                     if !self.is_at_end() {
@@ -478,17 +545,43 @@ impl Parser {
             }
         }
 
-        return Ok(items);
+        return Ok((items, module_decls));
     }
 
-    fn parse_declaration(&mut self) -> R<Option<Declaration>> {
-        let declaration = self.parse_declaration_internal(FnParseMode { req_body: true })?;
+    fn parse_top_level_item(&mut self) -> R<Option<TopLevelItem>> {
+        let start_span = self.lo_span();
+        let attributes = self.parse_attributes()?;
+        let visibility = self.parse_visibility()?;
 
-        let Some(declaration) = declaration else {
-            return Ok(declaration);
+        if self.matches(Token::Mod) {
+            self.expect(Token::Mod)?;
+            let name = self.parse_identifier()?;
+            let span = start_span.to(self.hi_span());
+            self.expect_semi()?;
+            return Ok(Some(TopLevelItem::Module(ModuleDecl {
+                name,
+                visibility,
+                attributes,
+                span,
+            })));
+        }
+
+        let fn_mode = FnParseMode { req_body: true };
+        let Some((identifier, kind)) = self.parse_declaration_kind(fn_mode)? else {
+            return Ok(None);
         };
 
-        return Ok(Some(declaration));
+        let declaration = Declaration {
+            id: self.next_id(),
+            span: start_span.to(self.hi_span()),
+            identifier,
+            kind,
+            visibility,
+            attributes,
+        };
+
+        self.expect_semi()?;
+        Ok(Some(TopLevelItem::Decl(declaration)))
     }
 
     fn parse_declaration_internal(&mut self, fn_mode: FnParseMode) -> R<Option<Declaration>> {
@@ -4561,6 +4654,12 @@ enum ParserError {
     UnexpectedSemicolonInList {
         context: &'static str,
     },
+    DuplicateModuleDecl,
+    ModuleDeclNameMismatch {
+        declared: String,
+        expected: String,
+    },
+    ModuleDeclInRoot,
 }
 
 impl Display for ParserError {
@@ -4644,11 +4743,27 @@ impl Display for ParserError {
             UnexpectedSemicolonInList { context } => {
                 write!(f, "unexpected semicolon in {}", context)
             }
+            DuplicateModuleDecl => f.write_str(
+                "duplicate `mod` declaration in this module",
+            ),
+            ModuleDeclNameMismatch { declared, expected } => write!(
+                f,
+                "`mod {}` does not match the enclosing module name `{}`",
+                declared, expected
+            ),
+            ModuleDeclInRoot => {
+                f.write_str("`mod` declarations are not allowed in the package root")
+            }
         }
     }
 }
 struct FnParseMode {
     req_body: bool,
+}
+
+enum TopLevelItem {
+    Decl(Declaration),
+    Module(ModuleDecl),
 }
 
 enum Delimiter {
@@ -4759,6 +4874,18 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let parser = Parser::new(file, next);
+        parser.parse().map(|(decls, _)| decls)
+    }
+
+    fn parse_decls_and_module_decls(
+        input: &str,
+    ) -> Result<(Vec<Declaration>, Vec<ModuleDecl>), Vec<Spanned<ParserError>>> {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let lexer = Lexer::new(input, file_id);
+        let file = lexer.tokenize().expect("Lexing failed");
+        let next: NextNode = Default::default();
+        let parser = Parser::new(file, next);
         parser.parse()
     }
 
@@ -4776,7 +4903,7 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let parser = Parser::new(file, next);
-        let decls = parser.parse().expect("Parse failed");
+        let (decls, _module_decls) = parser.parse().expect("Parse failed");
         assert_eq!(decls.len(), 1, "Expected exactly one declaration");
         (decls.into_iter().next().unwrap(), Symbols)
     }
@@ -4846,6 +4973,49 @@ mod tests {
     }
 
     // ==================== DECLARATION TESTS ====================
+
+    #[test]
+    fn test_mod_declaration_bare() {
+        let (decls, module_decls) =
+            parse_decls_and_module_decls("mod unix;").expect("Parse failed");
+        assert!(decls.is_empty(), "mod should not produce a Declaration");
+        assert_eq!(module_decls.len(), 1);
+        let m = &module_decls[0];
+        assert_eq!(m.name.symbol.as_str(), "unix");
+        assert_eq!(m.visibility.level, VisibilityLevel::Inherent);
+        assert!(m.attributes.is_empty());
+    }
+
+    #[test]
+    fn test_mod_declaration_public() {
+        let (_, module_decls) =
+            parse_decls_and_module_decls("public mod unix;").expect("Parse failed");
+        assert_eq!(module_decls.len(), 1);
+        assert_eq!(module_decls[0].visibility.level, VisibilityLevel::Public);
+    }
+
+    #[test]
+    fn test_mod_declaration_with_cfg_attr() {
+        let (_, module_decls) = parse_decls_and_module_decls(
+            "@cfg(family(\"unix\")) public mod unix;",
+        )
+        .expect("Parse failed");
+        assert_eq!(module_decls.len(), 1);
+        assert_eq!(module_decls[0].attributes.len(), 1);
+        assert_eq!(
+            module_decls[0].attributes[0].identifier.symbol.as_str(),
+            "cfg"
+        );
+    }
+
+    #[test]
+    fn test_mod_declaration_alongside_items() {
+        let (decls, module_decls) =
+            parse_decls_and_module_decls("mod posix;\nfunc foo() {}").expect("Parse failed");
+        assert_eq!(module_decls.len(), 1);
+        assert_eq!(decls.len(), 1);
+        assert!(matches!(decls[0].kind, DeclarationKind::Function(_)));
+    }
 
     #[test]
     fn test_struct_declaration() {
@@ -7065,7 +7235,8 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let mut parser = Parser::new(file, next);
-        let decls = parser.parse_module_declarations().unwrap_or_default();
+        let (decls, _module_decls) =
+            parser.parse_module_declarations().unwrap_or_default();
         (decls, parser.errors)
     }
 

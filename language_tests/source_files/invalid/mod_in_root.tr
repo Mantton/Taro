@@ -1,0 +1,4 @@
+// `mod` declarations are not allowed in the package root.
+public mod root;
+
+func main() {}

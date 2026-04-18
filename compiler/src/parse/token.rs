@@ -119,6 +119,7 @@ pub enum Token {
     Let,
     Loop,
     Match,
+    Mod,
     Mut,
     Namespace,
     Nil,

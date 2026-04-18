@@ -1,0 +1,4 @@
+error: `mod` declarations are not allowed in the package root
+ -> language_tests/source_files/invalid/mod_in_root.tr:2:0
+	public mod root;
+	^^^^^^^^^^^^^^^

@@ -74,9 +74,9 @@ any         as          is          break       case        const       continue
 defer       else        enum        export      extern      false
 for         func        guard       if          impl        import
 in          init        interface   let         loop        match
-namespace   nil         operator    private     public      readonly
-return      static      struct      true        type        var
-where       while       mut
+mod         mut         namespace   nil         operator    private
+public      readonly    return      static      struct      true
+type        var         where       while
 ```
 
 ### Reserved Keywords
@@ -121,8 +121,23 @@ keywords only inside computed-property accessor blocks.
 
 <module>               ::= { <file> } { <module> }
 
-<file>                 ::= { <declaration> }
+<file>                 ::= { <declaration> | <module_metadata_declaration> }
+
+<module_metadata_declaration>
+                       ::= { <attribute> } <visibility> 'mod' <identifier>
 ```
+
+A `<module_metadata_declaration>` attaches metadata — visibility and
+attributes such as `@cfg(...)` — to the enclosing implicit directory module.
+It does not introduce a module. The following constraints apply:
+
+- Only allowed at the top level of a non-root file.
+- The identifier must match the enclosing directory's module name.
+- At most one `mod` declaration per module (across all files in the
+  directory). Duplicates are rejected.
+- When omitted, the module is implicitly public.
+- When the attached `@cfg(...)` evaluates to false, the module is removed
+  from its parent's submodule list during configuration evaluation.
 
 ### Declarations
 
