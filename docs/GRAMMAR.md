@@ -383,7 +383,8 @@ keywords only inside computed-property accessor blocks.
 <reference_type>       ::= '&' [ 'const' ] <type>
 
 <tuple_type>           ::= '(' ')'
-                         | '(' <type> ',' [ <type_list> ] ')'
+                         | '(' <type> ',' ')'                /* one-element tuple */
+                         | '(' <type> ',' <type_list> ')'
 
 <type_list>            ::= <type> { ',' <type> } [ ',' ]
 
@@ -603,7 +604,8 @@ prefix operator, so propagation of an awaited value is written as `(await expr)!
 <paren_expression>     ::= '(' <expression> ')'
 
 <tuple_expression>     ::= '(' ')'
-                         | '(' <expression> ',' [ <expression_list> ] ')'
+                         | '(' <expression> ',' ')'                /* one-element tuple */
+                         | '(' <expression> ',' <expression_list> ')'
 
 <expression_list>      ::= <expression> { ',' <expression> } [ ',' ]
 
@@ -805,14 +807,21 @@ let user = User {
 
 ### Single-Element Tuples vs Parenthesized Expressions
 
-A single expression in parentheses is parsed as a parenthesized expression, **not** a tuple:
+A trailing comma disambiguates a one-element tuple from a parenthesized
+expression or type:
 ```
-(a)      // parenthesized expression, NOT a tuple
+(a)      // parenthesized expression (equivalent to `a`)
+(a,)     // one-element tuple, type `(T,)` if `a: T`
 (a, b)   // two-element tuple
 ()       // empty tuple (unit)
+
+(T)      // parenthesized type
+(T,)     // one-element tuple type
+(T) -> U // single-argument function type (NOT a tuple-return trick)
 ```
 
-Note: Single-element tuples are not currently supported in the grammar.
+The same rule applies to patterns: `(p,)` is a one-element tuple pattern and
+`(p)` is a parenthesized pattern equivalent to `p`.
 
 ### Struct Literal Disambiguation
 

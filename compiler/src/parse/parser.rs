@@ -1990,10 +1990,11 @@ impl Parser {
             return Ok(qualified);
         }
 
-        let elements =
-            self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
-                p.parse_type()
-            })?;
+        let (elements, trailing) = self.parse_delimiter_sequence_trailing(
+            Delimiter::Parenthesis,
+            Token::Comma,
+            |p| p.parse_type(),
+        )?;
 
         if self.matches(Token::RArrow) {
             self.expect(Token::RArrow)?;
@@ -2007,7 +2008,7 @@ impl Parser {
             return Ok(kind);
         }
 
-        if elements.len() == 1 {
+        if elements.len() == 1 && !trailing {
             let first = elements.into_iter().next().unwrap();
             return Ok(TypeKind::Parenthesis(first));
         }
@@ -2384,9 +2385,18 @@ impl Parser {
         let lo = self.lo_span();
         let mut res = Restrictions::empty();
         res.insert(Restrictions::ALLOW_REST_PATTERN);
-        let pats = self.with_restrictions(res, |p| {
-            p.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| p.parse_pattern())
+        let (mut pats, trailing) = self.with_restrictions(res, |p| {
+            p.parse_delimiter_sequence_trailing(
+                Delimiter::Parenthesis,
+                Token::Comma,
+                |p| p.parse_pattern(),
+            )
         })?;
+        // `(pat)` without a trailing comma is a parenthesized pattern;
+        // `(pat,)` is a one-element tuple pattern. Empty `()` stays a tuple.
+        if pats.len() == 1 && !trailing {
+            return Ok(pats.remove(0).kind);
+        }
         Ok(PatternKind::Tuple(pats, lo.to(self.hi_span())))
     }
 
@@ -2698,8 +2708,24 @@ impl Parser {
         &mut self,
         delim: Delimiter,
         separator: Token,
-        mut action: F,
+        action: F,
     ) -> R<Vec<T>>
+    where
+        F: FnMut(&mut Parser) -> R<T>,
+    {
+        let (items, _) = self.parse_delimiter_sequence_trailing(delim, separator, action)?;
+        Ok(items)
+    }
+
+    /// Like `parse_delimiter_sequence`, but also reports whether a trailing
+    /// separator was consumed after the last item. Used by tuple parsing to
+    /// distinguish `(x)` (parenthesized) from `(x,)` (one-element tuple).
+    fn parse_delimiter_sequence_trailing<T, F>(
+        &mut self,
+        delim: Delimiter,
+        separator: Token,
+        mut action: F,
+    ) -> R<(Vec<T>, bool)>
     where
         F: FnMut(&mut Parser) -> R<T>,
     {
@@ -2708,10 +2734,11 @@ impl Parser {
 
         // if immediately closed return empty vec
         if self.eat(delim.close()) {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
 
         let mut proceed = true;
+        let mut trailing = false;
 
         let mut items = Vec::new();
         while proceed {
@@ -2723,6 +2750,7 @@ impl Parser {
 
             // can proceed but cursor points to ending token, exit loop
             if proceed && self.matches(delim.close()) {
+                trailing = true;
                 break;
             }
         }
@@ -2734,7 +2762,7 @@ impl Parser {
         }
 
         self.expect(delim.close())?;
-        Ok(items)
+        Ok((items, trailing))
     }
 
     fn parse_sequence_until<T, F>(
@@ -3511,13 +3539,15 @@ impl Parser {
     fn parse_tuple_expr(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
 
-        let items = self.parse_delimiter_sequence(Delimiter::Parenthesis, Token::Comma, |p| {
-            p.parse_expression()
-        })?;
+        let (items, trailing) = self.parse_delimiter_sequence_trailing(
+            Delimiter::Parenthesis,
+            Token::Comma,
+            |p| p.parse_expression(),
+        )?;
 
         let span = lo.to(self.hi_span());
 
-        let kind = if items.len() == 1 {
+        let kind = if items.len() == 1 && !trailing {
             ExpressionKind::Parenthesis(items.into_iter().next().unwrap())
         } else {
             ExpressionKind::Tuple(items)
@@ -5054,9 +5084,31 @@ mod tests {
     }
 
     #[test]
+    fn test_single_element_tuple_type() {
+        let ty = parse_type_str("(int32,)");
+        assert!(matches!(&ty.kind, TypeKind::Tuple(types) if types.len() == 1));
+    }
+
+    #[test]
+    fn test_parenthesized_type_not_tuple() {
+        let ty = parse_type_str("(int32)");
+        assert!(matches!(ty.kind, TypeKind::Parenthesis(_)));
+    }
+
+    #[test]
     fn test_function_type() {
         let ty = parse_type_str("(int32, int32) -> int32");
         assert!(matches!(ty.kind, TypeKind::Function { .. }));
+    }
+
+    #[test]
+    fn test_function_type_single_arg_no_comma() {
+        // `(T) -> U` remains a single-argument function type, not a tuple-return trick.
+        let ty = parse_type_str("(int32) -> int32");
+        assert!(matches!(
+            &ty.kind,
+            TypeKind::Function { inputs, .. } if inputs.len() == 1
+        ));
     }
 
     #[test]
@@ -5581,6 +5633,18 @@ mod tests {
     fn test_tuple_expr() {
         let expr = parse_expr_str("(a, b, c)");
         assert!(matches!(&expr.kind, ExpressionKind::Tuple(elems) if elems.len() == 3));
+    }
+
+    #[test]
+    fn test_single_element_tuple_expr() {
+        let expr = parse_expr_str("(1,)");
+        assert!(matches!(&expr.kind, ExpressionKind::Tuple(elems) if elems.len() == 1));
+    }
+
+    #[test]
+    fn test_parenthesized_expr_no_comma() {
+        let expr = parse_expr_str("(1)");
+        assert!(matches!(expr.kind, ExpressionKind::Parenthesis(_)));
     }
 
     #[test]

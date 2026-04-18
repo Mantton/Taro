@@ -1,0 +1,25 @@
+// Test: Single-Element Tuples
+// A trailing comma disambiguates `(x,)` (one-element tuple) from `(x)`
+// (parenthesized expression).
+
+func main() {
+    // `(x,)` is a one-element tuple, `(x)` is a parenthesized expression.
+    let t: (int32,) = (1,)
+    assert(t.0 == 1, "single-element tuple access")
+
+    // `(x)` behaves exactly like `x`.
+    let plain: int32 = (1)
+    assert(plain == 1, "parenthesized expression unwraps")
+
+    // Destructuring a one-element tuple.
+    let (x,) = (42,)
+    assert(x == 42, "single-element tuple destructure")
+
+    // Nested one-element tuple inside a two-tuple.
+    let nested = ((1,), 2)
+    let inner = nested.0
+    assert(inner.0 == 1, "nested single-element tuple access")
+    assert(nested.1 == 2, "outer tuple second element")
+
+    std.print("PASS: Single-element tuples\n")
+}
