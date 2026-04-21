@@ -463,6 +463,14 @@ impl<'ctx> InferCtx<'ctx> {
             .map(|(id, origin)| (id, *origin))
             .collect()
     }
+
+    pub fn ty_var_root(&self, vid: TyVarID) -> TyVarID {
+        self.inner.borrow_mut().type_variables().root_var(vid)
+    }
+
+    pub fn const_var_root(&self, vid: ConstVarID) -> ConstVarID {
+        self.inner.borrow_mut().const_variables().root_var(vid)
+    }
 }
 
 impl<'ctx> InferCtx<'ctx> {

@@ -120,9 +120,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 AutoReference::Immutable,
                 AutoReference::Mutable,
             ] {
-                if matches!(r, AutoReference::Mutable) && !receiver_can_mut_borrow {
-                    continue;
-                }
+                // Always consider mutable auto-ref during method lookup; an
+                // immutable binding that selects a `&mut self` method produces
+                // a proper "cannot borrow as mutable" diagnostic during MIR
+                // validation instead of a confusing "no such member".
 
                 let receiver_ty = match r {
                     AutoReference::None => candidate_ty,

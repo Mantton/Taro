@@ -409,41 +409,98 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
     /// Check for unresolved type variables after solving completes successfully.
     /// Emit user-friendly errors for unresolved type parameters.
+    ///
+    /// A single unresolved generic parameter typically taints several vars
+    /// along the expression path (the call's return-type var, the outer
+    /// expression var, the enclosing local's var, ...). We dedup by
+    /// unification root and prefer the origin carrying a generic-parameter
+    /// name, so the user sees one pointed error instead of a cascade of
+    /// "type annotations needed" messages at overlapping spans.
     fn check_unresolved_vars(&self) {
-        use crate::sema::models::{InferTy, TyKind};
+        use crate::sema::models::{InferTy, TyKind, TyVarID};
+        use crate::sema::tycheck::infer::keys::TypeVariableOrigin;
 
         let gcx = self.infer_cx.gcx;
+
+        let mut by_root: FxHashMap<TyVarID, TypeVariableOrigin> = FxHashMap::default();
         for (var_id, origin) in self.infer_cx.all_type_var_origins() {
             let var_ty = Ty::new(TyKind::Infer(InferTy::TyVar(var_id)), gcx);
             let resolved = self.infer_cx.resolve_vars_if_possible(var_ty);
-            if resolved.is_infer() {
-                let msg = if let Some(name) = origin.param_name {
-                    format!(
-                        "generic parameter '{}' could not be inferred",
-                        gcx.symbol_text(name)
-                    )
-                } else {
-                    "type annotations needed: unable to infer type".into()
-                };
-                gcx.dcx().emit_error(msg.into(), Some(origin.location));
+            if !resolved.is_infer() {
+                continue;
             }
+            let root = self.infer_cx.ty_var_root(var_id);
+            by_root
+                .entry(root)
+                .and_modify(|existing| {
+                    if existing.param_name.is_none() && origin.param_name.is_some() {
+                        *existing = origin;
+                    }
+                })
+                .or_insert(origin);
         }
 
+        let mut ordered: Vec<_> = by_root.into_values().collect();
+        ordered.sort_by_key(|o| {
+            (
+                o.location.start.line,
+                o.location.start.offset,
+                o.location.end.line,
+                o.location.end.offset,
+            )
+        });
+        for origin in ordered {
+            let msg = if let Some(name) = origin.param_name {
+                format!(
+                    "generic parameter '{}' could not be inferred",
+                    gcx.symbol_text(name)
+                )
+            } else {
+                "type annotations needed: unable to infer type".into()
+            };
+            gcx.dcx().emit_error(msg.into(), Some(origin.location));
+        }
+
+        use crate::sema::models::ConstVarID;
+        use crate::sema::tycheck::infer::keys::ConstVariableOrigin;
+        let mut const_by_root: FxHashMap<ConstVarID, ConstVariableOrigin> = FxHashMap::default();
         for (var_id, origin) in self.infer_cx.all_const_var_origins() {
-            if matches!(
+            if !matches!(
                 self.infer_cx.const_var_binding(var_id),
                 crate::sema::tycheck::infer::keys::ConstVarValue::Unknown
             ) {
-                let msg = if let Some(name) = origin.param_name {
-                    format!(
-                        "const parameter '{}' could not be inferred",
-                        gcx.symbol_text(name)
-                    )
-                } else {
-                    "const value could not be inferred".into()
-                };
-                gcx.dcx().emit_error(msg.into(), Some(origin.location));
+                continue;
             }
+            let root = self.infer_cx.const_var_root(var_id);
+            const_by_root
+                .entry(root)
+                .and_modify(|existing| {
+                    if existing.param_name.is_none() && origin.param_name.is_some() {
+                        *existing = origin;
+                    }
+                })
+                .or_insert(origin);
+        }
+
+        let mut const_ordered: Vec<_> = const_by_root.into_values().collect();
+        const_ordered.sort_by_key(|o| {
+            (
+                o.location.start.line,
+                o.location.start.offset,
+                o.location.end.line,
+                o.location.end.offset,
+            )
+        });
+        for origin in const_ordered {
+            let msg = if let Some(name) = origin.param_name {
+                format!(
+                    "const parameter '{}' could not be inferred",
+                    gcx.symbol_text(name)
+                )
+            } else {
+                "const value could not be inferred".into()
+            };
+            gcx.dcx().emit_error(msg.into(), Some(origin.location));
         }
     }
 }

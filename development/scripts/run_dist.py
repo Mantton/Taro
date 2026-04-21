@@ -53,6 +53,11 @@ def main():
     input_path = raw_args[0]
     program_args = raw_args[1:]
 
+    # Allow either `run_dist.py <path> a b c` or `run_dist.py <path> -- a b c`;
+    # drop a leading `--` so we don't forward a duplicate to taro.
+    if program_args and program_args[0] == "--":
+        program_args = program_args[1:]
+
     if use_test and program_args:
         print("Error: forwarding program arguments is only supported for run, not --test.")
         sys.exit(1)

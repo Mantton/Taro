@@ -3732,6 +3732,11 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
 
+        // Resolve pending inference before the Optional-shape check so a
+        // freshly-synthesized scrutinee isn't misreported as non-Optional.
+        cs.solve_intermediate();
+        let expr_ty = cs.infer_cx.resolve_vars_if_possible(expr_ty);
+
         // Specialized diagnostic for optional binding shorthand (`if let`).
         // Catching this early avoids a cascade of resolution/type errors.
         if condition.source.kind == hir::MatchKind::OptionalBinding
