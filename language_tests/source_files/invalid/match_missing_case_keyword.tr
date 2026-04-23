@@ -1,0 +1,10 @@
+// CHECK_ONLY
+
+func main() {
+    let x = 1
+    let y = match x {
+        1 => 10
+        case _ => 0
+    }
+    let _ = y
+}

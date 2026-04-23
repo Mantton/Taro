@@ -1,0 +1,5 @@
+Checking – match_missing_case_keyword
+error: expected 'case' before match arm
+ -> language_tests/source_files/invalid/match_missing_case_keyword.tr:6:8
+	        1 => 10
+	        ^

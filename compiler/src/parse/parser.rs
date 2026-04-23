@@ -3924,9 +3924,19 @@ impl Parser {
             if self.matches(Token::RBrace) {
                 break;
             }
-            let item = self.parse_match_arm()?;
-            arms.push(item);
-            self.expect_semi()?;
+            match self.parse_match_arm() {
+                Ok(item) => {
+                    arms.push(item);
+                    if let Err(e) = self.expect_semi() {
+                        self.emit_error(e.value, e.span);
+                        self.synchronize_match_arm();
+                    }
+                }
+                Err(e) => {
+                    self.emit_error(e.value, e.span);
+                    self.synchronize_match_arm();
+                }
+            }
         }
 
         self.expect(Token::RBrace)?;
@@ -3946,9 +3956,18 @@ impl Parser {
         // Allow `_ => ...` as shorthand for `case _ => ...`
         let is_wildcard_shorthand =
             self.matches(Token::Underscore) && self.next_matches(1, Token::EqArrow);
-        if !is_wildcard_shorthand {
+        let has_case_keyword = self.eat(Token::Case);
+        if !has_case_keyword && !is_wildcard_shorthand {
+            if let Some(arm) = self.try_parse_match_arm_without_case(lo)? {
+                return Ok(arm);
+            }
+
             self.expect(Token::Case)?;
         }
+        self.parse_match_arm_body(lo)
+    }
+
+    fn parse_match_arm_body(&mut self, lo: Span) -> R<MatchArm> {
         let pattern = self.parse_match_arm_pattern()?;
         let guard = if self.eat(Token::If) {
             Some(self.parse_expression()?)
@@ -3965,6 +3984,39 @@ impl Parser {
             span: lo.to(self.hi_span()),
         };
         Ok(arm)
+    }
+
+    fn try_parse_match_arm_without_case(&mut self, lo: Span) -> R<Option<MatchArm>> {
+        let checkpoint = self.checkpoint();
+        let error_checkpoint = self.errors.len();
+        match self.parse_match_arm_body(lo) {
+            Ok(arm) => {
+                self.emit_error(ParserError::ExpectedMatchArmCaseKeyword, lo);
+                Ok(Some(arm))
+            }
+            Err(_) => {
+                self.restore(checkpoint);
+                self.errors.truncate(error_checkpoint);
+                Ok(None)
+            }
+        }
+    }
+
+    fn synchronize_match_arm(&mut self) {
+        while !self.is_at_end() {
+            if self.eat(Token::Semicolon) {
+                return;
+            }
+
+            if self.matches(Token::Case)
+                || self.matches(Token::RBrace)
+                || (self.matches(Token::Underscore) && self.next_matches(1, Token::EqArrow))
+            {
+                return;
+            }
+
+            self.bump();
+        }
     }
 }
 impl Parser {
@@ -4616,6 +4668,7 @@ enum ParserError {
     ExpectedType,
     ExpectedGenericRequirement,
     ExpectedMatchingPattern,
+    ExpectedMatchArmCaseKeyword,
     ExpectedElseBlock,
     ExpectedExpression,
     InvalidCollectionType,
@@ -4683,6 +4736,7 @@ impl Display for ParserError {
             ExpectedType => f.write_str("expected type"),
             ExpectedGenericRequirement => f.write_str("expected generic requirement"),
             ExpectedMatchingPattern => f.write_str("expected a matching pattern"),
+            ExpectedMatchArmCaseKeyword => f.write_str("expected 'case' before match arm"),
             ExpectedElseBlock => f.write_str("expected 'else' block"),
             ExpectedExpression => f.write_str("expected expression"),
             InvalidCollectionType => f.write_str("invalid collection type"),
@@ -5863,6 +5917,107 @@ mod tests {
     fn test_match_arm_shorthand() {
         let decl = parse_one_decl("func foo(x: int32) { match x { _ => 0; } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_match_missing_case_recovers_following_arm_and_statement() {
+        let input = "func test() {
+            let x = 1;
+            let y = match x {
+                1 => 10;
+                case _ => 0;
+            };
+            let z = 2;
+        }";
+        let (decls, errors) = parse_decls_with_recovery(input);
+
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err.value, ParserError::ExpectedMatchArmCaseKeyword)),
+            "missing-case recovery error should be reported"
+        );
+
+        let func = decls
+            .into_iter()
+            .find(|d| matches!(d.kind, DeclarationKind::Function(_)))
+            .unwrap();
+
+        if let DeclarationKind::Function(f) = func.kind {
+            let body = f.block.unwrap();
+            let let_count = body
+                .statements
+                .iter()
+                .filter(|s| matches!(s.kind, StatementKind::Variable(_)))
+                .count();
+            assert_eq!(let_count, 3, "should recover later statements after match");
+
+            let match_expr = body
+                .statements
+                .iter()
+                .find_map(|stmt| match &stmt.kind {
+                    StatementKind::Variable(local) => match local.initializer.as_ref() {
+                        Some(expr) => match &expr.kind {
+                            ExpressionKind::Match(match_expr) => Some(match_expr),
+                            _ => None,
+                        },
+                        None => None,
+                    },
+                    _ => None,
+                })
+                .expect("expected match initializer");
+            assert_eq!(match_expr.arms.len(), 2, "should recover later match arms");
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn test_match_missing_case_recovers_guarded_arm() {
+        let input = "func test(x: int32) {
+            let y = match x {
+                n if n > 0 => 1;
+                case _ => 0;
+            };
+        }";
+        let (decls, errors) = parse_decls_with_recovery(input);
+
+        assert!(
+            errors
+                .iter()
+                .any(|err| matches!(err.value, ParserError::ExpectedMatchArmCaseKeyword)),
+            "missing-case recovery error should be reported"
+        );
+
+        let func = decls
+            .into_iter()
+            .find(|d| matches!(d.kind, DeclarationKind::Function(_)))
+            .unwrap();
+
+        if let DeclarationKind::Function(f) = func.kind {
+            let body = f.block.unwrap();
+            let match_expr = body
+                .statements
+                .iter()
+                .find_map(|stmt| match &stmt.kind {
+                    StatementKind::Variable(local) => match local.initializer.as_ref() {
+                        Some(expr) => match &expr.kind {
+                            ExpressionKind::Match(match_expr) => Some(match_expr),
+                            _ => None,
+                        },
+                        None => None,
+                    },
+                    _ => None,
+                })
+                .expect("expected match initializer");
+            assert_eq!(match_expr.arms.len(), 2, "should recover guarded match arm");
+            assert!(
+                match_expr.arms[0].guard.is_some(),
+                "recovered arm should preserve its guard"
+            );
+        } else {
+            panic!("Expected function");
+        }
     }
 
     #[test]
