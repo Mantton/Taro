@@ -5002,10 +5002,6 @@ impl<'ctx> Checker<'ctx> {
             expression.span,
         );
 
-        if let Some(expectation) = expectation {
-            cs.equal(expectation, result_ty, expression.span);
-        }
-
         result_ty
     }
 

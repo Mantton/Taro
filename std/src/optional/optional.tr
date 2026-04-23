@@ -1,5 +1,5 @@
 import std.panic.panic
-import std.marker.Copy
+import std.marker.{Copy, Clone}
 import std.ops.Fn
 import std.default.Default
 
@@ -49,6 +49,39 @@ impl[Wrapped] Optional[Wrapped] {
 impl[Wrapped] Default for Optional[Wrapped] {
     public func default() -> Self {
         .none
+    }
+}
+
+impl[Wrapped] Copy for Optional[Wrapped] where Wrapped: Copy {}
+
+impl[Wrapped] Clone for Optional[Wrapped] where Wrapped: Clone {
+    public func clone(&self) -> Self {
+        match self {
+            case .some(v) => .some(v.clone())
+            case .none => .none
+        }
+    }
+}
+
+impl[Wrapped: Clone] Optional[&Wrapped] {
+    /// Converts an `Optional[&Wrapped]` into an `Optional[Wrapped]` by cloning
+    /// the referenced value.
+    public func cloned(self) -> Optional[Wrapped] {
+        match self {
+            case .some(v) => .some(v.clone())
+            case .none => .none
+        }
+    }
+}
+
+impl[Wrapped: Copy] Optional[&Wrapped] {
+    /// Converts an `Optional[&Wrapped]` into an `Optional[Wrapped]` by copying
+    /// the referenced value.
+    public func copied(self) -> Optional[Wrapped] {
+        match self {
+            case .some(v) => .some(*v)
+            case .none => .none
+        }
     }
 }
 

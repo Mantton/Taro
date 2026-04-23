@@ -292,7 +292,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let resolution = match self.resolve_static_member_resolution(head, base_ty, name, span) {
             Ok(resolution) => resolution,
-            Err(errors) => return SolverResult::Error(errors),
+            Err(errors) => {
+                if let Some(result) = self.try_inferred_member_optional_wrap_fallback(
+                    node_id, base_ty, name, expr_ty, span,
+                ) {
+                    return result;
+                }
+                return SolverResult::Error(errors);
+            }
         };
 
         self.record_value_resolution(node_id, resolution.clone());
@@ -395,6 +402,74 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 );
                 SolverResult::Error(vec![error])
             }
+        }
+    }
+
+    /// Fallback for `.variant` shorthand when the expected type is `Optional[Inner]`
+    /// but `variant` is not a member of `Optional` itself. Peels the optional,
+    /// re-attempts resolution on `Inner`, and if it resolves to a unit variant
+    /// constructor, binds the node's type to `Inner` so the outer coerce goal
+    /// can insert the `OptionalWrap` adjustment.
+    fn try_inferred_member_optional_wrap_fallback(
+        &mut self,
+        node_id: NodeID,
+        base_ty: Ty<'ctx>,
+        name: crate::span::Identifier,
+        expr_ty: Ty<'ctx>,
+        span: crate::span::Span,
+    ) -> Option<SolverResult<'ctx>> {
+        if self.gcx().symbol_eq(name.symbol, "some") || self.gcx().symbol_eq(name.symbol, "none") {
+            return None;
+        }
+
+        let (_, inner_ty) = self.unwrap_optional_type(base_ty)?;
+        let inner_ty = self.structurally_resolve(inner_ty);
+        if inner_ty.is_infer() || inner_ty.is_error() {
+            return None;
+        }
+        let inner_head = self.type_head_from_type(inner_ty)?;
+
+        let inner_resolution = self
+            .resolve_static_member_resolution(inner_head, inner_ty, name, span)
+            .ok()?;
+
+        // Only accept unit (constant) variant constructors for the wrap fallback.
+        // Other resolutions (function variants, associated functions) return
+        // callable types that would need the wrap to apply at the call site,
+        // which is a separate concern.
+        let (def_id, kind) = match inner_resolution {
+            Resolution::Definition(
+                def_id,
+                kind @ DefinitionKind::VariantConstructor(VariantCtorKind::Constant),
+            ) => (def_id, kind),
+            _ => return None,
+        };
+
+        self.record_value_resolution(node_id, Resolution::Definition(def_id, kind));
+
+        let def_ty = self.gcx().get_type(def_id);
+        let generics = self.gcx().generics_of(def_id);
+        let inner_base_args = match inner_ty.kind() {
+            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
+            _ => None,
+        };
+        let mut obligations = Vec::new();
+        let inner_final_ty = if !generics.is_empty() && def_ty.needs_instantiation() {
+            let args = self.instantiate_generic_args_with_defaults(def_id, inner_base_args, span);
+            let instantiated = instantiate_ty_with_args(self.gcx(), def_ty, args);
+            self.record_instantiation(node_id, args);
+            obligations.extend(self.constraints_for_def(def_id, Some(args), span));
+            instantiated
+        } else {
+            def_ty
+        };
+
+        if let Err(e) = self.unify(inner_ty, inner_final_ty) {
+            return Some(SolverResult::Error(vec![Spanned::new(e, span)]));
+        }
+        match self.unify(expr_ty, inner_final_ty) {
+            Ok(_) => Some(SolverResult::Solved(obligations)),
+            Err(e) => Some(SolverResult::Error(vec![Spanned::new(e, span)])),
         }
     }
 

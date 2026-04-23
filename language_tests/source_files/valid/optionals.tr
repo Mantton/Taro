@@ -281,6 +281,78 @@ func testCoercionsOptional() {
     let _ = optPrint2
 }
 
+enum Token {
+    case eof, linebreak, comma
+}
+
+func tokenEof() -> Token? {
+    return .eof
+}
+
+func tokenSome() -> Token? {
+    return .linebreak
+}
+
+func tokenNone() -> Token? {
+    return .none
+}
+
+enum Result[T] {
+    case ready, pending
+}
+
+func readyInferred() -> Result[int32]? {
+    return .ready
+}
+
+func testOptionalInferredMemberWrap() {
+    match tokenEof() {
+        case .some(t) => {
+            match t {
+                case .eof => assert(true, "return .eof wrapped into some(.eof)")
+                case _ => assert(false, "unexpected variant from return .eof")
+            }
+        }
+        case .none => assert(false, "return .eof should not produce .none")
+    }
+
+    match tokenSome() {
+        case .some(t) => {
+            match t {
+                case .linebreak => assert(true, "return .linebreak wrapped into some")
+                case _ => assert(false, "unexpected variant from return .linebreak")
+            }
+        }
+        case .none => assert(false, "return .linebreak should not produce .none")
+    }
+
+    match tokenNone() {
+        case .none => assert(true, "return .none stays .none")
+        case .some(_) => assert(false, "return .none should not wrap")
+    }
+
+    match readyInferred() {
+        case .some(r) => {
+            match r {
+                case .ready => assert(true, "generic enum unit variant wraps via fallback")
+                case .pending => assert(false, "unexpected variant")
+            }
+        }
+        case .none => assert(false, "expected some(.ready)")
+    }
+
+    let direct: Token? = .comma
+    match direct {
+        case .some(t) => {
+            match t {
+                case .comma => assert(true, "let binding coerces .comma into some")
+                case _ => assert(false, "unexpected variant in let-binding")
+            }
+        }
+        case .none => assert(false, "let binding should be some")
+    }
+}
+
 func main() {
     testOptionalChaining()
     testOptionalCoercion()
@@ -289,6 +361,7 @@ func main() {
     testOptionalMatchVerbose()
     testOptionalTypeAnnotation()
     testCoercionsOptional()
+    testOptionalInferredMemberWrap()
 
     std.print("PASS: optionals\n")
 }

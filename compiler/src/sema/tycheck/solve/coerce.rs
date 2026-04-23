@@ -802,7 +802,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     /// Check if ty is Optional[T] and return (generic_args, inner_ty)
-    fn unwrap_optional_type(
+    pub(crate) fn unwrap_optional_type(
         &self,
         ty: Ty<'ctx>,
     ) -> Option<(crate::sema::models::GenericArguments<'ctx>, Ty<'ctx>)> {

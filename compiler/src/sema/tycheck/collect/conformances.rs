@@ -80,8 +80,9 @@ impl<'ctx> HirVisitor for Actor<'ctx> {
 
 impl<'ctx> Actor<'ctx> {
     /// Collect conformance from impl blocks (impl Interface for Type {}).
-    /// For marker interfaces like Copy, impl-based conformances are NOT allowed
-    /// (they require inline syntax on the struct/enum definition).
+    /// Marker-only interfaces (Copy, Sendable) can be implemented via impl
+    /// blocks with where clauses to express conditional conformance.
+    /// Compiler-only interfaces (Tuple) cannot be implemented by user code.
     fn collect_impl_conformance(&mut self, impl_id: DefinitionID, interface_ty: &hir::Type) {
         // Extract the path from the interface type (must be a nominal type)
         let hir::TypeKind::Nominal(resolved_path) = &interface_ty.kind else {
@@ -112,9 +113,9 @@ impl<'ctx> Actor<'ctx> {
             .lowerer()
             .lower_interface_reference(self_ty, &interface_path);
 
-        // Check if this is a marker interface that requires inline syntax
-        if self.is_marker_interface(reference.id) {
-            self.emit_marker_requires_inline(interface_ty.span, reference);
+        // Reject compiler-only interfaces (Tuple)
+        if self.is_compiler_only_interface(reference.id) {
+            self.emit_compiler_only_error(interface_ty.span, reference);
             return;
         }
 
@@ -195,37 +196,6 @@ impl<'ctx> Actor<'ctx> {
 
             self.context.insert_conformance_record(record);
         }
-    }
-
-    /// Check if the given interface is a derivable interface that requires inline syntax.
-    /// Returns the StdItem variant if it's derivable, None otherwise.
-    fn get_derivable_interface(&self, interface_id: DefinitionID) -> Option<StdItem> {
-        for iface in StdItem::ALL_INTERFACES {
-            if let Some(def_id) = self.context.std_item_def(iface) {
-                if interface_id == def_id && iface.is_derivable() {
-                    return Some(iface);
-                }
-            }
-        }
-        None
-    }
-
-    /// Check if the given interface is a marker interface that requires inline derivation.
-    fn is_marker_interface(&self, interface_id: DefinitionID) -> bool {
-        self.get_derivable_interface(interface_id)
-            .map(|iface| iface.is_marker_only())
-            .unwrap_or(false)
-    }
-
-    fn emit_marker_requires_inline(&self, span: Span, interface: InterfaceReference<'ctx>) {
-        let interface_name = interface.format(self.context);
-        self.context.dcx().emit_error(
-            format!(
-                "'{}' cannot be implemented via impl block; use inline syntax on the struct/enum definition instead (e.g., `struct Foo: {} {{ ... }}`)",
-                interface_name, interface_name
-            ),
-            Some(span),
-        );
     }
 
     /// Check if an interface is compiler-only (cannot be implemented by user code).
