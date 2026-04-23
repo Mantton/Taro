@@ -2472,16 +2472,22 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn shadow_root_offsets_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<(u64, u8)> {
+        let mut roots = Vec::new();
         let mut deref_depth = 0u8;
         let mut current = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
         while let TyKind::Reference(inner, _) = current.kind() {
+            roots.push((0, deref_depth));
             deref_depth = deref_depth.saturating_add(1);
             current = crate::sema::tycheck::utils::normalize_aliases(self.gcx, inner);
         }
-        self.gc_root_offsets_for_ty(current)
-            .into_iter()
-            .map(|offset| (offset, deref_depth))
-            .collect()
+        roots.extend(
+            self.gc_root_offsets_for_ty(current)
+                .into_iter()
+                .map(|offset| (offset, deref_depth)),
+        );
+        roots.sort_unstable();
+        roots.dedup();
+        roots
     }
 
     fn should_refresh_shadow_for_place(

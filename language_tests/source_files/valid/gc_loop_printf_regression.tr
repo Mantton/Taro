@@ -1,0 +1,78 @@
+// Regression test for a shadow-stack rooting bug where tight allocation loops
+// calling printf/sprintf through a `&mut self` method would crash during GC.
+//
+// The failure mode: the `&mut Formatter` built by formatPrintf held the only
+// handle to a heap-escaped Formatter, but the shadow stack only rooted the
+// GC pointers reachable *through* the reference, not the reference value
+// itself. When a collection fired inside List.grow / bytesToString, the
+// Formatter was swept and the next writer.writeByte scribbled into a dead
+// span, producing SIGBUS inside libsystem_platform memmove.
+//
+// This test mirrors the original leek lexer shape: a `&mut self` method that
+// calls a formatter on every iteration of an outer loop big enough to trigger
+// many GC cycles.
+
+struct Counter {
+    count: usize
+    total: usize
+}
+
+impl Counter {
+    func new(_ total: usize) -> Self {
+        Counter { count: 0, total }
+    }
+}
+
+impl Counter {
+    var hasNext: bool {
+        get(&self) {
+            self.count < self.total
+        }
+    }
+}
+
+impl Counter {
+    func step(&mut self) -> usize? {
+        let v = self.count
+        self.count += 1
+        return v
+    }
+}
+
+impl Counter {
+    func run(self) -> usize {
+        var self = self
+        var lengths: usize = 0
+        while self.hasNext {
+            let v = self.step()
+            guard let v else { break }
+            // sprintf exercises the same formatPrintf path as printf("%v", …)
+            // without flooding stdout. Each call allocates a Formatter with a
+            // List[uint8] buffer, grows it a few times, then frees the lot —
+            // exactly the churn pattern that used to crash.
+            let rendered = std.sprintf("iter %v", v)
+            lengths = lengths + std.string.stringLen(rendered)
+        }
+        return lengths
+    }
+}
+
+func main() {
+    // 50k iterations comfortably exceeds the 1 MiB GC_MIN_TRIGGER, forcing
+    // multiple collections mid-loop.
+    let counter = Counter.new(50000)
+    let total = counter.run()
+
+    // Expected length sum: "iter " (5) for every iteration plus the width of
+    // the decimal representation of each index.
+    //   0..10        -> 10 runs * 1 digit
+    //   10..100      -> 90 runs * 2 digits
+    //   100..1000    -> 900 * 3
+    //   1000..10000  -> 9000 * 4
+    //   10000..50000 -> 40000 * 5
+    let digits: usize = 10 * 1 + 90 * 2 + 900 * 3 + 9000 * 4 + 40000 * 5
+    let expected: usize = 50000 * 5 + digits
+    assert(total == expected, "sprintf length sum mismatch")
+
+    print("PASS: gc loop printf regression\n")
+}

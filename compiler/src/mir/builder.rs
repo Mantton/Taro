@@ -280,23 +280,108 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
     }
 
+    fn place_base_local_from_expr(
+        &self,
+        expr_id: thir::ExprId,
+        seen_bindings: &mut FxHashSet<hir::NodeID>,
+    ) -> Option<LocalId> {
+        match self.thir.exprs[expr_id].kind {
+            thir::ExprKind::Local(id) => {
+                if let Some(place) = self.place_bindings.get(&id) {
+                    return Some(place.local);
+                }
+                if let Some(&local) = self.locals.get(&id) {
+                    return Some(local);
+                }
+
+                let init = *self.immutable_binding_initializers.get(&id)?;
+                if !seen_bindings.insert(id) {
+                    return None;
+                }
+                self.place_base_local_from_expr(init, seen_bindings)
+            }
+            thir::ExprKind::Field { lhs, .. }
+            | thir::ExprKind::Deref(lhs)
+            | thir::ExprKind::Cast { value: lhs }
+            | thir::ExprKind::Reference { expr: lhs, .. } => {
+                self.place_base_local_from_expr(lhs, seen_bindings)
+            }
+            thir::ExprKind::Upvar { .. } => Some(LocalId::from_raw(1)),
+            _ => None,
+        }
+    }
+
+    fn is_mutable_indirect_ty(&self, ty: Ty<'ctx>) -> bool {
+        let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
+        matches!(
+            ty.kind(),
+            TyKind::Reference(_, hir::Mutability::Mutable)
+                | TyKind::Pointer(_, hir::Mutability::Mutable)
+        )
+    }
+
+    fn mutable_indirect_call_arg_base_local(
+        &self,
+        expr_id: thir::ExprId,
+        seen_bindings: &mut FxHashSet<hir::NodeID>,
+    ) -> Option<LocalId> {
+        let expr = &self.thir.exprs[expr_id];
+        match expr.kind {
+            thir::ExprKind::Reference {
+                mutable: true,
+                expr,
+            } => self.place_base_local_from_expr(expr, seen_bindings),
+            thir::ExprKind::Cast { value } if self.is_mutable_indirect_ty(expr.ty) => self
+                .mutable_indirect_call_arg_base_local(value, seen_bindings)
+                .or_else(|| self.place_base_local_from_expr(value, seen_bindings)),
+            thir::ExprKind::Local(id) if self.is_mutable_indirect_ty(expr.ty) => {
+                if let Some(&init) = self.immutable_binding_initializers.get(&id) {
+                    if seen_bindings.insert(id) {
+                        if let Some(local) =
+                            self.mutable_indirect_call_arg_base_local(init, seen_bindings)
+                        {
+                            return Some(local);
+                        }
+                        if let Some(local) = self.place_base_local_from_expr(init, seen_bindings) {
+                            return Some(local);
+                        }
+                    }
+                }
+
+                self.place_base_local_from_expr(expr_id, seen_bindings)
+            }
+            thir::ExprKind::Field { .. } | thir::ExprKind::Deref(_) => {
+                if self.is_mutable_indirect_ty(expr.ty) {
+                    self.place_base_local_from_expr(expr_id, seen_bindings)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn shadow_resync_locals_for_call(&self, args: &[thir::ExprId]) -> Vec<LocalId> {
         let mut locals = Vec::new();
         let mut seen_locals = FxHashSet::default();
 
         for &arg in args {
             let mut seen_bindings = FxHashSet::default();
-            let Some(local_id) = self.maybe_uninit_local_from_call_arg(arg, &mut seen_bindings)
-            else {
-                continue;
-            };
+            if let Some(local_id) = self.maybe_uninit_local_from_call_arg(arg, &mut seen_bindings) {
+                if let Some(&mir_local) = self.locals.get(&local_id) {
+                    if seen_locals.insert(mir_local) {
+                        locals.push(mir_local);
+                    }
+                }
+            }
 
-            let Some(&mir_local) = self.locals.get(&local_id) else {
-                continue;
-            };
-
-            if seen_locals.insert(mir_local) {
-                locals.push(mir_local);
+            let mut seen_bindings = FxHashSet::default();
+            if let Some(mir_local) =
+                self.mutable_indirect_call_arg_base_local(arg, &mut seen_bindings)
+            {
+                if seen_locals.insert(mir_local) {
+                    locals.push(mir_local);
+                }
             }
         }
 
