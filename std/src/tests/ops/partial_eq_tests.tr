@@ -1,0 +1,22 @@
+struct WordCross {
+    value: string
+}
+
+impl std.ops.PartialEq[string] for WordCross {
+    public func eq(&self, _ other: &string) -> bool {
+        self.value == *other
+    }
+}
+
+func matchesCross[T: std.ops.PartialEq[U], U](_ lhs: T, _ rhs: U) -> bool {
+    lhs == rhs
+}
+
+@test
+func testPartialEqRhsCrossType() {
+    let w1 = WordCross { value: "ok" }
+    let w2 = WordCross { value: "ok" }
+    std.testing.assertTrue(matchesCross(w1, "ok"), "generic PartialEq[Rhs] bound should work")
+    std.testing.assertTrue(w2 != "no", "neq should dispatch through PartialEq[Rhs]")
+    std.testing.assertTrue(w2 == "ok", "comparison should borrow and allow reuse")
+}

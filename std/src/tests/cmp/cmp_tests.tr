@@ -1,0 +1,91 @@
+import std.cmp.{Ordering, PartialOrd, Ord}
+import std.optional.Optional
+
+@test
+func testStdCmpOrderingAndPrimitiveComparisons() {
+    let less: Ordering = .less
+    let equal: Ordering = .equal
+    let greater: Ordering = .greater
+
+    std.testing.assertTrue(less.isLess(), "less.isLess should be true")
+    std.testing.assertFalse(less.isEqual(), "less.isEqual should be false")
+    std.testing.assertFalse(less.isGreater(), "less.isGreater should be false")
+
+    std.testing.assertFalse(equal.isLess(), "equal.isLess should be false")
+    std.testing.assertTrue(equal.isEqual(), "equal.isEqual should be true")
+    std.testing.assertFalse(equal.isGreater(), "equal.isGreater should be false")
+
+    std.testing.assertFalse(greater.isLess(), "greater.isLess should be false")
+    std.testing.assertFalse(greater.isEqual(), "greater.isEqual should be false")
+    std.testing.assertTrue(greater.isGreater(), "greater.isGreater should be true")
+
+    std.testing.assertTrue(less.reverse().isGreater(), "less.reverse should be greater")
+    std.testing.assertTrue(equal.reverse().isEqual(), "equal.reverse should be equal")
+    std.testing.assertTrue(greater.reverse().isLess(), "greater.reverse should be less")
+
+    std.testing.assertTrue(equal.then(.less).isLess(), "equal.then(less) should be less")
+    std.testing.assertTrue(less.then(.greater).isLess(), "less.then(greater) should be less")
+
+    let a: int32 = 10
+    let b: int32 = 20
+    let c: int32 = 10
+    std.testing.assertTrue(a.cmp(&b).isLess(), "10 cmp 20 should be less")
+    std.testing.assertTrue(b.cmp(&a).isGreater(), "20 cmp 10 should be greater")
+    std.testing.assertTrue(a.cmp(&c).isEqual(), "10 cmp 10 should be equal")
+
+    let partial = a.partialCmp(&b)
+    std.testing.assertTrue(partial.isSome(), "partialCmp should return some for int32")
+    std.testing.assertTrue(partial.unwrap().isLess(), "partial ordering should be less")
+
+    let f = false
+    let t = true
+    std.testing.assertTrue(f.cmp(&t).isLess(), "false cmp true should be less")
+    std.testing.assertTrue(t.cmp(&f).isGreater(), "true cmp false should be greater")
+
+    let x: double = 1.5
+    let y: double = 2.5
+    let floatPartial = x.partialCmp(&y)
+    std.testing.assertTrue(floatPartial.isSome(), "float partialCmp should return some")
+    std.testing.assertTrue(floatPartial.unwrap().isLess(), "1.5 cmp 2.5 should be less")
+}
+
+struct ScoreNoMove {
+    value: int32
+}
+
+impl std.ops.PartialEq for ScoreNoMove {
+    public func eq(&self, _ other: &ScoreNoMove) -> bool {
+        self.value == other.value
+    }
+}
+
+impl PartialOrd for ScoreNoMove {
+    func partialCmp(&self, _ other: &ScoreNoMove) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoreNoMove {
+    func cmp(&self, _ other: &ScoreNoMove) -> Ordering {
+        if self.value < other.value {
+            .less
+        } else if self.value == other.value {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
+
+func geqThenReuse[T: Ord](_ a: T, _ b: T) -> bool {
+    let ge = a >= b
+    let _keep = &a
+    ge
+}
+
+@test
+func testOrdGenericCompareNoMove() {
+    let a = ScoreNoMove { value: 1 }
+    let b = ScoreNoMove { value: 1 }
+    std.testing.assertTrue(geqThenReuse(a, b), "generic ordered comparison should borrow, not move")
+}

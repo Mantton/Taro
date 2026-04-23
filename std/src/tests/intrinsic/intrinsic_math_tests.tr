@@ -1,0 +1,31 @@
+func approxEq(_ a: double, _ b: double, _ eps: double) -> bool {
+    (a - b).abs() <= eps
+}
+
+@test
+func testStdIntrinsicMath() {
+    let eps: double = 0.000001
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_sqrt_f64(9.0), 3.0, eps), "sqrt")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_sin_f64(0.0), 0.0, eps), "sin")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_cos_f64(0.0), 1.0, eps), "cos")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_tan_f64(0.0), 0.0, eps), "tan")
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_exp_f64(0.0), 1.0, eps), "exp")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_exp2_f64(3.0), 8.0, eps), "exp2")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_log_f64(1.0), 0.0, eps), "log")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_log2_f64(8.0), 3.0, eps), "log2")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_log10_f64(100.0), 2.0, eps), "log10")
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_floor_f64(3.7), 3.0, eps), "floor")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_ceil_f64(3.2), 4.0, eps), "ceil")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_trunc_f64(-3.7), -3.0, eps), "trunc")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_round_f64(2.3), 2.0, eps), "round")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_roundeven_f64(2.5), 2.0, eps), "roundeven")
+
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_pow_f64(2.0, 3.0), 8.0, eps), "pow")
+    let exp: int32 = 3
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_powi_f64_i32(2.0, exp), 8.0, eps), "powi")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_copysign_f64(3.0, -1.0), -3.0, eps), "copysign")
+    std.testing.assertTrue(approxEq(std.intrinsic.__intrinsic_fma_f64(2.0, 3.0, 4.0), 10.0, eps), "fma")
+}

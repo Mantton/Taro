@@ -1,0 +1,158 @@
+import std.collections.List
+import std.optional.Optional
+
+@test
+func testStdOptionalOperations() {
+    func someVal() -> int32? {
+        .some(42)
+    }
+    func noneVal() -> int32? {
+        .none
+    }
+
+    std.testing.assertTrue(someVal().isSome(), "isSome should be true for .some")
+    std.testing.assertTrue(noneVal().isNone(), "isNone should be true for .none")
+    std.testing.assertEqual(someVal().unwrap(), 42, "unwrap should return value")
+    std.testing.assertEqual(someVal().expect("should have value"), 42, "expect should return value")
+    std.testing.assertEqual(noneVal().unwrapOr(100), 100, "unwrapOr should return default for none")
+    std.testing.assertEqual(someVal().unwrapOr(100), 42, "unwrapOr should return value for some")
+    std.testing.assertEqual(noneVal().unwrapOrElse(|| -> int32 { 50 + 50 }), 100, "unwrapOrElse")
+
+    let mapped = someVal().map(|x| -> int32 { x * 2 })
+    std.testing.assertEqual(mapped.unwrap(), 84, "map should transform value")
+    std.testing.assertTrue(noneVal().map(|x| -> int32 { x * 2 }).isNone(), "map on none should return none")
+
+    std.testing.assertEqual(
+        someVal().flatMap(|x| -> int32? { .some(x + 1) }).unwrap(),
+        43,
+        "flatMap should chain transformations",
+    )
+    std.testing.assertTrue(
+        someVal().flatMap(|x| -> int32? { .none }).isNone(),
+        "flatMap returning none should give none",
+    )
+
+    std.testing.assertTrue(
+        someVal().filter(|x: &int32| -> bool { *x > 0 }).isSome(),
+        "filter passing predicate should keep value",
+    )
+    std.testing.assertTrue(
+        someVal().filter(|x: &int32| -> bool { *x < 0 }).isNone(),
+        "filter failing predicate should return none",
+    )
+
+    let other1: int32? = .some(100)
+    std.testing.assertEqual(someVal().and(other1).unwrap(), 100, "and should return second if first is some")
+    let other2: int32? = .some(100)
+    std.testing.assertTrue(noneVal().and(other2).isNone(), "and on none should return none")
+
+    let other3: int32? = .some(100)
+    std.testing.assertEqual(someVal().or(other3).unwrap(), 42, "or should return first if some")
+    let other4: int32? = .some(100)
+    std.testing.assertEqual(noneVal().or(other4).unwrap(), 100, "or should return second if first is none")
+}
+
+@test
+func testStdOptionalClonePrimitive() {
+    let original: int32? = .some(42)
+    let cloned = original.clone()
+    std.testing.assertTrue(cloned.isSome(), "clone of some should be some")
+    std.testing.assertEqual(cloned.unwrap(), 42, "clone should preserve value")
+
+    let empty: int32? = .none
+    let clonedEmpty = empty.clone()
+    std.testing.assertTrue(clonedEmpty.isNone(), "clone of none should be none")
+}
+
+@test
+func testStdOptionalCloneString() {
+    let original: string? = .some("hello")
+    let cloned = original.clone()
+    std.testing.assertTrue(cloned.isSome(), "string clone should be some")
+    std.testing.assertEqual(cloned.unwrap(), "hello", "string clone should preserve value")
+}
+
+@test
+func testStdOptionalCloneList() {
+    var inner: List[int32] = List()
+    inner.append(1)
+    inner.append(2)
+    inner.append(3)
+    let original: Optional[List[int32]] = .some(inner)
+
+    let cloned = original.clone()
+    std.testing.assertTrue(cloned.isSome(), "optional list clone should be some")
+
+    var clonedList = cloned.unwrap()
+    clonedList.append(4)
+    std.testing.assertEqual(clonedList.len(), 4 as usize, "cloned inner list should mutate independently")
+
+    let originalList = original.unwrap()
+    std.testing.assertEqual(originalList.len(), 3 as usize, "original inner list should remain unchanged")
+}
+
+@test
+func testStdOptionalCopyPrimitive() {
+    let original: int32? = .some(7)
+    let copy = original
+    std.testing.assertTrue(original.isSome(), "original should still be usable after copy")
+    std.testing.assertEqual(original.unwrap(), 7, "original value preserved")
+    std.testing.assertEqual(copy.unwrap(), 7, "copy value preserved")
+}
+
+func requireCopy[T: std.marker.Copy](_ value: T) -> T {
+    value
+}
+
+@test
+func testStdOptionalCopyBoundSatisfied() {
+    let opt: int32? = .some(9)
+    let echoed = requireCopy(opt)
+    std.testing.assertEqual(echoed.unwrap(), 9, "Optional[Copy] should satisfy Copy bound")
+}
+
+@test
+func testStdOptionalClonedFromReference() {
+    var list: List[int32] = List()
+    list.append(10)
+    list.append(20)
+    list.append(30)
+
+    let refOpt: Optional[&int32] = list.get(1 as usize)
+    let ownedOpt: int32? = refOpt.cloned()
+    std.testing.assertTrue(ownedOpt.isSome(), "cloned from some ref should be some")
+    std.testing.assertEqual(ownedOpt.unwrap(), 20, "cloned should produce owned copy of referenced value")
+
+    let missing: Optional[&int32] = list.get(99 as usize)
+    let missingOwned = missing.cloned()
+    std.testing.assertTrue(missingOwned.isNone(), "cloned on none should be none")
+}
+
+@test
+func testStdOptionalCopiedFromReference() {
+    var list: List[int32] = List()
+    list.append(10)
+    list.append(20)
+    list.append(30)
+
+    let refOpt: Optional[&int32] = list.get(1 as usize)
+    let ownedOpt: int32? = refOpt.copied()
+    std.testing.assertTrue(ownedOpt.isSome(), "copied from some ref should be some")
+    std.testing.assertEqual(ownedOpt.unwrap(), 20, "copied should produce owned copy of referenced value")
+
+    let missing: Optional[&int32] = list.get(99 as usize)
+    let missingOwned = missing.copied()
+    std.testing.assertTrue(missingOwned.isNone(), "copied on none should be none")
+}
+
+@test
+func testStdOptionalClonedWithString() {
+    var list: List[string] = List()
+    list.append("alpha")
+    list.append("beta")
+
+    let refOpt: Optional[&string] = list.get(0 as usize)
+    let owned: string? = refOpt.cloned()
+    std.testing.assertTrue(owned.isSome(), "cloned string ref should be some")
+    std.testing.assertEqual(owned.unwrap(), "alpha", "cloned string should equal referenced value")
+}

@@ -1,0 +1,13 @@
+@test
+func testStringEqualityEdgeCases() {
+    std.testing.assertTrue("" == "", "empty string equality")
+    std.testing.assertTrue(!("" == "a"), "empty vs non-empty")
+    std.testing.assertTrue("abc" == "abc", "same literal equality")
+    std.testing.assertTrue(!("abc" == "abd"), "different literal inequality")
+
+    let a = "same"
+    let b = "same"
+    let c = "different"
+    std.testing.assertTrue(a == b, "same value equality")
+    std.testing.assertTrue(!(a == c), "different value inequality")
+}
