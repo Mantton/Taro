@@ -3139,9 +3139,7 @@ impl Actor<'_, '_> {
             ast::ExpressionKind::Unary(_, rhs)
             | ast::ExpressionKind::Reference(rhs, _)
             | ast::ExpressionKind::Dereference(rhs)
-            | ast::ExpressionKind::Propagate(rhs) => {
-                self.find_outer_optional_unwrap(rhs, skip_id)
-            }
+            | ast::ExpressionKind::Propagate(rhs) => self.find_outer_optional_unwrap(rhs, skip_id),
             ast::ExpressionKind::Range(lhs, rhs, _) => self
                 .find_outer_optional_unwrap(lhs, skip_id)
                 .or_else(|| self.find_outer_optional_unwrap(rhs, skip_id)),

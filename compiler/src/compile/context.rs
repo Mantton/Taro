@@ -1869,7 +1869,8 @@ pub struct TypeDatabase<'arena> {
     pub impl_to_target_ty: FxHashMap<DefinitionID, Ty<'arena>>,
     pub type_head_to_impls: FxHashMap<TypeHead, Vec<DefinitionID>>,
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
-    pub type_head_to_properties: FxHashMap<TypeHead, FxHashMap<Symbol, ComputedPropertyEntry<'arena>>>,
+    pub type_head_to_properties:
+        FxHashMap<TypeHead, FxHashMap<Symbol, ComputedPropertyEntry<'arena>>>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
     /// Lowered default type for a generic type parameter (keyed by parameter DefinitionID).
     pub generic_type_defaults: FxHashMap<DefinitionID, Ty<'arena>>,

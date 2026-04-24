@@ -596,7 +596,13 @@ impl Scheduler {
             inner.queued = false;
             inner.running = true;
             inner.last_worker = worker_id;
-            (inner.handle, inner.out_ptr, inner.cancelled, inner.group_id, inner.is_spawned)
+            (
+                inner.handle,
+                inner.out_ptr,
+                inner.cancelled,
+                inner.group_id,
+                inner.is_spawned,
+            )
         };
         if cancelled {
             self.complete_task_cancelled(task_token);
@@ -1402,7 +1408,11 @@ fn current_worker_id() -> Option<usize> {
 }
 
 pub(crate) fn current_task_token() -> Option<TaskToken> {
-    WORKER_CONTEXT.with(|cell| cell.borrow().as_ref().and_then(|context| context.current_task))
+    WORKER_CONTEXT.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|context| context.current_task)
+    })
 }
 
 /// Entry point: run an async handle to completion using the multithreaded
@@ -1611,9 +1621,7 @@ pub extern "C" fn __rt__executor_take_task_panic_info(task_token: u64) -> *mut u
 /// Return the message from a `PanicReport` heap pointer (produced by
 /// `__rt__executor_take_task_panic_info`). The pointer remains valid after this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__panic_payload_message(
-    ptr: *mut u8,
-) -> crate::panic_unwind::RtString {
+pub extern "C" fn __rt__panic_payload_message(ptr: *mut u8) -> crate::panic_unwind::RtString {
     let report = unsafe { &*(ptr as *const crate::panic_unwind::PanicReport) };
     crate::panic_unwind::RtString {
         ptr: report.message.as_ptr(),

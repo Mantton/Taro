@@ -165,11 +165,7 @@ impl SyncState {
     }
 
     fn channel_close(&mut self, channel_id: usize) -> (i32, Vec<TaskToken>) {
-        let Some(channel) = self
-            .channels
-            .get_mut(channel_id)
-            .and_then(Option::as_mut)
-        else {
+        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -184,12 +180,12 @@ impl SyncState {
         (0, wake)
     }
 
-    fn channel_try_send(&mut self, channel_id: usize, value_ptr: *const u8) -> (i32, Vec<TaskToken>) {
-        let Some(channel) = self
-            .channels
-            .get_mut(channel_id)
-            .and_then(Option::as_mut)
-        else {
+    fn channel_try_send(
+        &mut self,
+        channel_id: usize,
+        value_ptr: *const u8,
+    ) -> (i32, Vec<TaskToken>) {
+        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -225,11 +221,7 @@ impl SyncState {
     }
 
     fn channel_try_recv(&mut self, channel_id: usize, out_ptr: *mut u8) -> (i32, Vec<TaskToken>) {
-        let Some(channel) = self
-            .channels
-            .get_mut(channel_id)
-            .and_then(Option::as_mut)
-        else {
+        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -289,11 +281,7 @@ impl SyncState {
     }
 
     fn mutex_try_lock(&mut self, mutex_id: usize, task_token: TaskToken) -> i32 {
-        let Some(mutex) = self
-            .mutexes
-            .get_mut(mutex_id)
-            .and_then(Option::as_mut)
-        else {
+        let Some(mutex) = self.mutexes.get_mut(mutex_id).and_then(Option::as_mut) else {
             return err_invalid();
         };
 
@@ -311,11 +299,7 @@ impl SyncState {
     }
 
     fn mutex_unlock(&mut self, mutex_id: usize, task_token: TaskToken) -> (i32, Vec<TaskToken>) {
-        let Some(mutex) = self
-            .mutexes
-            .get_mut(mutex_id)
-            .and_then(Option::as_mut)
-        else {
+        let Some(mutex) = self.mutexes.get_mut(mutex_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -376,11 +360,7 @@ impl SyncState {
     }
 
     fn rwlock_try_read(&mut self, lock_id: usize, task_token: TaskToken) -> i32 {
-        let Some(lock) = self
-            .rwlocks
-            .get_mut(lock_id)
-            .and_then(Option::as_mut)
-        else {
+        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
             return err_invalid();
         };
 
@@ -404,11 +384,7 @@ impl SyncState {
     }
 
     fn rwlock_try_write(&mut self, lock_id: usize, task_token: TaskToken) -> i32 {
-        let Some(lock) = self
-            .rwlocks
-            .get_mut(lock_id)
-            .and_then(Option::as_mut)
-        else {
+        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
             return err_invalid();
         };
 
@@ -429,12 +405,12 @@ impl SyncState {
         0
     }
 
-    fn rwlock_unlock_read(&mut self, lock_id: usize, task_token: TaskToken) -> (i32, Vec<TaskToken>) {
-        let Some(lock) = self
-            .rwlocks
-            .get_mut(lock_id)
-            .and_then(Option::as_mut)
-        else {
+    fn rwlock_unlock_read(
+        &mut self,
+        lock_id: usize,
+        task_token: TaskToken,
+    ) -> (i32, Vec<TaskToken>) {
+        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -470,12 +446,12 @@ impl SyncState {
         (0, wake)
     }
 
-    fn rwlock_unlock_write(&mut self, lock_id: usize, task_token: TaskToken) -> (i32, Vec<TaskToken>) {
-        let Some(lock) = self
-            .rwlocks
-            .get_mut(lock_id)
-            .and_then(Option::as_mut)
-        else {
+    fn rwlock_unlock_write(
+        &mut self,
+        lock_id: usize,
+        task_token: TaskToken,
+    ) -> (i32, Vec<TaskToken>) {
+        let Some(lock) = self.rwlocks.get_mut(lock_id).and_then(Option::as_mut) else {
             return (err_invalid(), Vec::new());
         };
 
@@ -572,7 +548,10 @@ impl SyncState {
                 queue_waiter(&mut lock.writer_waiters, task_token);
                 let can_write = lock.writer.is_none()
                     && lock.total_readers == 0
-                    && lock.writer_waiters.front().is_some_and(|front| *front == task_token);
+                    && lock
+                        .writer_waiters
+                        .front()
+                        .is_some_and(|front| *front == task_token);
                 if can_write {
                     remove_waiter(&mut lock.writer_waiters, task_token);
                     push_unique(&mut wake, task_token);
@@ -718,7 +697,11 @@ pub(crate) fn task_finalized(task_token: TaskToken) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_create(elem_size: usize, capacity: usize, bounded: u8) -> usize {
+pub extern "C" fn __rt__sync_channel_create(
+    elem_size: usize,
+    capacity: usize,
+    bounded: u8,
+) -> usize {
     state_cell()
         .lock()
         .unwrap()
@@ -794,7 +777,10 @@ pub extern "C" fn __rt__sync_mutex_try_lock(mutex_id: usize) -> i32 {
         Err(err) => return err,
     };
 
-    state_cell().lock().unwrap().mutex_try_lock(mutex_id, task_token)
+    state_cell()
+        .lock()
+        .unwrap()
+        .mutex_try_lock(mutex_id, task_token)
 }
 
 #[unsafe(no_mangle)]
@@ -832,7 +818,10 @@ pub extern "C" fn __rt__sync_rwlock_try_read(lock_id: usize) -> i32 {
         Err(err) => return err,
     };
 
-    state_cell().lock().unwrap().rwlock_try_read(lock_id, task_token)
+    state_cell()
+        .lock()
+        .unwrap()
+        .rwlock_try_read(lock_id, task_token)
 }
 
 #[unsafe(no_mangle)]
@@ -842,7 +831,10 @@ pub extern "C" fn __rt__sync_rwlock_try_write(lock_id: usize) -> i32 {
         Err(err) => return err,
     };
 
-    state_cell().lock().unwrap().rwlock_try_write(lock_id, task_token)
+    state_cell()
+        .lock()
+        .unwrap()
+        .rwlock_try_write(lock_id, task_token)
 }
 
 #[unsafe(no_mangle)]

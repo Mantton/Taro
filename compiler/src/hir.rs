@@ -1146,20 +1146,18 @@ impl StdItem {
             StdItem::OptionalSomeVariant
             | StdItem::OptionalNoneVariant
             | StdItem::ResultOkVariant
-            | StdItem::ResultErrVariant => {
-                Some(DefinitionKind::Variant)
-            }
+            | StdItem::ResultErrVariant => Some(DefinitionKind::Variant),
             StdItem::OptionalSomeCtor => Some(DefinitionKind::VariantConstructor(
                 crate::sema::resolve::models::VariantCtorKind::Function,
             )),
             StdItem::OptionalNoneCtor => Some(DefinitionKind::VariantConstructor(
                 crate::sema::resolve::models::VariantCtorKind::Constant,
             )),
-            StdItem::ResultOkCtor | StdItem::ResultErrCtor => Some(
-                DefinitionKind::VariantConstructor(
+            StdItem::ResultOkCtor | StdItem::ResultErrCtor => {
+                Some(DefinitionKind::VariantConstructor(
                     crate::sema::resolve::models::VariantCtorKind::Function,
-                ),
-            ),
+                ))
+            }
             StdItem::Make => None,
         }
     }

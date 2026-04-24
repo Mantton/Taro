@@ -254,10 +254,9 @@ impl<'ctx> Actor<'ctx> {
             }
 
             if self.context.definition_is_async(setter_id) {
-                self.context.dcx().emit_error(
-                    "async setters are not supported".into(),
-                    Some(ident.span),
-                );
+                self.context
+                    .dcx()
+                    .emit_error("async setters are not supported".into(), Some(ident.span));
                 return;
             }
         }

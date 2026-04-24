@@ -1,6 +1,6 @@
-use compiler::error::{CompileResult, ReportedError};
+use compiler::error::CompileResult;
 
-use crate::CommandLineArguments;
+use crate::{Cli, CliCommand};
 
 mod build;
 mod check;
@@ -10,113 +10,59 @@ mod run;
 mod std_attached;
 mod test;
 
-pub fn handle(arguments: CommandLineArguments) -> CompileResult<()> {
-    validate_test_selection_flags(&arguments)?;
-    validate_program_args(&arguments)?;
-
-    let _ = match arguments.command.as_str() {
-        "build" => {
-            build::run(arguments, false)?;
+pub fn handle(arguments: Cli) -> CompileResult<()> {
+    let _ = match arguments.command {
+        CliCommand::Build(arguments) => {
+            build::run(arguments.common, false)?;
             ()
         }
-        "check" => check::run(arguments)?,
-        "new" => new::run(arguments)?,
-        "run" => run::run(arguments)?,
-        "test" => test::run(arguments)?,
-        _ => panic!("unknown command"),
+        CliCommand::Check(arguments) => check::run(arguments)?,
+        CliCommand::New(arguments) => new::run(arguments)?,
+        CliCommand::Run(arguments) => run::run(arguments)?,
+        CliCommand::Test(arguments) => test::run(arguments)?,
     };
 
     Ok(())
 }
 
-fn validate_test_selection_flags(arguments: &CommandLineArguments) -> CompileResult<()> {
-    if arguments.command == "test" {
-        return Ok(());
-    }
-
-    let has_filter = arguments
-        .filter
-        .as_ref()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    let has_tags = arguments.tag.iter().any(|s| !s.trim().is_empty());
-
-    if has_filter || has_tags {
-        eprintln!("error: --filter and --tag are only supported with the 'test' command");
-        return Err(ReportedError);
-    }
-
-    Ok(())
-}
-
-fn validate_program_args(arguments: &CommandLineArguments) -> CompileResult<()> {
-    if !arguments.has_program_args() {
-        return Ok(());
-    }
-
-    if arguments.command == "run" {
-        return Ok(());
-    }
-
-    eprintln!(
-        "error: trailing program arguments after '--' are only supported with the 'run' command"
-    );
-    Err(ReportedError)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{validate_program_args, validate_test_selection_flags};
-    use crate::CommandLineArguments;
+    use crate::Cli;
     use clap::Parser;
 
     #[test]
-    fn allows_filter_and_tag_for_test_command() {
-        let args = CommandLineArguments::parse_from([
-            "taro", "test", "std", "--filter", "core", "--tag", "smoke",
-        ]);
-        assert!(validate_test_selection_flags(&args).is_ok());
+    fn rejects_filter_for_build_command() {
+        let args = Cli::try_parse_from(["taro", "build", "std", "--filter", "core"]);
+        assert!(args.is_err());
     }
 
     #[test]
-    fn rejects_filter_for_non_test_command() {
-        let args = CommandLineArguments::parse_from(["taro", "build", "std", "--filter", "core"]);
-        assert!(validate_test_selection_flags(&args).is_err());
-    }
-
-    #[test]
-    fn rejects_tag_for_non_test_command() {
-        let args = CommandLineArguments::parse_from(["taro", "check", "std", "--tag", "smoke"]);
-        assert!(validate_test_selection_flags(&args).is_err());
+    fn rejects_tag_for_check_command() {
+        let args = Cli::try_parse_from(["taro", "check", "std", "--tag", "smoke"]);
+        assert!(args.is_err());
     }
 
     #[test]
     fn allows_program_args_for_run_command() {
-        let args = CommandLineArguments::parse_from(["taro", "run", "std", "--", "foo", "bar"]);
-        assert!(validate_program_args(&args).is_ok());
+        let args = Cli::try_parse_from(["taro", "run", "std", "--", "foo", "bar"]);
+        assert!(args.is_ok());
     }
 
     #[test]
     fn rejects_program_args_for_build_command() {
-        let args = CommandLineArguments::parse_from(["taro", "build", "std", "--", "foo"]);
-        assert!(validate_program_args(&args).is_err());
-    }
-
-    #[test]
-    fn rejects_program_args_for_check_command() {
-        let args = CommandLineArguments::parse_from(["taro", "check", "std", "--", "foo"]);
-        assert!(validate_program_args(&args).is_err());
+        let args = Cli::try_parse_from(["taro", "build", "std", "--", "foo"]);
+        assert!(args.is_err());
     }
 
     #[test]
     fn rejects_program_args_for_new_command() {
-        let args = CommandLineArguments::parse_from(["taro", "new", "std", "--", "foo"]);
-        assert!(validate_program_args(&args).is_err());
+        let args = Cli::try_parse_from(["taro", "new", "github.com/acme/app", "--", "foo"]);
+        assert!(args.is_err());
     }
 
     #[test]
     fn rejects_program_args_for_test_command() {
-        let args = CommandLineArguments::parse_from(["taro", "test", "std", "--", "foo"]);
-        assert!(validate_program_args(&args).is_err());
+        let args = Cli::try_parse_from(["taro", "test", "std", "--", "foo"]);
+        assert!(args.is_err());
     }
 }

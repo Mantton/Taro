@@ -33,13 +33,11 @@ impl<'ctx> MirPass<'ctx> for AllocEscapeAnalysis {
         }
 
         let preds = build_predecessors(body);
-        let mut in_states: IndexVec<BasicBlockId, Vec<FxHashSet<LocalId>>> =
-            IndexVec::from(vec![
+        let mut in_states: IndexVec<BasicBlockId, Vec<FxHashSet<LocalId>>> = IndexVec::from(vec![
                 vec![FxHashSet::default(); local_count];
                 body.basic_blocks.len()
             ]);
-        let mut out_states: IndexVec<BasicBlockId, Vec<FxHashSet<LocalId>>> =
-            IndexVec::from(vec![
+        let mut out_states: IndexVec<BasicBlockId, Vec<FxHashSet<LocalId>>> = IndexVec::from(vec![
                 vec![FxHashSet::default(); local_count];
                 body.basic_blocks.len()
             ]);

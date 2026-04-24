@@ -1159,7 +1159,10 @@ impl<'ctx> Checker<'ctx> {
                     let struct_def = self.gcx().get_struct_definition(def.id);
                     let struct_def = crate::sema::tycheck::utils::instantiate::
                         instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-                    if let Some(field) = struct_def.fields.iter().find(|field| field.name == name.symbol)
+                    if let Some(field) = struct_def
+                        .fields
+                        .iter()
+                        .find(|field| field.name == name.symbol)
                     {
                         if field.mutability != hir::Mutability::Mutable {
                             self.gcx().dcx().emit_error(
@@ -1175,9 +1178,10 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(property) = self.lookup_member_property_on_base_ty(base_ty, name.symbol)
                 {
                     if property.setter_id.is_none() {
-                        self.gcx()
-                            .dcx()
-                            .emit_error("cannot assign to a read-only property".into(), Some(expr.span));
+                        self.gcx().dcx().emit_error(
+                            "cannot assign to a read-only property".into(),
+                            Some(expr.span),
+                        );
                         return false;
                     }
                     return true;
@@ -1507,7 +1511,10 @@ impl<'ctx> Checker<'ctx> {
                     let struct_def = self.gcx().get_struct_definition(def.id);
                     let struct_def = crate::sema::tycheck::utils::instantiate::
                         instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
-                    if let Some(field) = struct_def.fields.iter().find(|field| field.name == name.symbol)
+                    if let Some(field) = struct_def
+                        .fields
+                        .iter()
+                        .find(|field| field.name == name.symbol)
                     {
                         if field.mutability != hir::Mutability::Mutable {
                             self.gcx().dcx().emit_error(
@@ -3360,8 +3367,12 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(bound_args) = instantiation_args
                     && let Some(bound) = self.try_resolve_fn_bound(original_ty, def_id, bound_args)
                 {
-                    let expectation_ty =
-                        self.freshen_method_expectation_ty(def_id, bound.fn_signature_ty, name.span, cs);
+                    let expectation_ty = self.freshen_method_expectation_ty(
+                        def_id,
+                        bound.fn_signature_ty,
+                        name.span,
+                        cs,
+                    );
                     input_expectations.push(ArgumentExpectation {
                         ty: expectation_ty,
                         expects_async_callable: bound.expects_async_callable,
@@ -3523,10 +3534,11 @@ impl<'ctx> Checker<'ctx> {
             return ty;
         }
 
-        let mut args: Vec<GenericArgument<'ctx>> = GenericsBuilder::identity_for_item(self.gcx(), def_id)
-            .iter()
-            .copied()
-            .collect();
+        let mut args: Vec<GenericArgument<'ctx>> =
+            GenericsBuilder::identity_for_item(self.gcx(), def_id)
+                .iter()
+                .copied()
+                .collect();
         for param in self.gcx().generics_of(def_id).parameters.iter() {
             if indices.contains(&param.index) {
                 args[param.index] = cs.infer_cx.var_for_generic_param(param, span);

@@ -315,7 +315,10 @@ fn classify_frame(symbol: &str) -> FrameKind {
         return FrameKind::Synthetic;
     }
 
-    if symbol.starts_with("taro_runtime::") || symbol.starts_with("rt__") || symbol.starts_with("gc__") {
+    if symbol.starts_with("taro_runtime::")
+        || symbol.starts_with("rt__")
+        || symbol.starts_with("gc__")
+    {
         return FrameKind::Runtime;
     }
 
@@ -357,7 +360,9 @@ fn parse_backtrace_frames(backtrace: &str) -> Vec<ParsedFrame> {
 
     for line in backtrace.lines() {
         if let Some((index, symbol)) = parse_frame_header(line) {
-            if let (Some(prev_index), Some(prev_symbol)) = (current_index.take(), current_symbol.take()) {
+            if let (Some(prev_index), Some(prev_symbol)) =
+                (current_index.take(), current_symbol.take())
+            {
                 frames.push(ParsedFrame {
                     _index: prev_index,
                     kind: classify_frame(&prev_symbol),

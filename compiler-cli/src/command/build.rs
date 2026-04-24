@@ -1,6 +1,6 @@
 use super::{incremental, std_attached};
 use crate::{
-    CommandLineArguments, CompileModeOptions,
+    CommonCompileArgs, CompileModeOptions, TestArgs,
     package::{
         manifest::ValidatedDependencyGraph,
         sync::sync_dependencies,
@@ -29,7 +29,7 @@ use std::{
 };
 
 pub fn run(
-    arguments: CommandLineArguments,
+    arguments: CommonCompileArgs,
     require_executable: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     if arguments.is_single_file() {
@@ -40,7 +40,7 @@ pub fn run(
 }
 
 fn run_single_file(
-    arguments: CommandLineArguments,
+    arguments: CommonCompileArgs,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
@@ -147,7 +147,7 @@ fn script_target_dir(file_path: &PathBuf, profile_dir: &str) -> PathBuf {
 }
 
 fn run_package(
-    arguments: CommandLineArguments,
+    arguments: CommonCompileArgs,
     require_executable: bool,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
@@ -554,13 +554,12 @@ fn is_root_std_package(
 
 // ─── Test mode build ──────────────────────────────────────────────────
 
-pub fn run_test_mode(
-    arguments: CommandLineArguments,
-) -> Result<Option<std::path::PathBuf>, ReportedError> {
+pub fn run_test_mode(arguments: TestArgs) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let selection = TestSelection::new(
         arguments.normalized_test_filter(),
         arguments.normalized_test_tags(),
     );
+    let arguments = arguments.common;
 
     if arguments.is_single_file() {
         run_single_file_test(arguments, &selection)
@@ -570,7 +569,7 @@ pub fn run_test_mode(
 }
 
 fn run_single_file_test(
-    arguments: CommandLineArguments,
+    arguments: CommonCompileArgs,
     selection: &TestSelection,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
@@ -663,7 +662,7 @@ fn run_single_file_test(
 }
 
 fn run_package_test(
-    arguments: CommandLineArguments,
+    arguments: CommonCompileArgs,
     selection: &TestSelection,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();

@@ -117,7 +117,10 @@ impl<'ctx> Actor<'ctx> {
         let Some(goal) = self.goal_from_interface(interface) else {
             return;
         };
-        if self.context.interface_has_associated_property(goal.interface_id) {
+        if self
+            .context
+            .interface_has_associated_property(goal.interface_id)
+        {
             self.context.dcx().emit_error(
                 INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC.into(),
                 Some(span),

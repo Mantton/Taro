@@ -2,11 +2,11 @@ use std::process::Command;
 
 use compiler::error::ReportedError;
 
-use crate::{CommandLineArguments, command::build};
+use crate::{RunArgs, command::build};
 
-pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+pub fn run(arguments: RunArgs) -> Result<(), ReportedError> {
     let program_args = arguments.program_args.clone();
-    let exe = build::run(arguments, true)?;
+    let exe = build::run(arguments.common, true)?;
     let exe = exe.ok_or_else(|| {
         eprintln!("error: no executable was produced");
         ReportedError

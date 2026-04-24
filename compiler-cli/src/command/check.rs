@@ -1,6 +1,6 @@
 use super::{incremental, std_attached};
 use crate::{
-    CommandLineArguments, CompileModeOptions,
+    CheckArgs, CommonCompileArgs, CompileModeOptions,
     package::{
         manifest::ValidatedDependencyGraph, sync::sync_dependencies, utils::get_package_name,
     },
@@ -24,7 +24,9 @@ use std::{
     rc::Rc,
 };
 
-pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+pub fn run(arguments: CheckArgs) -> Result<(), ReportedError> {
+    let arguments = arguments.common;
+
     if arguments.is_single_file() {
         run_single_file(arguments)
     } else {
@@ -32,7 +34,7 @@ pub fn run(arguments: CommandLineArguments) -> Result<(), ReportedError> {
     }
 }
 
-fn run_single_file(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
@@ -137,7 +139,7 @@ fn script_target_dir(file_path: &PathBuf, profile_dir: &str) -> PathBuf {
         .join(profile_dir)
 }
 
-fn run_package(arguments: CommandLineArguments) -> Result<(), ReportedError> {
+fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {

@@ -9,10 +9,9 @@ use crate::{
         GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
         GenericWhereClause, Generics, Identifier, IfExpression, Impl, Interface, Label, Literal,
         Local, MapPair, MatchArm, MatchExpression, ModuleDecl, Mutability, Namespace,
-        NamespaceDeclaration,
-        NamespaceDeclarationKind, NodeID, Path, PathNode, PathSegment, Pattern,
-        PatternBindingCondition, PatternKind, PatternPath, RequiredTypeConstraint, SelfKind,
-        Statement, StatementKind, StaticVariable, Struct, StructLiteral, Type, TypeAlias,
+        NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Path, PathNode, PathSegment,
+        Pattern, PatternBindingCondition, PatternKind, PatternPath, RequiredTypeConstraint,
+        SelfKind, Statement, StatementKind, StaticVariable, Struct, StructLiteral, Type, TypeAlias,
         TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
         UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
         Visibility, VisibilityLevel,
@@ -94,10 +93,7 @@ fn pick_module_decl(
 
     if is_root {
         for decl in &decls {
-            dcx.emit_error(
-                ParserError::ModuleDeclInRoot.to_string(),
-                Some(decl.span),
-            );
+            dcx.emit_error(ParserError::ModuleDeclInRoot.to_string(), Some(decl.span));
             had_error = true;
         }
         if had_error {
@@ -181,9 +177,7 @@ impl Parser {
 }
 
 impl Parser {
-    fn parse(
-        mut self,
-    ) -> Result<(Vec<Declaration>, Vec<ModuleDecl>), Vec<Spanned<ParserError>>> {
+    fn parse(mut self) -> Result<(Vec<Declaration>, Vec<ModuleDecl>), Vec<Spanned<ParserError>>> {
         let result = self.parse_module_declarations();
         match result {
             Ok(_) if !self.errors.is_empty() => return Err(self.errors),
@@ -2083,11 +2077,10 @@ impl Parser {
             return Ok(qualified);
         }
 
-        let (elements, trailing) = self.parse_delimiter_sequence_trailing(
-            Delimiter::Parenthesis,
-            Token::Comma,
-            |p| p.parse_type(),
-        )?;
+        let (elements, trailing) =
+            self.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
+                p.parse_type()
+            })?;
 
         if self.matches(Token::RArrow) {
             self.expect(Token::RArrow)?;
@@ -2479,11 +2472,9 @@ impl Parser {
         let mut res = Restrictions::empty();
         res.insert(Restrictions::ALLOW_REST_PATTERN);
         let (mut pats, trailing) = self.with_restrictions(res, |p| {
-            p.parse_delimiter_sequence_trailing(
-                Delimiter::Parenthesis,
-                Token::Comma,
-                |p| p.parse_pattern(),
-            )
+            p.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
+                p.parse_pattern()
+            })
         })?;
         // `(pat)` without a trailing comma is a parenthesized pattern;
         // `(pat,)` is a one-element tuple pattern. Empty `()` stays a tuple.
@@ -3632,11 +3623,10 @@ impl Parser {
     fn parse_tuple_expr(&mut self) -> R<Box<Expression>> {
         let lo = self.lo_span();
 
-        let (items, trailing) = self.parse_delimiter_sequence_trailing(
-            Delimiter::Parenthesis,
-            Token::Comma,
-            |p| p.parse_expression(),
-        )?;
+        let (items, trailing) =
+            self.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
+                p.parse_expression()
+            })?;
 
         let span = lo.to(self.hi_span());
 
@@ -4797,9 +4787,7 @@ impl Display for ParserError {
             UnexpectedSemicolonInList { context } => {
                 write!(f, "unexpected semicolon in {}", context)
             }
-            DuplicateModuleDecl => f.write_str(
-                "duplicate `mod` declaration in this module",
-            ),
+            DuplicateModuleDecl => f.write_str("duplicate `mod` declaration in this module"),
             ModuleDeclNameMismatch { declared, expected } => write!(
                 f,
                 "`mod {}` does not match the enclosing module name `{}`",
@@ -5050,10 +5038,9 @@ mod tests {
 
     #[test]
     fn test_mod_declaration_with_cfg_attr() {
-        let (_, module_decls) = parse_decls_and_module_decls(
-            "@cfg(family(\"unix\")) public mod unix;",
-        )
-        .expect("Parse failed");
+        let (_, module_decls) =
+            parse_decls_and_module_decls("@cfg(family(\"unix\")) public mod unix;")
+                .expect("Parse failed");
         assert_eq!(module_decls.len(), 1);
         assert_eq!(module_decls[0].attributes.len(), 1);
         assert_eq!(
@@ -7390,8 +7377,7 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let mut parser = Parser::new(file, next);
-        let (decls, _module_decls) =
-            parser.parse_module_declarations().unwrap_or_default();
+        let (decls, _module_decls) = parser.parse_module_declarations().unwrap_or_default();
         (decls, parser.errors)
     }
 

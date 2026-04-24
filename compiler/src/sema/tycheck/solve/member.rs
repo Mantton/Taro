@@ -108,8 +108,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         continue;
                     }
 
-                    receiver_arg_ty =
-                        Ty::new(TyKind::Reference(ty, mutability), self.gcx());
+                    receiver_arg_ty = Ty::new(TyKind::Reference(ty, mutability), self.gcx());
                     property_adjustments.push(match mutability {
                         crate::hir::Mutability::Mutable => Adjustment::BorrowMutable,
                         crate::hir::Mutability::Immutable => Adjustment::BorrowImmutable,
@@ -596,11 +595,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     /// Check whether a type has any instance member with the given name that
     /// exists but is not visible from the current definition. Used to produce
     /// a "method is private" error instead of "no such member".
-    pub(crate) fn has_invisible_instance_member(
-        &self,
-        head: TypeHead,
-        name: Symbol,
-    ) -> bool {
+    pub(crate) fn has_invisible_instance_member(&self, head: TypeHead, name: Symbol) -> bool {
         let gcx = self.gcx();
         let current_def = self.current_def;
 

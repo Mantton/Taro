@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use compiler::compile::config::BuildProfile;
 use std::{path::PathBuf, process::exit};
 
@@ -13,15 +13,64 @@ pub struct CompileModeOptions {
 }
 
 #[derive(Parser, Clone, Debug)]
-pub struct CommandLineArguments {
-    pub command: String,
-    pub path: PathBuf,
+#[command(name = "taro", bin_name = "taro")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: CliCommand,
+}
+
+#[derive(Subcommand, Clone, Debug)]
+pub enum CliCommand {
+    Build(BuildArgs),
+    Check(CheckArgs),
+    Run(RunArgs),
+    Test(TestArgs),
+    New(NewArgs),
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct BuildArgs {
+    #[command(flatten)]
+    pub common: CommonCompileArgs,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct CheckArgs {
+    #[command(flatten)]
+    pub common: CommonCompileArgs,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct RunArgs {
+    #[command(flatten)]
+    pub common: CommonCompileArgs,
+    /// Program arguments forwarded to the compiled executable after `--`.
+    #[arg(last = true)]
+    pub program_args: Vec<String>,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct TestArgs {
+    #[command(flatten)]
+    pub common: CommonCompileArgs,
     /// Case-insensitive substring filter against qualified test names.
     #[arg(long = "filter")]
     pub filter: Option<String>,
     /// Case-insensitive test tag filter. Repeat to match any requested tag.
     #[arg(long = "tag")]
     pub tag: Vec<String>,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct NewArgs {
+    pub package: String,
+    #[arg(long = "kind", value_enum, default_value_t = NewProjectKind::Executable)]
+    pub kind: NewProjectKind,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct CommonCompileArgs {
+    pub path: PathBuf,
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
     #[arg(long = "std-path")]
@@ -61,12 +110,16 @@ pub struct CommandLineArguments {
     /// Refresh package.lock entries from current dependency sources.
     #[arg(long = "update-lock", conflicts_with = "locked")]
     pub update_lock: bool,
-    /// Program arguments forwarded to the compiled executable after `--`.
-    #[arg(last = true)]
-    pub program_args: Vec<String>,
 }
 
-impl CommandLineArguments {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum NewProjectKind {
+    #[default]
+    Executable,
+    Library,
+}
+
+impl CommonCompileArgs {
     /// Returns true if the path points to a single .tr file
     pub fn is_single_file(&self) -> bool {
         self.path
@@ -102,6 +155,16 @@ impl CommandLineArguments {
         }
     }
 
+    pub fn sync_options(&self) -> crate::package::sync::SyncOptions {
+        crate::package::sync::SyncOptions {
+            locked: self.locked,
+            update_lock: self.update_lock,
+            strict_env: ci_env_is_strict(),
+        }
+    }
+}
+
+impl TestArgs {
     pub fn normalized_test_filter(&self) -> Option<String> {
         self.filter
             .as_ref()
@@ -118,18 +181,6 @@ impl CommandLineArguments {
             .map(ToOwned::to_owned)
             .collect()
     }
-
-    pub fn sync_options(&self) -> crate::package::sync::SyncOptions {
-        crate::package::sync::SyncOptions {
-            locked: self.locked,
-            update_lock: self.update_lock,
-            strict_env: ci_env_is_strict(),
-        }
-    }
-
-    pub fn has_program_args(&self) -> bool {
-        !self.program_args.is_empty()
-    }
 }
 
 fn ci_env_is_strict() -> bool {
@@ -142,7 +193,7 @@ fn ci_env_is_strict() -> bool {
 }
 
 pub fn run() {
-    let arguments = CommandLineArguments::parse();
+    let arguments = Cli::parse();
     let result = command::handle(arguments);
     match result {
         Ok(_) => exit(0),
@@ -152,12 +203,41 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::CommandLineArguments;
+    use super::{Cli, CliCommand, NewProjectKind};
     use clap::Parser;
 
     #[test]
+    fn parses_new_command() {
+        let args = Cli::parse_from(["taro", "new", "github.com/acme/app"]);
+
+        match args.command {
+            CliCommand::New(new) => {
+                assert_eq!(new.package, "github.com/acme/app");
+                assert_eq!(new.kind, NewProjectKind::Executable);
+            }
+            other => panic!("expected new command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_new_command_with_library_kind() {
+        let args = Cli::parse_from(["taro", "new", "github.com/acme/app", "--kind", "library"]);
+
+        match args.command {
+            CliCommand::New(new) => assert_eq!(new.kind, NewProjectKind::Library),
+            other => panic!("expected new command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_new_command_with_unsupported_kind() {
+        let args = Cli::try_parse_from(["taro", "new", "github.com/acme/app", "--kind", "both"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
     fn parses_test_filter_and_tags() {
-        let args = CommandLineArguments::parse_from([
+        let args = Cli::parse_from([
             "taro",
             "test",
             "std",
@@ -169,14 +249,18 @@ mod tests {
             "slow",
         ]);
 
-        assert_eq!(args.command, "test");
-        assert_eq!(args.normalized_test_filter().as_deref(), Some("Core.Tests"));
-        assert_eq!(args.normalized_test_tags(), vec!["Smoke", "slow"]);
+        match args.command {
+            CliCommand::Test(test) => {
+                assert_eq!(test.normalized_test_filter().as_deref(), Some("Core.Tests"));
+                assert_eq!(test.normalized_test_tags(), vec!["Smoke", "slow"]);
+            }
+            other => panic!("expected test command, got {other:?}"),
+        }
     }
 
     #[test]
     fn normalized_filter_and_tags_trim_and_drop_empty() {
-        let args = CommandLineArguments::parse_from([
+        let args = Cli::parse_from([
             "taro",
             "test",
             "std",
@@ -188,45 +272,55 @@ mod tests {
             "   ",
         ]);
 
-        assert_eq!(args.normalized_test_filter().as_deref(), Some("core.tests"));
-        assert_eq!(args.normalized_test_tags(), vec!["Smoke"]);
+        match args.command {
+            CliCommand::Test(test) => {
+                assert_eq!(test.normalized_test_filter().as_deref(), Some("core.tests"));
+                assert_eq!(test.normalized_test_tags(), vec!["Smoke"]);
+            }
+            other => panic!("expected test command, got {other:?}"),
+        }
     }
 
     #[test]
     fn parses_lock_flags() {
-        let args = CommandLineArguments::parse_from(["taro", "build", "std", "--locked"]);
-        assert!(args.locked);
-        assert!(!args.update_lock);
+        let args = Cli::parse_from(["taro", "build", "std", "--locked"]);
+
+        match args.command {
+            CliCommand::Build(build) => {
+                assert!(build.common.locked);
+                assert!(!build.common.update_lock);
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
     }
 
     #[test]
     fn parses_run_program_args_after_double_dash() {
-        let args = CommandLineArguments::parse_from([
-            "taro",
-            "run",
-            "examples/hello.tr",
-            "--",
-            "foo",
-            "bar",
-        ]);
+        let args = Cli::parse_from(["taro", "run", "examples/hello.tr", "--", "foo", "bar"]);
 
-        assert_eq!(args.command, "run");
-        assert_eq!(args.program_args, vec!["foo", "bar"]);
+        match args.command {
+            CliCommand::Run(run) => assert_eq!(run.program_args, vec!["foo", "bar"]),
+            other => panic!("expected run command, got {other:?}"),
+        }
     }
 
     #[test]
     fn parses_empty_program_args_when_double_dash_is_last() {
-        let args = CommandLineArguments::parse_from(["taro", "run", "examples/hello.tr", "--"]);
+        let args = Cli::parse_from(["taro", "run", "examples/hello.tr", "--"]);
 
-        assert_eq!(args.command, "run");
-        assert!(args.program_args.is_empty());
+        match args.command {
+            CliCommand::Run(run) => assert!(run.program_args.is_empty()),
+            other => panic!("expected run command, got {other:?}"),
+        }
     }
 
     #[test]
     fn parses_without_program_args() {
-        let args = CommandLineArguments::parse_from(["taro", "run", "examples/hello.tr"]);
+        let args = Cli::parse_from(["taro", "run", "examples/hello.tr"]);
 
-        assert_eq!(args.command, "run");
-        assert!(args.program_args.is_empty());
+        match args.command {
+            CliCommand::Run(run) => assert!(run.program_args.is_empty()),
+            other => panic!("expected run command, got {other:?}"),
+        }
     }
 }

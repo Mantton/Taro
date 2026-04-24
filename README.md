@@ -74,6 +74,24 @@ taro run examples/hello.tr -- foo bar
 
 When reading arguments in Taro, `std.env.argv()` / `std.env.args()` include `argv[0]`, which is the actual generated executable path for `taro run`.
 
+### Create a New Package
+
+Use `taro new` to scaffold a package from a full package identifier:
+
+```bash
+taro new github.com/acme/app
+taro new github.com/acme/lib --kind library
+```
+
+This creates `./app` or `./lib` based on the repo segment of the package identifier.
+
+Generated templates currently support:
+
+- `--kind executable` (default): writes `src/main.tr`
+- `--kind library`: writes `src/lib.tr`
+
+Manifests still recognize `kind = "both"`, but `taro new` does not scaffold that layout yet.
+
 ### VS Code Extension
 
 The VS Code extension is designed for an external Taro toolchain install:

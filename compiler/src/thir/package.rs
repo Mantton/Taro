@@ -959,21 +959,17 @@ impl<'ctx> FunctionLower<'ctx> {
                 ExprKind::ExistentialTypeIs { value, target }
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
-                if let Some(property_write) = self
-                    .results
-                    .property_write(expr.id)
-                    .or_else(|| {
-                        self.results.property_read(lhs.id).and_then(|read| {
-                            read.setter_id.map(|setter_id| {
-                                crate::sema::tycheck::solve::ResolvedPropertyWrite {
-                                    property_id: read.property_id,
-                                    setter_id,
-                                    ty: read.ty,
-                                }
-                            })
+                if let Some(property_write) = self.results.property_write(expr.id).or_else(|| {
+                    self.results.property_read(lhs.id).and_then(|read| {
+                        read.setter_id.map(|setter_id| {
+                            crate::sema::tycheck::solve::ResolvedPropertyWrite {
+                                property_id: read.property_id,
+                                setter_id,
+                                ty: read.ty,
+                            }
                         })
                     })
-                    && let hir::ExpressionKind::Member { target, .. } = &lhs.kind
+                }) && let hir::ExpressionKind::Member { target, .. } = &lhs.kind
                 {
                     let receiver = self.lower_expr(target);
                     let value = self.lower_expr(rhs);
@@ -1781,7 +1777,11 @@ impl<'ctx> FunctionLower<'ctx> {
         id
     }
 
-    fn lower_propagate_expr(&mut self, expr: &hir::Expression, inner: &hir::Expression) -> Expr<'ctx> {
+    fn lower_propagate_expr(
+        &mut self,
+        expr: &hir::Expression,
+        inner: &hir::Expression,
+    ) -> Expr<'ctx> {
         let ty = self.results.node_type(expr.id);
         let span = expr.span;
         let scrutinee = self.lower_expr(inner);
@@ -1794,19 +1794,17 @@ impl<'ctx> FunctionLower<'ctx> {
         };
         let enum_def = self.gcx.get_enum_definition(scrutinee_def.id);
 
-        let make_arm = |this: &mut Self,
-                        pattern: thir::Pattern<'ctx>,
-                        body: ExprId|
-         -> thir::ArmId {
-            let id = thir::ArmId::from_raw(this.func.arms.len() as u32);
-            this.func.arms.push(thir::Arm {
-                pattern: Box::new(pattern),
-                guard: None,
-                body,
-                span,
-            });
-            id
-        };
+        let make_arm =
+            |this: &mut Self, pattern: thir::Pattern<'ctx>, body: ExprId| -> thir::ArmId {
+                let id = thir::ArmId::from_raw(this.func.arms.len() as u32);
+                this.func.arms.push(thir::Arm {
+                    pattern: Box::new(pattern),
+                    guard: None,
+                    body,
+                    span,
+                });
+                id
+            };
 
         if Some(scrutinee_def.id) == self.gcx.std_item_def(hir::StdItem::Optional) {
             let some_variant_def = self

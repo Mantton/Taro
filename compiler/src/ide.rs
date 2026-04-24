@@ -783,7 +783,10 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
     }
 
     fn member_definition_target(&self, node: &Expression, target: &Expression) -> Option<Span> {
-        if let Some(property) = self.results.and_then(|results| results.property_read(node.id)) {
+        if let Some(property) = self
+            .results
+            .and_then(|results| results.property_read(node.id))
+        {
             return Some(self.gcx.definition_ident(property.property_id).span);
         }
 
