@@ -6,7 +6,7 @@ use crate::{
     sema::{
         impl_engine::method_signature_matches,
         models::{
-            ConformanceRecord, Constraint, GenericArgument, GenericArguments, InterfaceGoal,
+            ConformanceRecord, GenericArgument, GenericArguments, InterfaceGoal,
             InterfaceMethodRequirement, InterfaceReference, SelectionError, SelectionMode, Ty,
         },
         tycheck::utils::{
@@ -303,25 +303,7 @@ impl<'ctx> Actor<'ctx> {
         &self,
         interface: InterfaceReference<'ctx>,
     ) -> Option<InterfaceGoal<'ctx>> {
-        let self_ty = match interface.arguments.get(0).copied() {
-            Some(GenericArgument::Type(ty)) => ty,
-            _ => return None,
-        };
-        let interface_args = if interface.arguments.len() > 1 {
-            self.context
-                .store
-                .interners
-                .intern_generic_args_slice(&interface.arguments[1..])
-        } else {
-            GenericArguments::empty()
-        };
-        Some(InterfaceGoal {
-            interface_id: interface.id,
-            self_ty,
-            interface_args,
-            bindings: interface.bindings,
-            param_env: &[] as &[Constraint<'ctx>],
-        })
+        interface.to_goal(self.context, &[])
     }
 }
 
@@ -341,28 +323,11 @@ pub fn resolve_conformance_witness_with_mode<'ctx>(
         return None;
     }
 
-    let self_ty = match interface.arguments.get(0).copied() {
-        Some(GenericArgument::Type(ty)) => ty,
-        _ => return None,
-    };
+    let self_ty = interface.self_ty()?;
     if ty_has_infer_types(self_ty) {
         return None;
     }
-    let interface_args = if interface.arguments.len() > 1 {
-        context
-            .store
-            .interners
-            .intern_generic_args_slice(&interface.arguments[1..])
-    } else {
-        GenericArguments::empty()
-    };
-    let goal = InterfaceGoal {
-        interface_id: interface.id,
-        self_ty,
-        interface_args,
-        bindings: interface.bindings,
-        param_env: &[],
-    };
+    let goal = interface.to_goal_with_self_ty(context, &[], self_ty);
 
     match context.build_conformance_witness(goal, mode) {
         Ok(witness) => Some(witness),

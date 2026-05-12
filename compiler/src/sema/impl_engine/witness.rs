@@ -167,24 +167,11 @@ fn interface_goal_from_record<'ctx>(
     gcx: Gcx<'ctx>,
     record: &ConformanceRecord<'ctx>,
 ) -> InterfaceGoal<'ctx> {
-    let self_ty = match record.interface.arguments.get(0).copied() {
-        Some(GenericArgument::Type(ty)) => ty,
-        _ => gcx.types.error,
-    };
-    let interface_args = if record.interface.arguments.len() > 1 {
-        gcx.store
-            .interners
-            .intern_generic_args_slice(&record.interface.arguments[1..])
-    } else {
-        GenericArguments::empty()
-    };
-    InterfaceGoal {
-        interface_id: record.interface.id,
-        self_ty,
-        interface_args,
-        bindings: record.interface.bindings,
-        param_env: &[],
-    }
+    record.interface.to_goal(gcx, &[]).unwrap_or_else(|| {
+        record
+            .interface
+            .to_goal_with_self_ty(gcx, &[], gcx.types.error)
+    })
 }
 
 fn goal_bindings_satisfied<'ctx>(

@@ -3,8 +3,8 @@ use crate::{
     sema::{
         error::{ExpectedFound, TypeError},
         models::{
-            AliasKind, GenericArgument, GenericArguments, InferTy, InterfaceGoal,
-            InterfaceReference, SelectionError, SelectionMode, Ty, TyKind,
+            AliasKind, GenericArgument, InferTy, InterfaceReference, SelectionError, SelectionMode,
+            Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::utils::type_head_from_value_ty,
@@ -675,25 +675,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             _ => {}
         }
 
-        let interface_args = if interface.arguments.len() > 1 {
-            self.gcx()
-                .store
-                .interners
-                .intern_generic_args_slice(&interface.arguments[1..])
-        } else {
-            GenericArguments::empty()
-        };
-        let self_ty = match interface.arguments.get(0).copied() {
-            Some(GenericArgument::Type(self_ty)) => self_ty,
-            _ => ty,
-        };
-        let goal = InterfaceGoal {
-            interface_id: interface.id,
-            self_ty,
-            interface_args,
-            bindings: interface.bindings,
-            param_env: &[],
-        };
+        let self_ty = interface.self_ty().unwrap_or(ty);
+        let goal = interface.to_goal_with_self_ty(self.gcx(), &[], self_ty);
         match self
             .gcx()
             .build_conformance_witness(goal, SelectionMode::Typecheck)

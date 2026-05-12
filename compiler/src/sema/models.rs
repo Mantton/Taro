@@ -1013,6 +1013,46 @@ fn format_callable_interface<'ctx>(
 }
 
 impl<'ctx> InterfaceReference<'ctx> {
+    pub fn self_ty(self) -> Option<Ty<'ctx>> {
+        match self.arguments.first().copied() {
+            Some(GenericArgument::Type(ty)) => Some(ty),
+            _ => None,
+        }
+    }
+
+    pub fn interface_args_without_self(self, gcx: Gcx<'ctx>) -> GenericArguments<'ctx> {
+        if self.arguments.len() > 1 {
+            gcx.store
+                .interners
+                .intern_generic_args_slice(&self.arguments[1..])
+        } else {
+            GenericArguments::empty()
+        }
+    }
+
+    pub fn to_goal(
+        self,
+        gcx: Gcx<'ctx>,
+        param_env: &'ctx [Constraint<'ctx>],
+    ) -> Option<InterfaceGoal<'ctx>> {
+        Some(self.to_goal_with_self_ty(gcx, param_env, self.self_ty()?))
+    }
+
+    pub fn to_goal_with_self_ty(
+        self,
+        gcx: Gcx<'ctx>,
+        param_env: &'ctx [Constraint<'ctx>],
+        self_ty: Ty<'ctx>,
+    ) -> InterfaceGoal<'ctx> {
+        InterfaceGoal {
+            interface_id: self.id,
+            self_ty,
+            interface_args: self.interface_args_without_self(gcx),
+            bindings: self.bindings,
+            param_env,
+        }
+    }
+
     pub fn format(self, gcx: Gcx<'ctx>) -> String {
         let name = gcx.definition_ident(self.id).symbol;
 

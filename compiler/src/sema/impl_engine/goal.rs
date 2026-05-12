@@ -1,9 +1,6 @@
 use crate::{
     compile::context::Gcx,
-    sema::models::{
-        AssociatedTypeBinding, GenericArgument, GenericArguments, InterfaceGoal,
-        InterfaceReference, Ty,
-    },
+    sema::models::{AssociatedTypeBinding, GenericArgument, InterfaceGoal, InterfaceReference, Ty},
 };
 
 pub(super) fn goal_from_interface_ref<'ctx>(
@@ -11,24 +8,7 @@ pub(super) fn goal_from_interface_ref<'ctx>(
     interface: InterfaceReference<'ctx>,
     param_env: &'ctx [crate::sema::models::Constraint<'ctx>],
 ) -> Option<InterfaceGoal<'ctx>> {
-    let self_ty = match interface.arguments.get(0).copied() {
-        Some(GenericArgument::Type(ty)) => ty,
-        _ => return None,
-    };
-    let interface_args = if interface.arguments.len() > 1 {
-        gcx.store
-            .interners
-            .intern_generic_args_slice(&interface.arguments[1..])
-    } else {
-        GenericArguments::empty()
-    };
-    Some(InterfaceGoal {
-        interface_id: interface.id,
-        self_ty,
-        interface_args,
-        bindings: interface.bindings,
-        param_env,
-    })
+    interface.to_goal(gcx, param_env)
 }
 
 pub(super) fn interface_ref_matches_goal<'ctx>(

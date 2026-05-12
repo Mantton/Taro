@@ -5,7 +5,7 @@ use crate::{
     hir::{self, DefinitionID, DefinitionKind, HirVisitor, StdItem},
     sema::{
         models::{
-            ConformanceRecord, ConstKind, Constraint, GenericArgument, GoalResult, InterfaceGoal,
+            ConformanceRecord, ConstKind, Constraint, GenericArgument, GoalResult,
             InterfaceReference, SelectionMode, Ty, TyKind,
         },
         resolve::models::TypeHead,
@@ -508,26 +508,8 @@ impl<'ctx> Actor<'ctx> {
                 continue;
             }
 
-            let self_ty = match interface.arguments.get(0).copied() {
-                Some(GenericArgument::Type(self_ty)) => self_ty,
-                _ => ty,
-            };
-            let interface_args = if interface.arguments.len() > 1 {
-                self.context
-                    .store
-                    .interners
-                    .intern_generic_args_slice(&interface.arguments[1..])
-            } else {
-                crate::sema::models::GenericArguments::empty()
-            };
-
-            let goal = InterfaceGoal {
-                interface_id: interface.id,
-                self_ty,
-                interface_args,
-                bindings: interface.bindings,
-                param_env,
-            };
+            let self_ty = interface.self_ty().unwrap_or(ty);
+            let goal = interface.to_goal_with_self_ty(self.context, param_env, self_ty);
 
             if matches!(
                 self.context
