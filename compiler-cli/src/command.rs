@@ -4,6 +4,7 @@ use crate::{Cli, CliCommand};
 
 mod build;
 mod check;
+mod compile_paths;
 mod incremental;
 mod new;
 mod run;
@@ -11,7 +12,7 @@ mod std_attached;
 mod test;
 
 pub fn handle(arguments: Cli) -> CompileResult<()> {
-    let _ = match arguments.command {
+    match arguments.command {
         CliCommand::Build(arguments) => {
             build::run(arguments.common, false)?;
             ()
@@ -20,7 +21,7 @@ pub fn handle(arguments: Cli) -> CompileResult<()> {
         CliCommand::New(arguments) => new::run(arguments)?,
         CliCommand::Run(arguments) => run::run(arguments)?,
         CliCommand::Test(arguments) => test::run(arguments)?,
-    };
+    }
 
     Ok(())
 }

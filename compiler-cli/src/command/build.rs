@@ -1,4 +1,7 @@
-use super::{incremental, std_attached};
+use super::{
+    compile_paths::{profile_dir_name, script_target_dir},
+    incremental, std_attached,
+};
 use crate::{
     CommonCompileArgs, CompileModeOptions, TestArgs,
     package::{
@@ -11,7 +14,7 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+        config::{Config, DebugOptions, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore},
         test_collector::TestSelection,
     },
@@ -21,12 +24,7 @@ use compiler::{
     metadata::{self, MetadataLoadStatus, ReuseMode},
 };
 use rustc_hash::FxHashMap;
-use std::{
-    hash::{Hash, Hasher},
-    path::PathBuf,
-    process::Command,
-    rc::Rc,
-};
+use std::{path::PathBuf, process::Command, rc::Rc};
 
 pub fn run(
     arguments: CommonCompileArgs,
@@ -133,17 +131,6 @@ fn run_single_file(
     eprintln!("Compiling – {}", file_stem);
     let mut compiler = Compiler::new(&icx, config);
     compiler.build()
-}
-
-fn script_target_dir(file_path: &PathBuf, profile_dir: &str) -> PathBuf {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    file_path.hash(&mut hasher);
-    let hash = format!("{:x}", hasher.finish());
-
-    std::env::temp_dir()
-        .join("taro-scripts")
-        .join(hash)
-        .join(profile_dir)
 }
 
 fn run_package(
@@ -518,13 +505,6 @@ fn build_runtime(
     // "object file" input.
     ctx.store.add_link_input(lib_path);
     Ok(())
-}
-
-fn profile_dir_name(profile: BuildProfile) -> &'static str {
-    match profile {
-        BuildProfile::Debug => "debug",
-        BuildProfile::Release => "release",
-    }
 }
 
 fn compile_std<'a>(
