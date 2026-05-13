@@ -55,7 +55,18 @@ const ENV_ARGC_GLOBAL_NAME: &str = "__taro_env_argc";
 const ENV_ARGV_GLOBAL_NAME: &str = "__taro_env_argv";
 
 fn target_is_aarch64(triple: &str) -> bool {
-    matches!(triple.split('-').next(), Some("aarch64" | "arm64"))
+    matches!(
+        triple.split('-').next(),
+        Some("aarch64" | "arm64" | "arm64e")
+    )
+}
+
+fn indirect_return_threshold_for_triple(triple: &str) -> u64 {
+    if target_is_aarch64(triple) {
+        AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+    } else {
+        NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+    }
 }
 
 /// Lower MIR for a package into a single LLVM module and cache its IR.
@@ -281,11 +292,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let target_data = gcx.store.target_layout.target_data();
         let target_triple = gcx.store.target_layout.triple();
         let target_triple_str = target_triple.as_str().to_str().unwrap_or("");
-        let default_indirect_return_threshold = if target_is_aarch64(target_triple_str) {
-            AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
-        } else {
-            NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
-        };
+        let default_indirect_return_threshold =
+            indirect_return_threshold_for_triple(target_triple_str);
         let indirect_return_threshold_bytes = default_indirect_return_threshold;
         let indirect_arg_threshold_bytes = DEFAULT_INDIRECT_ARG_THRESHOLD_BYTES;
         let usize_ty = context.ptr_sized_int_type(&target_data, None);
@@ -400,6 +408,36 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         )
     }
 
+    fn type_layout(&self, ty: Ty<'gcx>) -> Option<abi::TypeLayout> {
+        let llvm_ty = self.lower_ty(ty)?;
+        Some(abi::TypeLayout {
+            size: self.target_data.get_store_size(&llvm_ty),
+            align: self.target_data.get_abi_alignment(&llvm_ty),
+        })
+    }
+
+    fn compute_instance_fn_abi(
+        &self,
+        instance: Instance<'gcx>,
+        def_id: hir::DefinitionID,
+    ) -> abi::FnAbi<'gcx> {
+        let sig = self.gcx.get_signature(def_id);
+        let output = if self.instance_has_mir_body(instance) {
+            let body = self.gcx.get_mir_body(def_id);
+            body.locals[body.return_local].ty
+        } else {
+            sig.output
+        };
+        let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
+        abi::compute_fn_abi_from_tys(
+            &input_tys,
+            output,
+            sig.is_variadic,
+            |ty| self.type_layout(ty),
+            self.abi_policy_for_signature(sig),
+        )
+    }
+
     fn compute_fn_pointer_abi(
         &self,
         inputs: &'gcx [Ty<'gcx>],
@@ -478,35 +516,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // Set substitution context for this instance
             self.current_subst = instance.args();
 
-            let sig = self.gcx.get_signature(def_id);
-
-            // If a MIR pass (e.g., async transform) changed the return type,
-            // compute the ABI using the body's actual return type instead of
-            // the declared signature.
-            let fn_abi = if self.instance_has_mir_body(instance) {
-                let body = self.gcx.get_mir_body(def_id);
-                let actual_ret_ty = body.locals[body.return_local].ty;
-                if actual_ret_ty != sig.output {
-                    let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
-                    abi::compute_fn_abi_from_tys(
-                        &input_tys,
-                        actual_ret_ty,
-                        sig.is_variadic,
-                        |ty| {
-                            let llvm_ty = self.lower_ty(ty)?;
-                            Some(abi::TypeLayout {
-                                size: self.target_data.get_store_size(&llvm_ty),
-                                align: self.target_data.get_abi_alignment(&llvm_ty),
-                            })
-                        },
-                        self.abi_policy_for_signature(sig),
-                    )
-                } else {
-                    self.compute_fn_abi(sig)
-                }
-            } else {
-                self.compute_fn_abi(sig)
-            };
+            let fn_abi = self.compute_instance_fn_abi(instance, def_id);
 
             let fn_ty = self.lower_fn_abi(&fn_abi);
             let name = mangle_instance(self.gcx, instance);
@@ -4980,37 +4990,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     }
                 }
 
-                let sig = self.gcx.get_signature(resolved_def_id);
                 let prev_subst = self.current_subst;
                 self.current_subst = instance.args();
-
-                // If a MIR pass (e.g., async transform) changed the return type,
-                // use the body's actual return type for the ABI.
-                let fn_abi = if self.instance_has_mir_body(instance) {
-                    let body = self.gcx.get_mir_body(resolved_def_id);
-                    let actual_ret_ty = body.locals[body.return_local].ty;
-                    if actual_ret_ty != sig.output {
-                        let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
-                        abi::compute_fn_abi_from_tys(
-                            &input_tys,
-                            actual_ret_ty,
-                            sig.is_variadic,
-                            |ty| {
-                                let llvm_ty = self.lower_ty(ty)?;
-                                Some(abi::TypeLayout {
-                                    size: self.target_data.get_store_size(&llvm_ty),
-                                    align: self.target_data.get_abi_alignment(&llvm_ty),
-                                })
-                            },
-                            self.abi_policy_for_signature(sig),
-                        )
-                    } else {
-                        self.compute_fn_abi(sig)
-                    }
-                } else {
-                    self.compute_fn_abi(sig)
-                };
-
+                let fn_abi = self.compute_instance_fn_abi(instance, resolved_def_id);
                 let name = mangle_instance(self.gcx, instance);
                 self.current_subst = prev_subst;
 
@@ -5181,31 +5163,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Need to declare it as external
         let prev_subst = self.current_subst;
         self.current_subst = closure_args;
-        let sig = self.gcx.get_signature(closure_def_id);
-        let fn_abi = if self.instance_has_mir_body(instance) {
-            let body = self.gcx.get_mir_body(closure_def_id);
-            let actual_ret_ty = body.locals[body.return_local].ty;
-            if actual_ret_ty != sig.output {
-                let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
-                abi::compute_fn_abi_from_tys(
-                    &input_tys,
-                    actual_ret_ty,
-                    sig.is_variadic,
-                    |ty| {
-                        let llvm_ty = self.lower_ty(ty)?;
-                        Some(abi::TypeLayout {
-                            size: self.target_data.get_store_size(&llvm_ty),
-                            align: self.target_data.get_abi_alignment(&llvm_ty),
-                        })
-                    },
-                    self.abi_policy_for_signature(sig),
-                )
-            } else {
-                self.compute_fn_abi(sig)
-            }
-        } else {
-            self.compute_fn_abi(sig)
-        };
+        let fn_abi = self.compute_instance_fn_abi(instance, closure_def_id);
         let fn_ty = self.lower_fn_abi(&fn_abi);
         let name = mangle_instance(self.gcx, instance);
         let linkage = Some(Linkage::External);
@@ -6216,7 +6174,11 @@ fn struct_field_layout<'llvm, 'gcx>(
 
 #[cfg(test)]
 mod struct_layout_tests {
-    use super::{logical_to_physical_map, packed_field_order};
+    use super::{
+        AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
+        indirect_return_threshold_for_triple, logical_to_physical_map, packed_field_order,
+        target_is_aarch64,
+    };
 
     #[test]
     fn packed_field_order_sorts_by_align_then_size_then_source_index() {
@@ -6239,6 +6201,26 @@ mod struct_layout_tests {
         let physical_to_logical = vec![2, 0, 1];
         let logical_to_physical = logical_to_physical_map(&physical_to_logical);
         assert_eq!(logical_to_physical, vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn aarch64_detection_accepts_common_apple_spellings() {
+        assert!(target_is_aarch64("aarch64-unknown-linux-gnu"));
+        assert!(target_is_aarch64("arm64-apple-darwin"));
+        assert!(target_is_aarch64("arm64e-apple-darwin"));
+        assert!(!target_is_aarch64("x86_64-apple-darwin"));
+    }
+
+    #[test]
+    fn indirect_return_threshold_tracks_target_family() {
+        assert_eq!(
+            indirect_return_threshold_for_triple("arm64e-apple-darwin"),
+            AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+        );
+        assert_eq!(
+            indirect_return_threshold_for_triple("x86_64-unknown-linux-gnu"),
+            NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+        );
     }
 }
 

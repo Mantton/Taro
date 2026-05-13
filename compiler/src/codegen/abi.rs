@@ -149,3 +149,130 @@ fn should_consider_indirect_return(ty: Ty<'_>) -> bool {
 fn should_consider_indirect_argument(ty: Ty<'_>) -> bool {
     should_consider_indirect_return(ty)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{AbiPolicy, PassMode, TypeLayout, compute_fn_abi_from_tys};
+    use crate::{
+        PackageIndex,
+        compile::{
+            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+            context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
+        },
+        diagnostics::DiagCtx,
+        sema::models::{Ty, TyKind},
+    };
+    use rustc_hash::FxHashMap;
+    use std::{path::PathBuf, rc::Rc};
+
+    fn with_test_gcx<R>(f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
+        let root = std::env::temp_dir().join(format!(
+            "taro-abi-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir");
+
+        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
+        let arenas = CompilerArenas::new();
+        let store = CompilerStore::new(&arenas, root, &dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("store"));
+        let icx = CompilerContext::new(dcx, store);
+        let config = icx.store.arenas.configs.alloc(Config {
+            name: "abi-test".into(),
+            identifier: "abi-test".into(),
+            src: PathBuf::from("abi-test.tr"),
+            dependencies: FxHashMap::default(),
+            index: PackageIndex::new(1),
+            kind: PackageKind::Library,
+            executable_out: None,
+            no_std_prelude: true,
+            is_script: true,
+            profile: BuildProfile::Debug,
+            overflow_checks: false,
+            debug: DebugOptions {
+                dump_mir: false,
+                dump_llvm: false,
+                timings: false,
+            },
+            test_mode: false,
+            std_mode: StdMode::BootstrapStd,
+            is_std_provider: false,
+        });
+
+        f(Gcx::new(&icx, config))
+    }
+
+    fn aggregate_ty<'gcx>(gcx: Gcx<'gcx>) -> Ty<'gcx> {
+        let fields = gcx
+            .store
+            .interners
+            .intern_ty_list(vec![gcx.types.int64, gcx.types.int64]);
+        Ty::new(TyKind::Tuple(fields), gcx)
+    }
+
+    #[test]
+    fn large_aggregates_use_indirect_modes_when_enabled() {
+        with_test_gcx(|gcx| {
+            let aggregate = aggregate_ty(gcx);
+            let policy = AbiPolicy {
+                enable_indirect_returns: true,
+                indirect_return_threshold_bytes: 16,
+                enable_indirect_args: true,
+                indirect_arg_threshold_bytes: 16,
+            };
+            let abi = compute_fn_abi_from_tys(
+                &[aggregate],
+                aggregate,
+                false,
+                |_| Some(TypeLayout { size: 16, align: 8 }),
+                policy,
+            );
+
+            assert_eq!(abi.ret.mode, PassMode::Indirect { align: 8, size: 16 });
+            assert_eq!(abi.args[0].mode, PassMode::Indirect { align: 8, size: 16 });
+        });
+    }
+
+    #[test]
+    fn primitive_scalars_stay_direct_above_indirect_threshold() {
+        with_test_gcx(|gcx| {
+            let policy = AbiPolicy {
+                enable_indirect_returns: true,
+                indirect_return_threshold_bytes: 1,
+                enable_indirect_args: true,
+                indirect_arg_threshold_bytes: 1,
+            };
+            let abi = compute_fn_abi_from_tys(
+                &[gcx.types.int64],
+                gcx.types.int64,
+                false,
+                |_| Some(TypeLayout { size: 8, align: 8 }),
+                policy,
+            );
+
+            assert_eq!(abi.ret.mode, PassMode::Direct);
+            assert_eq!(abi.args[0].mode, PassMode::Direct);
+        });
+    }
+
+    #[test]
+    fn unlowerable_types_are_ignored_in_abi() {
+        with_test_gcx(|gcx| {
+            let policy = AbiPolicy {
+                enable_indirect_returns: true,
+                indirect_return_threshold_bytes: 0,
+                enable_indirect_args: true,
+                indirect_arg_threshold_bytes: 0,
+            };
+            let abi =
+                compute_fn_abi_from_tys(&[gcx.types.void], gcx.types.void, false, |_| None, policy);
+
+            assert_eq!(abi.ret.mode, PassMode::Ignore);
+            assert_eq!(abi.args[0].mode, PassMode::Ignore);
+        });
+    }
+}

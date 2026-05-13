@@ -4,9 +4,28 @@ use crate::{
     mir::{self, Operand, Place},
     sema::models::{GenericArguments, TyKind},
 };
-use inkwell::{AddressSpace, types::BasicType};
+use inkwell::{
+    AddressSpace,
+    types::{BasicType, BasicTypeEnum},
+};
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
+    fn lower_intrinsic_type_arg(
+        &self,
+        call_args: GenericArguments<'gcx>,
+        intrinsic_name: &str,
+    ) -> Option<BasicTypeEnum<'llvm>> {
+        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
+            self.gcx.dcx().emit_error(
+                format!("{intrinsic_name} intrinsic requires a type argument"),
+                None,
+            );
+            return None;
+        };
+        let elem_ty = self.substitute_ty_current(*elem_ty);
+        self.lower_ty(elem_ty)
+    }
+
     pub(super) fn lower_intrinsic_array_read(
         &mut self,
         body: &mir::Body<'gcx>,
@@ -603,11 +622,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         _args: &[Operand<'gcx>],
         destination: &Place<'gcx>,
     ) -> CompileResult<()> {
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            return Ok(());
-        };
-        let elem_ty = self.substitute_ty_current(*elem_ty);
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
+        let Some(llvm_elem_ty) = self.lower_intrinsic_type_arg(call_args, "size_of") else {
             // Types without an LLVM storage representation (e.g. `!`) have size 0.
             return self.store_place(destination, body, locals, self.usize_ty.const_zero().into());
         };
@@ -630,12 +645,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         _args: &[Operand<'gcx>],
         destination: &Place<'gcx>,
     ) -> CompileResult<()> {
-        let Some(crate::sema::models::GenericArgument::Type(elem_ty)) = call_args.get(0) else {
-            return Ok(());
-        };
-        let elem_ty = self.substitute_ty_current(*elem_ty);
-        let Some(llvm_elem_ty) = self.lower_ty(elem_ty) else {
-            return Ok(());
+        let Some(llvm_elem_ty) = self.lower_intrinsic_type_arg(call_args, "align_of") else {
+            return self.store_place(
+                destination,
+                body,
+                locals,
+                self.usize_ty.const_int(1, false).into(),
+            );
         };
 
         let align = self.target_data.get_abi_alignment(&llvm_elem_ty);

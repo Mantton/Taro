@@ -18,6 +18,8 @@ func main() {
     assert(auto_size == 16 as usize, "repr(Taro) should pack this layout to 16 bytes")
     assert(c_size == 24 as usize, "repr(C) should keep declaration-order C layout")
     assert(auto_size < c_size, "repr(Taro) should optimize this layout")
+    assert(std.mem.sizeOf[()]() == 0 as usize, "unit should have zero storage size")
+    assert(std.mem.alignOf[()]() == 1 as usize, "unit should have stable minimum alignment")
 
     var value = AutoLayout { a: 1, b: 2, c: 3 }
     assert(value.a == 1, "field `a` read should map correctly")
