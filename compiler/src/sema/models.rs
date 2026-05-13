@@ -127,7 +127,7 @@ impl<'arena> Ty<'arena> {
                         GenericArgument::Const(c) => {
                             matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty)
                         }
-                    })
+                    }) || iface.bindings.iter().any(|binding| visit(binding.ty))
                 }),
                 _ => false,
             }
@@ -321,7 +321,7 @@ impl<'ctx> Ty<'ctx> {
                     iface.arguments.iter().any(|arg| match arg {
                         GenericArgument::Type(ty) => visit(*ty),
                         GenericArgument::Const(c) => const_needs_instantiation(*c),
-                    })
+                    }) || iface.bindings.iter().any(|binding| visit(binding.ty))
                 }),
                 TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
                     GenericArgument::Type(ty) => visit(*ty),
@@ -1334,4 +1334,110 @@ pub struct AliasDefinition {
     pub ast_ty: Box<hir::Type>,
     /// For Inherent aliases - which extension declared it
     pub extension_id: Option<DefinitionID>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AssociatedTypeBinding, GenericArguments, GenericParameter, InferTy, InterfaceReference, Ty,
+        TyKind, TyVarID,
+    };
+    use crate::{
+        PackageIndex,
+        compile::{
+            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+            context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
+        },
+        diagnostics::DiagCtx,
+        hir::DefinitionID,
+        sema::resolve::models::DefinitionIndex,
+    };
+    use rustc_hash::FxHashMap;
+    use std::{path::PathBuf, rc::Rc};
+
+    fn with_test_gcx<R>(f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
+        let root = std::env::temp_dir().join(format!(
+            "taro-models-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir");
+
+        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
+        let arenas = CompilerArenas::new();
+        let store = CompilerStore::new(&arenas, root, &dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("store"));
+        let icx = CompilerContext::new(dcx, store);
+        let config = icx.store.arenas.configs.alloc(Config {
+            name: "models-test".into(),
+            identifier: "models-test".into(),
+            src: PathBuf::from("models-test.tr"),
+            dependencies: FxHashMap::default(),
+            index: PackageIndex::new(1),
+            kind: PackageKind::Library,
+            executable_out: None,
+            no_std_prelude: true,
+            is_script: true,
+            profile: BuildProfile::Debug,
+            overflow_checks: false,
+            debug: DebugOptions {
+                dump_mir: false,
+                dump_llvm: false,
+                timings: false,
+            },
+            test_mode: false,
+            std_mode: StdMode::BootstrapStd,
+            is_std_provider: false,
+        });
+
+        f(Gcx::new(&icx, config))
+    }
+
+    fn dummy_definition(index: u32) -> DefinitionID {
+        DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(index))
+    }
+
+    fn boxed_existential_with_binding<'ctx>(gcx: Gcx<'ctx>, binding_ty: Ty<'ctx>) -> Ty<'ctx> {
+        let binding = AssociatedTypeBinding {
+            name: gcx.intern_symbol("Item"),
+            ty: binding_ty,
+        };
+        let bindings = gcx.store.arenas.global.alloc_slice_clone(&[binding]);
+        let iface = InterfaceReference {
+            id: dummy_definition(10),
+            arguments: GenericArguments::empty(),
+            bindings,
+        };
+        let interfaces = gcx.store.arenas.global.alloc_slice_clone(&[iface]);
+        Ty::new(TyKind::BoxedExistential { interfaces }, gcx)
+    }
+
+    #[test]
+    fn boxed_existential_binding_counts_as_inference() {
+        with_test_gcx(|gcx| {
+            let infer_ty = Ty::new(TyKind::Infer(InferTy::TyVar(TyVarID::from_raw(0))), gcx);
+            let existential = boxed_existential_with_binding(gcx, infer_ty);
+
+            assert!(existential.contains_inference());
+        });
+    }
+
+    #[test]
+    fn boxed_existential_binding_counts_as_needing_instantiation() {
+        with_test_gcx(|gcx| {
+            let param_ty = Ty::new(
+                TyKind::Parameter(GenericParameter {
+                    index: 0,
+                    name: gcx.intern_symbol("T"),
+                }),
+                gcx,
+            );
+            let existential = boxed_existential_with_binding(gcx, param_ty);
+
+            assert!(existential.needs_instantiation());
+        });
+    }
 }

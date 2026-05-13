@@ -793,44 +793,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.context.struct_type(&fields, false)
     }
 
-    pub(super) fn interface_index(
-        &self,
-        interfaces: &[InterfaceReference<'gcx>],
-        interface_id: hir::DefinitionID,
-    ) -> Option<usize> {
-        interfaces.iter().position(|iface| iface.id == interface_id)
-    }
-
-    pub(super) fn superface_chain_from_root(
-        &self,
-        interfaces: &[InterfaceReference<'gcx>],
-        target_id: hir::DefinitionID,
-    ) -> Option<(usize, Vec<(hir::DefinitionID, usize)>)> {
-        for (index, iface) in interfaces.iter().enumerate() {
-            if iface.id == target_id {
-                return Some((index, Vec::new()));
-            }
-            if !self.interface_has_superface(iface.id, target_id) {
-                continue;
-            }
-            let chain = self.superface_chain_indices(iface.id, target_id)?;
-            return Some((index, chain));
-        }
-        None
-    }
-
-    pub(super) fn interface_has_superface(
-        &self,
-        interface_id: hir::DefinitionID,
-        target_id: hir::DefinitionID,
-    ) -> bool {
-        self.gcx.with_type_database(interface_id.package(), |db| {
-            db.interface_to_supers
-                .get(&interface_id)
-                .is_some_and(|supers| supers.contains(&target_id))
-        })
-    }
-
     pub(super) fn superface_chain_indices(
         &self,
         root_id: hir::DefinitionID,

@@ -102,9 +102,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
     ) -> Vec<InterfaceReference<'ctx>> {
         let mut out = Vec::new();
         let mut queue = std::collections::VecDeque::new();
-        let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+        let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
 
-        seen.insert(root.id);
+        seen.insert(root);
         out.push(root);
         queue.push_back(root);
 
@@ -115,7 +115,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
             for superface in &def.superfaces {
                 let iface = self.substitute_interface_ref(superface.value, current.arguments);
-                if seen.insert(iface.id) {
+                if seen.insert(iface) {
                     out.push(iface);
                     queue.push_back(iface);
                 }

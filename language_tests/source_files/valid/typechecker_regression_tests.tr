@@ -1,0 +1,87 @@
+interface TypecheckerOutputProducer {
+    type Output
+    func produce(&self) -> Self.Output
+}
+
+struct TypecheckerIntProducer {}
+
+impl TypecheckerOutputProducer for TypecheckerIntProducer {
+    type Output = int32
+
+    func produce(&self) -> int32 {
+        42
+    }
+}
+
+func consumeGenericExistentialBinding[T](
+    _ producer: any TypecheckerOutputProducer[Output = T],
+    _ expected: T,
+) -> T {
+    let value: T = producer.produce()
+    value
+}
+
+func testExistentialBindingWithGenericParameter() {
+    let producer: any TypecheckerOutputProducer[Output = int32] = TypecheckerIntProducer {}
+    let value = consumeGenericExistentialBinding(producer, 42)
+    assert(value == 42, "generic existential associated type binding should instantiate")
+}
+
+func testExistentialBindingMismatchIsRejected() {
+    let producer: any TypecheckerOutputProducer[Output = int32] = TypecheckerIntProducer {}
+    assert(
+        producer is any TypecheckerOutputProducer[Output = int32],
+        "matching associated type binding should satisfy runtime type assertion",
+    )
+    assert(
+        !(producer is any TypecheckerOutputProducer[Output = string]),
+        "mismatched associated type binding should not satisfy runtime type assertion",
+    )
+
+    let maybe = producer as? any TypecheckerOutputProducer[Output = string]
+    match maybe {
+        case .some(_) => assert(false, "mismatched associated type binding should not cast")
+        case .none => {}
+    }
+}
+
+interface TypecheckerSlot[T] {
+    func slot(&self) -> T
+}
+
+interface TypecheckerDualSlot: TypecheckerSlot[int32], TypecheckerSlot[string] {}
+
+struct TypecheckerDualSlotValue {
+    number: int32
+    text: string
+}
+
+impl TypecheckerSlot[int32] for TypecheckerDualSlotValue {
+    func slot(&self) -> int32 {
+        self.number
+    }
+}
+
+impl TypecheckerSlot[string] for TypecheckerDualSlotValue {
+    func slot(&self) -> string {
+        self.text
+    }
+}
+
+impl TypecheckerDualSlot for TypecheckerDualSlotValue {}
+
+func testGenericSuperinterfacesWithSameRoot() {
+    let dual: any TypecheckerDualSlot = TypecheckerDualSlotValue {
+        number: 7,
+        text: "seven",
+    }
+    let stringSlot: any TypecheckerSlot[string] = dual
+    assert(stringSlot.slot() == "seven", "generic superinterface upcast should preserve arguments")
+}
+
+func main() {
+    testExistentialBindingWithGenericParameter()
+    testExistentialBindingMismatchIsRejected()
+    testGenericSuperinterfacesWithSameRoot()
+    std.print("PASS: typechecker regression tests\n")
+}

@@ -374,7 +374,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let mut matched = None;
 
             for source in from_ifaces {
-                if self.interface_ref_matches_with_mode(*target, *source, infer, false) {
+                if self.existential_interface_ref_matches_with_mode(*target, *source, infer, false)
+                {
                     matched = Some(*source);
                     break;
                 }
@@ -385,7 +386,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         .into_iter()
                         .skip(1)
                     {
-                        if self.interface_ref_matches_with_mode(*target, candidate, infer, false) {
+                        if self.existential_interface_ref_matches_with_mode(
+                            *target, candidate, infer, false,
+                        ) {
                             matched = Some(candidate);
                             break;
                         }
@@ -538,6 +541,31 @@ impl<'ctx> ConstraintSolver<'ctx> {
         true
     }
 
+    fn existential_interface_ref_matches_with_mode(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+        infer: bool,
+        commit: bool,
+    ) -> bool {
+        if !infer {
+            return self.existential_interface_ref_matches(expected, actual);
+        }
+
+        let matches = self
+            .icx
+            .probe(|_| self.existential_interface_ref_matches_with_inference(expected, actual));
+        if !matches {
+            return false;
+        }
+
+        if commit {
+            return self.existential_interface_ref_matches_with_inference(expected, actual);
+        }
+
+        true
+    }
+
     fn interface_ref_matches_with_inference(
         &self,
         expected: InterfaceReference<'ctx>,
@@ -546,12 +574,58 @@ impl<'ctx> ConstraintSolver<'ctx> {
         expected.id == actual.id && self.interface_args_match_with_inference(expected, actual)
     }
 
+    fn existential_interface_ref_matches_with_inference(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        expected.id == actual.id
+            && self.interface_args_match_with_inference(expected, actual)
+            && self.interface_bindings_match_with_inference(expected, actual)
+    }
+
     fn interface_ref_matches(
         &self,
         expected: InterfaceReference<'ctx>,
         actual: InterfaceReference<'ctx>,
     ) -> bool {
         expected.id == actual.id && self.interface_args_match(expected, actual)
+    }
+
+    fn existential_interface_ref_matches(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        expected.id == actual.id
+            && self.interface_args_match(expected, actual)
+            && self.interface_bindings_match(expected, actual)
+    }
+
+    fn interface_bindings_match(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        expected.bindings.iter().all(|expected_binding| {
+            actual
+                .bindings
+                .iter()
+                .any(|actual_binding| actual_binding == expected_binding)
+        })
+    }
+
+    fn interface_bindings_match_with_inference(
+        &self,
+        expected: InterfaceReference<'ctx>,
+        actual: InterfaceReference<'ctx>,
+    ) -> bool {
+        expected.bindings.iter().all(|expected_binding| {
+            actual.bindings.iter().any(|actual_binding| {
+                expected_binding.name == actual_binding.name
+                    && self.unify(expected_binding.ty, actual_binding.ty).is_ok()
+            })
+        })
     }
 
     pub fn solve_conforms(
@@ -654,14 +728,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::BoxedExistential { interfaces } => {
                 let mut satisfied = interfaces
                     .iter()
-                    .any(|source| self.interface_ref_matches(interface, *source));
+                    .any(|source| self.existential_interface_ref_matches(interface, *source));
 
                 if !satisfied {
                     satisfied = interfaces.iter().any(|source| {
                         self.collect_interface_with_supers(*source)
                             .into_iter()
                             .skip(1)
-                            .any(|candidate| self.interface_ref_matches(interface, candidate))
+                            .any(|candidate| {
+                                self.existential_interface_ref_matches(interface, candidate)
+                            })
                     });
                 }
 

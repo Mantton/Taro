@@ -11,6 +11,7 @@ pub mod normalize;
 pub mod normalize_post_mono;
 pub mod param_env;
 pub mod unify;
+pub mod unresolved;
 
 pub use normalize::{normalize_aliases, normalize_ty};
 pub use normalize_post_mono::normalize_post_monomorphization;

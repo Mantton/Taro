@@ -292,9 +292,9 @@ fn collect_interface_with_supers<'ctx>(
 ) -> Vec<InterfaceReference<'ctx>> {
     let mut out = Vec::new();
     let mut queue = std::collections::VecDeque::new();
-    let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+    let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
 
-    seen.insert(root.id);
+    seen.insert(root);
     out.push(root);
     queue.push_back(root);
 
@@ -306,7 +306,7 @@ fn collect_interface_with_supers<'ctx>(
         for superface in &def.superfaces {
             let iface =
                 instantiate_interface_ref_with_args(gcx, superface.value, current.arguments);
-            if seen.insert(iface.id) {
+            if seen.insert(iface) {
                 out.push(iface);
                 queue.push_back(iface);
             }

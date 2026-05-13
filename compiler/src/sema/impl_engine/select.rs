@@ -18,6 +18,9 @@ use crate::{
                 },
                 normalize_aliases, normalize_ty, type_head_from_value_ty,
                 unify::TypeUnifier,
+                unresolved::{
+                    generic_arg_contains_unresolved_inference, ty_contains_unresolved_inference,
+                },
             },
         },
     },
@@ -764,96 +767,25 @@ fn constraint_type_equality_holds<'ctx>(
 }
 
 fn generic_args_contain_infer(args: GenericArguments<'_>) -> bool {
-    args.iter().any(|arg| match arg {
-        GenericArgument::Type(ty) => ty_contains_infer(*ty),
-        GenericArgument::Const(c) => {
-            matches!(c.kind, crate::sema::models::ConstKind::Infer(_)) || ty_contains_infer(c.ty)
-        }
-    })
+    args.iter().any(generic_arg_contains_unresolved_inference)
 }
 
 fn goal_has_unresolved_types(goal: InterfaceGoal<'_>) -> bool {
-    if ty_contains_infer(goal.self_ty) {
+    if ty_contains_unresolved_inference(goal.self_ty) {
         return true;
     }
 
     if goal
         .interface_args
         .iter()
-        .any(generic_arg_has_unresolved_types)
+        .any(generic_arg_contains_unresolved_inference)
     {
         return true;
     }
 
-    goal.bindings
-        .iter()
-        .any(|binding| ty_contains_infer(binding.ty) || binding.ty.needs_instantiation())
-}
-
-fn generic_arg_has_unresolved_types(arg: &GenericArgument<'_>) -> bool {
-    match arg {
-        GenericArgument::Type(ty) => ty_contains_infer(*ty),
-        GenericArgument::Const(c) => {
-            matches!(c.kind, crate::sema::models::ConstKind::Infer(_)) || ty_contains_infer(c.ty)
-        }
-    }
-}
-
-fn ty_contains_infer(ty: Ty<'_>) -> bool {
-    match ty.kind() {
-        TyKind::Infer(_) => true,
-        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
-            GenericArgument::Type(ty) => ty_contains_infer(*ty),
-            GenericArgument::Const(c) => {
-                matches!(c.kind, crate::sema::models::ConstKind::Infer(_))
-                    || ty_contains_infer(c.ty)
-            }
-        }),
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => ty_contains_infer(inner),
-        TyKind::Array { element, len } => {
-            ty_contains_infer(element)
-                || matches!(len.kind, crate::sema::models::ConstKind::Infer(_))
-                || ty_contains_infer(len.ty)
-        }
-        TyKind::Tuple(items) => items.iter().any(|item| ty_contains_infer(*item)),
-        TyKind::FnPointer { inputs, output } => {
-            inputs.iter().any(|input| ty_contains_infer(*input)) || ty_contains_infer(output)
-        }
-        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
-            iface.arguments.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => ty_contains_infer(*ty),
-                GenericArgument::Const(c) => {
-                    matches!(c.kind, crate::sema::models::ConstKind::Infer(_))
-                        || ty_contains_infer(c.ty)
-                }
-            })
-        }),
-        TyKind::Closure {
-            captured_generics,
-            inputs,
-            output,
-            ..
-        } => {
-            captured_generics.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => ty_contains_infer(*ty),
-                GenericArgument::Const(c) => {
-                    matches!(c.kind, crate::sema::models::ConstKind::Infer(_))
-                        || ty_contains_infer(c.ty)
-                }
-            }) || inputs.iter().any(|input| ty_contains_infer(*input))
-                || ty_contains_infer(output)
-        }
-        TyKind::Bool
-        | TyKind::Rune
-        | TyKind::String
-        | TyKind::Int(_)
-        | TyKind::UInt(_)
-        | TyKind::Float(_)
-        | TyKind::Parameter(_)
-        | TyKind::Opaque(_)
-        | TyKind::Error
-        | TyKind::Never => false,
-    }
+    goal.bindings.iter().any(|binding| {
+        ty_contains_unresolved_inference(binding.ty) || binding.ty.needs_instantiation()
+    })
 }
 
 fn unify_generic_argument<'ctx>(

@@ -73,48 +73,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let mut table_ptrs = Vec::with_capacity(to_ifaces.len());
         for target in to_ifaces.iter().cloned() {
-            if let Some(index) = self.interface_index(from_ifaces, target.id) {
-                let ptr = self
-                    .builder
-                    .build_extract_value(src, (index + 2) as u32, "exist_table")
-                    .unwrap()
-                    .into_pointer_value();
-                table_ptrs.push(ptr);
-                continue;
-            }
-
             if let Some((root_index, chain)) =
-                self.superface_chain_from_root(from_ifaces, target.id)
+                self.find_existential_projection_route(from_ifaces, target)
             {
-                let mut current_ptr = self
+                let root_ptr = self
                     .builder
                     .build_extract_value(src, (root_index + 2) as u32, "exist_root_table")
                     .unwrap()
                     .into_pointer_value();
-                for (current_iface, super_index) in chain {
-                    let table_ty = self.witness_table_struct_ty(current_iface);
-                    let table_ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let typed_ptr = self
-                        .builder
-                        .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
-                        .unwrap()
-                        .into_pointer_value();
-                    let field_index = self.interface_method_count(current_iface) + super_index;
-                    let field_ptr = self
-                        .builder
-                        .build_struct_gep(table_ty, typed_ptr, field_index as u32, "wt_super_ptr")
-                        .unwrap();
-                    current_ptr = self
-                        .builder
-                        .build_load(
-                            self.context.ptr_type(AddressSpace::default()),
-                            field_ptr,
-                            "wt_super_load",
-                        )
-                        .unwrap()
-                        .into_pointer_value();
-                }
-                table_ptrs.push(current_ptr);
+                table_ptrs.push(self.follow_existential_superface_chain(root_ptr, &chain));
                 continue;
             }
 
@@ -157,32 +124,38 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 return Some((index, Vec::new()));
             }
 
-            if !self.interface_has_superface(source.id, target.id) {
-                continue;
+            if let Some(chain) = self.superface_chain_to_interface_ref(*source, target) {
+                return Some((index, chain));
             }
+        }
 
-            let Some(chain) = self.superface_chain_indices(source.id, target.id) else {
-                continue;
-            };
+        None
+    }
 
-            let mut current = *source;
-            let mut valid = true;
-            for (iface_id, super_index) in chain.iter().copied() {
-                if current.id != iface_id {
-                    valid = false;
-                    break;
+    fn superface_chain_to_interface_ref(
+        &self,
+        root: InterfaceReference<'gcx>,
+        target: InterfaceReference<'gcx>,
+    ) -> Option<Vec<(hir::DefinitionID, usize)>> {
+        let mut queue = std::collections::VecDeque::new();
+        let mut seen = rustc_hash::FxHashSet::default();
+        queue.push_back((root, Vec::new()));
+        seen.insert(root);
+
+        while let Some((current, chain)) = queue.pop_front() {
+            for (super_index, superface) in
+                self.interface_superfaces(current).into_iter().enumerate()
+            {
+                if !seen.insert(superface) {
+                    continue;
                 }
 
-                let supers = self.interface_superfaces(current);
-                let Some(next) = supers.get(super_index).copied() else {
-                    valid = false;
-                    break;
-                };
-                current = next;
-            }
-
-            if valid && self.interface_ref_matches_for_assert(target, current) {
-                return Some((index, chain));
+                let mut next_chain = chain.clone();
+                next_chain.push((current.id, super_index));
+                if self.interface_ref_matches_for_assert(target, superface) {
+                    return Some(next_chain);
+                }
+                queue.push_back((superface, next_chain));
             }
         }
 

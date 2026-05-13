@@ -104,7 +104,6 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
     let require_return_slot = function_output != gcx.types.void;
 
     if !types_compatible(
-        gcx,
         &normalize_icx,
         &normalize_env,
         return_local_ty,
@@ -134,7 +133,7 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
             if let StatementKind::Assign(destination, rvalue) = &stmt.kind {
                 let dest_ty = place_ty(body, gcx, destination);
                 if let Some(value_ty) = rvalue_ty(body, gcx, rvalue) {
-                    if !types_compatible(gcx, &normalize_icx, &normalize_env, dest_ty, value_ty) {
+                    if !types_compatible(&normalize_icx, &normalize_env, dest_ty, value_ty) {
                         gcx.dcx().emit_error(
                             format!(
                                 "internal error: MIR assignment type mismatch (`{}` <- `{}`)",
@@ -147,7 +146,6 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
 
                     if is_full_return_place(body, destination)
                         && !types_compatible(
-                            gcx,
                             &normalize_icx,
                             &normalize_env,
                             function_output,
@@ -185,7 +183,6 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
 
                     if let Some(call_output) = call_output {
                         if !types_compatible(
-                            gcx,
                             &normalize_icx,
                             &normalize_env,
                             destination_ty,
@@ -203,7 +200,6 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
 
                         if is_full_return_place(body, destination)
                             && !types_compatible(
-                                gcx,
                                 &normalize_icx,
                                 &normalize_env,
                                 function_output,
@@ -459,7 +455,6 @@ fn call_output_ty<'ctx>(
 }
 
 fn types_compatible<'ctx>(
-    _gcx: Gcx<'ctx>,
     normalize_icx: &Rc<crate::sema::tycheck::infer::InferCtx<'ctx>>,
     normalize_env: &crate::sema::tycheck::utils::param_env::ParamEnv<'ctx>,
     expected: Ty<'ctx>,
@@ -484,9 +479,16 @@ fn types_compatible<'ctx>(
         || matches!(actual.kind(), TyKind::Never)
         || matches!(
             (expected.kind(), actual.kind()),
+            (TyKind::Reference(inner_expected, expected_mut), TyKind::Reference(inner_actual, actual_mut))
+                | (TyKind::Pointer(inner_expected, expected_mut), TyKind::Pointer(inner_actual, actual_mut))
+                if expected_mut == actual_mut
+                    && types_compatible(normalize_icx, normalize_env, inner_expected, inner_actual)
+        )
+        || matches!(
+            (expected.kind(), actual.kind()),
             (TyKind::Reference(inner_expected, _), TyKind::Pointer(inner_actual, _))
                 | (TyKind::Pointer(inner_expected, _), TyKind::Reference(inner_actual, _))
-                if inner_expected == inner_actual
+                if types_compatible(normalize_icx, normalize_env, inner_expected, inner_actual)
         )
         || matches!(
             (expected.kind(), actual.kind()),
@@ -497,11 +499,18 @@ fn types_compatible<'ctx>(
                 TyKind::BoxedExistential {
                     interfaces: actual_ifaces,
                 },
-            ) if existential_interfaces_compatible(expected_ifaces, actual_ifaces)
+            ) if existential_interfaces_compatible(
+                normalize_icx,
+                normalize_env,
+                expected_ifaces,
+                actual_ifaces,
+            )
         )
 }
 
 fn existential_interfaces_compatible<'ctx>(
+    normalize_icx: &Rc<crate::sema::tycheck::infer::InferCtx<'ctx>>,
+    normalize_env: &crate::sema::tycheck::utils::param_env::ParamEnv<'ctx>,
     expected: &'ctx [crate::sema::models::InterfaceReference<'ctx>],
     actual: &'ctx [crate::sema::models::InterfaceReference<'ctx>],
 ) -> bool {
@@ -512,7 +521,13 @@ fn existential_interfaces_compatible<'ctx>(
     let mut matched = vec![false; actual.len()];
     for expected_iface in expected {
         let Some((idx, _)) = actual.iter().enumerate().find(|(idx, actual_iface)| {
-            !matched[*idx] && interface_refs_compatible(*expected_iface, **actual_iface)
+            !matched[*idx]
+                && interface_refs_compatible(
+                    normalize_icx,
+                    normalize_env,
+                    *expected_iface,
+                    **actual_iface,
+                )
         }) else {
             return false;
         };
@@ -523,6 +538,8 @@ fn existential_interfaces_compatible<'ctx>(
 }
 
 fn interface_refs_compatible<'ctx>(
+    normalize_icx: &Rc<crate::sema::tycheck::infer::InferCtx<'ctx>>,
+    normalize_env: &crate::sema::tycheck::utils::param_env::ParamEnv<'ctx>,
     expected: crate::sema::models::InterfaceReference<'ctx>,
     actual: crate::sema::models::InterfaceReference<'ctx>,
 ) -> bool {
@@ -541,7 +558,18 @@ fn interface_refs_compatible<'ctx>(
         &actual.arguments
     };
 
-    if expected_args != actual_args || expected.bindings.len() != actual.bindings.len() {
+    if expected_args.len() != actual_args.len() || expected.bindings.len() != actual.bindings.len()
+    {
+        return false;
+    }
+
+    if !expected_args
+        .iter()
+        .zip(actual_args.iter())
+        .all(|(expected_arg, actual_arg)| {
+            generic_args_compatible(normalize_icx, normalize_env, *expected_arg, *actual_arg)
+        })
+    {
         return false;
     }
 
@@ -550,8 +578,34 @@ fn interface_refs_compatible<'ctx>(
             .bindings
             .iter()
             .find(|actual_binding| actual_binding.name == expected_binding.name)
-            .is_some_and(|actual_binding| actual_binding.ty == expected_binding.ty)
+            .is_some_and(|actual_binding| {
+                types_compatible(
+                    normalize_icx,
+                    normalize_env,
+                    expected_binding.ty,
+                    actual_binding.ty,
+                )
+            })
     })
+}
+
+fn generic_args_compatible<'ctx>(
+    normalize_icx: &Rc<crate::sema::tycheck::infer::InferCtx<'ctx>>,
+    normalize_env: &crate::sema::tycheck::utils::param_env::ParamEnv<'ctx>,
+    expected: crate::sema::models::GenericArgument<'ctx>,
+    actual: crate::sema::models::GenericArgument<'ctx>,
+) -> bool {
+    match (expected, actual) {
+        (
+            crate::sema::models::GenericArgument::Type(expected),
+            crate::sema::models::GenericArgument::Type(actual),
+        ) => types_compatible(normalize_icx, normalize_env, expected, actual),
+        (
+            crate::sema::models::GenericArgument::Const(expected),
+            crate::sema::models::GenericArgument::Const(actual),
+        ) => expected == actual,
+        _ => false,
+    }
 }
 
 fn operand_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, operand: &Operand<'ctx>) -> Ty<'ctx> {

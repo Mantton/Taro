@@ -6,12 +6,17 @@ use crate::{
     sema::{
         impl_engine::method_signature_matches,
         models::{
-            ConformanceRecord, GenericArgument, GenericArguments, InterfaceGoal,
-            InterfaceMethodRequirement, InterfaceReference, SelectionError, SelectionMode, Ty,
+            ConformanceRecord, GenericArguments, InterfaceGoal, InterfaceMethodRequirement,
+            InterfaceReference, SelectionError, SelectionMode, Ty,
         },
         tycheck::utils::{
-            generics::GenericsBuilder, instantiate::instantiate_interface_ref_with_args,
+            generics::GenericsBuilder,
+            instantiate::instantiate_interface_ref_with_args,
             type_head_from_value_ty,
+            unresolved::{
+                goal_contains_unresolved_inference, interface_ref_contains_unresolved_inference,
+                ty_contains_unresolved_inference,
+            },
         },
     },
 };
@@ -272,9 +277,9 @@ impl<'ctx> Actor<'ctx> {
     ) -> Vec<InterfaceReference<'ctx>> {
         let mut out = Vec::new();
         let mut queue = std::collections::VecDeque::new();
-        let mut seen: FxHashSet<DefinitionID> = FxHashSet::default();
+        let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
 
-        seen.insert(root.id);
+        seen.insert(root);
         out.push(root);
         queue.push_back(root);
 
@@ -289,7 +294,7 @@ impl<'ctx> Actor<'ctx> {
                     superface.value,
                     current.arguments,
                 );
-                if seen.insert(iface.id) {
+                if seen.insert(iface) {
                     out.push(iface);
                     queue.push_back(iface);
                 }
@@ -319,12 +324,12 @@ pub fn resolve_conformance_witness_with_mode<'ctx>(
     interface: InterfaceReference<'ctx>,
     mode: SelectionMode,
 ) -> Option<crate::sema::models::ConformanceWitness<'ctx>> {
-    if interface_has_unresolved_types(interface) {
+    if interface_ref_contains_unresolved_inference(interface) {
         return None;
     }
 
     let self_ty = interface.self_ty()?;
-    if ty_has_infer_types(self_ty) {
+    if ty_contains_unresolved_inference(self_ty) {
         return None;
     }
     let goal = interface.to_goal_with_self_ty(context, &[], self_ty);
@@ -338,95 +343,5 @@ pub fn resolve_conformance_witness_with_mode<'ctx>(
 }
 
 fn goal_has_unresolved_types(goal: InterfaceGoal<'_>) -> bool {
-    if ty_has_infer_types(goal.self_ty) {
-        return true;
-    }
-
-    if goal
-        .interface_args
-        .iter()
-        .any(generic_arg_has_unresolved_types)
-    {
-        return true;
-    }
-
-    goal.bindings
-        .iter()
-        .any(|binding| ty_has_infer_types(binding.ty))
-}
-
-fn interface_has_unresolved_types(interface: InterfaceReference<'_>) -> bool {
-    interface
-        .arguments
-        .iter()
-        .any(generic_arg_has_unresolved_types)
-        || interface
-            .bindings
-            .iter()
-            .any(|binding| ty_has_infer_types(binding.ty))
-}
-
-fn generic_arg_has_unresolved_types(arg: &GenericArgument<'_>) -> bool {
-    match arg {
-        GenericArgument::Type(ty) => ty_has_infer_types(*ty),
-        GenericArgument::Const(c) => {
-            matches!(c.kind, crate::sema::models::ConstKind::Infer(_)) || ty_has_infer_types(c.ty)
-        }
-    }
-}
-
-fn ty_has_infer_types(ty: crate::sema::models::Ty<'_>) -> bool {
-    use crate::sema::models::{ConstKind, GenericArgument, TyKind};
-
-    match ty.kind() {
-        TyKind::Infer(_) => true,
-        TyKind::Adt(_, args) | TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
-            GenericArgument::Type(ty) => ty_has_infer_types(*ty),
-            GenericArgument::Const(c) => {
-                matches!(c.kind, ConstKind::Infer(_)) || ty_has_infer_types(c.ty)
-            }
-        }),
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => ty_has_infer_types(inner),
-        TyKind::Array { element, len } => {
-            ty_has_infer_types(element)
-                || matches!(len.kind, ConstKind::Infer(_))
-                || ty_has_infer_types(len.ty)
-        }
-        TyKind::Tuple(items) => items.iter().any(|item| ty_has_infer_types(*item)),
-        TyKind::FnPointer { inputs, output } => {
-            inputs.iter().any(|input| ty_has_infer_types(*input)) || ty_has_infer_types(output)
-        }
-        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
-            iface.arguments.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => ty_has_infer_types(*ty),
-                GenericArgument::Const(c) => {
-                    matches!(c.kind, ConstKind::Infer(_)) || ty_has_infer_types(c.ty)
-                }
-            })
-        }),
-        TyKind::Closure {
-            captured_generics,
-            inputs,
-            output,
-            ..
-        } => {
-            captured_generics.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => ty_has_infer_types(*ty),
-                GenericArgument::Const(c) => {
-                    matches!(c.kind, ConstKind::Infer(_)) || ty_has_infer_types(c.ty)
-                }
-            }) || inputs.iter().any(|input| ty_has_infer_types(*input))
-                || ty_has_infer_types(output)
-        }
-        TyKind::Bool
-        | TyKind::Rune
-        | TyKind::String
-        | TyKind::Int(_)
-        | TyKind::UInt(_)
-        | TyKind::Float(_)
-        | TyKind::Parameter(_)
-        | TyKind::Opaque(_)
-        | TyKind::Error
-        | TyKind::Never => false,
-    }
+    goal_contains_unresolved_inference(goal)
 }
