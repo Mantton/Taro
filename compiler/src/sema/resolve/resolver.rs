@@ -756,6 +756,7 @@ impl<'a> Resolver<'a> {
             definition_to_ident: self.def_to_ident,
             definition_to_visibility: self.def_to_visibility,
             file_scope_mapping: self.file_scope_mapping,
+            block_scope_mapping: self.block_scope_mapping,
             expression_resolutions: self.expression_resolutions,
             root_scope: self.root_module_scope.unwrap(),
         }

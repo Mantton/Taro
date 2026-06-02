@@ -4663,6 +4663,7 @@ pub fn resolution_output_from_wire<'a>(
                 Some((def_from_wire(def), scope))
             })
             .collect(),
+        block_scope_mapping: FxHashMap::default(),
         expression_resolutions: wire
             .expression_resolutions
             .iter()

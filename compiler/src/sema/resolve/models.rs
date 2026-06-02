@@ -675,6 +675,7 @@ pub struct ResolutionOutput<'arena> {
     pub definition_to_visibility: FxHashMap<DefinitionID, Visibility>,
     pub file_scope_mapping: FxHashMap<FileID, Scope<'arena>>,
     pub definition_scope_mapping: FxHashMap<DefinitionID, Scope<'arena>>,
+    pub block_scope_mapping: FxHashMap<NodeID, Scope<'arena>>,
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
     pub root_scope: Scope<'arena>,
 }

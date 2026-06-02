@@ -50,11 +50,11 @@ compiler:
 compiler-release:
 	$(CARGO) build -p taro-bin --release
 
-lsp: dist
-	$(CARGO) build -p taro-lsp
+lsp:
+	$(PYTHON) $(BUILD_DIST) --profile debug
 
-lsp-release: dist
-	$(CARGO) build -p taro-lsp --release
+lsp-release:
+	$(PYTHON) $(BUILD_DIST) --profile release
 
 lsp-bin:
 	$(CARGO) build -p taro-lsp

@@ -16,6 +16,7 @@ Output Structure:
   dist/
     bin/
       taro                 (Compiler executable)
+      taro-lsp             (Language server executable)
     lib/
       taro/
         runtime/
@@ -119,7 +120,15 @@ def main():
         *release_flag(profile),
     ], cwd=repo_root)
 
-    # 3. Create Distribution Structure
+    # 3. Build Language Server
+    print("\n--- Building Language Server ---")
+    run_command([
+        "cargo", "build",
+        "-p", "taro-lsp",
+        *release_flag(profile),
+    ], cwd=repo_root)
+
+    # 4. Create Distribution Structure
     print("\n--- These files go to dist ---")
     
     # bin/taro
@@ -131,6 +140,13 @@ def main():
     
     print(f"Copying {src_bin} -> {dst_bin}")
     shutil.copy2(src_bin, dst_bin)
+
+    # bin/taro-lsp
+    src_lsp = repo_root / "target" / profile / "taro-lsp"
+    dst_lsp = bin_dir / "taro-lsp"
+
+    print(f"Copying {src_lsp} -> {dst_lsp}")
+    shutil.copy2(src_lsp, dst_lsp)
 
     # lib/taro/runtime/libtaro_runtime.a
     lib_dir = dist_dir / "lib" / "taro" / "runtime"
@@ -149,7 +165,7 @@ def main():
         std_dst.unlink() if std_dst.is_symlink() else shutil.rmtree(std_dst)
     std_dst.symlink_to(std_src, target_is_directory=True)
 
-    # 4. Build attached std artifacts into TARO_HOME (dist)
+    # 5. Build attached std artifacts into TARO_HOME (dist)
     print("\n--- Building Attached Std Artifacts ---")
     env = os.environ.copy()
     env["TARO_HOME"] = str(dist_dir)

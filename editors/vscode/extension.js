@@ -36,21 +36,32 @@ function resolveServerOptions() {
         };
     }
 
-    // 2) Probe current workspace roots (local-dev layout only).
+    // 2) Probe current workspace roots (local dist layout).
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
     for (const folder of workspaceFolders) {
-        const candidate = path.join(folder.uri.fsPath, 'target', 'debug', exeName);
+        const distRoot = path.join(folder.uri.fsPath, 'dist');
+        const candidate = path.join(distRoot, 'bin', exeName);
         if (fs.existsSync(candidate)) {
             return {
                 command: candidate,
                 args: [],
-                options: { env: maybeWithTaroHome(env, path.join(folder.uri.fsPath, 'dist')) }
+                options: { env: maybeWithTaroHome(env, distRoot) }
             };
         }
     }
 
-    // 3) Probe relative to this extension directory (repo-local dev layout only).
+    // 3) Probe relative to this extension directory (repo-local dist layout).
     const repoRoot = path.resolve(__dirname, '..', '..');
+    const distCandidate = path.join(repoRoot, 'dist', 'bin', exeName);
+    if (fs.existsSync(distCandidate)) {
+        return {
+            command: distCandidate,
+            args: [],
+            options: { env: maybeWithTaroHome(env, path.join(repoRoot, 'dist')) }
+        };
+    }
+
+    // 4) Probe repo-local debug build for extension development.
     const repoCandidate = path.join(repoRoot, 'target', 'debug', exeName);
     if (fs.existsSync(repoCandidate)) {
         return {
@@ -60,7 +71,7 @@ function resolveServerOptions() {
         };
     }
 
-    // 4) Fallback to PATH lookup.
+    // 5) Fallback to PATH lookup.
     const command = 'taro-lsp';
     return {
         command,

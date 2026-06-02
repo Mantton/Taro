@@ -35,6 +35,8 @@ use crate::{
 use rustc_hash::FxHashSet;
 use std::rc::Rc;
 
+const IDE_COMPLETION_PROBE_IDENTIFIER: &str = "__taro_completion_probe";
+
 #[derive(Clone, Copy)]
 struct ArgumentExpectation<'ctx> {
     ty: Ty<'ctx>,
@@ -4332,6 +4334,10 @@ impl<'ctx> Checker<'ctx> {
         emit_errors: bool,
     ) -> hir::Resolution {
         let gcx = self.gcx();
+        if gcx.symbol_eq(name.symbol, IDE_COMPLETION_PROBE_IDENTIFIER) {
+            return hir::Resolution::Error;
+        }
+
         if let TypeHead::Nominal(def_id) = head {
             if gcx.definition_kind(def_id) == DefinitionKind::Enum {
                 let enum_def = gcx.get_enum_definition(def_id);
@@ -4418,6 +4424,10 @@ impl<'ctx> Checker<'ctx> {
         emit_errors: bool,
     ) -> hir::Resolution {
         let gcx = self.gcx();
+        if gcx.symbol_eq(name.symbol, IDE_COMPLETION_PROBE_IDENTIFIER) {
+            return hir::Resolution::Error;
+        }
+
         let candidates = self.collect_bounded_static_member_candidates(base_ty, name.symbol);
 
         if candidates.is_empty() {

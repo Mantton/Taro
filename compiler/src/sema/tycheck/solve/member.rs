@@ -21,6 +21,8 @@ use crate::{
 };
 use rustc_hash::FxHashSet;
 
+const IDE_COMPLETION_PROBE_IDENTIFIER: &str = "__taro_completion_probe";
+
 impl<'ctx> ConstraintSolver<'ctx> {
     fn operator_method_name_for_kind(kind: OperatorKind) -> Option<&'static str> {
         match kind {
@@ -60,6 +62,16 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let final_receiver = self.structurally_resolve(receiver);
         if final_receiver.is_error() {
+            let obligation = Obligation {
+                location: span,
+                goal: Goal::Equal(result, Ty::error(self.gcx())),
+            };
+            return SolverResult::Solved(vec![obligation]);
+        }
+        if self
+            .gcx()
+            .symbol_eq(name.symbol, IDE_COMPLETION_PROBE_IDENTIFIER)
+        {
             let obligation = Obligation {
                 location: span,
                 goal: Goal::Equal(result, Ty::error(self.gcx())),
@@ -277,6 +289,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Adt(_, args) if !args.is_empty() => Some(args),
             _ => None,
         };
+
+        if self
+            .gcx()
+            .symbol_eq(name.symbol, IDE_COMPLETION_PROBE_IDENTIFIER)
+        {
+            let obligation = Obligation {
+                location: span,
+                goal: Goal::Equal(expr_ty, Ty::error(self.gcx())),
+            };
+            return SolverResult::Solved(vec![obligation]);
+        }
 
         let Some(head) = self.type_head_from_type(base_ty) else {
             let error = Spanned::new(

@@ -12,22 +12,29 @@ use crate::{
         DefinitionID, Expression, ExpressionField, ExpressionKind, HirVisitor, Module, PathSegment,
         Pattern, PatternKind, PatternPath, Resolution, ResolvedPath, StructLiteral, Type, UseTree,
         UseTreeAlias, UseTreeKind, walk_assoc_declaration, walk_declaration, walk_expression,
-        walk_path_segment, walk_pattern, walk_type, walk_use_tree,
+        walk_path_segment, walk_pattern, walk_resolved_path, walk_type, walk_use_tree,
     },
     interner,
     metadata::{self, MetadataLoadStatus, ReuseMode},
     package::{discover, manifest::Manifest, readonly, utils::normalize_module_path},
     sema::{
         models::{AdtKind, StructField, Ty, TyKind},
-        resolve::models::DefinitionKind,
+        resolve::models::{
+            DefinitionKind, PrimaryType, Resolution as AnyResolution, Scope, TypeHead,
+        },
         tycheck::results::TypeCheckResults,
     },
     span::{FileID, Position, Span},
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+pub use crate::ide_completion::{
+    CompletionContext, CompletionProbeOverlay, build_completion_probe_overlay,
+    completion_context_at, filter_completion_items_by_prefix,
+};
 
 // --- Public types matching LSP expectations ---
 
@@ -119,11 +126,59 @@ pub struct SignatureHelpResult {
     pub active_parameter: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionKind {
+    Function,
+    Method,
+    Struct,
+    Enum,
+    Interface,
+    Module,
+    Namespace,
+    Field,
+    Variant,
+    Variable,
+    Constant,
+    Property,
+    TypeAlias,
+    TypeParameter,
+    Keyword,
+    Type,
+    Package,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompletionInfo {
+    pub label: String,
+    pub kind: CompletionKind,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CompletionData {
+    scopes: Vec<CompletionScope>,
+    member_sites: Vec<MemberCompletionSite>,
+}
+
+#[derive(Debug, Clone)]
+struct CompletionScope {
+    span: Span,
+    items: Vec<CompletionInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct MemberCompletionSite {
+    span: Span,
+    items: Vec<CompletionInfo>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisSnapshot {
     pub diagnostics: Vec<DiagnosticRecord>,
     pub navigation: NavigationData,
     pub signatures: SignatureHelpData,
+    pub completions: CompletionData,
     pub status: AnalysisStatus,
     pub file_mappings: Vec<FileMapping>,
     pub file_lookup: FxHashMap<PathBuf, FileID>,
@@ -133,6 +188,7 @@ pub struct AnalysisSnapshot {
 struct IdeArtifacts {
     navigation: NavigationData,
     signatures: SignatureHelpData,
+    completions: CompletionData,
     status: AnalysisStatus,
 }
 
@@ -209,6 +265,7 @@ pub fn analyze_owner_for_ide(
             diagnostics,
             navigation: artifacts.navigation,
             signatures: artifacts.signatures,
+            completions: artifacts.completions,
             status: artifacts.status,
             file_mappings,
             file_lookup,
@@ -231,6 +288,7 @@ pub fn analyze_owner_for_ide(
                 diagnostics: snapshot_diagnostics,
                 navigation: NavigationData::default(),
                 signatures: SignatureHelpData::default(),
+                completions: CompletionData::default(),
                 status: AnalysisStatus::default(),
                 file_mappings,
                 file_lookup,
@@ -1041,6 +1099,859 @@ fn collect_signature_help_data<'ctx>(
     visitor.finish()
 }
 
+struct CompletionVisitor<'ctx, 'results> {
+    gcx: Gcx<'ctx>,
+    results: Option<&'results TypeCheckResults<'ctx>>,
+    resolution_output: &'results crate::sema::resolve::models::ResolutionOutput<'ctx>,
+    data: CompletionData,
+    current_def: Option<DefinitionID>,
+}
+
+impl<'ctx, 'results> CompletionVisitor<'ctx, 'results> {
+    fn new(
+        gcx: Gcx<'ctx>,
+        results: Option<&'results TypeCheckResults<'ctx>>,
+        resolution_output: &'results crate::sema::resolve::models::ResolutionOutput<'ctx>,
+    ) -> Self {
+        Self {
+            gcx,
+            results,
+            resolution_output,
+            data: CompletionData::default(),
+            current_def: None,
+        }
+    }
+
+    fn finish(mut self) -> CompletionData {
+        self.data
+            .scopes
+            .sort_by(|lhs, rhs| compare_navigation_spans(lhs.span, rhs.span));
+        self.data
+            .member_sites
+            .sort_by(|lhs, rhs| compare_navigation_spans(lhs.span, rhs.span));
+        self.data
+    }
+
+    fn push_scope(&mut self, span: Span, scope: Scope<'ctx>) {
+        let items = completion_items_for_scope(self.gcx, scope);
+        self.data.scopes.push(CompletionScope { span, items });
+    }
+
+    fn push_member_site(&mut self, span: Span, items: Vec<CompletionInfo>) {
+        if !items.is_empty() {
+            self.data
+                .member_sites
+                .push(MemberCompletionSite { span, items });
+        }
+    }
+
+    fn push_expression_member_sites(&mut self, node: &Expression) {
+        match &node.kind {
+            ExpressionKind::Member { target, name }
+            | ExpressionKind::MethodCall {
+                receiver: target,
+                name,
+                ..
+            } => {
+                let Some(results) = self.results else {
+                    return;
+                };
+                let mut items = if let Some(target_ty) = results.try_node_type(target.id) {
+                    member_completion_items_for_ty(
+                        self.gcx,
+                        target_ty,
+                        MemberCompletionMode::Instance,
+                        self.current_def,
+                    )
+                } else if let Some(def_id) =
+                    expression_resolution_for_ide(self.gcx, self.results, target)
+                        .and_then(|resolution| resolution.definition_id())
+                {
+                    static_member_completion_items_for_definition(
+                        self.gcx,
+                        def_id,
+                        self.current_def,
+                    )
+                } else {
+                    Vec::new()
+                };
+                if items.is_empty()
+                    && let Some(def_id) =
+                        expression_resolution_for_ide(self.gcx, self.results, target)
+                            .and_then(|resolution| resolution.definition_id())
+                {
+                    items = static_member_completion_items_for_definition(
+                        self.gcx,
+                        def_id,
+                        self.current_def,
+                    );
+                }
+                self.push_member_site(name.span, items);
+            }
+            ExpressionKind::Path(ResolvedPath::Relative(base, segment)) => {
+                let items = if let Some(results) = self.results
+                    && let Some(base_ty) = results.try_node_type(base.id)
+                {
+                    member_completion_items_for_ty(
+                        self.gcx,
+                        base_ty,
+                        MemberCompletionMode::Static,
+                        self.current_def,
+                    )
+                } else if let Some(def_id) = type_definition_id_for_completion(base) {
+                    static_member_completion_items_for_definition(
+                        self.gcx,
+                        def_id,
+                        self.current_def,
+                    )
+                } else {
+                    Vec::new()
+                };
+                self.push_member_site(segment.span, items);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<'ctx, 'results> HirVisitor for CompletionVisitor<'ctx, 'results> {
+    fn visit_module(&mut self, node: &Module, is_root: bool) {
+        for file in &node.files {
+            if let Some(scope) = self.resolution_output.file_scope_mapping.get(file).copied() {
+                self.push_scope(file_completion_span(*file), scope);
+            }
+        }
+
+        if let Some(scope) = self
+            .resolution_output
+            .definition_scope_mapping
+            .get(&node.id)
+            .copied()
+        {
+            self.push_scope(module_completion_span(node), scope);
+        }
+
+        hir::walk_module(self, node, is_root)
+    }
+
+    fn visit_declaration(&mut self, node: &Declaration) {
+        if let Some(scope) = self
+            .resolution_output
+            .definition_scope_mapping
+            .get(&node.id)
+            .copied()
+        {
+            self.push_scope(node.span, scope);
+        }
+
+        let previous = self.current_def.replace(node.id);
+        walk_declaration(self, node);
+        self.current_def = previous;
+    }
+
+    fn visit_assoc_declaration(
+        &mut self,
+        node: &AssociatedDeclaration,
+        context: hir::AssocContext,
+    ) {
+        if let Some(scope) = self
+            .resolution_output
+            .definition_scope_mapping
+            .get(&node.id)
+            .copied()
+        {
+            self.push_scope(node.span, scope);
+        }
+
+        let previous = self.current_def.replace(node.id);
+        walk_assoc_declaration(self, node, context);
+        self.current_def = previous;
+    }
+
+    fn visit_block(&mut self, node: &hir::Block) {
+        let mut items = self
+            .resolution_output
+            .file_scope_mapping
+            .get(&node.span.file)
+            .copied()
+            .map(|scope| completion_items_for_scope(self.gcx, scope))
+            .unwrap_or_default();
+        let mut seen: FxHashSet<_> = items
+            .iter()
+            .map(|item| (item.label.clone(), item.kind))
+            .collect();
+        if let Some(scope) = self.current_def.and_then(|def_id| {
+            self.resolution_output
+                .definition_scope_mapping
+                .get(&def_id)
+                .copied()
+        }) {
+            for item in completion_items_for_scope(self.gcx, scope) {
+                push_completion(&mut items, &mut seen, item);
+            }
+        }
+        collect_block_local_completions(self.gcx, node, &mut items, &mut seen);
+        if !items.is_empty() {
+            self.data.scopes.push(CompletionScope {
+                span: node.span,
+                items,
+            });
+        }
+        hir::walk_block(self, node)
+    }
+
+    fn visit_expression(&mut self, node: &Expression) {
+        self.push_expression_member_sites(node);
+        walk_expression(self, node)
+    }
+
+    fn visit_resolved_path(&mut self, node: &ResolvedPath) {
+        match node {
+            ResolvedPath::Resolved(path) => {
+                for pair in path.segments.windows(2) {
+                    let base = &pair[0];
+                    let member = &pair[1];
+                    if let Some(def_id) = base.resolution.definition_id() {
+                        let items = static_member_completion_items_for_definition(
+                            self.gcx,
+                            def_id,
+                            self.current_def,
+                        );
+                        self.push_member_site(member.span, items);
+                    }
+                }
+            }
+            ResolvedPath::Relative(base, segment) => {
+                if let Some(def_id) = type_definition_id_for_completion(base) {
+                    let items = static_member_completion_items_for_definition(
+                        self.gcx,
+                        def_id,
+                        self.current_def,
+                    );
+                    self.push_member_site(segment.span, items);
+                }
+            }
+        }
+
+        walk_resolved_path(self, node)
+    }
+}
+
+fn collect_completion_data<'ctx>(
+    gcx: Gcx<'ctx>,
+    package: &hir::Package,
+    results: Option<&TypeCheckResults<'ctx>>,
+) -> CompletionData {
+    let Some(resolution_output) = gcx.try_resolution_output(gcx.package_index()) else {
+        return CompletionData::default();
+    };
+    let mut visitor = CompletionVisitor::new(gcx, results, resolution_output);
+    visitor.visit_package(package);
+    visitor.finish()
+}
+
+#[derive(Clone, Copy)]
+enum MemberCompletionMode {
+    Instance,
+    Static,
+}
+
+fn completion_items_for_scope(gcx: Gcx<'_>, scope: Scope<'_>) -> Vec<CompletionInfo> {
+    let mut items = Vec::new();
+    let mut seen = FxHashSet::default();
+    let mut current = Some(scope);
+    let mut depth = 0usize;
+
+    while let Some(scope) = current {
+        collect_scope_completion_items(gcx, scope, &mut items, &mut seen, 0);
+        current = scope.parent;
+        depth += 1;
+        if depth > 128 {
+            break;
+        }
+    }
+
+    for primary in PrimaryType::ALL {
+        push_completion(
+            &mut items,
+            &mut seen,
+            CompletionInfo {
+                label: primary.name_str().to_string(),
+                kind: CompletionKind::Type,
+                detail: Some("builtin type".into()),
+            },
+        );
+    }
+
+    push_completion(
+        &mut items,
+        &mut seen,
+        CompletionInfo {
+            label: "make".into(),
+            kind: CompletionKind::Function,
+            detail: Some("builtin function".into()),
+        },
+    );
+
+    push_completion(
+        &mut items,
+        &mut seen,
+        CompletionInfo {
+            label: gcx.config.name.to_string(),
+            kind: CompletionKind::Package,
+            detail: Some("package".into()),
+        },
+    );
+    for alias in gcx.config.dependencies.keys() {
+        push_completion(
+            &mut items,
+            &mut seen,
+            CompletionInfo {
+                label: alias.to_string(),
+                kind: CompletionKind::Package,
+                detail: Some("package".into()),
+            },
+        );
+    }
+
+    items
+}
+
+fn collect_block_local_completions(
+    gcx: Gcx<'_>,
+    block: &hir::Block,
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+) {
+    for statement in &block.statements {
+        if let hir::StatementKind::Variable(local) = &statement.kind {
+            collect_pattern_completion_items(gcx, &local.pattern, items, seen);
+        }
+    }
+}
+
+fn collect_pattern_completion_items(
+    gcx: Gcx<'_>,
+    pattern: &Pattern,
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+) {
+    match &pattern.kind {
+        PatternKind::Binding { name, .. } => push_completion(
+            items,
+            seen,
+            CompletionInfo {
+                label: gcx.symbol_text(name.symbol).to_string(),
+                kind: CompletionKind::Variable,
+                detail: Some("local variable".into()),
+            },
+        ),
+        PatternKind::Tuple(items_pattern, _) | PatternKind::Or(items_pattern, _) => {
+            for item in items_pattern {
+                collect_pattern_completion_items(gcx, item, items, seen);
+            }
+        }
+        PatternKind::Reference { pattern, .. } => {
+            collect_pattern_completion_items(gcx, pattern, items, seen);
+        }
+        PatternKind::PathTuple { fields, .. } => {
+            for field in fields {
+                collect_pattern_completion_items(gcx, field, items, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_scope_completion_items(
+    gcx: Gcx<'_>,
+    scope: Scope<'_>,
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+    depth: usize,
+) {
+    if depth > 16 {
+        return;
+    }
+
+    {
+        let table = scope.table.borrow();
+        for (symbol, entry) in table.iter() {
+            let label = gcx.symbol_text(*symbol).to_string();
+            if let Some(type_entry) = entry.ty {
+                push_completion(
+                    items,
+                    seen,
+                    completion_for_resolution(gcx, label.clone(), type_entry.resolution()),
+                );
+            }
+            if !entry.values.is_empty() {
+                let resolution = if entry.values.len() == 1 {
+                    entry.values[0].resolution()
+                } else {
+                    AnyResolution::FunctionSet(
+                        entry
+                            .values
+                            .iter()
+                            .filter_map(|entry| entry.resolution().definition_id())
+                            .collect(),
+                    )
+                };
+                push_completion(
+                    items,
+                    seen,
+                    completion_for_resolution(gcx, label.clone(), resolution),
+                );
+            }
+        }
+    }
+
+    let globs = match scope.kind {
+        crate::sema::resolve::models::ScopeKind::File(..)
+        | crate::sema::resolve::models::ScopeKind::Block(..) => Some(&scope.glob_imports),
+        crate::sema::resolve::models::ScopeKind::Definition(
+            _,
+            DefinitionKind::Module | DefinitionKind::Namespace,
+        ) => Some(&scope.glob_exports),
+        _ => None,
+    };
+
+    if let Some(globs) = globs {
+        for usage in globs.borrow().iter() {
+            if let Some(scope) = usage.module_scope.get() {
+                collect_scope_completion_items(gcx, scope, items, seen, depth + 1);
+            }
+        }
+    }
+}
+
+fn completion_for_resolution<LocalNode>(
+    gcx: Gcx<'_>,
+    label: String,
+    resolution: AnyResolution<LocalNode>,
+) -> CompletionInfo {
+    match resolution {
+        AnyResolution::Definition(def_id, kind) => CompletionInfo {
+            label,
+            kind: completion_kind_for_definition(kind),
+            detail: completion_detail_for_definition(gcx, def_id, kind),
+        },
+        AnyResolution::FunctionSet(defs) => CompletionInfo {
+            label,
+            kind: CompletionKind::Function,
+            detail: defs
+                .first()
+                .and_then(|def_id| {
+                    completion_detail_for_definition(gcx, *def_id, DefinitionKind::Function)
+                })
+                .or_else(|| Some("overloaded function".into())),
+        },
+        AnyResolution::LocalVariable(_) => CompletionInfo {
+            label,
+            kind: CompletionKind::Variable,
+            detail: Some("local variable".into()),
+        },
+        AnyResolution::PrimaryType(primary) => CompletionInfo {
+            label: primary.name_str().to_string(),
+            kind: CompletionKind::Type,
+            detail: Some("builtin type".into()),
+        },
+        AnyResolution::StdItem(item) => CompletionInfo {
+            label,
+            kind: item
+                .expected_def_kind()
+                .map(completion_kind_for_definition)
+                .unwrap_or(CompletionKind::Function),
+            detail: Some("std item".into()),
+        },
+        AnyResolution::SelfTypeAlias(_) | AnyResolution::InterfaceSelfTypeParameter(_) => {
+            CompletionInfo {
+                label,
+                kind: CompletionKind::TypeParameter,
+                detail: Some("self type".into()),
+            }
+        }
+        AnyResolution::SelfConstructor(def_id) => CompletionInfo {
+            label,
+            kind: CompletionKind::Function,
+            detail: completion_detail_for_definition(gcx, def_id, DefinitionKind::Function),
+        },
+        AnyResolution::Error => CompletionInfo {
+            label,
+            kind: CompletionKind::Unknown,
+            detail: None,
+        },
+    }
+}
+
+fn completion_kind_for_definition(kind: DefinitionKind) -> CompletionKind {
+    match kind {
+        DefinitionKind::Function
+        | DefinitionKind::AssociatedFunction
+        | DefinitionKind::AssociatedOperator => CompletionKind::Function,
+        DefinitionKind::Struct => CompletionKind::Struct,
+        DefinitionKind::Enum => CompletionKind::Enum,
+        DefinitionKind::Interface => CompletionKind::Interface,
+        DefinitionKind::Module => CompletionKind::Module,
+        DefinitionKind::Namespace => CompletionKind::Namespace,
+        DefinitionKind::Field => CompletionKind::Field,
+        DefinitionKind::Variant | DefinitionKind::VariantConstructor(..) => CompletionKind::Variant,
+        DefinitionKind::Constant | DefinitionKind::AssociatedConstant => CompletionKind::Constant,
+        DefinitionKind::ModuleVariable => CompletionKind::Variable,
+        DefinitionKind::AssociatedProperty => CompletionKind::Property,
+        DefinitionKind::TypeAlias | DefinitionKind::AssociatedType => CompletionKind::TypeAlias,
+        DefinitionKind::TypeParameter | DefinitionKind::ConstParameter => {
+            CompletionKind::TypeParameter
+        }
+        DefinitionKind::Import
+        | DefinitionKind::Export
+        | DefinitionKind::Impl
+        | DefinitionKind::OpaqueType => CompletionKind::Unknown,
+    }
+}
+
+fn completion_detail_for_definition(
+    gcx: Gcx<'_>,
+    def_id: DefinitionID,
+    kind: DefinitionKind,
+) -> Option<String> {
+    match kind {
+        DefinitionKind::Function
+        | DefinitionKind::AssociatedFunction
+        | DefinitionKind::AssociatedOperator
+        | DefinitionKind::VariantConstructor(..) => {
+            crate::sema::models::format_definition_signature_for_display(gcx, def_id)
+        }
+        DefinitionKind::Struct
+        | DefinitionKind::Enum
+        | DefinitionKind::Interface
+        | DefinitionKind::Module
+        | DefinitionKind::Namespace
+        | DefinitionKind::Field
+        | DefinitionKind::Variant
+        | DefinitionKind::Constant
+        | DefinitionKind::AssociatedConstant
+        | DefinitionKind::AssociatedProperty
+        | DefinitionKind::ModuleVariable
+        | DefinitionKind::TypeAlias
+        | DefinitionKind::AssociatedType
+        | DefinitionKind::TypeParameter
+        | DefinitionKind::ConstParameter
+        | DefinitionKind::OpaqueType => Some(kind.description().into()),
+        _ => None,
+    }
+}
+
+fn push_completion(
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+    item: CompletionInfo,
+) {
+    if seen.insert((item.label.clone(), item.kind)) {
+        items.push(item);
+    }
+}
+
+fn member_completion_items_for_ty<'ctx>(
+    gcx: Gcx<'ctx>,
+    ty: Ty<'ctx>,
+    mode: MemberCompletionMode,
+    current_def: Option<DefinitionID>,
+) -> Vec<CompletionInfo> {
+    let mut items = Vec::new();
+    let mut seen = FxHashSet::default();
+    let Some(head) = type_head_for_completion(gcx, ty) else {
+        return items;
+    };
+
+    if matches!(mode, MemberCompletionMode::Instance) {
+        collect_struct_field_completions(gcx, ty, &mut items, &mut seen);
+        collect_property_completions(gcx, head, current_def, &mut items, &mut seen);
+    } else {
+        collect_enum_variant_completions(gcx, ty, current_def, &mut items, &mut seen);
+    }
+
+    collect_method_completions(gcx, head, mode, current_def, &mut items, &mut seen);
+    items
+}
+
+fn static_member_completion_items_for_definition(
+    gcx: Gcx<'_>,
+    def_id: DefinitionID,
+    current_def: Option<DefinitionID>,
+) -> Vec<CompletionInfo> {
+    let mut items = Vec::new();
+    let mut seen = FxHashSet::default();
+    let Some(kind) = gcx.try_definition_kind(def_id) else {
+        return items;
+    };
+
+    if kind == DefinitionKind::Enum
+        && let Some(enum_def) = gcx.try_get_enum_definition(def_id)
+    {
+        for variant in enum_def.variants {
+            if !definition_is_visible_for_completion(gcx, variant.ctor_def_id, current_def) {
+                continue;
+            }
+            push_completion(
+                &mut items,
+                &mut seen,
+                CompletionInfo {
+                    label: gcx.symbol_text(variant.name).to_string(),
+                    kind: CompletionKind::Variant,
+                    detail: Some("variant".into()),
+                },
+            );
+        }
+    }
+
+    if matches!(
+        kind,
+        DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::Interface
+    ) {
+        collect_method_completions(
+            gcx,
+            TypeHead::Nominal(def_id),
+            MemberCompletionMode::Static,
+            current_def,
+            &mut items,
+            &mut seen,
+        );
+    }
+
+    items
+}
+
+fn type_definition_id_for_completion(ty: &Type) -> Option<DefinitionID> {
+    match &ty.kind {
+        hir::TypeKind::Nominal(ResolvedPath::Resolved(path)) => path
+            .segments
+            .last()
+            .and_then(|segment| segment.resolution.definition_id()),
+        _ => None,
+    }
+}
+
+fn type_head_for_completion<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Option<TypeHead> {
+    match ty.kind() {
+        TyKind::Bool => Some(TypeHead::Primary(PrimaryType::Bool)),
+        TyKind::Rune => Some(TypeHead::Primary(PrimaryType::Rune)),
+        TyKind::String => Some(TypeHead::Primary(PrimaryType::String)),
+        TyKind::Int(k) => Some(TypeHead::Primary(PrimaryType::Int(k))),
+        TyKind::UInt(k) => Some(TypeHead::Primary(PrimaryType::UInt(k))),
+        TyKind::Float(k) => Some(TypeHead::Primary(PrimaryType::Float(k))),
+        TyKind::Adt(def, _) => Some(TypeHead::Nominal(def.id)),
+        TyKind::Reference(_, mutbl) => Some(TypeHead::Reference(mutbl)),
+        TyKind::Pointer(_, mutbl) => Some(TypeHead::Pointer(mutbl)),
+        TyKind::Tuple(items) => Some(TypeHead::Tuple(items.len() as u16)),
+        TyKind::Array { .. } => Some(TypeHead::Array),
+        TyKind::Closure { closure_def_id, .. } => Some(TypeHead::Closure(closure_def_id)),
+        TyKind::Alias { def_id, .. } => gcx
+            .try_get_alias_type(def_id)
+            .and_then(|ty| type_head_for_completion(gcx, ty)),
+        _ => None,
+    }
+}
+
+fn collect_struct_field_completions(
+    gcx: Gcx<'_>,
+    ty: Ty<'_>,
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+) {
+    match ty.kind() {
+        TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+            collect_struct_field_completions(gcx, inner, items, seen)
+        }
+        TyKind::Alias { def_id, .. } => {
+            if let Some(alias_ty) = gcx.try_get_alias_type(def_id) {
+                collect_struct_field_completions(gcx, alias_ty, items, seen);
+            }
+        }
+        TyKind::Adt(def, _) if def.kind == AdtKind::Struct => {
+            if let Some(struct_def) = gcx.try_get_struct_definition(def.id) {
+                for field in struct_def.fields {
+                    let ident = gcx.definition_ident(field.def_id);
+                    push_completion(
+                        items,
+                        seen,
+                        CompletionInfo {
+                            label: gcx.symbol_text(ident.symbol).to_string(),
+                            kind: CompletionKind::Field,
+                            detail: Some(field.ty.format(gcx)),
+                        },
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_enum_variant_completions(
+    gcx: Gcx<'_>,
+    ty: Ty<'_>,
+    current_def: Option<DefinitionID>,
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+) {
+    if let TyKind::Adt(def, _) = ty.kind()
+        && def.kind == AdtKind::Enum
+        && let Some(enum_def) = gcx.try_get_enum_definition(def.id)
+    {
+        for variant in enum_def.variants {
+            if !definition_is_visible_for_completion(gcx, variant.ctor_def_id, current_def) {
+                continue;
+            }
+            push_completion(
+                items,
+                seen,
+                CompletionInfo {
+                    label: gcx.symbol_text(variant.name).to_string(),
+                    kind: CompletionKind::Variant,
+                    detail: Some("variant".into()),
+                },
+            );
+        }
+    }
+}
+
+fn collect_property_completions(
+    gcx: Gcx<'_>,
+    head: TypeHead,
+    current_def: Option<DefinitionID>,
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+) {
+    let mut properties = Vec::new();
+    gcx.with_session_type_database(|db| {
+        if let Some(map) = db.type_head_to_properties.get(&head) {
+            properties.extend(map.values().copied());
+        }
+    });
+    for index in gcx.visible_packages() {
+        gcx.with_type_database(index, |db| {
+            if let Some(map) = db.type_head_to_properties.get(&head) {
+                properties.extend(map.values().copied());
+            }
+        });
+    }
+
+    for property in properties {
+        if !definition_is_visible_for_completion(gcx, property.property_id, current_def) {
+            continue;
+        }
+        let ident = gcx.definition_ident(property.property_id);
+        push_completion(
+            items,
+            seen,
+            CompletionInfo {
+                label: gcx.symbol_text(ident.symbol).to_string(),
+                kind: CompletionKind::Property,
+                detail: Some(property.ty.format(gcx)),
+            },
+        );
+    }
+}
+
+fn collect_method_completions(
+    gcx: Gcx<'_>,
+    head: TypeHead,
+    mode: MemberCompletionMode,
+    current_def: Option<DefinitionID>,
+    items: &mut Vec<CompletionInfo>,
+    seen: &mut FxHashSet<(String, CompletionKind)>,
+) {
+    let mut methods = Vec::new();
+    let mut collect = |db: &mut crate::compile::context::TypeDatabase<'_>| {
+        if let Some(index) = db.type_head_to_members.get(&head) {
+            let source = match mode {
+                MemberCompletionMode::Instance => &index.inherent_instance,
+                MemberCompletionMode::Static => &index.inherent_static,
+            };
+            for set in source.values() {
+                methods.extend(set.members.iter().copied());
+            }
+            if matches!(mode, MemberCompletionMode::Instance) {
+                for defs in index.trait_methods_by_name.values() {
+                    methods.extend(defs.iter().copied());
+                }
+            }
+        }
+    };
+
+    gcx.with_session_type_database(&mut collect);
+    for index in gcx.visible_packages() {
+        gcx.with_type_database(index, &mut collect);
+    }
+
+    let mut seen_defs = FxHashSet::default();
+    for def_id in methods {
+        if !seen_defs.insert(def_id)
+            || !definition_is_visible_for_completion(gcx, def_id, current_def)
+        {
+            continue;
+        }
+        let Some(kind) = gcx.try_definition_kind(def_id) else {
+            continue;
+        };
+        let Some(ident) = gcx.try_definition_ident(def_id) else {
+            continue;
+        };
+        push_completion(
+            items,
+            seen,
+            CompletionInfo {
+                label: gcx.symbol_text(ident.symbol).to_string(),
+                kind: CompletionKind::Method,
+                detail: completion_detail_for_definition(gcx, def_id, kind),
+            },
+        );
+    }
+}
+
+fn definition_is_visible_for_completion(
+    gcx: Gcx<'_>,
+    target: DefinitionID,
+    current_def: Option<DefinitionID>,
+) -> bool {
+    current_def
+        .map(|current_def| gcx.is_definition_visible(target, current_def))
+        .unwrap_or_else(|| {
+            matches!(
+                gcx.definition_visibility(target),
+                crate::sema::resolve::models::Visibility::Public
+            )
+        })
+}
+
+fn file_completion_span(file: FileID) -> Span {
+    Span {
+        file,
+        start: Position { line: 0, offset: 0 },
+        end: Position {
+            line: usize::MAX,
+            offset: usize::MAX,
+        },
+    }
+}
+
+fn module_completion_span(module: &Module) -> Span {
+    module
+        .declarations
+        .iter()
+        .map(|declaration| declaration.span)
+        .min_by(|lhs, rhs| compare_navigation_spans(*lhs, *rhs))
+        .unwrap_or_else(|| {
+            module
+                .files
+                .first()
+                .copied()
+                .map(file_completion_span)
+                .unwrap_or_else(|| Span::empty(FileID::new(0)))
+        })
+}
+
 fn call_signature_candidates<'ctx>(
     gcx: Gcx<'ctx>,
     results: Option<&TypeCheckResults<'ctx>>,
@@ -1081,6 +1992,7 @@ fn collect_ide_artifacts<'ctx>(
     IdeArtifacts {
         navigation: collect_navigation_data(gcx, package, results, module_targets),
         signatures: collect_signature_help_data(gcx, package, results),
+        completions: collect_completion_data(gcx, package, results),
         status,
     }
 }
@@ -1110,6 +2022,100 @@ pub fn signature_help_at(
         active_signature: 0,
         active_parameter: clamped_parameter,
     })
+}
+
+pub fn completion_at(
+    snapshot: &AnalysisSnapshot,
+    _source_text: &str,
+    file_id: FileID,
+    position: Position,
+) -> Vec<CompletionInfo> {
+    if let Some(site_index) =
+        find_member_completion_site_index(&snapshot.completions, file_id, position)
+    {
+        return sorted_completion_items(
+            snapshot.completions.member_sites[site_index].items.clone(),
+        );
+    }
+
+    let Some(scope_index) = find_completion_scope_index(&snapshot.completions, file_id, position)
+    else {
+        return Vec::new();
+    };
+    sorted_completion_items(snapshot.completions.scopes[scope_index].items.clone())
+}
+
+fn find_completion_scope_index(
+    data: &CompletionData,
+    file_id: FileID,
+    position: Position,
+) -> Option<usize> {
+    find_deepest_matching_span(
+        data.scopes
+            .iter()
+            .enumerate()
+            .map(|(index, scope)| (index, scope.span)),
+        file_id,
+        position,
+    )
+}
+
+fn find_member_completion_site_index(
+    data: &CompletionData,
+    file_id: FileID,
+    position: Position,
+) -> Option<usize> {
+    find_deepest_matching_span(
+        data.member_sites
+            .iter()
+            .enumerate()
+            .map(|(index, site)| (index, site.span)),
+        file_id,
+        position,
+    )
+}
+
+fn find_deepest_matching_span(
+    spans: impl Iterator<Item = (usize, Span)>,
+    file_id: FileID,
+    position: Position,
+) -> Option<usize> {
+    spans
+        .filter(|(_, span)| span_contains_position(*span, file_id, position))
+        .max_by(|(_, lhs), (_, rhs)| compare_navigation_spans(*lhs, *rhs))
+        .map(|(index, _)| index)
+}
+
+fn sorted_completion_items(mut items: Vec<CompletionInfo>) -> Vec<CompletionInfo> {
+    items.sort_by(|lhs, rhs| {
+        lhs.label
+            .cmp(&rhs.label)
+            .then_with(|| completion_kind_order(lhs.kind).cmp(&completion_kind_order(rhs.kind)))
+    });
+    items
+}
+
+fn completion_kind_order(kind: CompletionKind) -> u8 {
+    match kind {
+        CompletionKind::Function => 0,
+        CompletionKind::Method => 1,
+        CompletionKind::Variable => 2,
+        CompletionKind::Field => 3,
+        CompletionKind::Property => 4,
+        CompletionKind::Struct => 5,
+        CompletionKind::Enum => 6,
+        CompletionKind::Interface => 7,
+        CompletionKind::Variant => 8,
+        CompletionKind::TypeAlias => 9,
+        CompletionKind::TypeParameter => 10,
+        CompletionKind::Type => 11,
+        CompletionKind::Module => 12,
+        CompletionKind::Namespace => 13,
+        CompletionKind::Package => 14,
+        CompletionKind::Constant => 15,
+        CompletionKind::Keyword => 16,
+        CompletionKind::Unknown => 17,
+    }
 }
 
 fn find_innermost_span_index(
@@ -1452,6 +2458,7 @@ mod tests {
         },
         constants::{STD_PACKAGE_PATH, STD_PREFIX},
         diagnostics::DiagCtx,
+        ide_completion::COMPLETION_PROBE_IDENTIFIER,
         interner,
         span::Position,
     };
@@ -1617,6 +2624,7 @@ mod tests {
                 diagnostics: Vec::new(),
                 navigation: artifacts.navigation,
                 signatures: artifacts.signatures,
+                completions: artifacts.completions,
                 status: artifacts.status,
                 file_mappings,
                 file_lookup,
@@ -1714,6 +2722,7 @@ mod tests {
             diagnostics: Vec::new(),
             navigation: artifacts.navigation,
             signatures: artifacts.signatures,
+            completions: artifacts.completions,
             status: artifacts.status,
             file_mappings,
             file_lookup,
@@ -1855,6 +2864,18 @@ mod tests {
         position: Position,
     ) -> super::SignatureHelpResult {
         super::signature_help_at(snapshot, source, file_id, position).expect("signature help")
+    }
+
+    fn completion_labels_at_position(
+        snapshot: &AnalysisSnapshot,
+        source: &str,
+        file_id: crate::span::FileID,
+        position: Position,
+    ) -> Vec<String> {
+        super::completion_at(snapshot, source, file_id, position)
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
     }
 
     fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
@@ -2000,6 +3021,109 @@ mod tests {
         assert_eq!(help.signatures.len(), 1);
         assert!(help.signatures[0].label.contains("uint32"));
         assert_eq!(help.signatures[0].parameters.len(), 2);
+    }
+
+    #[test]
+    fn lexical_completion_includes_locals_declarations_and_builtin_types() {
+        let source = "struct Foo { bar: uint32 }\n\nfunc helper() {}\n\nfunc main() {\n    let local = Foo { bar: 1 }\n    local\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+        let labels = completion_labels_at_position(
+            &snapshot,
+            &source_text,
+            file_id,
+            start_position(source, "local", 2),
+        );
+
+        assert!(labels.contains(&"local".to_string()), "{labels:?}");
+        assert!(labels.contains(&"helper".to_string()), "{labels:?}");
+        assert!(labels.contains(&"Foo".to_string()), "{labels:?}");
+        assert!(labels.contains(&"uint32".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn member_completion_includes_struct_fields() {
+        let source = "struct Foo { bar: uint32 }\n\nfunc main() {\n    let foo = Foo { bar: 1 }\n    let value = foo.bar\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+        let labels = completion_labels_at_position(
+            &snapshot,
+            &source_text,
+            file_id,
+            start_position(source, "bar", 3),
+        );
+
+        assert!(labels.contains(&"bar".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn static_member_completion_includes_enum_variants() {
+        let source =
+            "enum Heading { case north, south }\n\nfunc main() {\n    let dir = Heading.north\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+        let labels = completion_labels_at_position(
+            &snapshot,
+            &source_text,
+            file_id,
+            start_position(source, "north", 2),
+        );
+
+        assert!(labels.contains(&"north".to_string()), "{labels:?}");
+        assert!(labels.contains(&"south".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn probe_member_completion_includes_struct_fields() {
+        let source = "struct Foo { bar: uint32 }\n\nfunc main() {\n    let foo = Foo { bar: 1 }\n    let value = foo.__taro_completion_probe\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+        assert!(snapshot.status.typed_available, "{:?}", snapshot.status);
+
+        let labels = completion_labels_at_position(
+            &snapshot,
+            &source_text,
+            file_id,
+            end_position(source, COMPLETION_PROBE_IDENTIFIER, 1),
+        );
+
+        assert!(labels.contains(&"bar".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn probe_static_completion_includes_enum_variants() {
+        let source = "enum Heading { case north, south }\n\nfunc main() {\n    let dir = Heading.__taro_completion_probe\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+        assert!(snapshot.status.typed_available, "{:?}", snapshot.status);
+
+        let labels = completion_labels_at_position(
+            &snapshot,
+            &source_text,
+            file_id,
+            end_position(source, COMPLETION_PROBE_IDENTIFIER, 1),
+        );
+
+        assert!(labels.contains(&"north".to_string()), "{labels:?}");
+        assert!(labels.contains(&"south".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn completion_falls_back_when_typecheck_results_drop() {
+        let source = "enum Heading {\n    case north\n}\n\nfunc main() {\n    let dir = Heading.north\n}\n\nfunc broken() {\n    let value: uint32 = \"no\"\n}\n";
+        let (snapshot, source_text, file_id, has_results) = analyze_package_completion_with_status(
+            "github.com/example/completion-fallback",
+            "src/main.tr",
+            &[("src/main.tr", source)],
+        );
+
+        assert!(
+            !has_results,
+            "expected typecheck failure to drop IDE results"
+        );
+        let labels = completion_labels_at_position(
+            &snapshot,
+            &source_text,
+            file_id,
+            start_position(&source_text, "Heading", 2),
+        );
+
+        assert!(labels.contains(&"Heading".to_string()), "{labels:?}");
     }
 
     #[test]

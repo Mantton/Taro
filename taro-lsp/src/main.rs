@@ -1,8 +1,13 @@
 use compiler::{
     diagnostics::{DiagnosticLevel, DiagnosticRecord, DiagnosticStage},
     ide::{
-        AnalysisMode, AnalysisOwner, AnalysisRequest, AnalysisSnapshot, SourceOverlay,
-        analyze_owner_for_ide, resolve_analysis_owner, signature_help_at,
+        AnalysisMode, AnalysisOwner, AnalysisRequest, AnalysisSnapshot, CompletionInfo,
+        CompletionKind as TaroCompletionKind, SourceOverlay, analyze_owner_for_ide, completion_at,
+        resolve_analysis_owner, signature_help_at,
+    },
+    ide_completion::{
+        CompletionContext, build_completion_probe_overlay, completion_context_at,
+        filter_completion_items_by_prefix,
     },
     span::{FileID, Position as SpanPosition, Span},
 };
@@ -12,7 +17,11 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{sync::Mutex, task::JoinHandle, time::sleep};
+use tokio::{
+    sync::{Mutex, Semaphore},
+    task::JoinHandle,
+    time::sleep,
+};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -41,6 +50,7 @@ struct BackendState {
 struct Backend {
     client: Client,
     state: Arc<Mutex<BackendState>>,
+    analysis_gate: Arc<Semaphore>,
 }
 
 impl Backend {
@@ -48,6 +58,7 @@ impl Backend {
         Self {
             client,
             state: Arc::new(Mutex::new(BackendState::default())),
+            analysis_gate: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -68,6 +79,15 @@ impl Backend {
                     .log_message(
                         MessageType::ERROR,
                         format!("failed to resolve analysis owner for {}: {error}", uri),
+                    )
+                    .await;
+                self.client
+                    .publish_diagnostics(
+                        uri,
+                        vec![general_diagnostic(format!(
+                            "failed to resolve analysis owner: {error}"
+                        ))],
+                        None,
                     )
                     .await;
                 return;
@@ -104,6 +124,7 @@ impl Backend {
         let task_owner = owner.clone();
         let state_ref = self.state.clone();
         let client = self.client.clone();
+        let analysis_gate = self.analysis_gate.clone();
         let handle = tokio::spawn(async move {
             loop {
                 let mut mode = {
@@ -154,6 +175,12 @@ impl Backend {
                 let started_at = Instant::now();
 
                 let analysis_owner = task_owner.clone();
+                let Ok(_permit) = analysis_gate.clone().acquire_owned().await else {
+                    client
+                        .log_message(MessageType::ERROR, "analysis gate closed")
+                        .await;
+                    break;
+                };
                 let snapshot = match tokio::task::spawn_blocking(move || {
                     analyze_owner_for_ide(analysis_owner, text, None)
                 })
@@ -248,6 +275,112 @@ impl Backend {
         Some((doc.text.clone(), doc.version, snapshot))
     }
 
+    async fn snapshot_context_for_uri(
+        &self,
+        uri: &Url,
+    ) -> Option<(String, i32, AnalysisOwner, AnalysisSnapshot)> {
+        let state = self.state.lock().await;
+        let doc = state.documents.get(uri)?;
+        let owner = doc.owner.as_ref()?.clone();
+        let snapshot = state.analyses.get(&owner)?.snapshot.clone()?;
+        Some((doc.text.clone(), doc.version, owner, snapshot))
+    }
+
+    async fn completion_for_uri_position(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Option<Vec<CompletionInfo>> {
+        let (text, _version, owner, snapshot) = self.snapshot_context_for_uri(uri).await?;
+        let line_text = line_at(&text, position.line as usize)?;
+        let file_id = file_id_for_uri(&snapshot, uri)?;
+        let span_position = SpanPosition {
+            line: position.line as usize,
+            offset: utf16_to_char_offset(line_text, position.character),
+        };
+        let context = completion_context_at(&text, span_position);
+        let fallback_prefix = completion_prefix(&context);
+        let fallback = || {
+            filter_completion_items_by_prefix(
+                completion_at(&snapshot, &text, file_id, span_position),
+                fallback_prefix,
+            )
+        };
+
+        match &context {
+            CompletionContext::Member { .. } | CompletionContext::StaticMember { .. } => {
+                let Some(overlay) = build_completion_probe_overlay(&text, span_position, &context)
+                else {
+                    return Some(fallback());
+                };
+                let Some(probe_snapshot) = self
+                    .completion_probe_snapshot(&owner, uri, overlay.source_text.clone())
+                    .await
+                else {
+                    return Some(fallback());
+                };
+                let Some(probe_file_id) = file_id_for_uri(&probe_snapshot, uri) else {
+                    return Some(fallback());
+                };
+
+                let items = filter_completion_items_by_prefix(
+                    completion_at(
+                        &probe_snapshot,
+                        &overlay.source_text,
+                        probe_file_id,
+                        overlay.position,
+                    ),
+                    &overlay.prefix,
+                );
+                if items.is_empty() {
+                    Some(fallback())
+                } else {
+                    Some(items)
+                }
+            }
+            CompletionContext::Lexical { .. } => Some(fallback()),
+            CompletionContext::Unknown => {
+                Some(completion_at(&snapshot, &text, file_id, span_position))
+            }
+        }
+    }
+
+    async fn completion_probe_snapshot(
+        &self,
+        owner: &AnalysisOwner,
+        uri: &Url,
+        active_document_text: String,
+    ) -> Option<AnalysisSnapshot> {
+        let request = {
+            let state = self.state.lock().await;
+            let documents = owner_documents(&state.documents, owner);
+            if documents.is_empty() {
+                return None;
+            }
+            AnalysisRequest {
+                mode: AnalysisMode::OnType,
+                overlays: documents
+                    .into_iter()
+                    .map(|document| SourceOverlay {
+                        path: document.path,
+                        content: if document.uri == *uri {
+                            active_document_text.clone()
+                        } else {
+                            document.text
+                        },
+                    })
+                    .collect(),
+            }
+        };
+
+        let owner = owner.clone();
+        let _permit = self.analysis_gate.clone().acquire_owned().await.ok()?;
+        tokio::task::spawn_blocking(move || analyze_owner_for_ide(owner, request, None))
+            .await
+            .ok()?
+            .ok()
+    }
+
     async fn text_for_path(&self, path: &Path) -> Option<String> {
         let state = self.state.lock().await;
         state.documents.iter().find_map(|(uri, document)| {
@@ -269,19 +402,7 @@ impl LanguageServer for Backend {
                 name: "taro-lsp".to_string(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
-            capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
-                )),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
-                definition_provider: Some(OneOf::Left(true)),
-                signature_help_provider: Some(SignatureHelpOptions {
-                    trigger_characters: Some(signature_help_trigger_characters()),
-                    retrigger_characters: Some(signature_help_trigger_characters()),
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                }),
-                ..ServerCapabilities::default()
-            },
+            capabilities: server_capabilities(),
         })
     }
 
@@ -503,6 +624,21 @@ impl LanguageServer for Backend {
             active_parameter: Some(help.active_parameter as u32),
         }))
     }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let Some(items) = self.completion_for_uri_position(&uri, position).await else {
+            return Ok(None);
+        };
+        let items = items
+            .into_iter()
+            .map(lsp_completion_item)
+            .collect::<Vec<_>>();
+
+        Ok(Some(CompletionResponse::Array(items)))
+    }
 }
 
 #[derive(Clone)]
@@ -592,6 +728,70 @@ fn merge_analysis_mode(current: AnalysisMode, next: AnalysisMode) -> AnalysisMod
     }
 }
 
+fn completion_prefix(context: &CompletionContext) -> &str {
+    match context {
+        CompletionContext::Lexical { prefix }
+        | CompletionContext::Member { prefix, .. }
+        | CompletionContext::StaticMember { prefix, .. } => prefix,
+        CompletionContext::Unknown => "",
+    }
+}
+
+fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(signature_help_trigger_characters()),
+            retrigger_characters: Some(signature_help_trigger_characters()),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
+        completion_provider: Some(CompletionOptions {
+            resolve_provider: Some(false),
+            trigger_characters: Some(vec![".".into()]),
+            all_commit_characters: None,
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+            completion_item: None,
+        }),
+        ..ServerCapabilities::default()
+    }
+}
+
+fn lsp_completion_item(item: CompletionInfo) -> CompletionItem {
+    CompletionItem {
+        label: item.label.clone(),
+        kind: Some(lsp_completion_kind(item.kind)),
+        detail: item.detail,
+        insert_text: Some(item.label),
+        insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+        ..CompletionItem::default()
+    }
+}
+
+fn lsp_completion_kind(kind: TaroCompletionKind) -> CompletionItemKind {
+    match kind {
+        TaroCompletionKind::Function => CompletionItemKind::FUNCTION,
+        TaroCompletionKind::Method => CompletionItemKind::METHOD,
+        TaroCompletionKind::Struct => CompletionItemKind::STRUCT,
+        TaroCompletionKind::Enum => CompletionItemKind::ENUM,
+        TaroCompletionKind::Interface => CompletionItemKind::INTERFACE,
+        TaroCompletionKind::Module
+        | TaroCompletionKind::Namespace
+        | TaroCompletionKind::Package => CompletionItemKind::MODULE,
+        TaroCompletionKind::Field => CompletionItemKind::FIELD,
+        TaroCompletionKind::Variant => CompletionItemKind::ENUM_MEMBER,
+        TaroCompletionKind::Variable => CompletionItemKind::VARIABLE,
+        TaroCompletionKind::Constant => CompletionItemKind::CONSTANT,
+        TaroCompletionKind::Property => CompletionItemKind::PROPERTY,
+        TaroCompletionKind::TypeAlias
+        | TaroCompletionKind::TypeParameter
+        | TaroCompletionKind::Type => CompletionItemKind::TYPE_PARAMETER,
+        TaroCompletionKind::Keyword => CompletionItemKind::KEYWORD,
+        TaroCompletionKind::Unknown => CompletionItemKind::TEXT,
+    }
+}
+
 fn diagnostics_for_uri(
     snapshot: &AnalysisSnapshot,
     current_path: &Path,
@@ -615,10 +815,12 @@ fn lsp_diagnostic(
     source_text: &str,
     file_map: &HashMap<FileID, PathBuf>,
 ) -> Option<Diagnostic> {
-    let span = diagnostic.span?;
-    let file_path = file_map.get(&span.file)?;
-    if !paths_match(file_path, current_path) {
-        return None;
+    let span = diagnostic.span;
+    if let Some(span) = span {
+        let file_path = file_map.get(&span.file)?;
+        if !paths_match(file_path, current_path) {
+            return None;
+        }
     }
 
     let severity = match diagnostic.level {
@@ -657,7 +859,9 @@ fn lsp_diagnostic(
     }
 
     Some(Diagnostic {
-        range: range_from_span(span, source_text),
+        range: span
+            .map(|span| range_from_span(span, source_text))
+            .unwrap_or_else(zero_range),
         severity,
         code,
         code_description: None,
@@ -671,6 +875,33 @@ fn lsp_diagnostic(
         tags: None,
         data: None,
     })
+}
+
+fn general_diagnostic(message: String) -> Diagnostic {
+    Diagnostic {
+        range: zero_range(),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String("general".into())),
+        code_description: None,
+        source: Some("taro".to_string()),
+        message,
+        related_information: None,
+        tags: None,
+        data: None,
+    }
+}
+
+fn zero_range() -> Range {
+    Range {
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end: Position {
+            line: 0,
+            character: 0,
+        },
+    }
 }
 
 fn stage_name(stage: DiagnosticStage) -> &'static str {
@@ -807,13 +1038,16 @@ fn paths_match(lhs: &Path, rhs: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnalysisOwner, DocumentData, OwnerDocument, find_navigation_index, owner_documents,
-        owner_documents_changed, signature_help_trigger_characters,
+        AnalysisOwner, CompletionInfo, DocumentData, OwnerDocument, TaroCompletionKind,
+        completion_prefix, find_navigation_index, general_diagnostic, lsp_completion_item,
+        owner_documents, owner_documents_changed, server_capabilities,
+        signature_help_trigger_characters, utf16_to_char_offset,
     };
+    use compiler::ide_completion::CompletionContext;
     use compiler::span::{FileID, Position, Span};
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use tower_lsp::lsp_types::Url;
+    use tower_lsp::lsp_types::{CompletionItemKind, Url};
 
     #[test]
     fn owner_documents_collects_matching_documents() {
@@ -916,6 +1150,70 @@ mod tests {
     #[test]
     fn signature_help_trigger_characters_match_supported_contexts() {
         assert_eq!(signature_help_trigger_characters(), vec!["(", ","]);
+    }
+
+    #[test]
+    fn server_capabilities_advertise_completion() {
+        let capabilities = server_capabilities();
+        let completion = capabilities
+            .completion_provider
+            .expect("completion provider");
+        assert_eq!(completion.trigger_characters, Some(vec![".".to_string()]));
+    }
+
+    #[test]
+    fn completion_item_conversion_is_stable() {
+        let item = lsp_completion_item(CompletionInfo {
+            label: "format".into(),
+            kind: TaroCompletionKind::Function,
+            detail: Some("func format()".into()),
+        });
+
+        assert_eq!(item.label, "format");
+        assert_eq!(item.kind, Some(CompletionItemKind::FUNCTION));
+        assert_eq!(item.insert_text.as_deref(), Some("format"));
+        assert_eq!(item.detail.as_deref(), Some("func format()"));
+    }
+
+    #[test]
+    fn completion_prefix_tracks_all_contexts() {
+        assert_eq!(
+            completion_prefix(&CompletionContext::Lexical {
+                prefix: "loc".into()
+            }),
+            "loc"
+        );
+        assert_eq!(
+            completion_prefix(&CompletionContext::Member {
+                receiver: "point".into(),
+                prefix: "m".into()
+            }),
+            "m"
+        );
+        assert_eq!(
+            completion_prefix(&CompletionContext::StaticMember {
+                base: "Heading".into(),
+                prefix: "n".into()
+            }),
+            "n"
+        );
+        assert_eq!(completion_prefix(&CompletionContext::Unknown), "");
+    }
+
+    #[test]
+    fn utf16_offsets_count_wide_characters_for_completion_positions() {
+        assert_eq!(utf16_to_char_offset("a😀b", 0), 0);
+        assert_eq!(utf16_to_char_offset("a😀b", 1), 1);
+        assert_eq!(utf16_to_char_offset("a😀b", 3), 2);
+        assert_eq!(utf16_to_char_offset("a😀b", 4), 3);
+    }
+
+    #[test]
+    fn general_diagnostic_uses_zero_range() {
+        let diagnostic = general_diagnostic("missing TARO_HOME".into());
+        assert_eq!(diagnostic.range.start.line, 0);
+        assert_eq!(diagnostic.range.start.character, 0);
+        assert_eq!(diagnostic.message, "missing TARO_HOME");
     }
 }
 

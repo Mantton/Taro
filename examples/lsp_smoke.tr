@@ -1,0 +1,29 @@
+struct SmokePoint: Copy {
+    x: uint32
+    y: uint32
+}
+
+impl SmokePoint {
+    func magnitude(self) -> uint32 {
+        return self.x + self.y
+    }
+}
+
+enum Heading {
+    case north, south, east, west
+}
+
+func describe(_ heading: Heading, _ point: SmokePoint) -> uint32 {
+    return point.x
+}
+
+func main() {
+    let point = SmokePoint { x: 10, y: 20 }
+    let heading = Heading.north
+    let localValue = describe(.north, point)
+
+    let fieldValue = point.x
+    let methodValue = point.magnitude()
+    let enumValue = Heading.south
+    let hoverValue: SmokePoint = point
+}

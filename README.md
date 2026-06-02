@@ -103,7 +103,15 @@ The VS Code extension is designed for an external Taro toolchain install:
 
 Repo-local `target/debug/taro-lsp` and `dist/` are still supported as a development fallback when working inside the Taro repository.
 
-### Language Server (Basic)
+For the daily-driver repo workflow, build the local toolchain and language server together:
+
+```bash
+make lsp
+```
+
+This places both `taro` and `taro-lsp` under `dist/bin/`, with attached std artifacts under `dist/lib/taro/std/`.
+
+### Language Server
 
 `taro-lsp` currently provides:
 
@@ -111,8 +119,19 @@ Repo-local `target/debug/taro-lsp` and `dist/` are still supported as a developm
 - hover
 - go-to-definition
 - signature help
+- completion for in-scope names plus probe-backed member/static-member contexts
 
-This is intentionally a basic surface for now (for example, completion/rename/formatting are not part of this phase yet).
+Completion is intentionally an MVP: it covers lexical names plus `value.` / `value.prefix` and `Type.` / `Type.prefix` candidates for identifier and dotted-path receivers. The server runs an internal completion probe for incomplete member syntax, so `point.`, `point.m`, `Heading.`, and `Heading.n` should complete in VS Code even before the source is syntactically complete. Arbitrary expression receivers such as `makePoint().` are not first-class yet. Rename, formatting, references, semantic tokens, and code actions are not part of the current LSP surface.
+
+Manual smoke fixture: open `examples/lsp_smoke.tr` from the repository root in the VS Code extension development host. Expected checks:
+
+- `local` inside `main` offers `localValue`
+- `point.` offers `x`, `y`, and `magnitude`
+- `point.m` filters to `magnitude`
+- `Heading.` offers `north`, `south`, `east`, and `west`
+- `Heading.n` filters to `north`
+- `describe(` shows signature help
+- hover/go-to-definition work on `SmokePoint`, `Heading`, `point.x`, and `Heading.south`
 
 ### Compiler Timings
 

@@ -12,6 +12,7 @@ pub mod diagnostics;
 pub mod error;
 mod hir;
 pub mod ide;
+pub mod ide_completion;
 mod interner;
 pub mod metadata;
 pub mod mir;
