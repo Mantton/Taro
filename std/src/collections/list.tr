@@ -1,4 +1,4 @@
-import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, sizeOf}
+import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, setBufferLen, sizeOf}
 import std.optional.Optional
 import std.iter.{Iterator, Iterable, FromIterator}
 import std.panic.panic
@@ -13,6 +13,7 @@ public struct List[Element] {
 }
 
 public func __list_from_raw_parts[Element](_ buffer: *mut uint8, _ len: usize, _ cap: usize) -> List[Element] {
+    setBufferLen[Element](buffer, len)
     List[Element] {
         buffer,
         len,
@@ -86,6 +87,7 @@ impl[Element] List[Element] {
         }
 
         self.len += 1
+        setBufferLen[Element](self.buffer, self.len)
     }
 
     func grow(&mut self) {
@@ -151,6 +153,7 @@ impl[Element] List[Element] {
         }
 
         self.len -= 1
+        setBufferLen[Element](self.buffer, self.len)
         let elemSize = sizeOf[Element]()
         let offset = self.len * elemSize
         var elem = MaybeUninit[Element].uninit()
@@ -163,6 +166,7 @@ impl[Element] List[Element] {
 
     public func clear(&mut self) {
         self.len = 0
+        setBufferLen[Element](self.buffer, self.len)
     }
 }
 
@@ -208,6 +212,7 @@ impl[Element] List[Element] {
         }
 
         self.len += 1
+        setBufferLen[Element](self.buffer, self.len)
         return true
     }
 
@@ -235,6 +240,7 @@ impl[Element] List[Element] {
         }
 
         self.len -= 1
+        setBufferLen[Element](self.buffer, self.len)
         return .some(unsafe { elem.assumeInit() })
     }
 }

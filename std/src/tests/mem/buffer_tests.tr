@@ -28,3 +28,9 @@ func testGrowBufferPreservesBytes() {
 
     std.testing.assertEqual(text, "abcd", "growBuffer should preserve existing bytes while extending capacity")
 }
+
+@test
+func testGcDescLayoutReportsSizeAndAlign() {
+    std.testing.assertEqual(std.mem.gcDescSize[int64](), std.mem.sizeOf[int64](), "GcDesc size should match intrinsic size")
+    std.testing.assertEqual(std.mem.gcDescAlign[int64](), std.mem.alignOf[int64](), "GcDesc align should match intrinsic align")
+}

@@ -262,6 +262,10 @@ fn snapshot_registered_threads() -> (usize, Vec<Arc<ThreadState>>) {
 }
 
 fn wait_for_registered_threads(snapshot: &[Arc<ThreadState>], current_id: std::thread::ThreadId) {
+    // Registered threads cooperate with stop-the-world GC by polling,
+    // allocating, entering a safepoint, or detaching before long blocking
+    // native work. A registered thread that never reaches a safepoint can
+    // stall collection indefinitely.
     for thread in snapshot {
         if thread.id == current_id {
             continue;
@@ -427,6 +431,10 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
         Some(n) => n,
         None => return std::ptr::null_mut(),
     };
+    let scan_size = match elem_size.checked_mul(len) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
+    };
     if total == 0 {
         return std::ptr::null_mut();
     }
@@ -434,7 +442,7 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
     if needs_gc {
         initiate_collection();
     }
-    with_gc(|gc| gc.alloc(total, desc, true))
+    with_gc(|gc| gc.alloc_with_scan_size(total, scan_size, desc, true))
 }
 
 #[unsafe(no_mangle)]
@@ -466,6 +474,33 @@ pub extern "C" fn __gc__add_root(ptr: *const u8) {
     with_gc(|gc| gc.add_root(ptr));
 }
 
+/// Register a global/static memory range to be conservatively scanned.
+#[unsafe(no_mangle)]
+pub extern "C" fn __gc__register_static(start: *const u8, byte_len: usize) {
+    if start.is_null() || byte_len == 0 {
+        return;
+    }
+    with_gc(|gc| gc.register_static_root(start, byte_len));
+}
+
+/// Update the initialized length of a GC-managed pointer-bearing buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn __gc__set_buf_len(ptr: *mut u8, desc: *const GcDesc, len: usize) {
+    if ptr.is_null() || desc.is_null() || !desc_has_pointers(desc) {
+        return;
+    }
+
+    let elem_size = unsafe { desc.as_ref() }.map(|d| d.size).unwrap_or(0);
+    if elem_size == 0 {
+        return;
+    }
+    let Some(scan_size) = elem_size.checked_mul(len) else {
+        return;
+    };
+
+    with_gc(|gc| gc.set_buffer_scan_size(ptr, scan_size));
+}
+
 /// Grow a GC-managed buffer to a new capacity.
 ///
 /// Allocates a new buffer with the new capacity and copies existing data.
@@ -478,7 +513,8 @@ pub extern "C" fn __gc__grow_buf(
     old_len: usize,
     new_cap: usize,
 ) -> *mut u8 {
-    if desc.is_null() || new_cap == 0 {
+    ensure_thread_registered();
+    if desc.is_null() || new_cap == 0 || old_len > new_cap {
         return std::ptr::null_mut();
     }
 
@@ -491,16 +527,27 @@ pub extern "C" fn __gc__grow_buf(
         Some(n) => n,
         None => return std::ptr::null_mut(),
     };
+    let scan_size = match elem_size.checked_mul(old_len) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
+    };
+
+    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    if needs_gc {
+        initiate_collection();
+    }
 
     // Allocate new buffer
-    let new_ptr = with_gc(|gc| gc.alloc(new_total, desc, true));
+    let new_ptr = with_gc(|gc| gc.alloc_with_scan_size(new_total, scan_size, desc, true));
     if new_ptr.is_null() {
         return std::ptr::null_mut();
     }
 
     // Copy existing data if there is any
     if !old_ptr.is_null() && old_len > 0 {
-        let copy_bytes = old_len.saturating_mul(elem_size);
+        let Some(copy_bytes) = old_len.checked_mul(elem_size) else {
+            return std::ptr::null_mut();
+        };
         unsafe {
             std::ptr::copy_nonoverlapping(old_ptr, new_ptr, copy_bytes);
         }
@@ -706,7 +753,11 @@ struct Span {
 
     // Per-slot metadata (only populated for scan spans).
     descs: Vec<*const GcDesc>,
+    // Requested payload bytes for each slot.
     sizes: Vec<usize>,
+    // Bytes the marker should trace. Array buffers may allocate more capacity
+    // than their initialized length.
+    scan_sizes: Vec<usize>,
 
     // Free list for small-object spans (indexes into slots).
     free_list: Vec<usize>,
@@ -762,6 +813,11 @@ impl Span {
             } else {
                 Vec::new()
             },
+            scan_sizes: if has_pointers {
+                vec![0; object_count]
+            } else {
+                Vec::new()
+            },
             free_list,
             allocated: 0,
             in_class_list: false,
@@ -775,6 +831,7 @@ impl Span {
         start_page: usize,
         page_count: usize,
         payload_size: usize,
+        scan_size: usize,
         desc: *const GcDesc,
         has_pointers: bool,
         is_array: bool,
@@ -811,6 +868,11 @@ impl Span {
             } else {
                 Vec::new()
             },
+            scan_sizes: if has_pointers {
+                vec![scan_size.min(payload_size)]
+            } else {
+                Vec::new()
+            },
             free_list: Vec::new(),
             allocated: 1,
             in_class_list: false,
@@ -826,6 +888,7 @@ impl Span {
     fn alloc_small(
         &mut self,
         payload_size: usize,
+        scan_size: usize,
         desc: *const GcDesc,
         is_array: bool,
     ) -> Option<*mut u8> {
@@ -842,6 +905,7 @@ impl Span {
         if self.has_pointers {
             self.descs[index] = desc;
             self.sizes[index] = payload_size;
+            self.scan_sizes[index] = scan_size.min(payload_size);
             bitset_set(&mut self.array_map, index, is_array);
         }
         self.allocated += 1;
@@ -854,6 +918,7 @@ impl Span {
         if self.has_pointers {
             self.descs[index] = std::ptr::null();
             self.sizes[index] = 0;
+            self.scan_sizes[index] = 0;
             bitset_set(&mut self.array_map, index, false);
         }
         self.free_list.push(index);
@@ -1002,20 +1067,59 @@ impl Gc {
         self.manual_roots.push(ptr);
     }
 
+    fn register_static_root(&mut self, start: *const u8, byte_len: usize) {
+        let Some(end_addr) = (start as usize).checked_add(byte_len) else {
+            return;
+        };
+        let range = start..(end_addr as *const u8);
+        if !self
+            .static_roots
+            .iter()
+            .any(|existing| existing.start == range.start && existing.end == range.end)
+        {
+            self.static_roots.push(range);
+        }
+    }
+
     // Route small allocations to size-class spans; large allocations get a span.
     // payload_size is the requested size, alloc_size is rounded up for alignment.
     fn alloc(&mut self, size: usize, desc: *const GcDesc, is_array: bool) -> *mut u8 {
+        self.alloc_with_scan_size(size, size, desc, is_array)
+    }
+
+    fn alloc_with_scan_size(
+        &mut self,
+        size: usize,
+        scan_size: usize,
+        desc: *const GcDesc,
+        is_array: bool,
+    ) -> *mut u8 {
         // Compute allocation size with alignment and choose the scan lane.
         let payload_size = size;
+        let scan_size = scan_size.min(payload_size);
         let align = desc_alignment(desc).max(std::mem::size_of::<usize>());
         let alloc_size = align_up(payload_size, align);
         let has_pointers = desc_has_pointers(desc);
 
         // Small allocations go through size-class spans; large ones get whole pages.
         let (ptr, alloc_bytes) = if alloc_size > PAGE_SIZE {
-            self.alloc_large(payload_size, alloc_size, desc, has_pointers, is_array)
+            self.alloc_large(
+                payload_size,
+                scan_size,
+                alloc_size,
+                desc,
+                has_pointers,
+                is_array,
+            )
         } else {
-            self.alloc_small(payload_size, alloc_size, desc, has_pointers, is_array)
+            self.alloc_small(
+                payload_size,
+                scan_size,
+                alloc_size,
+                desc,
+                has_pointers,
+                is_array,
+            )
         };
 
         self.after_alloc(alloc_bytes);
@@ -1026,6 +1130,7 @@ impl Gc {
     fn alloc_small(
         &mut self,
         payload_size: usize,
+        scan_size: usize,
         alloc_size: usize,
         desc: *const GcDesc,
         has_pointers: bool,
@@ -1038,7 +1143,7 @@ impl Gc {
         let span_id = self.take_span_for_class(class_index, lane);
         let span = self.spans[span_id].as_mut().expect("span exists");
         let ptr = span
-            .alloc_small(payload_size, desc, is_array)
+            .alloc_small(payload_size, scan_size, desc, is_array)
             .expect("span has free slot");
         if span.has_free() && !span.in_class_list {
             self.class_spans[class_index][lane].push(span_id);
@@ -1051,6 +1156,7 @@ impl Gc {
     fn alloc_large(
         &mut self,
         payload_size: usize,
+        scan_size: usize,
         alloc_size: usize,
         desc: *const GcDesc,
         has_pointers: bool,
@@ -1067,6 +1173,7 @@ impl Gc {
             start_page,
             pages,
             payload_size,
+            scan_size,
             desc,
             has_pointers,
             is_array,
@@ -1203,6 +1310,24 @@ impl Gc {
         }
     }
 
+    fn set_buffer_scan_size(&mut self, ptr: *mut u8, scan_size: usize) {
+        let Some((span_id, object_index)) = self.find_object(ptr.cast_const()) else {
+            return;
+        };
+        let Some(span) = self.spans.get_mut(span_id).and_then(|s| s.as_mut()) else {
+            return;
+        };
+        if !span.has_pointers
+            || !bitset_get(&span.alloc_map, object_index)
+            || !bitset_get(&span.array_map, object_index)
+        {
+            return;
+        }
+        if scan_size <= span.sizes[object_index] {
+            span.scan_sizes[object_index] = scan_size;
+        }
+    }
+
     fn collect(&mut self, threads: &[Arc<ThreadState>]) {
         // Stop-the-world collection: gather roots, mark, then sweep.
         let mut manual_roots = std::mem::take(&mut self.manual_roots);
@@ -1296,20 +1421,21 @@ impl Gc {
         }
 
         let payload_size = span.sizes[object_index];
+        let scan_size = span.scan_sizes[object_index].min(payload_size);
         let base = unsafe { span.base.add(object_index * span.object_size) };
         let elem_size = desc.size;
         let is_array = bitset_get(&span.array_map, object_index);
 
         if is_array && elem_size != 0 {
             // Arrays/slices: apply field offsets for each element.
-            let count = payload_size / elem_size;
+            let count = scan_size / elem_size;
             for index in 0..count {
                 let elem_base = unsafe { base.add(index * elem_size) };
                 self.push_pointer_fields(elem_base, elem_size, desc, stack);
             }
         } else {
             // Single object: trace pointer fields once.
-            self.push_pointer_fields(base, payload_size, desc, stack);
+            self.push_pointer_fields(base, scan_size, desc, stack);
         }
     }
 
@@ -1393,6 +1519,7 @@ impl Gc {
                     if span.has_pointers && !span.descs.is_empty() {
                         span.descs[0] = std::ptr::null();
                         span.sizes[0] = 0;
+                        span.scan_sizes[0] = 0;
                     }
                     span.allocated = 0;
                     self.stats.record_free(total_bytes);
@@ -1620,7 +1747,31 @@ fn register_segment_arenas(arena_map: &mut HashMap<usize, usize>, segment: &Segm
 
 #[cfg(test)]
 mod tests {
-    use super::Gc;
+    use super::{
+        __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach, Gc, GcDesc,
+    };
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    static POINTER_OFFSETS: [usize; 1] = [0];
+
+    fn bytes_desc(size: usize) -> GcDesc {
+        GcDesc {
+            size,
+            align: 1,
+            ptr_offsets: std::ptr::null(),
+            ptr_count: 0,
+        }
+    }
+
+    fn pointer_desc() -> GcDesc {
+        GcDesc {
+            size: std::mem::size_of::<*mut u8>(),
+            align: std::mem::align_of::<*mut u8>(),
+            ptr_offsets: POINTER_OFFSETS.as_ptr(),
+            ptr_count: POINTER_OFFSETS.len(),
+        }
+    }
 
     #[test]
     fn persistent_roots_use_reference_counts() {
@@ -1636,5 +1787,70 @@ mod tests {
 
         gc.remove_persistent_root(ptr);
         assert!(!gc.persistent_roots.contains_key(&ptr));
+    }
+
+    #[test]
+    fn static_roots_keep_global_pointer_alive() {
+        let mut gc = Gc::new();
+        let leaf_desc = bytes_desc(8);
+        let child = gc.alloc(8, &leaf_desc, false);
+        let global_slot = child;
+
+        gc.register_static_root(
+            (&global_slot as *const *mut u8).cast::<u8>(),
+            std::mem::size_of::<*mut u8>(),
+        );
+        gc.collect(&[]);
+
+        assert!(gc.find_object(child).is_some());
+    }
+
+    #[test]
+    fn buffer_scan_size_limits_traced_elements() {
+        let mut gc = Gc::new();
+        let leaf_desc = bytes_desc(8);
+        let pointer_desc = pointer_desc();
+        let elem_size = std::mem::size_of::<*mut u8>();
+        let child = gc.alloc(8, &leaf_desc, false);
+        let buffer = gc.alloc_with_scan_size(elem_size * 2, elem_size, &pointer_desc, true);
+
+        unsafe {
+            (buffer as *mut *mut u8).write(child);
+        }
+
+        gc.add_root(buffer);
+        gc.collect(&[]);
+        assert!(gc.find_object(child).is_some());
+
+        gc.set_buffer_scan_size(buffer, 0);
+        gc.add_root(buffer);
+        gc.collect(&[]);
+        assert!(gc.find_object(child).is_none());
+    }
+
+    #[test]
+    fn grow_buf_rejects_invalid_lengths() {
+        let desc = bytes_desc(2);
+
+        let past_capacity = __gc__grow_buf(std::ptr::null_mut(), &desc, 2, 1);
+        assert!(past_capacity.is_null());
+
+        let overflow = __gc__grow_buf(std::ptr::null_mut(), &desc, usize::MAX, usize::MAX);
+        assert!(overflow.is_null());
+    }
+
+    #[test]
+    fn detached_threads_do_not_block_collection() {
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            __gc__thread_attach();
+            __gc__thread_detach();
+            tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        });
+
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        __gc__collect();
+        handle.join().unwrap();
     }
 }

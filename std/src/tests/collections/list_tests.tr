@@ -280,7 +280,22 @@ func testListStringPopAndRemoveAt() {
     let popped = list.pop()
     std.testing.assertTrue(popped.isSome(), "pop should return removed string")
     std.testing.assertEqual(popped.unwrap(), "gamma", "pop should return last string")
+    std.runtime.collect()
     std.testing.assertEqual(*list.at(0), "alpha", "remaining string should stay in place")
+
+    list.clear()
+    std.runtime.collect()
+    std.testing.assertEqual(list.len(), 0 as usize, "clear should drop logical string length")
+}
+
+@test
+func testListStringSpareCapacityAfterCollect() {
+    var list: List[string] = List(withCapacity: 64)
+    list.append(std.sprintf("kept %v", 1))
+    std.runtime.collect()
+
+    std.testing.assertEqual(list.len(), 1 as usize, "list should keep initialized length")
+    std.testing.assertEqual(*list.at(0), "kept 1", "initialized string should survive collect")
 }
 
 @test

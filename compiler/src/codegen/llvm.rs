@@ -117,6 +117,8 @@ pub fn emit_package_with_timings<'gcx>(
     emitter.lower_instances(package)?;
     timings.lower_instances = phase_started_at.elapsed();
 
+    emitter.emit_static_root_registration_ctor();
+
     let phase_started_at = Instant::now();
     emitter.emit_start_shim(package);
     timings.emit_entry_or_harness = phase_started_at.elapsed();
@@ -187,6 +189,8 @@ pub fn emit_test_package_with_timings<'gcx>(
     emitter.lower_instances(package)?;
     timings.lower_instances = phase_started_at.elapsed();
 
+    emitter.emit_static_root_registration_ctor();
+
     let phase_started_at = Instant::now();
     emitter.emit_test_harness(tests);
     timings.emit_entry_or_harness = phase_started_at.elapsed();
@@ -226,6 +230,7 @@ struct Emitter<'llvm, 'gcx> {
     functions: FxHashMap<Instance<'gcx>, FunctionValue<'llvm>>,
     fn_abis: FxHashMap<Instance<'gcx>, abi::FnAbi<'gcx>>,
     globals: FxHashMap<hir::DefinitionID, PointerValue<'llvm>>,
+    static_gc_roots: Vec<(PointerValue<'llvm>, u64)>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
@@ -329,6 +334,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             functions: FxHashMap::default(),
             fn_abis: FxHashMap::default(),
             globals: FxHashMap::default(),
+            static_gc_roots: Vec::new(),
             strings: FxHashMap::default(),
             target_data,
             gc_descs: FxHashMap::default(),
@@ -688,7 +694,80 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let ptr = global.as_pointer_value();
         self.globals.insert(def_id, ptr);
+        if self.static_storage_needs_gc_root(ty, llvm_ty) {
+            let byte_len = self.target_data.get_store_size(&llvm_ty);
+            self.static_gc_roots.push((ptr, byte_len));
+        }
         ptr
+    }
+
+    fn static_storage_needs_gc_root(
+        &mut self,
+        ty: Ty<'gcx>,
+        llvm_ty: BasicTypeEnum<'llvm>,
+    ) -> bool {
+        self.target_data.get_store_size(&llvm_ty) != 0
+            && !self.gc_root_offsets_for_ty(ty).is_empty()
+    }
+
+    fn declare_gc_register_static_fn(&self) -> FunctionValue<'llvm> {
+        if let Some(f) = self.module.get_function("__gc__register_static") {
+            return f;
+        }
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let fn_ty = self
+            .context
+            .void_type()
+            .fn_type(&[ptr_ty.into(), self.usize_ty.into()], false);
+        self.module
+            .add_function("__gc__register_static", fn_ty, Some(Linkage::External))
+    }
+
+    fn emit_static_root_registration_ctor(&mut self) {
+        if self.static_gc_roots.is_empty() {
+            return;
+        }
+
+        let void_ty = self.context.void_type();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let ctor_ty = void_ty.fn_type(&[], false);
+        let ctor = self.module.add_function(
+            "__taro_register_gc_statics",
+            ctor_ty,
+            Some(Linkage::Internal),
+        );
+        let entry = self.context.append_basic_block(ctor, "entry");
+        let builder = self.context.create_builder();
+        builder.position_at_end(entry);
+
+        let register_static = self.declare_gc_register_static_fn();
+        for (ptr, byte_len) in &self.static_gc_roots {
+            builder
+                .build_call(
+                    register_static,
+                    &[
+                        (*ptr).into(),
+                        self.usize_ty.const_int(*byte_len, false).into(),
+                    ],
+                    "",
+                )
+                .unwrap();
+        }
+        builder.build_return(None).unwrap();
+
+        let priority_ty = self.context.i32_type();
+        let ctor_entry_ty = self
+            .context
+            .struct_type(&[priority_ty.into(), ptr_ty.into(), ptr_ty.into()], false);
+        let ctor_entry = ctor_entry_ty.const_named_struct(&[
+            priority_ty.const_int(65535, false).into(),
+            ctor.as_global_value().as_pointer_value().into(),
+            ptr_ty.const_null().into(),
+        ]);
+        let ctors_ty = ctor_entry_ty.array_type(1);
+        let ctors = self.module.add_global(ctors_ty, None, "llvm.global_ctors");
+        ctors.set_linkage(Linkage::Appending);
+        ctors.set_initializer(&ctor_entry_ty.const_array(&[ctor_entry]));
     }
 
     fn declare_external_static_global(&mut self, def_id: hir::DefinitionID) -> PointerValue<'llvm> {
@@ -5564,11 +5643,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return *ptr;
         }
         let sym_text = self.gcx.symbol_text(&sym);
-        let gv = self
-            .builder
-            .build_global_string_ptr(sym_text.as_ref(), "str")
-            .unwrap();
-        let ptr = gv.as_pointer_value();
+        let string_const = self.context.const_string(sym_text.as_ref().as_bytes(), true);
+        let global = self.module.add_global(
+            string_const.get_type(),
+            None,
+            &format!("__str_{}", self.strings.len()),
+        );
+        global.set_initializer(&string_const);
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_unnamed_addr(true);
+        let ptr = global
+            .as_pointer_value()
+            .const_cast(self.context.ptr_type(AddressSpace::default()));
         let _ = self.strings.insert(sym, ptr);
         ptr
     }
