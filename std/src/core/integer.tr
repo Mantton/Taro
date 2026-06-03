@@ -3,6 +3,10 @@ import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
 
+func usizeMax() -> usize {
+    0xffffffffffffffff_u64 as usize
+}
+
 // Hash integers as little-endian bytes for stable, explicit byte feeds.
 func hashU8[H: Hasher](_ hasher: &mut H, _ value: uint8) {
     let bytes: [uint8; 1] = [value]
@@ -328,5 +332,31 @@ impl Ord for usize {
         } else {
             .greater
         }
+    }
+}
+
+impl usize {
+    public func checkedAdd(self, _ rhs: usize) -> usize? {
+        if self > usizeMax() - rhs {
+            return .none
+        }
+        return .some(self + rhs)
+    }
+
+    public func checkedSub(self, _ rhs: usize) -> usize? {
+        if self < rhs {
+            return .none
+        }
+        return .some(self - rhs)
+    }
+
+    public func checkedMul(self, _ rhs: usize) -> usize? {
+        if self == 0 || rhs == 0 {
+            return .some(0 as usize)
+        }
+        if self > usizeMax() / rhs {
+            return .none
+        }
+        return .some(self * rhs)
     }
 }

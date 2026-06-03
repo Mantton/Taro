@@ -271,10 +271,12 @@ extern "taro_rt" {
 
 // Raw runtime hooks stay here because the compiler currently resolves them by name.
 public func makeBuffer[T](_ len: usize, _ cap: usize) -> *mut uint8 {
+    assertBufferCapacity[T](cap, "buffer capacity overflow")
     __gc__makebuf(std.intrinsic.__intrinsic_gc_desc[T](), len, cap)
 }
 
 public func growBuffer[T](_ oldPtr: *mut uint8, _ oldLen: usize, _ newCap: usize) -> *mut uint8 {
+    assertBufferCapacity[T](newCap, "buffer capacity overflow")
     __gc__grow_buf(oldPtr, std.intrinsic.__intrinsic_gc_desc[T](), oldLen, newCap)
 }
 
@@ -300,6 +302,35 @@ public func sizeOf[T]() -> usize {
 
 public func alignOf[T]() -> usize {
     std.intrinsic.__intrinsic_align_of[T]()
+}
+
+public func maxBufferBytes() -> usize {
+    return (0xffffffffffffffff_u64 as usize) / (2 as usize)
+}
+
+public func maxBufferCapacity[T]() -> usize {
+    let elemSize = sizeOf[T]()
+    if elemSize == 0 {
+        return 0xffffffffffffffff_u64 as usize
+    }
+    return maxBufferBytes() / elemSize
+}
+
+public func checkedBufferByteCount[T](_ capacity: usize) -> usize? {
+    let elemSize = sizeOf[T]()
+    if elemSize == 0 {
+        return .some(0 as usize)
+    }
+    if capacity > maxBufferCapacity[T]() {
+        return .none
+    }
+    return capacity.checkedMul(elemSize)
+}
+
+public func assertBufferCapacity[T](_ capacity: usize, _ message: string) {
+    if capacity > maxBufferCapacity[T]() {
+        panic(message)
+    }
 }
 
 public func replace[T](_ dest: &mut T, _ src: T) -> T {

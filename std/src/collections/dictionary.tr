@@ -5,6 +5,7 @@ import std.panic.panic
 import std.iter.{Iterator, Iterable}
 import std.marker.Clone
 import std.ops.Fn
+import std.mem.assertBufferCapacity
 
 const SWISS_GROUP_WIDTH: usize = 8
 const SWISS_CTRL_EMPTY: uint8 = 0x80
@@ -23,6 +24,53 @@ func hashKey[Key: Hashable](_ key: &Key) -> uint64 {
     var hasher = DefaultHasher.new()
     key.hash(into: &mut hasher)
     hasher.finish()
+}
+
+func dictionaryCapacityOverflow() {
+    panic("dictionary capacity overflow")
+}
+
+func checkedDictionaryLenAfterInsert(_ len: usize) -> usize {
+    match len.checkedAdd(1 as usize) {
+        case .some(nextLen) => return nextLen
+        case .none => {
+            dictionaryCapacityOverflow()
+            return 0 as usize
+        }
+    }
+}
+
+func assertDictionaryStorageCapacity[Key: Hashable, Value](_ capacity: usize) {
+    assertBufferCapacity[uint8](capacity, "dictionary capacity overflow")
+    assertBufferCapacity[uint64](capacity, "dictionary capacity overflow")
+    assertBufferCapacity[Key?](capacity, "dictionary capacity overflow")
+    assertBufferCapacity[Value?](capacity, "dictionary capacity overflow")
+}
+
+public func __dictionary_should_grow_for_insert(_ len: usize, _ capacity: usize) -> bool {
+    if capacity == 0 {
+        return true
+    }
+
+    let maxLenBeforeGrow = capacity - (capacity / (4 as usize))
+    return len >= maxLenBeforeGrow
+}
+
+public func __dictionary_next_capacity_for_grow[Key: Hashable, Value](_ current: usize) -> usize {
+    let nextCapacity = if current == 0 {
+        SWISS_INITIAL_CAPACITY
+    } else {
+        match current.checkedMul(2 as usize) {
+            case .some(capacity) => capacity
+            case .none => {
+                dictionaryCapacityOverflow()
+                0 as usize
+            }
+        }
+    }
+
+    assertDictionaryStorageCapacity[Key, Value](nextCapacity)
+    return nextCapacity
 }
 
 /// Hash table layout (scalar Swiss-style probing):
@@ -233,7 +281,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                     *self.hashes.at(insertSlot) = hash
                     *self.keys.at(insertSlot) = .some(key)
                     *self.values.at(insertSlot) = .some(value)
-                    self.len += 1
+                    self.len = checkedDictionaryLenAfterInsert(self.len)
                     return .none
                 }
 
@@ -303,7 +351,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                     *self.hashes.at(insertSlot) = hash
                     *self.keys.at(insertSlot) = .some(key)
                     *self.values.at(insertSlot) = .some(value)
-                    self.len += 1
+                    self.len = checkedDictionaryLenAfterInsert(self.len)
                     return self.valueAtSlot(insertSlot)
                 }
 
@@ -366,20 +414,11 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
     }
 
     func shouldGrowForInsert(&self) -> bool {
-        if self.capacity == 0 {
-            return true
-        }
-
-        let nextLen = self.len + (1 as usize)
-        return nextLen * (4 as usize) > self.capacity * (3 as usize)
+        __dictionary_should_grow_for_insert(self.len, self.capacity)
     }
 
     func grow(&mut self) {
-        let newCapacity = if self.capacity == 0 {
-            SWISS_INITIAL_CAPACITY
-        } else {
-            self.capacity * 2
-        }
+        let newCapacity = __dictionary_next_capacity_for_grow[Key, Value](self.capacity)
 
         var newControls: List[uint8] = List(withCapacity: newCapacity)
         var newHashes: List[uint64] = List(withCapacity: newCapacity)

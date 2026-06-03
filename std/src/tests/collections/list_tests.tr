@@ -1,7 +1,12 @@
-import std.collections.List
+import std.collections.{List, __list_from_raw_parts}
 import std.cmp.{Ordering, PartialOrd, Ord}
 import std.marker.Clone
 import std.optional.Optional
+
+struct CapacityWideElement {
+    left: uint64
+    right: uint64
+}
 
 func sumRef(_ list: &List[int32]) -> int32 {
     var sum: int32 = 0
@@ -140,6 +145,36 @@ func testListReserve() {
     let capBefore = list.capacity()
     list.reserve(50 as usize)
     std.testing.assertEqual(list.capacity(), capBefore, "reserve smaller should be no-op")
+}
+
+@test
+@expectPanic
+func testListWithCapacityRejectsOverflowingByteCapacity() {
+    let capacity = std.mem.maxBufferCapacity[CapacityWideElement]() + (1 as usize)
+    let _ = List[CapacityWideElement].new(withCapacity: capacity)
+}
+
+@test
+@expectPanic
+func testListReserveRejectsOverflowingByteCapacity() {
+    var list: List[CapacityWideElement] = List()
+    list.reserve(std.mem.maxBufferCapacity[CapacityWideElement]() + (1 as usize))
+}
+
+@test
+@expectPanic
+func testListAppendRejectsCapacityOverflowBeforeWrite() {
+    let capacity = std.mem.maxBufferCapacity[int32]()
+    var list = __list_from_raw_parts[int32](unsafe { 0 as *mut uint8 }, capacity, capacity)
+    list.append(1)
+}
+
+@test
+@expectPanic
+func testListInsertRejectsCapacityOverflowBeforeWrite() {
+    let capacity = std.mem.maxBufferCapacity[int32]()
+    var list = __list_from_raw_parts[int32](unsafe { 0 as *mut uint8 }, capacity, capacity)
+    let _ = list.insert(at: capacity, 1)
 }
 
 @test

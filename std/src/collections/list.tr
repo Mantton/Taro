@@ -1,9 +1,54 @@
-import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, setBufferLen, sizeOf}
+import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity, setBufferLen, sizeOf}
 import std.optional.Optional
 import std.iter.{Iterator, Iterable, FromIterator}
 import std.panic.panic
 import std.cmp.{Ord, Ordering}
 import std.marker.Clone
+
+const LIST_INITIAL_CAPACITY: usize = 4
+
+func listCapacityOverflow() {
+    panic("list capacity overflow")
+}
+
+func checkedListLenAfterInsert(_ len: usize) -> usize {
+    match len.checkedAdd(1 as usize) {
+        case .some(nextLen) => return nextLen
+        case .none => {
+            listCapacityOverflow()
+            return 0 as usize
+        }
+    }
+}
+
+func nextListCapacity[Element](_ current: usize, _ required: usize) -> usize {
+    let maxCapacity = maxBufferCapacity[Element]()
+    if required > maxCapacity {
+        listCapacityOverflow()
+    }
+
+    var newCap = if current == 0 { LIST_INITIAL_CAPACITY } else { current }
+    if newCap > maxCapacity {
+        newCap = required
+    }
+
+    while newCap < required {
+        match newCap.checkedMul(2 as usize) {
+            case .some(doubled) => {
+                if doubled > maxCapacity {
+                    newCap = required
+                } else {
+                    newCap = doubled
+                }
+            }
+            case .none => {
+                newCap = required
+            }
+        }
+    }
+
+    return newCap
+}
 
 @lang("List")
 public struct List[Element] {
@@ -35,6 +80,9 @@ impl[Element] List[Element] {
             return List[Element]()
         }
 
+        if capacity > maxBufferCapacity[Element]() {
+            listCapacityOverflow()
+        }
         let buf = makeBuffer[Element](0, capacity)
         List[Element] {
             buffer: buf,
@@ -76,6 +124,7 @@ impl[Element] FromIterator for List[Element] {
 
 impl[Element] List[Element] {
     public func append(&mut self, _ item: Element) {
+        let nextLen = checkedListLenAfterInsert(self.len)
         if self.len >= self.cap {
             self.grow()
         }
@@ -86,12 +135,13 @@ impl[Element] List[Element] {
                 .write(item)
         }
 
-        self.len += 1
+        self.len = nextLen
         setBufferLen[Element](self.buffer, self.len)
     }
 
     func grow(&mut self) {
-        let newCap = if self.cap == 0 { 4 } else { self.cap * 2 }
+        let required = checkedListLenAfterInsert(self.len)
+        let newCap = nextListCapacity[Element](self.cap, required)
         let newBuffer = growBuffer[Element](self.buffer, self.len, newCap)
         self.buffer = newBuffer
         self.cap = newCap
@@ -176,11 +226,7 @@ impl[Element] List[Element] {
             return
         }
 
-        var newCap = if self.cap == 0 { 4 } else { self.cap }
-        while newCap < minCapacity {
-            newCap = newCap * 2
-        }
-
+        let newCap = nextListCapacity[Element](self.cap, minCapacity)
         let newBuffer = growBuffer[Element](self.buffer, self.len, newCap)
         self.buffer = newBuffer
         self.cap = newCap
@@ -191,6 +237,7 @@ impl[Element] List[Element] {
             return false
         }
 
+        let nextLen = checkedListLenAfterInsert(self.len)
         if self.len >= self.cap {
             self.grow()
         }
@@ -211,7 +258,7 @@ impl[Element] List[Element] {
                 .write(item)
         }
 
-        self.len += 1
+        self.len = nextLen
         setBufferLen[Element](self.buffer, self.len)
         return true
     }

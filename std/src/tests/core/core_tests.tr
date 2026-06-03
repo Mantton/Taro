@@ -15,3 +15,24 @@ func testInt32Arithmetic() {
     std.testing.assertEqual(a / b, div_expected, "int32 division failed")
     std.testing.assertEqual(a % b, rem_expected, "int32 remainder failed")
 }
+
+@test
+func testUsizeCheckedArithmetic() {
+    let max = 0xffffffffffffffff_u64 as usize
+    let one = 1 as usize
+
+    let addOk = (max - one).checkedAdd(one)
+    std.testing.assertTrue(addOk.isSome(), "usize checkedAdd should succeed in range")
+    std.testing.assertEqual(addOk.unwrap(), max, "usize checkedAdd in-range value mismatch")
+    std.testing.assertTrue(max.checkedAdd(one).isNone(), "usize checkedAdd should reject overflow")
+
+    let subOk = one.checkedSub(one)
+    std.testing.assertTrue(subOk.isSome(), "usize checkedSub should succeed in range")
+    std.testing.assertEqual(subOk.unwrap(), 0 as usize, "usize checkedSub in-range value mismatch")
+    std.testing.assertTrue((0 as usize).checkedSub(one).isNone(), "usize checkedSub should reject underflow")
+
+    let mulOk = (max / (2 as usize)).checkedMul(2 as usize)
+    std.testing.assertTrue(mulOk.isSome(), "usize checkedMul should succeed in range")
+    std.testing.assertEqual(mulOk.unwrap(), max - one, "usize checkedMul in-range value mismatch")
+    std.testing.assertTrue(((max / (2 as usize)) + one).checkedMul(2 as usize).isNone(), "usize checkedMul should reject overflow")
+}
