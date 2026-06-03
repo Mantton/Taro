@@ -34,6 +34,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.normalize_post_mono_ty(self.substitute_ty_current(ty))
     }
 
+    #[inline]
+    pub(super) fn mono_ty_if_resolved(&self, ty: Ty<'gcx>) -> Ty<'gcx> {
+        let ty = self.substitute_ty_current(ty);
+        if ty.needs_instantiation() {
+            ty
+        } else {
+            self.normalize_post_mono_ty(ty)
+        }
+    }
+
     pub(super) fn resolve_generic_args(
         &self,
         args: GenericArguments<'gcx>,

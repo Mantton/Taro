@@ -17,6 +17,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         to_ty: Ty<'gcx>,
         value: BasicValueEnum<'llvm>,
     ) -> CompileResult<BasicValueEnum<'llvm>> {
+        let from_ty = self.mono_ty_if_resolved(from_ty);
+        let to_ty = self.mono_ty_if_resolved(to_ty);
         let TyKind::BoxedExistential { interfaces } = to_ty.kind() else {
             return Ok(value);
         };

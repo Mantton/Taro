@@ -2132,6 +2132,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                                 continue;
                             }
                         }
+                        if !expects_pointer && actual_is_pointer {
+                            if let Some(BasicValueEnum::PointerValue(ptr)) =
+                                self.eval_operand(body, locals, arg)?
+                            {
+                                let direct_ty = self.mono_ty_if_resolved(abi_arg.ty);
+                                if !direct_ty.needs_instantiation()
+                                    && let Some(load_ty) = self.lower_ty(direct_ty)
+                                {
+                                    let loaded = self
+                                        .builder
+                                        .build_load(load_ty, ptr, "direct_arg")
+                                        .unwrap();
+                                    lowered.push(loaded);
+                                    continue;
+                                }
+                            }
+                        }
                     }
                     if let Some(val) = self.eval_operand(body, locals, arg)? {
                         lowered.push(val);
@@ -3694,6 +3711,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         ty: Ty<'gcx>,
         value: BasicValueEnum<'llvm>,
     ) -> CompileResult<PointerValue<'llvm>> {
+        let ty = self.mono_ty_if_resolved(ty);
         let Some(llvm_payload_ty) = self.lower_ty(ty) else {
             return Ok(self.context.ptr_type(AddressSpace::default()).const_null());
         };
@@ -5643,7 +5661,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return *ptr;
         }
         let sym_text = self.gcx.symbol_text(&sym);
-        let string_const = self.context.const_string(sym_text.as_ref().as_bytes(), true);
+        let string_const = self
+            .context
+            .const_string(sym_text.as_ref().as_bytes(), true);
         let global = self.module.add_global(
             string_const.get_type(),
             None,
@@ -5788,6 +5808,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn gc_root_offsets_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<u64> {
+        let ty = self.mono_ty_if_resolved(ty);
         let mut offsets = Vec::new();
         self.append_gc_root_offsets(ty, 0, &mut offsets);
         offsets.sort_unstable();
