@@ -118,6 +118,123 @@ func testGrowthThresholdAndOverwrite() {
 }
 
 @test
+func testDictionarySetAndGetOrHelpers() {
+    var dict: [int32: string] = [:]
+
+    dict.set(key: 1, value: "one")
+    std.testing.assertEqual(dict.len(), 1 as usize, "set should insert new key")
+    std.testing.assertEqual(*dict.get(&1).unwrap(), "one", "set should write value")
+
+    dict.set(key: 1, value: "ONE")
+    std.testing.assertEqual(dict.len(), 1 as usize, "set overwrite should not change len")
+    std.testing.assertEqual(*dict.get(&1).unwrap(), "ONE", "set should overwrite value")
+
+    let hit = dict.getOr(&1, default: "missing")
+    let miss = dict.getOr(&2, default: "missing")
+    std.testing.assertEqual(hit, "ONE", "getOr should clone stored value")
+    std.testing.assertEqual(miss, "missing", "getOr should return provided default")
+}
+
+@test
+func testDictionaryEntryVacantAndOccupiedOperations() {
+    var dict: [int32: int32] = [:]
+
+    match dict.entry(7) {
+        case .vacant(entry) => {
+            std.testing.assertEqual(*entry.key(), 7, "vacant entry should expose key")
+            let value = entry.insert(70)
+            *value += 1
+        }
+        case .occupied(_) => std.testing.fail("new key should create vacant entry")
+    }
+
+    std.testing.assertEqual(*dict.get(&7).unwrap(), 71, "vacant insert should write mutable value")
+
+    match dict.entry(7) {
+        case .occupied(entry) => {
+            var occupied = entry
+            std.testing.assertEqual(*occupied.key(), 7, "occupied entry should expose key")
+            std.testing.assertEqual(*occupied.get(), 71, "occupied get should read value")
+            *occupied.get() += 4
+            let previous = occupied.insert(99)
+            std.testing.assertEqual(previous, 75, "occupied insert should return previous value")
+            let removed = occupied.remove()
+            std.testing.assertEqual(removed, 99, "occupied remove should return current value")
+        }
+        case .vacant(_) => std.testing.fail("existing key should create occupied entry")
+    }
+
+    std.testing.assertFalse(dict.contains(&7), "occupied remove should delete key")
+}
+
+@test
+func testDictionaryEntryOrInsertAndModify() {
+    var dict: [int32: int32] = [:]
+
+    let inserted = dict.entry(1).orInsert(10)
+    *inserted += 5
+    std.testing.assertEqual(*dict.get(&1).unwrap(), 15, "orInsert should insert and return mutable value")
+
+    let existing = dict.entry(1).orInsert(99)
+    *existing += 1
+    std.testing.assertEqual(*dict.get(&1).unwrap(), 16, "orInsert should reuse occupied value")
+
+    let generated = dict.entry(2).orInsertWith(|| -> int32 { 40 + 2 })
+    std.testing.assertEqual(*generated, 42, "orInsertWith should call provider for vacant entry")
+
+    let _ = dict.entry(1).andModify(|value: &mut int32| {
+        *value += 10
+    }).orInsert(0)
+    let _ = dict.entry(3).andModify(|value: &mut int32| {
+        *value += 10
+    }).orInsert(30)
+
+    std.testing.assertEqual(*dict.get(&1).unwrap(), 26, "andModify should mutate occupied entry")
+    std.testing.assertEqual(*dict.get(&3).unwrap(), 30, "andModify should preserve vacant entry for orInsert")
+}
+
+@test
+func testDictionaryEntryCollisionAndGrowthBehavior() {
+    var dict: [CollisionKey: int32] = [:]
+
+    let entryKey1 = CollisionKey { id: 1 }
+    let entryKey2 = CollisionKey { id: 2 }
+    let entryKey3 = CollisionKey { id: 3 }
+    let _ = dict.entry(entryKey1).orInsert(10)
+    let _ = dict.entry(entryKey2).orInsert(20)
+    let _ = dict.entry(entryKey3).orInsert(30)
+
+    let mutateKey = CollisionKey { id: 2 }
+    match dict.entry(mutateKey) {
+        case .occupied(entry) => {
+            var occupied = entry
+            *occupied.get() += 1
+        }
+        case .vacant(_) => std.testing.fail("collision key should be occupied")
+    }
+
+    std.testing.assertEqual(*dict.get(&CollisionKey { id: 1 }).unwrap(), 10, "collision entry should keep key 1 reachable")
+    std.testing.assertEqual(*dict.get(&CollisionKey { id: 2 }).unwrap(), 21, "collision entry should mutate key 2")
+    std.testing.assertEqual(*dict.get(&CollisionKey { id: 3 }).unwrap(), 30, "collision entry should keep key 3 reachable")
+
+    let removed = dict.remove(&CollisionKey { id: 1 })
+    std.testing.assertTrue(removed.isSome(), "remove should create reusable tombstone")
+    let entryKey4 = CollisionKey { id: 4 }
+    let _ = dict.entry(entryKey4).orInsert(40)
+    std.testing.assertEqual(dict.len(), 3 as usize, "vacant entry should reuse tombstone without losing len")
+    std.testing.assertEqual(*dict.get(&CollisionKey { id: 4 }).unwrap(), 40, "vacant collision entry should insert after tombstone")
+
+    var growing: [int32: int32] = [:]
+    var i: int32 = 0
+    while i < 13 {
+        let _ = growing.entry(i).orInsert(i + 100)
+        i += 1
+    }
+    std.testing.assertEqual(growing.len(), 13 as usize, "entry vacant insertion should grow at threshold")
+    std.testing.assertEqual(*growing.get(&12).unwrap(), 112, "entry insertion should survive growth")
+}
+
+@test
 func testDictionaryIterators() {
     var dict: [int32: string] = [:]
     let _ = dict.insert(key: 1, value: "one")

@@ -4,6 +4,7 @@ import std.collections.List
 import std.panic.panic
 import std.iter.{Iterator, Iterable}
 import std.marker.Clone
+import std.ops.Fn
 
 const SWISS_GROUP_WIDTH: usize = 8
 const SWISS_CTRL_EMPTY: uint8 = 0x80
@@ -82,73 +83,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         self.get(key).isSome()
     }
 
-    public func remove(&mut self, _ key: &Key) -> Value? {
-        if self.capacity == 0 {
-            return .none
-        }
-
-        let hash = hashKey(key)
-        let fp = swissFingerprint(hash)
-        let mask = self.capacity - (1 as usize)
-        let base = (hash as usize) & mask
-
-        var groupOffset: usize = 0
-        while groupOffset < self.capacity {
-            let groupStart = (base + groupOffset) & mask
-
-            var slotOffset: usize = 0
-            while slotOffset < SWISS_GROUP_WIDTH {
-                let slot = (groupStart + slotOffset) & mask
-                let ctrl = *self.controls.at(slot)
-
-                if ctrl == SWISS_CTRL_EMPTY {
-                    return .none
-                }
-
-                if swissCtrlIsFull(ctrl) && ctrl == fp {
-                    let slotHash = *self.hashes.at(slot)
-                    if slotHash == hash {
-                        let keysRead: &List[Key?] = &self.keys
-                        let keySlot = keysRead.at(slot)
-                        match keySlot {
-                            case .some(existingKey) => {
-                                if key.eq(existingKey) {
-                                    let valueSlot: &mut Value? = self.values.at(slot)
-                                    var removed: Value?
-                                    unsafe {
-                                        let valuePtr: *mut Value? = valueSlot as *mut Value?
-                                        removed = valuePtr.read()
-                                        valuePtr.write(.none)
-                                    }
-
-                                    let keySlotWrite: &mut Key? = self.keys.at(slot)
-                                    let ctrlSlot: &mut uint8 = self.controls.at(slot)
-                                    let hashSlot: &mut uint64 = self.hashes.at(slot)
-                                    *keySlotWrite = .none
-                                    *ctrlSlot = SWISS_CTRL_DELETED
-                                    *hashSlot = 0_u64
-
-                                    if removed.isSome() {
-                                        self.len -= 1
-                                    }
-                                    return removed
-                                }
-                            }
-                            case .none => {}
-                        }
-                    }
-                }
-
-                slotOffset += 1
-            }
-
-            groupOffset += SWISS_GROUP_WIDTH
-        }
-
-        return .none
-    }
-
-    public func get(&self, _ key: &Key) -> Optional[&Value] {
+    func findSlot(&self, _ key: &Key) -> usize? {
         if self.capacity == 0 {
             return .none
         }
@@ -178,15 +113,7 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
                         match keySlot {
                             case .some(existingKey) => {
                                 if key.eq(existingKey) {
-                                    let valueSlot: &Value? = self.values.at(slot)
-                                    match valueSlot {
-                                        case .some(existingValue) => {
-                                            return .some(existingValue)
-                                        }
-                                        case .none => {
-                                            return .none
-                                        }
-                                    }
+                                    return .some(slot)
                                 }
                             }
                             case .none => {}
@@ -203,60 +130,74 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
         return .none
     }
 
-    public func get(&mut self, _ key: &Key) -> Optional[&mut Value] {
-        if self.capacity == 0 {
-            return .none
+    func valueAtSlot(&self, _ slot: usize) -> &Value {
+        let valueSlot: &Value? = self.values.at(slot)
+        match valueSlot {
+            case .some(value) => return value
+            case .none => panic("dictionary slot has no value")
+        }
+    }
+
+    func valueAtSlot(&mut self, _ slot: usize) -> &mut Value {
+        let valueSlot: &mut Value? = self.values.at(slot)
+        match valueSlot {
+            case .some(value) => return value
+            case .none => panic("dictionary slot has no value")
+        }
+    }
+
+    func keyAtSlot(&self, _ slot: usize) -> &Key {
+        let keySlot: &Key? = self.keys.at(slot)
+        match keySlot {
+            case .some(key) => return key
+            case .none => panic("dictionary slot has no key")
+        }
+    }
+
+    func removeSlot(&mut self, _ slot: usize) -> Value {
+        let valueSlot: &mut Value? = self.values.at(slot)
+        var removed: Value?
+        unsafe {
+            let valuePtr: *mut Value? = valueSlot as *mut Value?
+            removed = valuePtr.read()
+            valuePtr.write(.none)
         }
 
-        let hash = hashKey(key)
-        let fp = swissFingerprint(hash)
-        let mask = self.capacity - (1 as usize)
-        let base = (hash as usize) & mask
+        let keySlot: &mut Key? = self.keys.at(slot)
+        let ctrlSlot: &mut uint8 = self.controls.at(slot)
+        let hashSlot: &mut uint64 = self.hashes.at(slot)
+        *keySlot = .none
+        *ctrlSlot = SWISS_CTRL_DELETED
+        *hashSlot = 0_u64
 
-        var groupOffset: usize = 0
-        while groupOffset < self.capacity {
-            let groupStart = (base + groupOffset) & mask
-
-            var slotOffset: usize = 0
-            while slotOffset < SWISS_GROUP_WIDTH {
-                let slot = (groupStart + slotOffset) & mask
-                let ctrl = *self.controls.at(slot)
-
-                if ctrl == SWISS_CTRL_EMPTY {
-                    return .none
-                }
-
-                if swissCtrlIsFull(ctrl) && ctrl == fp {
-                    let slotHash = *self.hashes.at(slot)
-                    if slotHash == hash {
-                        let keys: &mut List[Key?] = &mut self.keys
-                        let keySlot = keys.at(slot)
-                        match keySlot {
-                            case .some(existingKey) => {
-                                if key.eq(existingKey) {
-                                    let valueSlot: &mut Value? = self.values.at(slot)
-                                    match valueSlot {
-                                        case .some(existingValue) => {
-                                            return .some(existingValue)
-                                        }
-                                        case .none => {
-                                            return .none
-                                        }
-                                    }
-                                }
-                            }
-                            case .none => {}
-                        }
-                    }
-                }
-
-                slotOffset += 1
+        match removed {
+            case .some(value) => {
+                self.len -= 1
+                return value
             }
-
-            groupOffset += SWISS_GROUP_WIDTH
+            case .none => panic("dictionary slot has no value")
         }
+    }
 
-        return .none
+    public func remove(&mut self, _ key: &Key) -> Value? {
+        match self.findSlot(key) {
+            case .some(slot) => return .some(self.removeSlot(slot))
+            case .none => return .none
+        }
+    }
+
+    public func get(&self, _ key: &Key) -> Optional[&Value] {
+        match self.findSlot(key) {
+            case .some(slot) => return .some(self.valueAtSlot(slot))
+            case .none => return .none
+        }
+    }
+
+    public func get(&mut self, _ key: &Key) -> Optional[&mut Value] {
+        match self.findSlot(key) {
+            case .some(slot) => return .some(self.valueAtSlot(slot))
+            case .none => return .none
+        }
     }
 
     public func insert(&mut self, key: Key, value: Value) -> Value? {
@@ -332,6 +273,96 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
 
         self.grow()
         return self.insert(key: key, value: value)
+    }
+
+    func insertAndGet(&mut self, key: Key, value: Value) -> &mut Value {
+        if self.capacity == 0 || self.shouldGrowForInsert() {
+            self.grow()
+        }
+
+        let hash = hashKey(&key)
+        let fp = swissFingerprint(hash)
+        let mask = self.capacity - (1 as usize)
+        let base = (hash as usize) & mask
+
+        var firstDeleted: usize = 0 as usize
+        var hasDeleted = false
+
+        var groupOffset: usize = 0
+        while groupOffset < self.capacity {
+            let groupStart = (base + groupOffset) & mask
+
+            var slotOffset: usize = 0
+            while slotOffset < SWISS_GROUP_WIDTH {
+                let slot = (groupStart + slotOffset) & mask
+                let ctrl = *self.controls.at(slot)
+
+                if ctrl == SWISS_CTRL_EMPTY {
+                    let insertSlot = if hasDeleted { firstDeleted } else { slot }
+                    *self.controls.at(insertSlot) = fp
+                    *self.hashes.at(insertSlot) = hash
+                    *self.keys.at(insertSlot) = .some(key)
+                    *self.values.at(insertSlot) = .some(value)
+                    self.len += 1
+                    return self.valueAtSlot(insertSlot)
+                }
+
+                if ctrl == SWISS_CTRL_DELETED {
+                    if !hasDeleted {
+                        hasDeleted = true
+                        firstDeleted = slot
+                    }
+                } else if swissCtrlIsFull(ctrl) && ctrl == fp {
+                    let slotHash = *self.hashes.at(slot)
+                    if slotHash == hash {
+                        let keySlot: &mut Key? = self.keys.at(slot)
+                        match keySlot {
+                            case .some(existingKey) => {
+                                if key == *existingKey {
+                                    let valueSlot: &mut Value? = self.values.at(slot)
+                                    unsafe {
+                                        let valueSlotPtr: *mut Value? = valueSlot as *mut Value?
+                                        let replacement: Value? = .some(value)
+                                        valueSlotPtr.write(replacement)
+                                    }
+                                    return self.valueAtSlot(slot)
+                                }
+                            }
+                            case .none => {}
+                        }
+                    }
+                }
+
+                slotOffset += 1
+            }
+
+            groupOffset += SWISS_GROUP_WIDTH
+        }
+
+        self.grow()
+        return self.insertAndGet(key: key, value: value)
+    }
+
+    public func set(&mut self, key: Key, value: Value) {
+        let _ = self.insert(key: key, value: value)
+    }
+
+    public func getOr(&self, _ key: &Key, default defaultValue: Value) -> Value where Value: Clone {
+        match self.get(key) {
+            case .some(value) => value.clone()
+            case .none => defaultValue
+        }
+    }
+
+    public func entry(&mut self, _ key: Key) -> Entry[Key, Value] {
+        match self.findSlot(&key) {
+            case .some(slot) => {
+                return .occupied(OccupiedEntry[Key, Value] { dict: self, slot })
+            }
+            case .none => {
+                return .vacant(VacantEntry[Key, Value] { dict: self, key })
+            }
+        }
     }
 
     func shouldGrowForInsert(&self) -> bool {
@@ -482,6 +513,106 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
 
     public func entries(&mut self) -> DictMutEntriesIterator[Key, Value] {
         DictMutEntriesIterator[Key, Value] { dict: self, currentSlot: 0 }
+    }
+}
+
+public enum Entry[Key: Hashable, Value] {
+    case occupied(OccupiedEntry[Key, Value])
+    case vacant(VacantEntry[Key, Value])
+}
+
+impl[Key: Hashable, Value] Entry[Key, Value] {
+    public func orInsert(self, _ defaultValue: Value) -> &mut Value {
+        match self {
+            case .occupied(entry) => {
+                var occupied = entry
+                return occupied.get()
+            }
+            case .vacant(entry) => {
+                return entry.insert(defaultValue)
+            }
+        }
+    }
+
+    public func orInsertWith[F: Fn[(), Value]](self, _ f: F) -> &mut Value {
+        match self {
+            case .occupied(entry) => {
+                var occupied = entry
+                return occupied.get()
+            }
+            case .vacant(entry) => {
+                return entry.insert(f())
+            }
+        }
+    }
+
+    public func andModify[F: Fn[&mut Value, ()]](self, _ f: F) -> Entry[Key, Value] {
+        match self {
+            case .occupied(entry) => {
+                var occupied = entry
+                f(occupied.get())
+                return .occupied(occupied)
+            }
+            case .vacant(entry) => return .vacant(entry)
+        }
+    }
+}
+
+public struct OccupiedEntry[Key: Hashable, Value] {
+    dict: &mut Dictionary[Key, Value]
+    slot: usize
+}
+
+impl[Key: Hashable, Value] OccupiedEntry[Key, Value] {
+    public func key(&self) -> &Key {
+        return self.dict.keyAtSlot(self.slot)
+    }
+
+    public func get(&self) -> &Value {
+        return self.dict.valueAtSlot(self.slot)
+    }
+
+    public func get(&mut self) -> &mut Value {
+        return self.dict.valueAtSlot(self.slot)
+    }
+
+    public func insert(&mut self, _ value: Value) -> Value {
+        let valueSlot: &mut Value? = self.dict.values.at(self.slot)
+        var previous: Value?
+        unsafe {
+            let valueSlotPtr: *mut Value? = valueSlot as *mut Value?
+            previous = valueSlotPtr.read()
+            let replacement: Value? = .some(value)
+            valueSlotPtr.write(replacement)
+        }
+
+        match previous {
+            case .some(oldValue) => return oldValue
+            case .none => panic("dictionary slot has no value")
+        }
+    }
+
+    public func remove(self) -> Value {
+        var entry = self
+        return entry.dict.removeSlot(entry.slot)
+    }
+}
+
+public struct VacantEntry[Key: Hashable, Value] {
+    dict: &mut Dictionary[Key, Value]
+    key: Key
+}
+
+impl[Key: Hashable, Value] VacantEntry[Key, Value] {
+    public func key(&self) -> &Key {
+        return &self.key
+    }
+
+    public func insert(self, _ value: Value) -> &mut Value {
+        var entry = self
+        var dict = entry.dict
+        let key = entry.key
+        return dict.insertAndGet(key: key, value: value)
     }
 }
 

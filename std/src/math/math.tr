@@ -2,6 +2,20 @@ public const E: double = 2.718281828459045
 public const PI: double = 3.141592653589793
 public const TAU: double = 6.283185307179586
 
+public func min[T: std.cmp.Ord](_ a: T, _ b: T) -> T {
+    if a <= b {
+        return a
+    }
+    return b
+}
+
+public func max[T: std.cmp.Ord](_ a: T, _ b: T) -> T {
+    if a >= b {
+        return a
+    }
+    return b
+}
+
 public func abs(_ x: float) -> float {
     return x.abs()
 }

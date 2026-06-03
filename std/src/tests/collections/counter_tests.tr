@@ -1,0 +1,80 @@
+import std.collections.Counter
+
+@test
+func testCounterMissingIncrementDecrementAndRemoval() {
+    var counter = Counter[int32]()
+
+    std.testing.assertTrue(counter.isEmpty(), "new counter should be empty")
+    std.testing.assertEqual(counter.get(&10), 0, "missing key should read as zero")
+    std.testing.assertFalse(counter.contains(&10), "missing key should not be contained")
+
+    std.testing.assertEqual(counter.increment(10), 1, "default increment should add one")
+    std.testing.assertEqual(counter.increment(10, by: 4), 5, "custom increment should add amount")
+    std.testing.assertEqual(counter.decrement(10), 4, "default decrement should subtract one")
+    std.testing.assertEqual(counter.decrement(10, by: 4), 0, "decrement to zero should return zero")
+    std.testing.assertFalse(counter.contains(&10), "zero count should remove key")
+    std.testing.assertEqual(counter.len(), 0 as usize, "zero count should not be stored")
+
+    std.testing.assertEqual(counter.decrement(10, by: 3), -3, "negative counts should be allowed")
+    std.testing.assertTrue(counter.contains(&10), "negative counts should remain stored")
+    std.testing.assertEqual(counter.get(&10), -3, "negative count should be readable")
+
+    std.testing.assertEqual(counter.remove(&10), -3, "remove should return previous count")
+    std.testing.assertEqual(counter.remove(&10), 0, "remove missing key should return zero")
+}
+
+@test
+func testCounterSetClearAndIteration() {
+    var counter = Counter[int32]()
+
+    counter.set(key: 1, count: 2)
+    counter.set(key: 2, count: 3)
+    counter.set(key: 3, count: 0)
+
+    std.testing.assertEqual(counter.len(), 2 as usize, "set zero should not store key")
+    std.testing.assertTrue(counter.contains(&1), "set nonzero should store key")
+    std.testing.assertFalse(counter.contains(&3), "set zero should remove key")
+
+    var total: int32 = 0
+    for entry in &counter {
+        let (_, count) = entry
+        total += *count
+    }
+    std.testing.assertEqual(total, 5, "shared iteration should expose counts")
+
+    for entry in &mut counter {
+        let (_, count) = entry
+        *count += 10
+    }
+    std.testing.assertEqual(counter.get(&1), 12, "mutable iteration should update count 1")
+    std.testing.assertEqual(counter.get(&2), 13, "mutable iteration should update count 2")
+
+    var movedTotal: int32 = 0
+    for entry in counter {
+        let (_, count) = entry
+        movedTotal += count
+    }
+    std.testing.assertEqual(movedTotal, 25, "owned iteration should yield stored counts")
+
+    var cleared = Counter[int32]()
+    cleared.set(key: 9, count: 1)
+    cleared.clear()
+    std.testing.assertTrue(cleared.isEmpty(), "clear should remove all counts")
+    std.testing.assertEqual(cleared.get(&9), 0, "cleared key should read as zero")
+}
+
+@test
+func testCounterStringFrequencyExample() {
+    var counter = Counter[string]()
+
+    let _ = counter.increment("red")
+    let _ = counter.increment("blue")
+    let _ = counter.increment("red")
+    let _ = counter.decrement("blue")
+    let _ = counter.increment("green", by: -2)
+
+    std.testing.assertEqual(counter.get(&"red"), 2, "red should have frequency two")
+    std.testing.assertEqual(counter.get(&"blue"), 0, "blue should be removed after returning to zero")
+    std.testing.assertFalse(counter.contains(&"blue"), "zero frequency string key should not be stored")
+    std.testing.assertEqual(counter.get(&"green"), -2, "negative string frequency should be stored")
+}

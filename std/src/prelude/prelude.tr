@@ -1,7 +1,7 @@
 export std.result.*
 export std.optional.*
 export std.ops.*
-export std.collections.{Array, Dictionary, List, Set, DictKeysIterator, DictValuesIterator, DictEntriesIterator}
+export std.collections.{Array, Counter, Dictionary, List, Set, DictKeysIterator, DictValuesIterator, DictEntriesIterator}
 export std.range.{Range, ClosedRange, Step}
 export std.marker.{Copy, Clone, Sendable}
 export std.iter.{Iterator, Iterable, AsyncIterator, AsyncIterable, FromIterator, enumerate, map, filter, take, skip, zip}

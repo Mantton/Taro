@@ -21,6 +21,7 @@ func main() {
     let point = SmokePoint { x: 10, y: 20 }
     let heading = Heading.north
     let localValue = describe(.north, point)
+    let lexicalProbe = localValue
 
     let fieldValue = point.x
     let methodValue = point.magnitude()

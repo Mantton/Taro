@@ -1,5 +1,35 @@
 import std.math
+import std.cmp.{Ordering, PartialOrd, Ord}
+import std.optional.Optional
 import std.testing.{assertEqual, assertTrue}
+
+struct RankedValue {
+    value: int32
+}
+
+impl std.ops.PartialEq for RankedValue {
+    public func eq(&self, _ other: &RankedValue) -> bool {
+        self.value == other.value
+    }
+}
+
+impl PartialOrd for RankedValue {
+    public func partialCmp(&self, _ other: &RankedValue) -> Optional[Ordering] {
+        .some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedValue {
+    public func cmp(&self, _ other: &RankedValue) -> Ordering {
+        if self.value < other.value {
+            .less
+        } else if self.value == other.value {
+            .equal
+        } else {
+            .greater
+        }
+    }
+}
 
 func approxEqDouble(_ a: double, _ b: double, _ eps: double) -> bool {
     return (a - b).abs() <= eps
@@ -7,6 +37,28 @@ func approxEqDouble(_ a: double, _ b: double, _ eps: double) -> bool {
 
 func approxEqFloat(_ a: float, _ b: float, _ eps: float) -> bool {
     return (a - b).abs() <= eps
+}
+
+func genericMinRanked[T: Ord](_ a: T, _ b: T) -> T {
+    math.min(a, b)
+}
+
+@test
+func testMathMinMaxOrdValues() {
+    assertEqual(math.min(8, 3), 3, "int32 min")
+    assertEqual(math.max(8, 3), 8, "int32 max")
+    assertEqual(math.min(4 as usize, 9 as usize), 4 as usize, "usize min")
+    assertEqual(math.max(4 as usize, 9 as usize), 9 as usize, "usize max")
+    assertEqual(math.min(5, 5), 5, "equal min")
+    assertEqual(math.max(5, 5), 5, "equal max")
+
+    let low = RankedValue { value: 10 }
+    let high = RankedValue { value: 20 }
+    let minRanked = genericMinRanked(low, high)
+    assertEqual(minRanked.value, 10, "generic custom Ord min")
+
+    let maxRanked = math.max(RankedValue { value: -1 }, RankedValue { value: 6 })
+    assertEqual(maxRanked.value, 6, "custom Ord max")
 }
 
 @test

@@ -737,6 +737,14 @@ fn completion_prefix(context: &CompletionContext) -> &str {
     }
 }
 
+fn completion_trigger_characters() -> Vec<String> {
+    let mut characters = vec![".".to_string()];
+    characters.extend(('a'..='z').map(|ch| ch.to_string()));
+    characters.extend(('A'..='Z').map(|ch| ch.to_string()));
+    characters.push("_".to_string());
+    characters
+}
+
 fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
@@ -749,7 +757,7 @@ fn server_capabilities() -> ServerCapabilities {
         }),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
-            trigger_characters: Some(vec![".".into()]),
+            trigger_characters: Some(completion_trigger_characters()),
             all_commit_characters: None,
             work_done_progress_options: WorkDoneProgressOptions::default(),
             completion_item: None,
@@ -1039,13 +1047,13 @@ fn paths_match(lhs: &Path, rhs: &Path) -> bool {
 mod tests {
     use super::{
         AnalysisOwner, CompletionInfo, DocumentData, OwnerDocument, TaroCompletionKind,
-        completion_prefix, find_navigation_index, general_diagnostic, lsp_completion_item,
-        owner_documents, owner_documents_changed, server_capabilities,
-        signature_help_trigger_characters, utf16_to_char_offset,
+        completion_prefix, completion_trigger_characters, find_navigation_index,
+        general_diagnostic, lsp_completion_item, owner_documents, owner_documents_changed,
+        server_capabilities, signature_help_trigger_characters, utf16_to_char_offset,
     };
     use compiler::ide_completion::CompletionContext;
     use compiler::span::{FileID, Position, Span};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
     use tower_lsp::lsp_types::{CompletionItemKind, Url};
 
@@ -1158,7 +1166,24 @@ mod tests {
         let completion = capabilities
             .completion_provider
             .expect("completion provider");
-        assert_eq!(completion.trigger_characters, Some(vec![".".to_string()]));
+        assert_eq!(
+            completion.trigger_characters,
+            Some(completion_trigger_characters())
+        );
+    }
+
+    #[test]
+    fn completion_trigger_characters_include_dot_and_identifier_starts() {
+        let characters = completion_trigger_characters();
+        let unique = characters.iter().collect::<HashSet<_>>();
+
+        assert_eq!(characters.len(), unique.len(), "{characters:?}");
+        for expected in [".", "a", "z", "A", "Z", "_"] {
+            assert!(characters.iter().any(|item| item == expected));
+        }
+        for excluded in ["0", "9"] {
+            assert!(!characters.iter().any(|item| item == excluded));
+        }
     }
 
     #[test]

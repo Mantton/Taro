@@ -1,0 +1,133 @@
+import std.collections.{Dictionary, DictOwnedEntriesIterator, DictEntriesIterator, DictMutEntriesIterator}
+import std.hash.Hashable
+import std.iter.{Iterator, Iterable}
+import std.optional.Optional
+
+public struct Counter[Key: Hashable] {
+    storage: Dictionary[Key, int32]
+}
+
+impl[Key: Hashable] Counter[Key] {
+    public func new() -> Self {
+        Counter[Key] {
+            storage: Dictionary[Key, int32](),
+        }
+    }
+
+    public func len(&self) -> usize {
+        self.storage.len()
+    }
+
+    public func isEmpty(&self) -> bool {
+        self.storage.isEmpty()
+    }
+
+    public func get(&self, _ key: &Key) -> int32 {
+        match self.storage.get(key) {
+            case .some(count) => return *count
+            case .none => return 0
+        }
+    }
+
+    public func contains(&self, _ key: &Key) -> bool {
+        self.storage.contains(key)
+    }
+
+    public func set(&mut self, key: Key, count: int32) {
+        if count == 0 {
+            let _ = self.storage.remove(&key)
+        } else {
+            self.storage.set(key: key, value: count)
+        }
+    }
+
+    public func increment(&mut self, _ key: Key, by amount: int32 = 1) -> int32 {
+        let next = self.get(&key) + amount
+        self.set(key: key, count: next)
+        return next
+    }
+
+    public func decrement(&mut self, _ key: Key, by amount: int32 = 1) -> int32 {
+        return self.increment(key, by: -amount)
+    }
+
+    public func remove(&mut self, _ key: &Key) -> int32 {
+        match self.storage.remove(key) {
+            case .some(count) => return count
+            case .none => return 0
+        }
+    }
+
+    public func clear(&mut self) {
+        self.storage.clear()
+    }
+}
+
+public struct CounterIterator[Key: Hashable] {
+    inner: DictOwnedEntriesIterator[Key, int32]
+}
+
+impl[Key: Hashable] Iterator for CounterIterator[Key] {
+    type Element = (Key, int32)
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        self.inner.next()
+    }
+}
+
+public struct CounterRefIterator[Key: Hashable] {
+    inner: DictEntriesIterator[Key, int32]
+}
+
+impl[Key: Hashable] Iterator for CounterRefIterator[Key] {
+    type Element = (&Key, &int32)
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        self.inner.next()
+    }
+}
+
+public struct CounterMutIterator[Key: Hashable] {
+    inner: DictMutEntriesIterator[Key, int32]
+}
+
+impl[Key: Hashable] Iterator for CounterMutIterator[Key] {
+    type Element = (&Key, &mut int32)
+
+    public func next(&mut self) -> Optional[Self.Element] {
+        self.inner.next()
+    }
+}
+
+impl[Key: Hashable] Iterable for Counter[Key] {
+    type Iterator = CounterIterator[Key]
+    type Element = (Key, int32)
+
+    public func iter(self) -> Self.Iterator {
+        CounterIterator[Key] {
+            inner: self.storage.iter(),
+        }
+    }
+}
+
+impl[Key: Hashable] Iterable for &Counter[Key] {
+    type Iterator = CounterRefIterator[Key]
+    type Element = (&Key, &int32)
+
+    public func iter(self) -> Self.Iterator {
+        CounterRefIterator[Key] {
+            inner: self.storage.entries(),
+        }
+    }
+}
+
+impl[Key: Hashable] Iterable for &mut Counter[Key] {
+    type Iterator = CounterMutIterator[Key]
+    type Element = (&Key, &mut int32)
+
+    public func iter(self) -> Self.Iterator {
+        CounterMutIterator[Key] {
+            inner: self.storage.entries(),
+        }
+    }
+}

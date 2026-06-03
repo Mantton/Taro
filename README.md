@@ -121,11 +121,11 @@ This places both `taro` and `taro-lsp` under `dist/bin/`, with attached std arti
 - signature help
 - completion for in-scope names plus probe-backed member/static-member contexts
 
-Completion is intentionally an MVP: it covers lexical names plus `value.` / `value.prefix` and `Type.` / `Type.prefix` candidates for identifier and dotted-path receivers. The server runs an internal completion probe for incomplete member syntax, so `point.`, `point.m`, `Heading.`, and `Heading.n` should complete in VS Code even before the source is syntactically complete. Arbitrary expression receivers such as `makePoint().` are not first-class yet. Rename, formatting, references, semantic tokens, and code actions are not part of the current LSP surface.
+Completion is intentionally an MVP: it covers lexical names plus `value.` / `value.prefix` and `Type.` / `Type.prefix` candidates for identifier and dotted-path receivers. VS Code should automatically request lexical completions when typing an identifier-start character (`A-Z`, `a-z`, or `_`), and the server runs an internal completion probe for incomplete member syntax, so `point.`, `point.m`, `Heading.`, and `Heading.n` should complete even before the source is syntactically complete. Arbitrary expression receivers such as `makePoint().` are not first-class yet. Rename, formatting, references, semantic tokens, and code actions are not part of the current LSP surface.
 
 Manual smoke fixture: open `examples/lsp_smoke.tr` from the repository root in the VS Code extension development host. Expected checks:
 
-- `local` inside `main` offers `localValue`
+- retyping `l` in `lexicalProbe = localValue` automatically opens lexical completions and offers `localValue`
 - `point.` offers `x`, `y`, and `magnitude`
 - `point.m` filters to `magnitude`
 - `Heading.` offers `north`, `south`, `east`, and `west`
