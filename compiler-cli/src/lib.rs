@@ -195,10 +195,11 @@ fn ci_env_is_strict() -> bool {
 pub fn run() {
     let arguments = Cli::parse();
     let result = command::handle(arguments);
-    match result {
-        Ok(_) => exit(0),
-        Err(_) => exit(1),
-    }
+    let exit_code = match result {
+        Ok(outcome) => outcome.process_exit_code(),
+        Err(_) => 1,
+    };
+    exit(exit_code)
 }
 
 #[cfg(test)]

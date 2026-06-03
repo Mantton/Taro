@@ -2,9 +2,12 @@ use std::process::Command;
 
 use compiler::error::ReportedError;
 
-use crate::{RunArgs, command::build};
+use crate::{
+    RunArgs,
+    command::{CommandOutcome, CommandResult, build, child_exit_code},
+};
 
-pub fn run(arguments: RunArgs) -> Result<(), ReportedError> {
+pub fn run(arguments: RunArgs) -> CommandResult {
     let program_args = arguments.program_args.clone();
     let exe = build::run(arguments.common, true)?;
     let exe = exe.ok_or_else(|| {
@@ -21,8 +24,8 @@ pub fn run(arguments: RunArgs) -> Result<(), ReportedError> {
         })?;
 
     if status.success() {
-        Ok(())
+        Ok(CommandOutcome::Success)
     } else {
-        Err(ReportedError)
+        Ok(CommandOutcome::ChildExit(child_exit_code(status)))
     }
 }

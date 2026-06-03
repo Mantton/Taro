@@ -2,9 +2,12 @@ use std::process::Command;
 
 use compiler::error::ReportedError;
 
-use crate::{TestArgs, command::build};
+use crate::{
+    TestArgs,
+    command::{CommandOutcome, CommandResult, build, child_exit_code},
+};
 
-pub fn run(arguments: TestArgs) -> Result<(), ReportedError> {
+pub fn run(arguments: TestArgs) -> CommandResult {
     let exe = build::run_test_mode(arguments)?;
     let exe = exe.ok_or_else(|| {
         eprintln!("error: no test executable was produced");
@@ -17,8 +20,8 @@ pub fn run(arguments: TestArgs) -> Result<(), ReportedError> {
     })?;
 
     if status.success() {
-        Ok(())
+        Ok(CommandOutcome::Success)
     } else {
-        Err(ReportedError)
+        Ok(CommandOutcome::ChildExit(child_exit_code(status)))
     }
 }

@@ -1,0 +1,7 @@
+// EXPECT_EXIT: 42
+import std.process
+
+func main() {
+    std.print("exiting\n")
+    process.exit(42)
+}
