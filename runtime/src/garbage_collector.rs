@@ -578,6 +578,8 @@ struct Segment {
     // Backing storage for the segment (bytes are owned here).
     data: *mut u8,
     len: usize,
+    #[cfg(test)]
+    owns_memory: bool,
     // Page index -> span id for that page; SPAN_NONE means free/unassigned.
     page_map: Vec<usize>,
     // Bump pointer in pages for fresh allocation.
@@ -599,7 +601,21 @@ impl Segment {
         Self {
             data,
             len: bytes,
+            #[cfg(test)]
+            owns_memory: true,
             page_map: vec![SPAN_NONE; pages],
+            next_page: 0,
+            free_runs: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn test_fake(base: usize, len: usize) -> Self {
+        Self {
+            data: base as *mut u8,
+            len,
+            owns_memory: false,
+            page_map: vec![SPAN_NONE; pages_for_size(len).max(1)],
             next_page: 0,
             free_runs: Vec::new(),
         }
@@ -713,6 +729,10 @@ impl Segment {
 impl Drop for Segment {
     fn drop(&mut self) {
         // Segments own their raw memory; free it on drop.
+        #[cfg(test)]
+        if !self.owns_memory {
+            return;
+        }
         if self.data.is_null() || self.len == 0 {
             return;
         }
@@ -1008,9 +1028,10 @@ struct SweepStats {
 // just a span id, and the class lists track spans with free slots.
 pub(crate) struct Gc {
     segments: Vec<Segment>,
-    // Maps arena index (address / SEGMENT_SIZE) to segment index for O(1) lookup.
-    // A segment may span multiple arenas, so multiple keys can point to the same segment.
-    arena_map: HashMap<usize, usize>,
+    // Maps arena index (address / SEGMENT_SIZE) to candidate segment indices.
+    // Segments are page-aligned, not SEGMENT_SIZE-aligned, so multiple segments
+    // can share an arena bucket and large segments can span multiple buckets.
+    arena_map: HashMap<usize, Vec<usize>>,
     spans: Vec<Option<Span>>,
     // Free list of span IDs for reuse (prevents unbounded growth of spans vec).
     free_span_ids: Vec<usize>,
@@ -1264,19 +1285,25 @@ impl Gc {
         (index, start_page, base)
     }
 
-    // O(1) segment lookup via arena map.
+    // Segment lookup via arena bucket candidates.
     fn segment_index_for_ptr(&self, ptr: *const u8) -> Option<usize> {
         let p = ptr as usize;
         let arena = p / SEGMENT_SIZE;
-        let index = *self.arena_map.get(&arena)?;
-        // Verify the pointer is actually within this segment's bounds.
-        let segment = &self.segments[index];
-        let base = segment.base();
-        if p >= base && p < base + segment.len {
-            Some(index)
-        } else {
-            None
+        let candidates = self.arena_map.get(&arena)?;
+        for &index in candidates {
+            // Verify the pointer is actually within this segment's bounds.
+            let Some(segment) = self.segments.get(index) else {
+                continue;
+            };
+            let base = segment.base();
+            let Some(offset) = p.checked_sub(base) else {
+                continue;
+            };
+            if offset < segment.len {
+                return Some(index);
+            }
         }
+        None
     }
 
     pub(crate) fn add_persistent_root(&mut self, ptr: *const u8) {
@@ -1734,14 +1761,26 @@ fn next_gc_threshold(live_bytes: usize) -> usize {
 }
 
 // Register all arena indices that a segment spans in the arena map.
-// A segment may span 1-2 arenas depending on its alignment.
-fn register_segment_arenas(arena_map: &mut HashMap<usize, usize>, segment: &Segment, index: usize) {
+// A segment may span multiple arenas when it is created for a large allocation.
+fn register_segment_arenas(
+    arena_map: &mut HashMap<usize, Vec<usize>>,
+    segment: &Segment,
+    index: usize,
+) {
     let base = segment.base();
-    let end = base + segment.len;
+    if segment.len == 0 {
+        return;
+    }
+    let last_byte = base
+        .checked_add(segment.len - 1)
+        .expect("segment address range overflow");
     let first_arena = base / SEGMENT_SIZE;
-    let last_arena = (end.saturating_sub(1)) / SEGMENT_SIZE;
+    let last_arena = last_byte / SEGMENT_SIZE;
     for arena in first_arena..=last_arena {
-        arena_map.insert(arena, index);
+        let candidates = arena_map.entry(arena).or_default();
+        if !candidates.contains(&index) {
+            candidates.push(index);
+        }
     }
 }
 
@@ -1749,6 +1788,7 @@ fn register_segment_arenas(arena_map: &mut HashMap<usize, usize>, segment: &Segm
 mod tests {
     use super::{
         __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach, Gc, GcDesc,
+        PAGE_SIZE, SEGMENT_SIZE, Segment, register_segment_arenas,
     };
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1771,6 +1811,45 @@ mod tests {
             ptr_offsets: POINTER_OFFSETS.as_ptr(),
             ptr_count: POINTER_OFFSETS.len(),
         }
+    }
+
+    #[test]
+    fn segment_lookup_keeps_older_same_arena_candidate() {
+        let mut gc = Gc::new();
+        let arena_base = 42 * SEGMENT_SIZE;
+        gc.segments = vec![
+            Segment::test_fake(arena_base + PAGE_SIZE, PAGE_SIZE),
+            Segment::test_fake(arena_base + (PAGE_SIZE * 2), PAGE_SIZE),
+        ];
+        gc.arena_map.clear();
+        register_segment_arenas(&mut gc.arena_map, &gc.segments[0], 0);
+        register_segment_arenas(&mut gc.arena_map, &gc.segments[1], 1);
+
+        let first_ptr = gc.segments[0].data;
+        let second_ptr = gc.segments[1].data;
+
+        assert_eq!(gc.segment_index_for_ptr(first_ptr), Some(0));
+        assert_eq!(gc.segment_index_for_ptr(second_ptr), Some(1));
+    }
+
+    #[test]
+    fn segment_lookup_finds_large_segment_across_all_arenas() {
+        let mut gc = Gc::new();
+        let base = (77 * SEGMENT_SIZE) + SEGMENT_SIZE - PAGE_SIZE;
+        gc.segments = vec![Segment::test_fake(base, SEGMENT_SIZE + PAGE_SIZE)];
+        gc.arena_map.clear();
+        register_segment_arenas(&mut gc.arena_map, &gc.segments[0], 0);
+
+        let segment = &gc.segments[0];
+        let first_ptr = segment.data;
+        let last_ptr = segment
+            .base()
+            .checked_add(segment.len - 1)
+            .expect("test segment address range")
+            as *const u8;
+
+        assert_eq!(gc.segment_index_for_ptr(first_ptr), Some(0));
+        assert_eq!(gc.segment_index_for_ptr(last_ptr), Some(0));
     }
 
     #[test]
