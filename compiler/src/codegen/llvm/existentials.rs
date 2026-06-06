@@ -98,22 +98,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         expected: InterfaceReference<'gcx>,
         actual: InterfaceReference<'gcx>,
     ) -> bool {
-        if expected.id != actual.id {
-            return false;
-        }
-
-        let expected_args = if !expected.arguments.is_empty() {
-            &expected.arguments[1..]
-        } else {
-            &expected.arguments
-        };
-        let actual_args = if !actual.arguments.is_empty() {
-            &actual.arguments[1..]
-        } else {
-            &actual.arguments
-        };
-
-        expected_args == actual_args && expected.bindings == actual.bindings
+        crate::sema::impl_engine::ref_ops::interface_ref_matches(
+            expected,
+            actual,
+            crate::sema::impl_engine::ref_ops::InterfaceRefMatch::Logical,
+        )
     }
 
     fn find_existential_projection_route(
@@ -126,38 +115,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 return Some((index, Vec::new()));
             }
 
-            if let Some(chain) = self.superface_chain_to_interface_ref(*source, target) {
+            if let Some(chain) = crate::sema::impl_engine::ref_ops::superface_chain_to_interface_ref(
+                self.gcx, *source, target,
+            ) {
                 return Some((index, chain));
-            }
-        }
-
-        None
-    }
-
-    fn superface_chain_to_interface_ref(
-        &self,
-        root: InterfaceReference<'gcx>,
-        target: InterfaceReference<'gcx>,
-    ) -> Option<Vec<(hir::DefinitionID, usize)>> {
-        let mut queue = std::collections::VecDeque::new();
-        let mut seen = rustc_hash::FxHashSet::default();
-        queue.push_back((root, Vec::new()));
-        seen.insert(root);
-
-        while let Some((current, chain)) = queue.pop_front() {
-            for (super_index, superface) in
-                self.interface_superfaces(current).into_iter().enumerate()
-            {
-                if !seen.insert(superface) {
-                    continue;
-                }
-
-                let mut next_chain = chain.clone();
-                next_chain.push((current.id, super_index));
-                if self.interface_ref_matches_for_assert(target, superface) {
-                    return Some(next_chain);
-                }
-                queue.push_back((superface, next_chain));
             }
         }
 

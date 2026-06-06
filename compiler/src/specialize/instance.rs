@@ -1,19 +1,22 @@
-use crate::{hir::DefinitionID, sema::models::GenericArguments};
+use crate::{
+    hir::DefinitionID,
+    sema::models::{GenericArguments, InterfaceReference},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VirtualInstance {
+pub struct VirtualInstance<'ctx> {
     pub method_id: DefinitionID,
-    pub method_interface: DefinitionID,
+    pub method_interface: InterfaceReference<'ctx>,
     pub slot: usize,
     pub table_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum InstanceKind {
+pub enum InstanceKind<'ctx> {
     /// A user-defined callable item.
     Item(DefinitionID),
     /// Dynamic dispatch through an existential witness table.
-    Virtual(VirtualInstance),
+    Virtual(VirtualInstance<'ctx>),
 }
 
 /// Represents a resolved call target.
@@ -23,7 +26,7 @@ pub enum InstanceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Instance<'ctx> {
     /// The specific callable to invoke (direct or virtual).
-    pub kind: InstanceKind,
+    pub kind: InstanceKind<'ctx>,
     /// The concrete type arguments for this instantiation.
     pub args: GenericArguments<'ctx>,
 }
@@ -40,7 +43,7 @@ impl<'ctx> Instance<'ctx> {
     /// Create a virtual (existential) instance.
     pub fn virtual_call(
         method_id: DefinitionID,
-        method_interface: DefinitionID,
+        method_interface: InterfaceReference<'ctx>,
         slot: usize,
         table_index: usize,
         args: GenericArguments<'ctx>,
@@ -69,7 +72,7 @@ impl<'ctx> Instance<'ctx> {
         self.args
     }
 
-    pub fn kind(&self) -> InstanceKind {
+    pub fn kind(&self) -> InstanceKind<'ctx> {
         self.kind
     }
 

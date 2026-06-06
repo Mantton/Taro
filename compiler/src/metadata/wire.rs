@@ -949,7 +949,7 @@ pub enum InstanceKindWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualInstanceWire {
     pub method_id: DefIdWire,
-    pub method_interface: DefIdWire,
+    pub method_interface: InterfaceReferenceWire,
     pub slot: u32,
     pub table_index: u32,
 }
@@ -3233,7 +3233,7 @@ pub fn instance_to_wire(v: Instance<'_>) -> InstanceWire {
             InstanceKind::Item(id) => InstanceKindWire::Item(def_to_wire(id)),
             InstanceKind::Virtual(virtual_call) => InstanceKindWire::Virtual(VirtualInstanceWire {
                 method_id: def_to_wire(virtual_call.method_id),
-                method_interface: def_to_wire(virtual_call.method_interface),
+                method_interface: interface_reference_to_wire(virtual_call.method_interface),
                 slot: virtual_call.slot as u32,
                 table_index: virtual_call.table_index as u32,
             }),
@@ -3252,7 +3252,7 @@ pub fn instance_from_wire<'a>(gcx: GlobalContext<'a>, v: &InstanceWire) -> Insta
         InstanceKindWire::Item(id) => InstanceKind::Item(def_from_wire(id)),
         InstanceKindWire::Virtual(virtual_call) => InstanceKind::Virtual(VirtualInstance {
             method_id: def_from_wire(&virtual_call.method_id),
-            method_interface: def_from_wire(&virtual_call.method_interface),
+            method_interface: interface_reference_from_wire(gcx, &virtual_call.method_interface),
             slot: virtual_call.slot as usize,
             table_index: virtual_call.table_index as usize,
         }),

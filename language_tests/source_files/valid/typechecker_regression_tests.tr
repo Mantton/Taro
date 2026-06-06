@@ -49,6 +49,20 @@ interface TypecheckerSlot[T] {
     func slot(&self) -> T
 }
 
+interface TypecheckerProjectionMarker {}
+
+struct TypecheckerProjectionSlotValue[T: TypecheckerOutputProducer] {
+    producer: T
+}
+
+impl[T: TypecheckerOutputProducer] TypecheckerSlot[T.Output] for TypecheckerProjectionSlotValue[T] {
+    func slot(&self) -> T.Output {
+        self.producer.produce()
+    }
+}
+
+impl[T: TypecheckerOutputProducer] TypecheckerProjectionMarker for TypecheckerProjectionSlotValue[T] {}
+
 interface TypecheckerDualSlot: TypecheckerSlot[int32], TypecheckerSlot[string] {}
 
 struct TypecheckerDualSlotValue {
@@ -70,18 +84,80 @@ impl TypecheckerSlot[string] for TypecheckerDualSlotValue {
 
 impl TypecheckerDualSlot for TypecheckerDualSlotValue {}
 
-func testGenericSuperinterfacesWithSameRoot() {
-    let dual: any TypecheckerDualSlot = TypecheckerDualSlotValue {
-        number: 7,
-        text: "seven",
+func makeTypecheckerDualSlotValue(_ number: int32, _ text: string) -> TypecheckerDualSlotValue {
+    TypecheckerDualSlotValue {
+        number: number,
+        text: text,
     }
+}
+
+func testGenericSuperinterfacesWithSameRoot() {
+    let dual: any TypecheckerDualSlot = makeTypecheckerDualSlotValue(7, "seven")
     let stringSlot: any TypecheckerSlot[string] = dual
     assert(stringSlot.slot() == "seven", "generic superinterface upcast should preserve arguments")
+}
+
+func testDirectRepeatedGenericInterfaceRoots() {
+    let directForInt: any TypecheckerSlot[int32] & TypecheckerSlot[string] =
+        makeTypecheckerDualSlotValue(9, "nine")
+    let numberSlot: any TypecheckerSlot[int32] = directForInt
+    assert(numberSlot.slot() == 9, "direct repeated-root int slot should dispatch")
+
+    let directForString: any TypecheckerSlot[int32] & TypecheckerSlot[string] =
+        makeTypecheckerDualSlotValue(9, "nine")
+    let stringSlot: any TypecheckerSlot[string] = directForString
+    assert(stringSlot.slot() == "nine", "direct repeated-root string slot should dispatch")
+
+    let directForIntAssert: any TypecheckerSlot[int32] & TypecheckerSlot[string] =
+        makeTypecheckerDualSlotValue(9, "nine")
+    assert(directForIntAssert is any TypecheckerSlot[int32], "`is` should match repeated-root int slot")
+
+    let directForStringAssert: any TypecheckerSlot[int32] & TypecheckerSlot[string] =
+        makeTypecheckerDualSlotValue(9, "nine")
+    assert(directForStringAssert is any TypecheckerSlot[string], "`is` should match repeated-root string slot")
+
+    let directForBoolAssert: any TypecheckerSlot[int32] & TypecheckerSlot[string] =
+        makeTypecheckerDualSlotValue(9, "nine")
+    assert(!(directForBoolAssert is any TypecheckerSlot[bool]), "`is` should reject mismatched repeated-root args")
+
+    let directForCast: any TypecheckerSlot[int32] & TypecheckerSlot[string] =
+        makeTypecheckerDualSlotValue(9, "nine")
+    let maybeString = directForCast as? any TypecheckerSlot[string]
+    match maybeString {
+        case .some(slot) => assert(slot.slot() == "nine", "`as?` should preserve repeated-root string dispatch")
+        case .none => assert(false, "`as?` should find repeated-root string slot")
+    }
+
+    let duplicate: any TypecheckerSlot[int32] & TypecheckerSlot[int32] =
+        makeTypecheckerDualSlotValue(9, "nine")
+    let duplicateInt: any TypecheckerSlot[int32] = duplicate
+    assert(duplicateInt.slot() == 9, "exact duplicate interface references should remain usable")
+}
+
+func testMetadataNormalizesSubstitutedInterfaceProjection() {
+    let forAssert: any TypecheckerProjectionMarker = TypecheckerProjectionSlotValue[TypecheckerIntProducer] {
+        producer: TypecheckerIntProducer {},
+    }
+    assert(
+        forAssert is any TypecheckerSlot[int32],
+        "metadata lookup should normalize substituted generic interface projections",
+    )
+
+    let forCast: any TypecheckerProjectionMarker = TypecheckerProjectionSlotValue[TypecheckerIntProducer] {
+        producer: TypecheckerIntProducer {},
+    }
+    let maybeSlot = forCast as? any TypecheckerSlot[int32]
+    match maybeSlot {
+        case .some(slot) => assert(slot.slot() == 42, "metadata cast should preserve normalized projection dispatch")
+        case .none => assert(false, "metadata cast should find normalized projection conformance")
+    }
 }
 
 func main() {
     testExistentialBindingWithGenericParameter()
     testExistentialBindingMismatchIsRejected()
     testGenericSuperinterfacesWithSameRoot()
+    testDirectRepeatedGenericInterfaceRoots()
+    testMetadataNormalizesSubstitutedInterfaceProjection()
     std.print("PASS: typechecker regression tests\n")
 }

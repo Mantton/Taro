@@ -1,6 +1,7 @@
 mod candidate;
 mod canonical;
 mod goal;
+pub mod ref_ops;
 mod select;
 mod witness;
 

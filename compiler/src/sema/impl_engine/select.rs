@@ -430,10 +430,6 @@ impl<'ctx> Selector<'ctx> {
             instantiate_interface_ref_with_args(self.gcx, record.interface, subst)
         };
 
-        if !interface_header_matches_goal(self.gcx, instantiated, goal) {
-            return None;
-        }
-
         let constraints: Vec<_> = self
             .gcx
             .canonical_constraints_of(record.extension)
@@ -441,6 +437,10 @@ impl<'ctx> Selector<'ctx> {
             .map(|constraint| instantiate_constraint_with_args(self.gcx, constraint.value, subst))
             .collect();
         let env = ParamEnv::new(constraints.clone());
+
+        if !interface_header_matches_goal(self.gcx, instantiated, goal, &env) {
+            return None;
+        }
 
         let mut obligations = Vec::new();
         for constraint in constraints {
@@ -516,12 +516,22 @@ impl<'ctx> Selector<'ctx> {
             return None;
         }
 
+        let instantiated_constraints = self
+            .gcx
+            .canonical_constraints_of(record.extension)
+            .into_iter()
+            .map(|constraint| {
+                instantiate_constraint_with_args(self.gcx, constraint.value, fresh_args)
+            })
+            .collect();
+        let env = ParamEnv::new(instantiated_constraints);
+
         for (lhs, rhs) in instantiated_iface
             .arguments
             .iter()
             .zip(expected_iface.arguments.iter())
         {
-            if !unify_generic_argument(self.gcx, &unifier, *lhs, *rhs) {
+            if !unify_generic_argument(self.gcx, icx.clone(), &env, &unifier, *lhs, *rhs) {
                 return None;
             }
         }
@@ -641,6 +651,7 @@ fn interface_header_matches_goal<'ctx>(
     gcx: Gcx<'ctx>,
     interface: InterfaceReference<'ctx>,
     goal: InterfaceGoal<'ctx>,
+    env: &ParamEnv<'ctx>,
 ) -> bool {
     let mut expected = goal.to_interface_ref(gcx);
     let expected_count = gcx.generics_of(goal.interface_id).total_count();
@@ -652,7 +663,17 @@ fn interface_header_matches_goal<'ctx>(
         expected.arguments = gcx.store.interners.intern_generic_args(args);
     }
 
-    interface.id == expected.id && interface.arguments == expected.arguments
+    if interface.id != expected.id || interface.arguments.len() != expected.arguments.len() {
+        return false;
+    }
+
+    let icx = Rc::new(InferCtx::new(gcx));
+    let unifier = TypeUnifier::new(icx.clone());
+    interface
+        .arguments
+        .iter()
+        .zip(expected.arguments.iter())
+        .all(|(lhs, rhs)| unify_generic_argument(gcx, icx.clone(), env, &unifier, *lhs, *rhs))
 }
 
 fn refine_impl_args_from_constraints<'ctx>(
@@ -789,18 +810,24 @@ fn goal_has_unresolved_types(goal: InterfaceGoal<'_>) -> bool {
 }
 
 fn unify_generic_argument<'ctx>(
-    gcx: Gcx<'ctx>,
+    _gcx: Gcx<'ctx>,
+    icx: Rc<InferCtx<'ctx>>,
+    env: &ParamEnv<'ctx>,
     unifier: &TypeUnifier<'ctx, '_>,
     lhs: GenericArgument<'ctx>,
     rhs: GenericArgument<'ctx>,
 ) -> bool {
     match (lhs, rhs) {
         (GenericArgument::Type(lhs), GenericArgument::Type(rhs)) => {
-            let lhs = normalize_aliases(gcx, lhs);
-            let rhs = normalize_aliases(gcx, rhs);
+            let lhs = icx.resolve_vars_if_possible(lhs);
+            let rhs = icx.resolve_vars_if_possible(rhs);
+            let lhs = normalize_ty(icx.clone(), lhs, env);
+            let rhs = normalize_ty(icx.clone(), rhs, env);
             unifier.unify(lhs, rhs).is_ok()
         }
         (GenericArgument::Const(lhs), GenericArgument::Const(rhs)) => {
+            let lhs = icx.resolve_const_if_possible(lhs);
+            let rhs = icx.resolve_const_if_possible(rhs);
             unifier.unify_const(lhs, rhs).is_ok()
         }
         _ => false,

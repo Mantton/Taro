@@ -1,6 +1,6 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::{DefinitionID, StdItem},
+    hir::DefinitionID,
     sema::{
         models::{ConstKind, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind},
         resolve::models::DefinitionKind,
@@ -36,15 +36,21 @@ pub fn resolve_instance<'ctx>(
         return Instance::item(def_id, args);
     };
 
-    let Some(slot) = interface_method_slot(gcx, interface_id, def_id) else {
+    let Some(method_interface) = interface_ref_from_call(gcx, interface_id, args) else {
         return Instance::item(def_id, args);
     };
 
-    let Some(table_index) = interface_table_index(gcx, interfaces, interface_id) else {
+    let Some(slot) =
+        crate::sema::impl_engine::ref_ops::interface_method_slot(gcx, interface_id, def_id)
+    else {
         return Instance::item(def_id, args);
     };
 
-    Instance::virtual_call(def_id, interface_id, slot, table_index, args)
+    let Some(table_index) = interface_table_index(gcx, interfaces, method_interface) else {
+        return Instance::item(def_id, args);
+    };
+
+    Instance::virtual_call(def_id, method_interface, slot, table_index, args)
 }
 
 fn resolve_interface_method_for_concrete<'ctx>(
@@ -190,32 +196,27 @@ fn self_ty_from_args<'ctx>(
     }
 }
 
-fn interface_method_slot(
-    gcx: GlobalContext<'_>,
-    interface_id: DefinitionID,
-    method_id: DefinitionID,
-) -> Option<usize> {
-    gcx.with_type_database(interface_id.package(), |db| {
-        let requirements = db.interface_requirements.get(&interface_id)?;
-        requirements
-            .methods
-            .iter()
-            .position(|method| method.id == method_id)
-    })
-}
-
 fn interface_table_index<'ctx>(
     gcx: GlobalContext<'ctx>,
     interfaces: &'ctx [InterfaceReference<'ctx>],
-    method_interface: DefinitionID,
+    method_interface: InterfaceReference<'ctx>,
 ) -> Option<usize> {
     for (index, iface) in interfaces.iter().enumerate() {
-        // TODO: Match interface arguments if duplicates with different args are allowed.
-        if iface.id == method_interface {
+        if crate::sema::impl_engine::ref_ops::interface_ref_matches(
+            method_interface,
+            *iface,
+            crate::sema::impl_engine::ref_ops::InterfaceRefMatch::Logical,
+        ) {
             return Some(index);
         }
 
-        if interface_has_superface(gcx, iface.id, method_interface) {
+        if crate::sema::impl_engine::ref_ops::superface_chain_to_interface_ref(
+            gcx,
+            *iface,
+            method_interface,
+        )
+        .is_some()
+        {
             return Some(index);
         }
     }
@@ -223,15 +224,16 @@ fn interface_table_index<'ctx>(
     None
 }
 
-fn interface_has_superface(
-    gcx: GlobalContext<'_>,
-    root_interface: DefinitionID,
-    target_interface: DefinitionID,
-) -> bool {
-    gcx.with_type_database(root_interface.package(), |db| {
-        db.interface_to_supers
-            .get(&root_interface)
-            .map_or(false, |supers| supers.contains(&target_interface))
+fn interface_ref_from_call<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    interface_id: DefinitionID,
+    args: GenericArguments<'ctx>,
+) -> Option<InterfaceReference<'ctx>> {
+    let arguments = interface_args_from_call(gcx, interface_id, args)?;
+    Some(InterfaceReference {
+        id: interface_id,
+        arguments,
+        bindings: &[],
     })
 }
 
@@ -241,26 +243,11 @@ fn interface_args_from_call<'ctx>(
     args: GenericArguments<'ctx>,
 ) -> Option<GenericArguments<'ctx>> {
     let count = gcx.generics_of(interface_id).total_count();
-    if count == 0 {
-        return Some(gcx.store.interners.intern_generic_args(Vec::new()));
-    }
-    if args.len() < count {
-        // PartialEq has default `Rhs = Self`; calls often materialize only `Self`.
-        if let Some(partial_eq_id) = gcx.std_item_def(StdItem::PartialEq) {
-            if interface_id == partial_eq_id && args.len() == 1 {
-                let self_arg = args.get(0).copied()?;
-                if let GenericArgument::Type(self_ty) = self_arg {
-                    return Some(gcx.store.interners.intern_generic_args(vec![
-                        GenericArgument::Type(self_ty),
-                        GenericArgument::Type(self_ty),
-                    ]));
-                }
-            }
-        }
-        return None;
-    }
-    let slice: Vec<_> = args.iter().take(count).cloned().collect();
-    Some(gcx.store.interners.intern_generic_args(slice))
+    let provided = gcx
+        .store
+        .interners
+        .intern_generic_args_slice(&args[..args.len().min(count)]);
+    crate::sema::impl_engine::ref_ops::complete_interface_arguments(gcx, interface_id, provided)
 }
 
 fn complete_instance_args_for_def<'ctx>(

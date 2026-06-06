@@ -6,16 +6,14 @@ use crate::{
     mir::{self, Operand, Place},
     sema::{
         models::{
-            ConstKind, GenericArgument, GenericArguments, InterfaceDefinition, InterfaceReference,
-            InterfaceRequirements, SelectionMode, Ty, TyKind,
+            AssociatedTypeBinding, ConstKind, GenericArgument, GenericArguments,
+            InterfaceDefinition, InterfaceReference, InterfaceRequirements, SelectionMode, Ty,
+            TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
             resolve_conformance_witness_with_mode,
-            utils::{
-                instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
-                type_head_from_value_ty,
-            },
+            utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
         },
     },
     specialize::{Instance, InstanceKind, resolve_instance},
@@ -62,28 +60,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
-    fn canonical_interface_ref_for_assert(
-        &self,
-        iface: InterfaceReference<'gcx>,
-    ) -> InterfaceReference<'gcx> {
-        let args = if !iface.arguments.is_empty() {
-            iface.arguments[1..].iter().copied().collect::<Vec<_>>()
-        } else {
-            iface.arguments.iter().copied().collect::<Vec<_>>()
-        };
-        let canonical_args = self.gcx.store.interners.intern_generic_args(args);
-        InterfaceReference {
-            id: iface.id,
-            arguments: canonical_args,
-            bindings: iface.bindings,
-        }
-    }
-
     pub(super) fn interface_descriptor_ptr(
         &mut self,
         iface: InterfaceReference<'gcx>,
     ) -> PointerValue<'llvm> {
-        let canonical = self.canonical_interface_ref_for_assert(iface);
+        let canonical =
+            crate::sema::impl_engine::ref_ops::descriptor_key_interface_ref(self.gcx, iface);
         if let Some(ptr) = self.interface_descriptors.get(&canonical) {
             return *ptr;
         }
@@ -218,15 +200,53 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let instantiated = if extension_args.is_empty() {
             iface
         } else {
-            self.substitute_interface_ref(iface, extension_args)
+            crate::sema::impl_engine::ref_ops::substitute_interface_ref(
+                self.gcx,
+                iface,
+                extension_args,
+            )
         };
         let instantiated = self.interface_args_with_self(concrete_ty, instantiated);
+        let instantiated = self.normalize_interface_ref_for_metadata(instantiated);
 
         if self.conformance_witness(instantiated).is_none() {
             return None;
         }
 
         Some(instantiated)
+    }
+
+    fn normalize_interface_ref_for_metadata(
+        &self,
+        iface: InterfaceReference<'gcx>,
+    ) -> InterfaceReference<'gcx> {
+        let args = iface
+            .arguments
+            .iter()
+            .map(|arg| match arg {
+                GenericArgument::Type(ty) => {
+                    GenericArgument::Type(self.normalize_post_mono_ty(*ty))
+                }
+                GenericArgument::Const(c) => GenericArgument::Const(*c),
+            })
+            .collect();
+        let args = self.gcx.store.interners.intern_generic_args(args);
+
+        let bindings = iface
+            .bindings
+            .iter()
+            .map(|binding| AssociatedTypeBinding {
+                name: binding.name,
+                ty: self.normalize_post_mono_ty(binding.ty),
+            })
+            .collect::<Vec<_>>();
+        let bindings = self.gcx.store.arenas.global.alloc_slice_clone(&bindings);
+
+        InterfaceReference {
+            id: iface.id,
+            arguments: args,
+            bindings,
+        }
     }
 
     pub(super) fn type_metadata_ptr(&mut self, concrete_ty: Ty<'gcx>) -> PointerValue<'llvm> {
@@ -653,16 +673,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         &self,
         iface: InterfaceReference<'gcx>,
     ) -> Vec<InterfaceReference<'gcx>> {
-        let Some(def) = self.interface_definition(iface.id) else {
-            return Vec::new();
-        };
-
-        let mut out = Vec::with_capacity(def.superfaces.len());
-        for superface in &def.superfaces {
-            let substituted = self.substitute_interface_ref(superface.value, iface.arguments);
-            out.push(substituted);
-        }
-        out
+        crate::sema::impl_engine::ref_ops::direct_superfaces(self.gcx, iface)
     }
 
     pub(super) fn interface_args_with_self(
@@ -670,21 +681,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self_ty: Ty<'gcx>,
         iface: InterfaceReference<'gcx>,
     ) -> InterfaceReference<'gcx> {
-        if iface.arguments.is_empty() {
-            return iface;
-        }
-
-        let mut args: Vec<_> = iface.arguments.iter().cloned().collect();
-        if let Some(first) = args.get_mut(0) {
-            *first = GenericArgument::Type(self_ty);
-        }
-
-        let interned = self.gcx.store.interners.intern_generic_args(args);
-        InterfaceReference {
-            id: iface.id,
-            arguments: interned,
-            bindings: &[],
-        }
+        crate::sema::impl_engine::ref_ops::interface_ref_with_self(self.gcx, self_ty, iface)
     }
 
     fn complete_interface_call_args(
@@ -701,81 +698,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return args;
         }
 
-        let expected = self.gcx.generics_of(parent).total_count();
-        if args.len() >= expected {
-            return args;
-        }
-
-        // PartialEq has default `Rhs = Self`; callers often materialize only `Self`.
-        if let Some(partial_eq_id) = self.gcx.std_item_def(hir::StdItem::PartialEq) {
-            if parent == partial_eq_id && args.len() == 1 && expected == 2 {
-                if let Some(GenericArgument::Type(self_ty)) = args.get(0).copied() {
-                    return self.gcx.store.interners.intern_generic_args(vec![
-                        GenericArgument::Type(self_ty),
-                        GenericArgument::Type(self_ty),
-                    ]);
-                }
-            }
-        }
-
-        args
-    }
-
-    fn substitute_interface_ref(
-        &self,
-        template: InterfaceReference<'gcx>,
-        args: GenericArguments<'gcx>,
-    ) -> InterfaceReference<'gcx> {
-        let mut new_args = Vec::with_capacity(template.arguments.len());
-        for arg in template.arguments.iter() {
-            match arg {
-                GenericArgument::Type(ty) => {
-                    let substituted = if args.is_empty() {
-                        *ty
-                    } else {
-                        instantiate_ty_with_args(self.gcx, *ty, args)
-                    };
-                    let normalized = self.normalize_post_mono_ty(substituted);
-                    new_args.push(GenericArgument::Type(normalized));
-                }
-                GenericArgument::Const(c) => {
-                    let substituted = if args.is_empty() {
-                        *c
-                    } else {
-                        instantiate_const_with_args(self.gcx, *c, args)
-                    };
-                    new_args.push(GenericArgument::Const(substituted));
-                }
-            }
-        }
-
-        let interned = self.gcx.store.interners.intern_generic_args(new_args);
-
-        // Also substitute bindings
-        let mut new_bindings = Vec::with_capacity(template.bindings.len());
-        for binding in template.bindings {
-            let substituted_ty = if args.is_empty() {
-                binding.ty
-            } else {
-                instantiate_ty_with_args(self.gcx, binding.ty, args)
-            };
-            let substituted_ty = self.normalize_post_mono_ty(substituted_ty);
-            new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-                name: binding.name,
-                ty: substituted_ty,
-            });
-        }
-
-        InterfaceReference {
-            id: template.id,
-            arguments: interned,
-            bindings: self
-                .gcx
-                .store
-                .arenas
-                .global
-                .alloc_slice_clone(&new_bindings),
-        }
+        crate::sema::impl_engine::ref_ops::complete_interface_arguments(self.gcx, parent, args)
+            .unwrap_or(args)
     }
 
     pub(super) fn witness_table_struct_ty(
@@ -793,56 +717,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.context.struct_type(&fields, false)
     }
 
-    pub(super) fn superface_chain_indices(
-        &self,
-        root_id: hir::DefinitionID,
-        target_id: hir::DefinitionID,
-    ) -> Option<Vec<(hir::DefinitionID, usize)>> {
-        use std::collections::{HashMap, VecDeque};
-
-        let mut queue = VecDeque::new();
-        let mut parents: HashMap<hir::DefinitionID, (hir::DefinitionID, usize)> = HashMap::new();
-        queue.push_back(root_id);
-        parents.insert(root_id, (root_id, 0));
-
-        while let Some(current) = queue.pop_front() {
-            if current == target_id {
-                break;
-            }
-            let Some(def) = self.interface_definition(current) else {
-                continue;
-            };
-            for (index, superface) in def.superfaces.iter().enumerate() {
-                let next = superface.value.id;
-                if parents.contains_key(&next) {
-                    continue;
-                }
-                parents.insert(next, (current, index));
-                queue.push_back(next);
-            }
-        }
-
-        if !parents.contains_key(&target_id) {
-            return None;
-        }
-
-        let mut chain = Vec::new();
-        let mut current = target_id;
-        while current != root_id {
-            let Some((parent, index)) = parents.get(&current).cloned() else {
-                return None;
-            };
-            chain.push((parent, index));
-            current = parent;
-        }
-        chain.reverse();
-        Some(chain)
-    }
-
     pub(super) fn virtual_instance_for_call(
         &self,
         func: &Operand<'gcx>,
-    ) -> Option<crate::specialize::VirtualInstance> {
+    ) -> Option<crate::specialize::VirtualInstance<'gcx>> {
         let Operand::Constant(c) = func else {
             return None;
         };
@@ -985,7 +863,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         &mut self,
         body: &mir::Body<'gcx>,
         locals: &mut [LocalStorage<'llvm>],
-        instance: &crate::specialize::VirtualInstance,
+        instance: &crate::specialize::VirtualInstance<'gcx>,
         args: &[Operand<'gcx>],
         destination: &Place<'gcx>,
         normal_bb: BasicBlock<'llvm>,
@@ -996,12 +874,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let method_name = self.gcx.definition_symbol_or_fallback(instance.method_id);
         let iface_name = self
             .gcx
-            .definition_symbol_or_fallback(instance.method_interface);
+            .definition_symbol_or_fallback(instance.method_interface.id);
         self.debug_virtual_dispatch(format!(
             "method={:?} ({}) iface={:?} ({}) slot={} table_index={} receiver_ty={}",
             instance.method_id,
             self.gcx.symbol_text(method_name),
-            instance.method_interface,
+            instance.method_interface.id,
             self.gcx.symbol_text(iface_name),
             instance.slot,
             instance.table_index,
@@ -1026,10 +904,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let (data_ptr, root_table_ptr) =
             self.extract_existential_parts(receiver_ty, receiver_val, instance.table_index)?;
 
-        let method_table_ptr = if root_iface.id == instance.method_interface {
+        let method_table_ptr = if crate::sema::impl_engine::ref_ops::interface_ref_matches(
+            instance.method_interface,
+            root_iface,
+            crate::sema::impl_engine::ref_ops::InterfaceRefMatch::Logical,
+        ) {
             root_table_ptr
         } else if let Some(chain) =
-            self.superface_chain_indices(root_iface.id, instance.method_interface)
+            crate::sema::impl_engine::ref_ops::superface_chain_to_interface_ref(
+                self.gcx,
+                root_iface,
+                instance.method_interface,
+            )
         {
             let mut current_ptr = root_table_ptr;
             for (current_iface, super_index) in chain {
@@ -1060,7 +946,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             root_table_ptr
         };
 
-        let method_table_ty = self.witness_table_struct_ty(instance.method_interface);
+        let method_table_ty = self.witness_table_struct_ty(instance.method_interface.id);
         let method_table_ptr_ty = self.context.ptr_type(AddressSpace::default());
         let typed_method_table = self
             .builder

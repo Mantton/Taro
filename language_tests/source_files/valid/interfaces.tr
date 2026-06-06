@@ -43,6 +43,13 @@ func testDefaultGenericSelfSubstitution() {
     assert(a.same(&b), "default generic argument Self should substitute to concrete impl self type")
 }
 
+func testDefaultGenericSelfSubstitutionVirtual() {
+    let a = BoxedSameAs { value: 11 }
+    let b = BoxedSameAs { value: 11 }
+    let erased: any SameAs = a
+    assert(erased.same(&b), "default generic argument Self should dispatch through existential")
+}
+
 interface HashableDM {
     func hash[H](&self, _ hasher: &mut H)
 }
@@ -350,6 +357,7 @@ func testAssociatedConstantsInConformance() {
 func main() {
     testInterfaceConstGenerics()
     testDefaultGenericSelfSubstitution()
+    testDefaultGenericSelfSubstitutionVirtual()
     testDefaultMethodConcreteAndForwarding()
     testInterfaceGenericImpl()
     testInterfaceInheritance()

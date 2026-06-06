@@ -18,7 +18,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 8;
+const META_FORMAT_VERSION: u32 = 9;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {

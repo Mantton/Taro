@@ -11,7 +11,6 @@ use crate::{
         },
         tycheck::utils::{
             generics::GenericsBuilder,
-            instantiate::instantiate_interface_ref_with_args,
             type_head_from_value_ty,
             unresolved::{
                 goal_contains_unresolved_inference, interface_ref_contains_unresolved_inference,
@@ -275,33 +274,7 @@ impl<'ctx> Actor<'ctx> {
         &self,
         root: InterfaceReference<'ctx>,
     ) -> Vec<InterfaceReference<'ctx>> {
-        let mut out = Vec::new();
-        let mut queue = std::collections::VecDeque::new();
-        let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
-
-        seen.insert(root);
-        out.push(root);
-        queue.push_back(root);
-
-        while let Some(current) = queue.pop_front() {
-            let Some(def) = self.context.get_interface_definition(current.id) else {
-                continue;
-            };
-
-            for superface in &def.superfaces {
-                let iface = instantiate_interface_ref_with_args(
-                    self.context,
-                    superface.value,
-                    current.arguments,
-                );
-                if seen.insert(iface) {
-                    out.push(iface);
-                    queue.push_back(iface);
-                }
-            }
-        }
-
-        out
+        crate::sema::impl_engine::ref_ops::collect_interface_with_superfaces(self.context, root)
     }
 
     fn goal_from_interface(

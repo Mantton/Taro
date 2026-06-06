@@ -4851,6 +4851,7 @@ fn is_generic_type_disambiguating_token(token: &Token) -> bool {
             | &RBrace
             | &Dot
             | &Comma
+            | &Amp
             | &Semicolon
             | &EOF
             | &QuestionDot
@@ -6267,6 +6268,14 @@ mod tests {
     fn test_existential_multiple_bounds() {
         let ty = parse_type_str("any Hashable & Equatable");
         assert!(matches!(ty.kind, TypeKind::BoxedExistential { .. }));
+    }
+
+    #[test]
+    fn test_existential_multiple_generic_bounds() {
+        let ty = parse_type_str("any Slot[int32] & Slot[string]");
+        assert!(
+            matches!(&ty.kind, TypeKind::BoxedExistential { interfaces } if interfaces.len() == 2)
+        );
     }
 
     // ==================== PATTERN TESTS (EXTENDED) ====================

@@ -448,27 +448,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         obligations
     }
 
-    fn interface_args_match(
-        &self,
-        expected: InterfaceReference<'ctx>,
-        actual: InterfaceReference<'ctx>,
-    ) -> bool {
-        self.interface_args_match_inner(expected, actual, false)
-    }
-
     fn interface_args_match_with_inference(
         &self,
         expected: InterfaceReference<'ctx>,
         actual: InterfaceReference<'ctx>,
-    ) -> bool {
-        self.interface_args_match_inner(expected, actual, true)
-    }
-
-    fn interface_args_match_inner(
-        &self,
-        expected: InterfaceReference<'ctx>,
-        actual: InterfaceReference<'ctx>,
-        infer: bool,
     ) -> bool {
         let expected_args = if expected.arguments.len() > 0 {
             &expected.arguments[1..]
@@ -483,13 +466,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         if expected_args.len() != actual_args.len() {
             return false;
-        }
-
-        if !infer {
-            return expected_args
-                .iter()
-                .zip(actual_args.iter())
-                .all(|(a, b)| a == b);
         }
 
         expected_args
@@ -589,7 +565,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         expected: InterfaceReference<'ctx>,
         actual: InterfaceReference<'ctx>,
     ) -> bool {
-        expected.id == actual.id && self.interface_args_match(expected, actual)
+        crate::sema::impl_engine::ref_ops::interface_ref_matches(
+            expected,
+            actual,
+            crate::sema::impl_engine::ref_ops::InterfaceRefMatch::Header,
+        )
     }
 
     fn existential_interface_ref_matches(
@@ -597,22 +577,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
         expected: InterfaceReference<'ctx>,
         actual: InterfaceReference<'ctx>,
     ) -> bool {
-        expected.id == actual.id
-            && self.interface_args_match(expected, actual)
-            && self.interface_bindings_match(expected, actual)
-    }
-
-    fn interface_bindings_match(
-        &self,
-        expected: InterfaceReference<'ctx>,
-        actual: InterfaceReference<'ctx>,
-    ) -> bool {
-        expected.bindings.iter().all(|expected_binding| {
-            actual
-                .bindings
-                .iter()
-                .any(|actual_binding| actual_binding == expected_binding)
-        })
+        crate::sema::impl_engine::ref_ops::interface_ref_matches(
+            expected,
+            actual,
+            crate::sema::impl_engine::ref_ops::InterfaceRefMatch::Logical,
+        )
     }
 
     fn interface_bindings_match_with_inference(
