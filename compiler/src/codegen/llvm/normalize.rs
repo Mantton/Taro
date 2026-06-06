@@ -44,6 +44,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
+    #[inline]
+    pub(super) fn mono_ty_with_args_if_resolved(
+        &self,
+        ty: Ty<'gcx>,
+        args: GenericArguments<'gcx>,
+    ) -> Ty<'gcx> {
+        let ty = instantiate_ty_with_args(self.gcx, ty, args);
+        if ty.needs_instantiation() {
+            ty
+        } else {
+            self.normalize_post_mono_ty(ty)
+        }
+    }
+
     pub(super) fn resolve_generic_args(
         &self,
         args: GenericArguments<'gcx>,

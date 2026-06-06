@@ -47,7 +47,7 @@ func assertDictionaryStorageCapacity[Key: Hashable, Value](_ capacity: usize) {
     assertBufferCapacity[Value?](capacity, "dictionary capacity overflow")
 }
 
-public func __dictionary_should_grow_for_insert(_ len: usize, _ capacity: usize) -> bool {
+func dictionaryShouldGrowForInsert(_ len: usize, _ capacity: usize) -> bool {
     if capacity == 0 {
         return true
     }
@@ -56,7 +56,7 @@ public func __dictionary_should_grow_for_insert(_ len: usize, _ capacity: usize)
     return len >= maxLenBeforeGrow
 }
 
-public func __dictionary_next_capacity_for_grow[Key: Hashable, Value](_ current: usize) -> usize {
+func nextDictionaryCapacityForGrow[Key: Hashable, Value](_ current: usize) -> usize {
     let nextCapacity = if current == 0 {
         SWISS_INITIAL_CAPACITY
     } else {
@@ -71,6 +71,37 @@ public func __dictionary_next_capacity_for_grow[Key: Hashable, Value](_ current:
 
     assertDictionaryStorageCapacity[Key, Value](nextCapacity)
     return nextCapacity
+}
+
+@test
+func testDictionaryShouldGrowForInsertUsesOverflowFreeThreshold() {
+    let capacity = 0xffffffffffffffff_u64 as usize
+    let maxLenBeforeGrow = capacity - (capacity / (4 as usize))
+
+    std.testing.assertFalse(
+        dictionaryShouldGrowForInsert(maxLenBeforeGrow - (1 as usize), capacity),
+        "dictionary should not grow below the overflow-free load threshold",
+    )
+
+    std.testing.assertTrue(
+        dictionaryShouldGrowForInsert(maxLenBeforeGrow, capacity),
+        "dictionary should grow at the overflow-free load threshold",
+    )
+}
+
+@test
+@expectPanic
+func testDictionaryGrowRejectsCapacityOverflow() {
+    let capacity = ((0xffffffffffffffff_u64 as usize) / (2 as usize)) + (1 as usize)
+    let _ = nextDictionaryCapacityForGrow[int32, int32](capacity)
+}
+
+@test
+@expectPanic
+func testDictionaryGrowRejectsStorageByteOverflow() {
+    let maxValueCapacity = std.mem.maxBufferCapacity[(uint64, uint64)?]()
+    let capacity = (maxValueCapacity / (2 as usize)) + (1 as usize)
+    let _ = nextDictionaryCapacityForGrow[int32, (uint64, uint64)](capacity)
 }
 
 /// Hash table layout (scalar Swiss-style probing):
@@ -414,11 +445,11 @@ impl[Key: Hashable, Value] Dictionary[Key, Value] {
     }
 
     func shouldGrowForInsert(&self) -> bool {
-        __dictionary_should_grow_for_insert(self.len, self.capacity)
+        dictionaryShouldGrowForInsert(self.len, self.capacity)
     }
 
     func grow(&mut self) {
-        let newCapacity = __dictionary_next_capacity_for_grow[Key, Value](self.capacity)
+        let newCapacity = nextDictionaryCapacityForGrow[Key, Value](self.capacity)
 
         var newControls: List[uint8] = List(withCapacity: newCapacity)
         var newHashes: List[uint64] = List(withCapacity: newCapacity)

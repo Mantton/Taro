@@ -1,0 +1,26 @@
+// Regression coverage for direct calls from generic callers passing concrete
+// pointer arguments into separately-specialized generic callees.
+//
+// The call lowering bridge must not treat the pointer value as storage to load
+// from when the callee's generic parameter resolves to a pointer type.
+
+func identityGeneric[T](_ value: T) -> T {
+    value
+}
+
+func passPointerThroughGenericCaller[Marker](_ marker: Marker, _ ptr: *mut int32) -> *mut int32 {
+    let _ = marker
+    return identityGeneric(ptr)
+}
+
+func main() {
+    var value: int32 = 7
+    let ptr = unsafe { &mut value as *mut int32 }
+
+    let returned = passPointerThroughGenericCaller(123_i64, ptr)
+    returned.write(99)
+
+    assert(value == 99, "generic caller should pass pointer value without loading through it")
+
+    print("PASS: generic pointer direct call regression\n")
+}

@@ -1,7 +1,6 @@
 import std.hash.{Hashable, Hasher}
 import std.iter.{Iterator, Iterable}
 import std.marker.Clone
-import std.collections.{__dictionary_next_capacity_for_grow, __dictionary_should_grow_for_insert}
 
 func consumeDictionaryMoveSemantics(_ values: [int32: string]) -> usize {
     values.len()
@@ -24,11 +23,6 @@ func testDictionaryLiteralAndConstructorInference() {
 
 struct CollisionKey {
     id: int32
-}
-
-struct DictionaryWideValue {
-    left: uint64
-    right: uint64
 }
 
 impl std.ops.PartialEq for CollisionKey {
@@ -121,37 +115,6 @@ func testGrowthThresholdAndOverwrite() {
     std.testing.assertTrue(overwrite.isSome(), "overwrite should return previous value after threshold growth")
     std.testing.assertEqual(overwrite.unwrap(), 105, "overwrite previous value mismatch after threshold growth")
     std.testing.assertEqual(dict.len(), 13 as usize, "overwrite should not change len")
-}
-
-@test
-func testDictionaryShouldGrowForInsertUsesOverflowFreeThreshold() {
-    let capacity = 0xffffffffffffffff_u64 as usize
-    let maxLenBeforeGrow = capacity - (capacity / (4 as usize))
-
-    std.testing.assertFalse(
-        __dictionary_should_grow_for_insert(maxLenBeforeGrow - (1 as usize), capacity),
-        "dictionary should not grow below the overflow-free load threshold",
-    )
-
-    std.testing.assertTrue(
-        __dictionary_should_grow_for_insert(maxLenBeforeGrow, capacity),
-        "dictionary should grow at the overflow-free load threshold",
-    )
-}
-
-@test
-@expectPanic
-func testDictionaryGrowRejectsCapacityOverflow() {
-    let capacity = ((0xffffffffffffffff_u64 as usize) / (2 as usize)) + (1 as usize)
-    let _ = __dictionary_next_capacity_for_grow[int32, int32](capacity)
-}
-
-@test
-@expectPanic
-func testDictionaryGrowRejectsStorageByteOverflow() {
-    let maxValueCapacity = std.mem.maxBufferCapacity[DictionaryWideValue?]()
-    let capacity = (maxValueCapacity / (2 as usize)) + (1 as usize)
-    let _ = __dictionary_next_capacity_for_grow[int32, DictionaryWideValue](capacity)
 }
 
 @test

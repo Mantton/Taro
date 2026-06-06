@@ -401,8 +401,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         &self,
         sig: &crate::sema::models::LabeledFunctionSignature<'gcx>,
     ) -> abi::FnAbi<'gcx> {
-        abi::compute_fn_abi(
-            sig,
+        let input_tys: Vec<_> = sig
+            .inputs
+            .iter()
+            .map(|param| self.mono_ty_if_resolved(param.ty))
+            .collect();
+        let output = self.mono_ty_if_resolved(sig.output);
+        abi::compute_fn_abi_from_tys(
+            &input_tys,
+            output,
+            sig.is_variadic,
             |ty| {
                 let llvm_ty = self.lower_ty(ty)?;
                 Some(abi::TypeLayout {
@@ -434,7 +442,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         } else {
             sig.output
         };
-        let input_tys: Vec<_> = sig.inputs.iter().map(|param| param.ty).collect();
+        let instance_args = instance.args();
+        let input_tys: Vec<_> = sig
+            .inputs
+            .iter()
+            .map(|param| self.mono_ty_with_args_if_resolved(param.ty, instance_args))
+            .collect();
+        let output = self.mono_ty_with_args_if_resolved(output, instance_args);
         abi::compute_fn_abi_from_tys(
             &input_tys,
             output,
@@ -449,8 +463,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         inputs: &'gcx [Ty<'gcx>],
         output: Ty<'gcx>,
     ) -> abi::FnAbi<'gcx> {
+        let input_tys: Vec<_> = inputs
+            .iter()
+            .map(|ty| self.mono_ty_if_resolved(*ty))
+            .collect();
+        let output = self.mono_ty_if_resolved(output);
         abi::compute_fn_abi_from_tys(
-            inputs,
+            &input_tys,
             output,
             false,
             |ty| {
@@ -2110,9 +2129,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 abi::PassMode::Ignore => {}
                 abi::PassMode::Direct => {
                     if let Some(abi_arg) = abi_arg {
-                        let actual_ty = self.operand_ty(body, arg);
+                        let expected_ty = self.mono_ty_if_resolved(abi_arg.ty);
+                        let actual_ty = self.mono_ty_if_resolved(self.operand_ty(body, arg));
                         let expects_pointer = matches!(
-                            abi_arg.ty.kind(),
+                            expected_ty.kind(),
                             TyKind::Pointer(..) | TyKind::Reference(..)
                         );
                         let actual_is_pointer = matches!(
@@ -2136,9 +2156,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             if let Some(BasicValueEnum::PointerValue(ptr)) =
                                 self.eval_operand(body, locals, arg)?
                             {
-                                let direct_ty = self.mono_ty_if_resolved(abi_arg.ty);
-                                if !direct_ty.needs_instantiation()
-                                    && let Some(load_ty) = self.lower_ty(direct_ty)
+                                if !expected_ty.needs_instantiation()
+                                    && let Some(load_ty) = self.lower_ty(expected_ty)
                                 {
                                     let loaded = self
                                         .builder
@@ -5749,6 +5768,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn gc_desc_for(&mut self, ty: Ty<'gcx>) -> PointerValue<'llvm> {
+        let ty = self.mono_ty_if_resolved(ty);
         if let Some(&gv) = self.gc_descs.get(&ty) {
             return gv;
         }
