@@ -1,13 +1,95 @@
 use crate::{
     compile::context::GlobalContext,
-    hir::DefinitionID,
+    hir::{self, DefinitionID},
     sema::models::{
         Const, ConstKind, GenericArgument, GenericArguments, GenericParameter,
         GenericParameterDefinition, GenericParameterDefinitionKind, Generics, Ty, TyKind,
     },
     sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
+    span::Span,
 };
 use std::marker::PhantomData;
+
+pub fn generic_parameter_marker(param: &GenericParameterDefinition) -> GenericParameter {
+    GenericParameter {
+        index: param.index,
+        name: param.name,
+    }
+}
+
+pub fn expected_const_param_ty<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    lowerer: &dyn TypeLowerer<'ctx>,
+    param: &GenericParameterDefinition,
+) -> Option<Ty<'ctx>> {
+    let GenericParameterDefinitionKind::Const { ty, .. } = &param.kind else {
+        return None;
+    };
+
+    Some(
+        gcx.try_generic_const_param_ty(param.id)
+            .unwrap_or_else(|| lowerer.lower_type(ty)),
+    )
+}
+
+pub fn const_param_from_type_arg<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    lowerer: &dyn TypeLowerer<'ctx>,
+    ty: &hir::Type,
+) -> Option<Const<'ctx>> {
+    let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &ty.kind else {
+        return None;
+    };
+
+    let hir::Resolution::Definition(param_id, hir::DefinitionKind::ConstParameter) =
+        path.resolution
+    else {
+        return None;
+    };
+
+    let owner = gcx.definition_parent(param_id)?;
+    let generics = gcx.generics_of(owner);
+    let def = generics.parameters.iter().find(|p| p.id == param_id)?;
+    let ty = expected_const_param_ty(gcx, lowerer, def)?;
+
+    Some(Const {
+        ty,
+        kind: ConstKind::Param(generic_parameter_marker(def)),
+    })
+}
+
+pub fn const_arg_ty_mismatches<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    actual_ty: Ty<'ctx>,
+    expected_ty: Ty<'ctx>,
+) -> bool {
+    actual_ty != expected_ty && actual_ty != gcx.types.error && expected_ty != gcx.types.error
+}
+
+pub fn emit_const_arg_type_mismatch<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    expected_ty: Ty<'ctx>,
+    span: Span,
+) {
+    let message = format!(
+        "const argument does not match parameter type '{}'",
+        expected_ty.format(gcx)
+    );
+    gcx.dcx().emit_error(message, Some(span));
+}
+
+pub fn error_generic_argument<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    lowerer: &dyn TypeLowerer<'ctx>,
+    param: &GenericParameterDefinition,
+) -> GenericArgument<'ctx> {
+    match &param.kind {
+        GenericParameterDefinitionKind::Type { .. } => GenericArgument::Type(gcx.types.error),
+        GenericParameterDefinitionKind::Const { .. } => {
+            GenericArgument::Const(lowerer.error_const())
+        }
+    }
+}
 
 pub struct GenericsBuilder<'ctx> {
     _1: PhantomData<&'ctx ()>,
@@ -18,24 +100,15 @@ impl<'ctx> GenericsBuilder<'ctx> {
         let lower_ctx = DefTyLoweringCtx::new(id, gcx);
         Self::for_item(gcx, id, |param, _| match &param.kind {
             GenericParameterDefinitionKind::Type { .. } => {
-                let p = GenericParameter {
-                    index: param.index,
-                    name: param.name,
-                };
-                let ty = Ty::new(TyKind::Parameter(p), gcx);
+                let ty = Ty::new(TyKind::Parameter(generic_parameter_marker(param)), gcx);
                 GenericArgument::Type(ty)
             }
-            GenericParameterDefinitionKind::Const { ty, .. } => {
-                let p = GenericParameter {
-                    index: param.index,
-                    name: param.name,
-                };
-                let ty = gcx
-                    .try_generic_const_param_ty(param.id)
-                    .unwrap_or_else(|| lower_ctx.lowerer().lower_type(ty));
+            GenericParameterDefinitionKind::Const { .. } => {
+                let ty = expected_const_param_ty(gcx, lower_ctx.lowerer(), param)
+                    .unwrap_or(gcx.types.error);
                 GenericArgument::Const(Const {
                     ty,
-                    kind: ConstKind::Param(p),
+                    kind: ConstKind::Param(generic_parameter_marker(param)),
                 })
             }
         })

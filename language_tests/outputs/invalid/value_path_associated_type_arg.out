@@ -1,0 +1,4 @@
+error: associated type bindings are not allowed in value generic arguments
+ -> language_tests/source_files/invalid/value_path_associated_type_arg.tr:6:32
+	    let _ = valuePathGenericArg[Item = int32](1)
+	                                ^^^^

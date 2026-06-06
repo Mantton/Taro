@@ -1,0 +1,7 @@
+func valuePathGenericArg[T](_ value: T) -> T {
+    value
+}
+
+func main() {
+    let _ = valuePathGenericArg[Item = int32](1)
+}

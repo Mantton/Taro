@@ -15,6 +15,12 @@ use crate::{
             solve::DefaultFallbackGoalData,
             utils::{
                 const_eval::eval_const_expression,
+                generics::{
+                    const_arg_ty_mismatches,
+                    const_param_from_type_arg as generic_const_param_from_type_arg,
+                    emit_const_arg_type_mismatch, expected_const_param_ty,
+                    generic_parameter_marker,
+                },
                 instantiate::{
                     instantiate_const_with_args, instantiate_constraint_with_args,
                     instantiate_interface_ref_with_args, instantiate_ty_with_args,
@@ -335,9 +341,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             GenericParameterDefinitionKind::Const { ty, .. },
                             hir::TypeArgument::Const(c),
                         ) => {
-                            let expected_ty = gcx
-                                .try_generic_const_param_ty(param.id)
-                                .unwrap_or_else(|| self.lower_type(ty));
+                            let expected_ty = expected_const_param_ty(gcx, self, param)
+                                .unwrap_or_else(|| {
+                                    gcx.try_generic_const_param_ty(param.id)
+                                        .unwrap_or_else(|| self.lower_type(ty))
+                                });
                             GenericArgument::Const(self.lower_const_argument(expected_ty, c))
                         }
                         (
@@ -352,19 +360,16 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                             GenericParameterDefinitionKind::Const { ty: param_ty, .. },
                             hir::TypeArgument::Type(ty_arg),
                         ) => {
-                            let expected_ty = gcx
-                                .try_generic_const_param_ty(param.id)
-                                .unwrap_or_else(|| self.lower_type(param_ty));
-                            if let Some(param) = self.const_param_from_type_arg(ty_arg) {
-                                if param.ty != expected_ty
-                                    && param.ty != gcx.types.error
-                                    && expected_ty != gcx.types.error
-                                {
-                                    let message = format!(
-                                        "const argument does not match parameter type '{}'",
-                                        expected_ty.format(gcx)
-                                    );
-                                    gcx.dcx().emit_error(message, Some(ty_arg.span));
+                            let expected_ty = expected_const_param_ty(gcx, self, param)
+                                .unwrap_or_else(|| {
+                                    gcx.try_generic_const_param_ty(param.id)
+                                        .unwrap_or_else(|| self.lower_type(param_ty))
+                                });
+                            if let Some(param) =
+                                generic_const_param_from_type_arg(gcx, self, ty_arg)
+                            {
+                                if const_arg_ty_mismatches(gcx, param.ty, expected_ty) {
+                                    emit_const_arg_type_mismatch(gcx, expected_ty, ty_arg.span);
                                     GenericArgument::Const(self.error_const())
                                 } else {
                                     GenericArgument::Const(Const {
@@ -436,9 +441,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
                         // ---- const param ----
                         GenericParameterDefinitionKind::Const { ty, default } => {
-                            let expected_ty = gcx
-                                .try_generic_const_param_ty(param.id)
-                                .unwrap_or_else(|| self.lower_type(ty));
+                            let expected_ty = expected_const_param_ty(gcx, self, param)
+                                .unwrap_or_else(|| {
+                                    gcx.try_generic_const_param_ty(param.id)
+                                        .unwrap_or_else(|| self.lower_type(ty))
+                                });
                             if let Some(default) = default {
                                 if self.can_infer() {
                                     let infer_const =
@@ -527,15 +534,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
     ) -> Const<'ctx> {
         let gcx = self.gcx();
         if let Some(param) = self.lower_const_parameter(anon) {
-            if param.ty != expected_ty
-                && param.ty != gcx.types.error
-                && expected_ty != gcx.types.error
-            {
-                let message = format!(
-                    "const argument does not match parameter type '{}'",
-                    expected_ty.format(gcx)
-                );
-                gcx.dcx().emit_error(message, Some(anon.value.span));
+            if const_arg_ty_mismatches(gcx, param.ty, expected_ty) {
+                emit_const_arg_type_mismatch(gcx, expected_ty, anon.value.span);
                 return self.error_const();
             }
             return Const {
@@ -548,11 +548,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         };
 
         if !const_value_matches_type(value, expected_ty) {
-            let message = format!(
-                "const argument does not match parameter type '{}'",
-                expected_ty.format(gcx)
-            );
-            gcx.dcx().emit_error(message, Some(anon.value.span));
+            emit_const_arg_type_mismatch(gcx, expected_ty, anon.value.span);
             return self.error_const();
         }
 
@@ -1207,52 +1203,11 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let generics = gcx.generics_of(owner);
         let def = generics.parameters.iter().find(|p| p.id == param_id)?;
 
-        let ty = gcx
-            .try_generic_const_param_ty(param_id)
-            .or_else(|| match &def.kind {
-                GenericParameterDefinitionKind::Const { ty, .. } => Some(self.lower_type(ty)),
-                _ => None,
-            })?;
-
-        let param = GenericParameter {
-            index: def.index,
-            name: def.name,
-        };
+        let ty = expected_const_param_ty(gcx, self, def)?;
 
         Some(Const {
             ty,
-            kind: ConstKind::Param(param),
-        })
-    }
-
-    fn const_param_from_type_arg(&self, ty: &hir::Type) -> Option<Const<'ctx>> {
-        let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &ty.kind else {
-            return None;
-        };
-
-        let hir::Resolution::Definition(param_id, DefinitionKind::ConstParameter) = path.resolution
-        else {
-            return None;
-        };
-
-        let gcx = self.gcx();
-        let owner = gcx.definition_parent(param_id)?;
-        let generics = gcx.generics_of(owner);
-        let def = generics.parameters.iter().find(|p| p.id == param_id)?;
-
-        let param = GenericParameter {
-            index: def.index,
-            name: def.name,
-        };
-
-        Some(Const {
-            ty: gcx
-                .try_generic_const_param_ty(param_id)
-                .or_else(|| match &def.kind {
-                    GenericParameterDefinitionKind::Const { ty, .. } => Some(self.lower_type(ty)),
-                    _ => None,
-                })?,
-            kind: ConstKind::Param(param),
+            kind: ConstKind::Param(generic_parameter_marker(def)),
         })
     }
 

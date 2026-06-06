@@ -64,6 +64,17 @@ pub struct ConstraintSystem<'ctx> {
     error_count_at_start: usize,
 }
 
+struct SolverOutputs<'ctx> {
+    adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+    interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
+    field_indices: FxHashMap<NodeID, usize>,
+    property_reads: FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
+    property_writes: FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
+    overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
+    value_resolutions: FxHashMap<NodeID, Resolution>,
+    instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
+}
+
 impl<'ctx> ConstraintSystem<'ctx> {
     pub fn new(
         context: Gcx<'ctx>,
@@ -372,25 +383,16 @@ impl<'ctx> ConstraintSystem<'ctx> {
         let mut driver = SolverDriver::new(solver);
         let result = driver.solve_to_fixpoint();
 
-        // Pull adjustments back out of the solver/driver.
-        let (
-            adjustments,
-            interface_calls,
-            field_indices,
-            property_reads,
-            property_writes,
-            overload_sources,
-            value_resolutions,
-            instantiation_args,
-        ) = driver.into_parts();
-        self.adjustments = adjustments;
-        self.interface_calls = interface_calls;
-        self.field_indices = field_indices;
-        self.property_reads = property_reads;
-        self.property_writes = property_writes;
-        self.overload_sources = overload_sources;
-        self.value_resolutions = value_resolutions;
-        self.instantiation_args = instantiation_args;
+        // Pull collected outputs back out of the solver/driver.
+        let outputs = driver.into_parts();
+        self.adjustments = outputs.adjustments;
+        self.interface_calls = outputs.interface_calls;
+        self.field_indices = outputs.field_indices;
+        self.property_reads = outputs.property_reads;
+        self.property_writes = outputs.property_writes;
+        self.overload_sources = outputs.overload_sources;
+        self.value_resolutions = outputs.value_resolutions;
+        self.instantiation_args = outputs.instantiation_args;
 
         if result.is_ok() {
             if check_unresolved && gcx.dcx().error_count() == self.error_count_at_start {
@@ -972,28 +974,17 @@ impl<'ctx> SolverDriver<'ctx> {
         }
     }
 
-    fn into_parts(
-        self,
-    ) -> (
-        FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
-        FxHashMap<NodeID, InterfaceCallInfo>,
-        FxHashMap<NodeID, usize>,
-        FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
-        FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
-        FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
-        FxHashMap<NodeID, Resolution>,
-        FxHashMap<NodeID, GenericArguments<'ctx>>,
-    ) {
-        (
-            self.solver.adjustments,
-            self.solver.interface_calls,
-            self.solver.field_indices,
-            self.solver.property_reads,
-            self.solver.property_writes,
-            self.solver.overload_sources,
-            self.solver.value_resolutions,
-            self.solver.instantiation_args,
-        )
+    fn into_parts(self) -> SolverOutputs<'ctx> {
+        SolverOutputs {
+            adjustments: self.solver.adjustments,
+            interface_calls: self.solver.interface_calls,
+            field_indices: self.solver.field_indices,
+            property_reads: self.solver.property_reads,
+            property_writes: self.solver.property_writes,
+            overload_sources: self.solver.overload_sources,
+            value_resolutions: self.solver.value_resolutions,
+            instantiation_args: self.solver.instantiation_args,
+        }
     }
 
     fn solve_to_fixpoint(&mut self) -> Result<(), SpannedErrorList<'ctx>> {

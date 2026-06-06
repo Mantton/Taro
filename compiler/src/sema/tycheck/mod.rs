@@ -16,6 +16,8 @@ pub mod infer;
 pub mod lower;
 pub mod results;
 pub mod solve;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod utils;
 mod wf;
 
@@ -24,6 +26,8 @@ pub struct TypecheckPhaseTiming {
     pub name: &'static str,
     pub duration: Duration,
 }
+
+const TYPECHECK_PHASE_COUNT: usize = 19;
 
 pub fn resolve_conformance_witness<'ctx>(
     context: GlobalContext<'ctx>,
@@ -44,121 +48,109 @@ pub fn typecheck_package<'ctx>(
     package: &hir::Package,
     context: GlobalContext<'ctx>,
 ) -> CompileResult<results::TypeCheckResults<'ctx>> {
-    collect::attributes::run(package, context)?; // Collect Attributes
-    collect::generics::run(package, context)?; // Collect Generics Headers
-    collect::adt::run(package, context)?; // Collect ADT Definitions
-    collect::interface::collect::run(package, context)?; // Collect Interface Definition
-    impls::identify::run(package, context)?; // Resolve Impl Block Identities
-    collect::alias::run(package, context)?; // Collect Type Aliases
-    collect::static_variable::run(package, context)?; // Collect Static Variable Types
-    collect::constant::run(package, context)?; // Collect Constant Types
-    collect::constraints::run(package, context)?; // Collect Generic Constraints
-    impls::target::run(package, context)?; // Cache Impl Target Types
-    collect::function::run(package, context)?; // Collect Function Type Signatures
-    collect::variant::run(package, context)?; // Collect Enum Variant Definitions
-    collect::field::run(package, context)?; // Collect ADT Type Definitions
-    collect::interface::requirements::run(package, context)?; // Collect Interface Requirements
-    impls::member::run(package, context)?; // Collect Impl Block Members
-    collect::conformances::run(package, context)?; // Collect Conformances
-    collect::interface::conform::run(package, context)?; // Validate Conformances
-
-    // WellFormed?
-    wf::run(package, context)?;
-    // Check Body
-    let results = check::run(package, context)?;
-    Ok(results)
+    let mut phase_timings = None;
+    run_typecheck_pipeline(package, context, &mut phase_timings)
 }
 
 pub fn typecheck_package_with_timings<'ctx>(
     package: &hir::Package,
     context: GlobalContext<'ctx>,
 ) -> CompileResult<(results::TypeCheckResults<'ctx>, Vec<TypecheckPhaseTiming>)> {
-    let mut phase_timings = Vec::with_capacity(18);
+    let mut phase_timings = Vec::with_capacity(TYPECHECK_PHASE_COUNT);
+    let results = {
+        let mut timings = Some(&mut phase_timings);
+        run_typecheck_pipeline(package, context, &mut timings)?
+    };
+    Ok((results, phase_timings))
+}
 
-    macro_rules! run_timed {
-        ($name:literal, $expression:expr) => {{
-            let started_at = Instant::now();
-            let value = $expression;
-            phase_timings.push(TypecheckPhaseTiming {
-                name: $name,
-                duration: started_at.elapsed(),
-            });
-            value
-        }};
-    }
-
-    run_timed!(
-        "sema.typecheck.collect.attributes",
+fn run_typecheck_pipeline<'ctx>(
+    package: &hir::Package,
+    context: GlobalContext<'ctx>,
+    phase_timings: &mut Option<&mut Vec<TypecheckPhaseTiming>>,
+) -> CompileResult<results::TypeCheckResults<'ctx>> {
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.attributes", || {
         collect::attributes::run(package, context)
-    )?; // Collect Attributes
-    run_timed!(
-        "sema.typecheck.collect.generics",
+    })?; // Collect Attributes
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.generics", || {
         collect::generics::run(package, context)
-    )?; // Collect Generics Headers
-    run_timed!(
-        "sema.typecheck.collect.adt",
+    })?; // Collect Generics Headers
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.adt", || {
         collect::adt::run(package, context)
-    )?; // Collect ADT Definitions
-    run_timed!(
+    })?; // Collect ADT Definitions
+    run_typecheck_phase(
+        phase_timings,
         "sema.typecheck.collect.interface.collect",
-        collect::interface::collect::run(package, context)
+        || collect::interface::collect::run(package, context),
     )?; // Collect Interface Definition
-    run_timed!(
-        "sema.typecheck.impls.identify",
+    run_typecheck_phase(phase_timings, "sema.typecheck.impls.identify", || {
         impls::identify::run(package, context)
-    )?; // Resolve Impl Block Identities
-    run_timed!(
-        "sema.typecheck.collect.alias",
+    })?; // Resolve Impl Block Identities
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.alias", || {
         collect::alias::run(package, context)
-    )?; // Collect Type Aliases
-    run_timed!(
+    })?; // Collect Type Aliases
+    run_typecheck_phase(
+        phase_timings,
         "sema.typecheck.collect.static_variable",
-        collect::static_variable::run(package, context)
+        || collect::static_variable::run(package, context),
     )?; // Collect Static Variable Types
-    run_timed!(
-        "sema.typecheck.collect.constant",
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.constant", || {
         collect::constant::run(package, context)
-    )?; // Collect Constant Types
-    run_timed!(
-        "sema.typecheck.collect.constraints",
+    })?; // Collect Constant Types
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.constraints", || {
         collect::constraints::run(package, context)
-    )?; // Collect Generic Constraints
-    run_timed!(
-        "sema.typecheck.impls.target",
+    })?; // Collect Generic Constraints
+    run_typecheck_phase(phase_timings, "sema.typecheck.impls.target", || {
         impls::target::run(package, context)
-    )?; // Cache Impl Target Types
-    run_timed!(
-        "sema.typecheck.collect.function",
+    })?; // Cache Impl Target Types
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.function", || {
         collect::function::run(package, context)
-    )?; // Collect Function Type Signatures
-    run_timed!(
-        "sema.typecheck.collect.variant",
+    })?; // Collect Function Type Signatures
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.variant", || {
         collect::variant::run(package, context)
-    )?; // Collect Enum Variant Definitions
-    run_timed!(
-        "sema.typecheck.collect.field",
+    })?; // Collect Enum Variant Definitions
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.field", || {
         collect::field::run(package, context)
-    )?; // Collect ADT Type Definitions
-    run_timed!(
+    })?; // Collect ADT Type Definitions
+    run_typecheck_phase(
+        phase_timings,
         "sema.typecheck.collect.interface.requirements",
-        collect::interface::requirements::run(package, context)
+        || collect::interface::requirements::run(package, context),
     )?; // Collect Interface Requirements
-    run_timed!(
-        "sema.typecheck.impls.member",
+    run_typecheck_phase(phase_timings, "sema.typecheck.impls.member", || {
         impls::member::run(package, context)
-    )?; // Collect Impl Block Members
-    run_timed!(
-        "sema.typecheck.collect.conformances",
+    })?; // Collect Impl Block Members
+    run_typecheck_phase(phase_timings, "sema.typecheck.collect.conformances", || {
         collect::conformances::run(package, context)
-    )?; // Collect Conformances
-    run_timed!(
+    })?; // Collect Conformances
+    run_typecheck_phase(
+        phase_timings,
         "sema.typecheck.collect.interface.conform",
-        collect::interface::conform::run(package, context)
+        || collect::interface::conform::run(package, context),
     )?; // Validate Conformances
 
     // WellFormed?
-    run_timed!("sema.typecheck.wf", wf::run(package, context))?;
+    run_typecheck_phase(phase_timings, "sema.typecheck.wf", || {
+        wf::run(package, context)
+    })?;
     // Check Body
-    let results = run_timed!("sema.typecheck.check", check::run(package, context))?;
-    Ok((results, phase_timings))
+    run_typecheck_phase(phase_timings, "sema.typecheck.check", || {
+        check::run(package, context)
+    })
+}
+
+fn run_typecheck_phase<R>(
+    phase_timings: &mut Option<&mut Vec<TypecheckPhaseTiming>>,
+    name: &'static str,
+    phase: impl FnOnce() -> CompileResult<R>,
+) -> CompileResult<R> {
+    let started_at = Instant::now();
+    let value = phase();
+    if let Some(phase_timings) = phase_timings.as_deref_mut() {
+        phase_timings.push(TypecheckPhaseTiming {
+            name,
+            duration: started_at.elapsed(),
+        });
+    }
+    value
 }
