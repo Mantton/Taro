@@ -47,6 +47,9 @@ struct TaskSlot {
 }
 
 struct TaskSlotInner {
+    // `occupied` plus `generation` is the authority for whether a task token is
+    // live. Queue/running/completed flags must be updated while holding this
+    // lock so stale wakeups cannot resurrect a finalized slot.
     generation: TaskGeneration,
     occupied: bool,
     handle: *mut u8,
@@ -508,6 +511,9 @@ impl Scheduler {
         preferred_worker: Option<usize>,
         is_spawned: bool,
     ) -> TaskToken {
+        debug_assert!(owner_worker < self.worker_count);
+        debug_assert!(preferred_worker.is_none_or(|worker| worker < self.worker_count));
+
         let frame = async_handle_frame(handle);
         let mobility = async_handle_mobility(handle);
 
@@ -566,6 +572,8 @@ impl Scheduler {
             };
 
         if !frame.is_null() {
+            // The async frame may contain compiler-emitted shadow roots. Keep it
+            // as a persistent root from enqueue until finalization/teardown.
             with_gc(|gc| gc.add_persistent_root(frame as *const u8));
         }
 
@@ -576,6 +584,8 @@ impl Scheduler {
     }
 
     fn run_task(&self, worker_id: usize, task_token: TaskToken) {
+        debug_assert!(worker_id < self.worker_count);
+
         let (task_index, task_generation) = unpack_task_token(task_token);
         let Some(slot) = self.lookup_task_slot(task_index) else {
             return;
@@ -596,6 +606,10 @@ impl Scheduler {
             inner.queued = false;
             inner.running = true;
             inner.last_worker = worker_id;
+            debug_assert!(
+                matches!(inner.mobility, TaskMobility::Movable) || inner.owner_worker == worker_id,
+                "pinned task scheduled on non-owner worker"
+            );
             (
                 inner.handle,
                 inner.out_ptr,
@@ -643,6 +657,8 @@ impl Scheduler {
             let requeue_target = {
                 let mut inner = slot.inner.lock().unwrap();
                 inner.running = false;
+                // Pending polls must either have registered a runtime wait
+                // (`blocked`) or be cooperatively requeued here.
                 if !inner.occupied || inner.generation != task_generation || inner.completed {
                     None
                 } else if inner.wake_requested {
@@ -685,6 +701,10 @@ impl Scheduler {
                 inner.running = false;
                 return;
             }
+            debug_assert!(
+                !inner.handle.is_null() || inner.frame.is_null(),
+                "task slot has a frame without an async handle"
+            );
             inner.completed = true;
             inner.running = false;
             inner.queued = false;
@@ -746,6 +766,8 @@ impl Scheduler {
                 return;
             }
             inner.cancelled = true;
+            // A blocked task has no queue owner; wake it so `run_task` can take
+            // the cancellation path and perform normal finalization cleanup.
             if inner.running {
                 inner.wake_requested = true;
                 false
@@ -774,6 +796,7 @@ impl Scheduler {
                 inner.running = false;
                 return;
             }
+            debug_assert!(inner.cancelled || !inner.queued);
             inner.completed = true;
             inner.cancelled = true;
             inner.running = false;
@@ -829,6 +852,10 @@ impl Scheduler {
                 inner.running = false;
                 return;
             }
+            debug_assert!(
+                inner.group_id.is_some() || inner.is_spawned,
+                "only spawned/grouped tasks should be isolated after panic"
+            );
             inner.completed = true;
             inner.running = false;
             inner.queued = false;
@@ -986,6 +1013,8 @@ impl Scheduler {
                 sequence,
                 task_token,
             }));
+            // Heap entries are append-only. `latest` is the cancellation and
+            // re-registration guard that makes older heap entries stale.
             timers.latest[task_index] = Some(TimerRegistration { deadline, sequence });
             previous.is_none_or(|earliest| deadline < earliest)
         };
@@ -1099,6 +1128,8 @@ impl Scheduler {
                 return;
             }
             if inner.running {
+                // The worker owns the poll right now. Record that a wake
+                // happened; the worker will reschedule after the poll returns.
                 inner.wake_requested = true;
                 return;
             }
@@ -1171,6 +1202,9 @@ impl Scheduler {
     }
 
     fn wake_tasks(&self, task_tokens: &[TaskToken]) {
+        // Wakes are advisory: stale/completed/already-queued tokens are filtered
+        // by `enqueue_task`, so external subsystems can race safely with task
+        // completion.
         self.schedule_tasks(task_tokens.iter().copied().map(|task_token| {
             let (task_index, task_generation) = unpack_task_token(task_token);
             let preferred_worker = {
@@ -1418,6 +1452,9 @@ pub(crate) fn current_task_token() -> Option<TaskToken> {
 /// Entry point: run an async handle to completion using the multithreaded
 /// executor.
 pub fn run_root(handle: *mut u8, out: *mut u8) {
+    // Rooted execution owns the scheduler session for this async root. The
+    // guard ensures background workers and remaining tasks are torn down on all
+    // exit paths.
     let scheduler = install_scheduler(true);
     let _guard = SessionGuard {
         scheduler: Arc::clone(&scheduler),
@@ -1950,6 +1987,9 @@ pub extern "C-unwind" fn __rt__executor_finish_rootless() {
         return;
     }
 
+    // Rootless sessions are created lazily by sync code that spawns async work.
+    // Once started here, worker 0 drives the session to quiescence exactly like
+    // a rooted run.
     let _guard = SessionGuard {
         scheduler: Arc::clone(&scheduler),
     };
@@ -1980,6 +2020,8 @@ pub extern "C" fn __rt__executor_abort_rootless() {
         Arc::clone(scheduler)
     };
 
+    // Abort is intentionally non-polling: queued async frames are dropped so a
+    // panicking sync test cannot leave rootless work alive for the next test.
     scheduler.force_shutdown();
     scheduler.join_background_threads();
     scheduler.teardown_remaining_tasks();
@@ -2224,6 +2266,70 @@ mod tests {
         assert!(inner.completed);
         assert_eq!(inner.generation, task_generation);
         assert!(inner.out_buf.is_some());
+    }
+
+    #[test]
+    fn timer_latest_table_ignores_stale_deadlines() {
+        let scheduler = Scheduler::new(false, 1);
+        let token = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            false,
+        );
+
+        let old_deadline = Instant::now() + StdDuration::from_millis(10);
+        let new_deadline = old_deadline + StdDuration::from_secs(5);
+        scheduler.register_sleep(token, old_deadline);
+        scheduler.register_sleep(token, new_deadline);
+
+        let timers = scheduler.timers.lock().unwrap();
+        let stale_entry = timers
+            .heap
+            .iter()
+            .map(|entry| entry.0)
+            .find(|entry| entry.deadline == old_deadline)
+            .expect("old timer entry should still be in the heap");
+        let latest_entry = timers
+            .heap
+            .iter()
+            .map(|entry| entry.0)
+            .find(|entry| entry.deadline == new_deadline)
+            .expect("new timer entry should be in the heap");
+
+        assert!(!Scheduler::is_live_timer_entry(&timers, stale_entry));
+        assert!(Scheduler::is_live_timer_entry(&timers, latest_entry));
+    }
+
+    #[test]
+    fn clear_task_timer_makes_due_timer_entry_stale() {
+        let scheduler = Scheduler::new(false, 1);
+        let token = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            false,
+        );
+        let (task_index, _) = unpack_task_token(token);
+        let slot = scheduler.lookup_task_slot(task_index).unwrap();
+        slot.inner.lock().unwrap().queued = false;
+
+        let due = Instant::now()
+            .checked_sub(StdDuration::from_millis(1))
+            .unwrap_or_else(Instant::now);
+        scheduler.register_sleep(token, due);
+        scheduler.clear_task_timer(token);
+        scheduler.wake_due_timers();
+
+        let inner = slot.inner.lock().unwrap();
+        assert!(!inner.queued, "cleared timer must not wake the task");
+        drop(inner);
+        let timers = scheduler.timers.lock().unwrap();
+        assert!(timers.latest[task_index].is_none());
     }
 
     fn note_max(counter: &AtomicUsize, candidate: usize) {
@@ -2690,6 +2796,28 @@ mod tests {
     }
 
     #[test]
+    fn rootless_abort_drops_pending_spawned_handles() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        assert!(session_cell().lock().unwrap().is_none());
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let _token = __rt__executor_spawn(
+            make_pending_handle(Arc::clone(&polls), Arc::clone(&drops)),
+            0,
+        );
+
+        assert_eq!(polls.load(Ordering::Acquire), 0);
+        assert_eq!(drops.load(Ordering::Acquire), 0);
+
+        __rt__executor_abort_rootless();
+
+        assert_eq!(polls.load(Ordering::Acquire), 0);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+        assert!(session_cell().lock().unwrap().is_none());
+    }
+
+    #[test]
     fn cancel_marks_blocked_task_and_wakes_it() {
         let scheduler = Scheduler::new(false, 1);
         let token = scheduler.add_task(
@@ -2755,6 +2883,95 @@ mod tests {
 
         assert_eq!(polls.load(Ordering::Acquire), 0);
         assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct TimerMutexChildFrame {
+        mutex_id: usize,
+        armed: bool,
+        ready: Arc<AtomicBool>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    unsafe extern "C-unwind" fn timer_mutex_child_poll(
+        frame: *mut u8,
+        _ctx: *mut u8,
+        _out: *mut u8,
+    ) -> u8 {
+        let frame = unsafe { &mut *(frame as *mut TimerMutexChildFrame) };
+        if !frame.armed {
+            assert_eq!(crate::sync::__rt__sync_mutex_try_lock(frame.mutex_id), 0);
+            register_sleep(Instant::now() + StdDuration::from_secs(30));
+            frame.armed = true;
+            frame.ready.store(true, Ordering::Release);
+        }
+        0
+    }
+
+    unsafe extern "C" fn timer_mutex_child_drop(frame: *mut u8) {
+        let frame = unsafe { Box::from_raw(frame as *mut TimerMutexChildFrame) };
+        frame.drops.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[test]
+    fn task_cancellation_cleans_timer_and_sync_state() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let scheduler = Scheduler::new(false, 1);
+        let mutex_id = crate::sync::__rt__sync_mutex_create();
+        let child_ready = Arc::new(AtomicBool::new(false));
+        let child_drops = Arc::new(AtomicUsize::new(0));
+        let handle = __rt__async_create(
+            Box::into_raw(Box::new(TimerMutexChildFrame {
+                mutex_id,
+                armed: false,
+                ready: Arc::clone(&child_ready),
+                drops: Arc::clone(&child_drops),
+            })) as *mut u8,
+            timer_mutex_child_poll as *const () as *const u8,
+            timer_mutex_child_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+        let token = scheduler.add_task(handle, ptr::null_mut(), None, 0, Some(0), false);
+        let (task_index, _) = unpack_task_token(token);
+
+        let local = scheduler.start();
+        let worker_scheduler = Arc::clone(&scheduler);
+        let worker = thread::Builder::new()
+            .name("taro-test-cancel-cleanup-worker".into())
+            .spawn(move || worker_scheduler.worker_loop(0, local))
+            .expect("failed to spawn cancellation cleanup worker");
+
+        let ready_deadline = Instant::now() + StdDuration::from_secs(2);
+        while Instant::now() < ready_deadline && !child_ready.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        assert!(
+            child_ready.load(Ordering::Acquire),
+            "child task never reached timer/mutex blocked state"
+        );
+        assert!(
+            scheduler.timers.lock().unwrap().latest[task_index].is_some(),
+            "child task should have registered a timer before cancellation"
+        );
+
+        scheduler.cancel_task(token);
+        let drop_deadline = Instant::now() + StdDuration::from_secs(2);
+        while Instant::now() < drop_deadline && child_drops.load(Ordering::Acquire) == 0 {
+            thread::yield_now();
+        }
+        assert_eq!(child_drops.load(Ordering::Acquire), 1);
+        assert!(
+            scheduler.timers.lock().unwrap().latest[task_index].is_none(),
+            "cancelled task timer should be cleared during finalization"
+        );
+        assert_eq!(
+            crate::sync::__rt__sync_mutex_destroy(mutex_id),
+            0,
+            "cancelled task should release owned mutex"
+        );
+
+        scheduler.force_shutdown();
+        worker.join().expect("cancellation cleanup worker join failed");
+        scheduler.join_background_threads();
     }
 
     struct PollSpawnedCancelledRoot {

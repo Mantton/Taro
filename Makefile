@@ -9,12 +9,13 @@ RUN_DIST := $(ROOT)/development/scripts/run_dist.py
 LANGUAGE_TESTS := $(ROOT)/development/scripts/language_tests.py
 TEST_ALL := $(ROOT)/development/scripts/test_all.py
 BENCHMARK_TIMINGS := $(ROOT)/development/scripts/benchmark_timings.py
+RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
 
 DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests std-tests all-tests benchmark
+.PHONY: help compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests std-tests runtime-stress all-tests benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -38,6 +39,7 @@ help:
 	@echo "  make language-tests JOBS=4"
 	@echo "  make language-tests FILTER=optional"
 	@echo "  make std-tests                Run std package test files"
+	@echo "  make runtime-stress           Run runtime-tagged std stress tests across worker counts"
 	@echo "  make all-tests                Run full test_all.py pipeline"
 	@echo "  make all-tests JOBS=4"
 	@echo ""
@@ -89,6 +91,9 @@ language-tests:
 
 std-tests: dist
 	$(PYTHON) $(TEST_ALL) --skip-cargo-tests --skip-build-dist --skip-language-tests
+
+runtime-stress:
+	$(PYTHON) $(RUNTIME_STRESS)
 
 all-tests:
 	$(PYTHON) $(TEST_ALL) $(if $(JOBS),--jobs $(JOBS),)

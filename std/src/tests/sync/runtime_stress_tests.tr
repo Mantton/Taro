@@ -1,0 +1,301 @@
+@cfg(family("unix"))
+static var RUNTIME_STRESS_RAW_MUTEX: std.optional.Optional[std.sys.sync.RawMutex] = .none
+
+@cfg(family("unix"))
+static var RUNTIME_STRESS_MUTEX_COUNTER: int32 = 0
+
+@cfg(family("unix"))
+static var RUNTIME_STRESS_RAW_RWLOCK: std.optional.Optional[std.sys.sync.RawRwLock] = .none
+
+@cfg(family("unix"))
+static var RUNTIME_STRESS_RWLOCK_VALUE: int32 = 0
+
+@cfg(family("unix"))
+func runtimeStressLockRawMutex(_ mutex: &std.sys.sync.RawMutex) async {
+    var acquired = false
+    while !acquired {
+        let tryRes = std.sys.sync.mutexTryLock(mutex)
+        match tryRes {
+            case .ok(true) => acquired = true
+            case .ok(false) => {
+                let waitRes = await std.sys.sync.waitMutexLock(mutex)
+                match waitRes {
+                    case .ok(_) => {}
+                    case .err(_) => std.panic.panic("raw mutex wait should succeed")
+                }
+            }
+            case .err(_) => std.panic.panic("raw mutex tryLock should succeed or block")
+        }
+    }
+}
+
+@cfg(family("unix"))
+func runtimeStressLockRawRwRead(_ lock: &std.sys.sync.RawRwLock) async {
+    var acquired = false
+    while !acquired {
+        let tryRes = std.sys.sync.rwlockTryRead(lock)
+        match tryRes {
+            case .ok(true) => acquired = true
+            case .ok(false) => {
+                let waitRes = await std.sys.sync.waitRwLockRead(lock)
+                match waitRes {
+                    case .ok(_) => {}
+                    case .err(_) => std.panic.panic("raw rwlock read wait should succeed")
+                }
+            }
+            case .err(_) => std.panic.panic("raw rwlock tryRead should succeed or block")
+        }
+    }
+}
+
+@cfg(family("unix"))
+func runtimeStressLockRawRwWrite(_ lock: &std.sys.sync.RawRwLock) async {
+    var acquired = false
+    while !acquired {
+        let tryRes = std.sys.sync.rwlockTryWrite(lock)
+        match tryRes {
+            case .ok(true) => acquired = true
+            case .ok(false) => {
+                let waitRes = await std.sys.sync.waitRwLockWrite(lock)
+                match waitRes {
+                    case .ok(_) => {}
+                    case .err(_) => std.panic.panic("raw rwlock write wait should succeed")
+                }
+            }
+            case .err(_) => std.panic.panic("raw rwlock tryWrite should succeed or block")
+        }
+    }
+}
+
+@cfg(family("unix"))
+func runtimeStressMutexWorker() async -> int32 {
+    let mutex = match RUNTIME_STRESS_RAW_MUTEX {
+        case .some(value) => value
+        case .none => std.panic.panic("runtime stress mutex should be seeded")
+    }
+
+    var iter = 0_i32
+    while iter < 8_i32 {
+        await runtimeStressLockRawMutex(&mutex)
+        RUNTIME_STRESS_MUTEX_COUNTER += 1_i32
+        match std.sys.sync.mutexUnlock(&mutex) {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("raw mutex unlock should succeed")
+        }
+        await std.testing.yieldNow()
+        iter += 1_i32
+    }
+
+    return 8_i32
+}
+
+@cfg(family("unix"))
+func runtimeStressRwWriter() async -> int32 {
+    let lock = match RUNTIME_STRESS_RAW_RWLOCK {
+        case .some(value) => value
+        case .none => std.panic.panic("runtime stress rwlock should be seeded")
+    }
+
+    await runtimeStressLockRawRwWrite(&lock)
+    RUNTIME_STRESS_RWLOCK_VALUE = 99_i32
+    match std.sys.sync.rwlockUnlockWrite(&lock) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("raw rwlock write unlock should succeed")
+    }
+    return 1_i32
+}
+
+@cfg(family("unix"))
+func runtimeStressRwReader() async -> int32 {
+    let lock = match RUNTIME_STRESS_RAW_RWLOCK {
+        case .some(value) => value
+        case .none => std.panic.panic("runtime stress rwlock should be seeded")
+    }
+
+    await runtimeStressLockRawRwRead(&lock)
+    let observed = RUNTIME_STRESS_RWLOCK_VALUE
+    match std.sys.sync.rwlockUnlockRead(&lock) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("raw rwlock read unlock should succeed")
+    }
+    return observed
+}
+
+@cfg(family("unix"))
+@test
+@tag("runtime")
+func runtimeStressBoundedChannelProducerConsumer() async {
+    let channel = match std.sync.bounded[int32](4 as usize) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("bounded channel should be created")
+    }
+
+    let producerChannel = channel
+    let producer = std.task.spawn(|| async {
+        var value = 1_i32
+        while value <= 128_i32 {
+            let sendRes = await producerChannel.send(value)
+            match sendRes {
+                case .ok(_) => {}
+                case .err(_) => std.panic.panic("bounded channel send should succeed")
+            }
+            value += 1_i32
+        }
+        return 128_i32
+    })
+
+    let consumerChannel = channel
+    let consumer = std.task.spawn(|| async {
+        var count = 0_i32
+        var sum = 0_i32
+        while count < 128_i32 {
+            let value = match await consumerChannel.recv() {
+                case .some(v) => v
+                case .none => std.panic.panic("bounded channel should not close during stress")
+            }
+            sum += value
+            count += 1_i32
+        }
+        return sum
+    })
+
+    let produced = (await producer.result()).unwrap()
+    let consumed = (await consumer.result()).unwrap()
+    std.testing.assertEqual(produced, 128_i32, "producer should send every message")
+    std.testing.assertEqual(consumed, 8256_i32, "consumer should receive the sum of 1..128")
+    std.testing.assertTrue(channel.destroy().isOk(), "bounded channel destroy should succeed")
+}
+
+@cfg(family("unix"))
+@test
+@tag("runtime")
+func runtimeStressChannelCloseWakesManyReceivers() async {
+    let channel = match std.sync.bounded[int32](1 as usize) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("bounded channel should be created")
+    }
+
+    let firstChannel = channel
+    let first = std.task.spawn(|| async {
+        match await firstChannel.recv() {
+            case .none => return 1_i32
+            case .some(_) => return 0_i32
+        }
+    })
+    let secondChannel = channel
+    let second = std.task.spawn(|| async {
+        match await secondChannel.recv() {
+            case .none => return 1_i32
+            case .some(_) => return 0_i32
+        }
+    })
+    let thirdChannel = channel
+    let third = std.task.spawn(|| async {
+        match await thirdChannel.recv() {
+            case .none => return 1_i32
+            case .some(_) => return 0_i32
+        }
+    })
+    let fourthChannel = channel
+    let fourth = std.task.spawn(|| async {
+        match await fourthChannel.recv() {
+            case .none => return 1_i32
+            case .some(_) => return 0_i32
+        }
+    })
+
+    await std.testing.yieldNow()
+    std.testing.assertTrue(channel.close().isOk(), "channel close should wake receivers")
+
+    let total = (await first.result()).unwrap()
+        + (await second.result()).unwrap()
+        + (await third.result()).unwrap()
+        + (await fourth.result()).unwrap()
+    std.testing.assertEqual(total, 4_i32, "all blocked receivers should observe close")
+    std.testing.assertTrue(channel.destroy().isOk(), "channel destroy should succeed")
+}
+
+@cfg(family("unix"))
+@test
+@tag("runtime")
+func runtimeStressMutexContentionSerializesUpdates() async {
+    let mutex = match std.sys.sync.mutexCreate() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("raw mutex should be created")
+    }
+    RUNTIME_STRESS_RAW_MUTEX = .some(mutex)
+    RUNTIME_STRESS_MUTEX_COUNTER = 0_i32
+
+    var tasks = std.collections.List[std.task.Task[int32]]()
+    var idx = 0_i32
+    while idx < 16_i32 {
+        let task = std.task.spawn(|| async { return await runtimeStressMutexWorker() })
+        tasks.append(task)
+        idx += 1_i32
+    }
+
+    var completed = 0_i32
+    while !tasks.isEmpty() {
+        let task = match tasks.pop() {
+            case .some(value) => value
+            case .none => std.panic.panic("mutex stress task list should not be empty")
+        }
+        completed += (await task.result()).unwrap()
+    }
+
+    std.testing.assertEqual(completed, 128_i32, "mutex workers should all complete")
+    std.testing.assertEqual(RUNTIME_STRESS_MUTEX_COUNTER, 128_i32, "mutex should serialize all increments")
+    RUNTIME_STRESS_RAW_MUTEX = .none
+    std.testing.assertTrue(std.sys.sync.mutexDestroy(mutex).isOk(), "raw mutex destroy should succeed")
+}
+
+@cfg(family("unix"))
+@test
+@tag("runtime")
+func runtimeStressRwLockWriterEventuallyRuns() async {
+    let lock = match std.sys.sync.rwlockCreate() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("raw rwlock should be created")
+    }
+    RUNTIME_STRESS_RAW_RWLOCK = .some(lock)
+    RUNTIME_STRESS_RWLOCK_VALUE = 0_i32
+
+    await runtimeStressLockRawRwRead(&lock)
+    let writer = std.task.spawn(|| async { return await runtimeStressRwWriter() })
+
+    var writerQueued = false
+    var probes = 0_i32
+    while !writerQueued && probes < 100_i32 {
+        match std.sys.sync.rwlockTryRead(&lock) {
+            case .ok(true) => {
+                match std.sys.sync.rwlockUnlockRead(&lock) {
+                    case .ok(_) => {}
+                    case .err(_) => std.panic.panic("rwlock probe read unlock should succeed")
+                }
+                await std.testing.yieldNow()
+            }
+            case .ok(false) => writerQueued = true
+            case .err(_) => std.panic.panic("rwlock probe read should succeed or block")
+        }
+        probes += 1_i32
+    }
+    std.testing.assertTrue(writerQueued, "writer should queue behind the held reader")
+
+    let firstReader = std.task.spawn(|| async { return await runtimeStressRwReader() })
+    let secondReader = std.task.spawn(|| async { return await runtimeStressRwReader() })
+
+    match std.sys.sync.rwlockUnlockRead(&lock) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("initial read unlock should succeed")
+    }
+
+    let wrote = (await writer.result()).unwrap()
+    let first = (await firstReader.result()).unwrap()
+    let second = (await secondReader.result()).unwrap()
+
+    std.testing.assertEqual(wrote, 1_i32, "queued writer should eventually run")
+    std.testing.assertEqual(first, 99_i32, "reader should observe writer update")
+    std.testing.assertEqual(second, 99_i32, "second reader should observe writer update")
+    RUNTIME_STRESS_RAW_RWLOCK = .none
+    std.testing.assertTrue(std.sys.sync.rwlockDestroy(lock).isOk(), "raw rwlock destroy should succeed")
+}

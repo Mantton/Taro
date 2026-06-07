@@ -109,6 +109,10 @@ fn pop_waiter(queue: &mut VecDeque<TaskToken>) -> Option<TaskToken> {
     queue.pop_front()
 }
 
+fn front_waiter(queue: &VecDeque<TaskToken>) -> Option<TaskToken> {
+    queue.front().copied()
+}
+
 fn current_task_token() -> Result<TaskToken, i32> {
     crate::executor::current_task_token().ok_or_else(err_perm)
 }
@@ -289,6 +293,13 @@ impl SyncState {
             return err_busy();
         }
 
+        if let Some(front) = front_waiter(&mutex.waiters) {
+            if front != task_token {
+                return err_busy();
+            }
+            mutex.waiters.pop_front();
+        }
+
         mutex.owner = Some(task_token);
         self.ownership
             .entry(task_token)
@@ -317,7 +328,7 @@ impl SyncState {
         }
 
         let mut wake = Vec::new();
-        if let Some(waiter) = pop_waiter(&mut mutex.waiters) {
+        if let Some(waiter) = front_waiter(&mutex.waiters) {
             push_unique(&mut wake, waiter);
         }
 
@@ -369,6 +380,7 @@ impl SyncState {
             return err_busy();
         }
 
+        remove_waiter(&mut lock.reader_waiters, task_token);
         *lock.readers.entry(task_token).or_insert(0) += 1;
         lock.total_readers += 1;
 
@@ -389,6 +401,15 @@ impl SyncState {
         };
 
         if lock.writer.is_some() || lock.total_readers > 0 {
+            return err_busy();
+        }
+
+        if let Some(front) = front_waiter(&lock.writer_waiters) {
+            if front != task_token {
+                return err_busy();
+            }
+            lock.writer_waiters.pop_front();
+        } else if !lock.reader_waiters.is_empty() {
             return err_busy();
         }
 
@@ -438,8 +459,10 @@ impl SyncState {
 
         let mut wake = Vec::new();
         if lock.total_readers == 0 {
-            if let Some(waiter) = pop_waiter(&mut lock.writer_waiters) {
+            if let Some(waiter) = front_waiter(&lock.writer_waiters) {
                 push_unique(&mut wake, waiter);
+            } else {
+                extend_unique(&mut wake, lock.reader_waiters.iter().copied());
             }
         }
 
@@ -474,10 +497,10 @@ impl SyncState {
         }
 
         let mut wake = Vec::new();
-        if let Some(waiter) = pop_waiter(&mut lock.writer_waiters) {
+        if let Some(waiter) = front_waiter(&lock.writer_waiters) {
             push_unique(&mut wake, waiter);
         } else {
-            extend_unique(&mut wake, lock.reader_waiters.drain(..));
+            extend_unique(&mut wake, lock.reader_waiters.iter().copied());
         }
 
         (0, wake)
@@ -526,8 +549,7 @@ impl SyncState {
                     return Err(err_invalid());
                 };
                 queue_waiter(&mut mutex.waiters, task_token);
-                if mutex.owner.is_none() {
-                    remove_waiter(&mut mutex.waiters, task_token);
+                if mutex.owner.is_none() && front_waiter(&mutex.waiters) == Some(task_token) {
                     push_unique(&mut wake, task_token);
                 }
             }
@@ -537,7 +559,6 @@ impl SyncState {
                 };
                 queue_waiter(&mut lock.reader_waiters, task_token);
                 if lock.writer.is_none() && lock.writer_waiters.is_empty() {
-                    remove_waiter(&mut lock.reader_waiters, task_token);
                     push_unique(&mut wake, task_token);
                 }
             }
@@ -548,21 +569,25 @@ impl SyncState {
                 queue_waiter(&mut lock.writer_waiters, task_token);
                 let can_write = lock.writer.is_none()
                     && lock.total_readers == 0
+                    && lock.reader_waiters.is_empty()
                     && lock
                         .writer_waiters
                         .front()
                         .is_some_and(|front| *front == task_token);
                 if can_write {
-                    remove_waiter(&mut lock.writer_waiters, task_token);
                     push_unique(&mut wake, task_token);
                 }
             }
         }
 
+        debug_assert_unique_tasks(&wake);
         Ok(wake)
     }
 
     fn collect_ready_waiters(&mut self, wake: &mut Vec<TaskToken>) {
+        // This pass runs after state changes such as unlock, close, or task
+        // finalization. It wakes waiters made ready by the new state while
+        // preserving one wake per task token.
         for channel in self.channels.iter_mut().flatten() {
             if channel.closed {
                 extend_unique(wake, channel.send_waiters.drain(..));
@@ -589,7 +614,7 @@ impl SyncState {
 
         for mutex in self.mutexes.iter_mut().flatten() {
             if mutex.owner.is_none() {
-                if let Some(waiter) = pop_waiter(&mut mutex.waiters) {
+                if let Some(waiter) = front_waiter(&mutex.waiters) {
                     push_unique(wake, waiter);
                 }
             }
@@ -597,14 +622,14 @@ impl SyncState {
 
         for lock in self.rwlocks.iter_mut().flatten() {
             if lock.writer.is_none() && lock.total_readers == 0 {
-                if let Some(waiter) = pop_waiter(&mut lock.writer_waiters) {
+                if let Some(waiter) = front_waiter(&lock.writer_waiters) {
                     push_unique(wake, waiter);
                     continue;
                 }
             }
 
             if lock.writer.is_none() && lock.writer_waiters.is_empty() {
-                extend_unique(wake, lock.reader_waiters.drain(..));
+                extend_unique(wake, lock.reader_waiters.iter().copied());
             }
         }
     }
@@ -632,8 +657,10 @@ impl SyncState {
                     continue;
                 };
                 if mutex.owner == Some(task_token) {
+                    // Cancelled/panicked tasks release logical ownership so the
+                    // next waiter can acquire the mutex on its next poll.
                     mutex.owner = None;
-                    if let Some(waiter) = pop_waiter(&mut mutex.waiters) {
+                    if let Some(waiter) = front_waiter(&mutex.waiters) {
                         push_unique(&mut wake, waiter);
                     }
                 }
@@ -646,8 +673,10 @@ impl SyncState {
                 if let Some(count) = lock.readers.remove(&task_token) {
                     lock.total_readers = lock.total_readers.saturating_sub(count);
                     if lock.total_readers == 0 {
-                        if let Some(waiter) = pop_waiter(&mut lock.writer_waiters) {
+                        if let Some(waiter) = front_waiter(&lock.writer_waiters) {
                             push_unique(&mut wake, waiter);
+                        } else {
+                            extend_unique(&mut wake, lock.reader_waiters.iter().copied());
                         }
                     }
                 }
@@ -658,19 +687,32 @@ impl SyncState {
                     continue;
                 };
                 if lock.writer == Some(task_token) {
+                    // Writer finalization hands off to the next writer first,
+                    // then to all queued readers if no writer is waiting.
                     lock.writer = None;
-                    if let Some(waiter) = pop_waiter(&mut lock.writer_waiters) {
+                    if let Some(waiter) = front_waiter(&lock.writer_waiters) {
                         push_unique(&mut wake, waiter);
                     } else {
-                        extend_unique(&mut wake, lock.reader_waiters.drain(..));
+                        extend_unique(&mut wake, lock.reader_waiters.iter().copied());
                     }
                 }
             }
         }
 
         self.collect_ready_waiters(&mut wake);
+        debug_assert_unique_tasks(&wake);
 
         wake
+    }
+}
+
+fn debug_assert_unique_tasks(_tasks: &[TaskToken]) {
+    #[cfg(debug_assertions)]
+    for (index, task) in _tasks.iter().enumerate() {
+        debug_assert!(
+            !_tasks[index + 1..].contains(task),
+            "sync wake batch contains duplicate task token"
+        );
     }
 }
 
@@ -934,6 +976,20 @@ mod tests {
     }
 
     #[test]
+    fn mutex_woken_waiter_reserves_turn_against_new_lockers() {
+        let mut state = SyncState::default();
+        let id = state.mutex_create();
+        assert_eq!(state.mutex_try_lock(id, 1), 0);
+        let _ = state.register_wait(2, id, WaitKind::Mutex).unwrap();
+
+        let (unlock_status, wake) = state.mutex_unlock(id, 1);
+        assert_eq!(unlock_status, 0);
+        assert_eq!(wake, vec![2]);
+        assert_eq!(state.mutex_try_lock(id, 3), err_busy());
+        assert_eq!(state.mutex_try_lock(id, 2), 0);
+    }
+
+    #[test]
     fn rwlock_writer_preference_blocks_new_readers() {
         let mut state = SyncState::default();
         let id = state.rwlock_create();
@@ -947,6 +1003,8 @@ mod tests {
         let (unlock_status, wake_after_read) = state.rwlock_unlock_read(id, 1);
         assert_eq!(unlock_status, 0);
         assert_eq!(wake_after_read, vec![2]);
+        assert_eq!(state.rwlock_try_read(id, 3), err_busy());
+        assert_eq!(state.rwlock_try_write(id, 2), 0);
     }
 
     #[test]
@@ -960,6 +1018,54 @@ mod tests {
         assert_eq!(wake, vec![2]);
 
         assert_eq!(state.mutex_try_lock(id, 2), 0);
+    }
+
+    #[test]
+    fn task_finalization_removes_channel_waiters() {
+        let mut state = SyncState::default();
+
+        let send_id = state.channel_create(4, 1, true);
+        let value = 7u32.to_ne_bytes();
+        let (send_status, _) = state.channel_try_send(send_id, value.as_ptr());
+        assert_eq!(send_status, 0);
+        assert!(
+            state
+                .register_wait(44, send_id, WaitKind::ChannelSend)
+                .unwrap()
+                .is_empty()
+        );
+
+        let recv_id = state.channel_create(4, 1, true);
+        assert!(
+            state
+                .register_wait(44, recv_id, WaitKind::ChannelRecv)
+                .unwrap()
+                .is_empty()
+        );
+
+        let wake = state.task_finalized(44);
+        assert!(wake.is_empty());
+
+        let send_channel = state.channels[send_id].as_ref().unwrap();
+        assert!(!send_channel.send_waiters.contains(&44));
+        let recv_channel = state.channels[recv_id].as_ref().unwrap();
+        assert!(!recv_channel.recv_waiters.contains(&44));
+    }
+
+    #[test]
+    fn channel_close_wakes_unique_waiters() {
+        let mut state = SyncState::default();
+        let id = state.channel_create(4, 1, true);
+        {
+            let channel = state.channels[id].as_mut().unwrap();
+            queue_waiter(&mut channel.send_waiters, 7);
+            queue_waiter(&mut channel.send_waiters, 11);
+            queue_waiter(&mut channel.recv_waiters, 7);
+        }
+
+        let (status, wake) = state.channel_close(id);
+        assert_eq!(status, 0);
+        assert_eq!(wake, vec![7, 11]);
     }
 
     #[test]
@@ -1007,6 +1113,66 @@ mod tests {
 
         let wake_after_finalize = state.task_finalized(2);
         assert_eq!(wake_after_finalize, vec![3]);
+    }
+
+    #[test]
+    fn task_finalization_releases_rwlock_writer_and_wakes_readers() {
+        let mut state = SyncState::default();
+        let id = state.rwlock_create();
+        assert_eq!(state.rwlock_try_write(id, 1), 0);
+        assert!(
+            state
+                .register_wait(2, id, WaitKind::RwRead)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            state
+                .register_wait(3, id, WaitKind::RwRead)
+                .unwrap()
+                .is_empty()
+        );
+
+        let wake = state.task_finalized(1);
+        assert_eq!(wake, vec![2, 3]);
+
+        let lock = state.rwlocks[id].as_ref().unwrap();
+        assert_eq!(lock.writer, None);
+        assert!(lock.reader_waiters.contains(&2));
+        assert!(lock.reader_waiters.contains(&3));
+
+        assert_eq!(state.rwlock_try_read(id, 2), 0);
+        assert_eq!(state.rwlock_try_read(id, 3), 0);
+        let lock = state.rwlocks[id].as_ref().unwrap();
+        assert!(lock.reader_waiters.is_empty());
+    }
+
+    #[test]
+    fn task_finalization_releases_rwlock_readers_and_wakes_writer() {
+        let mut state = SyncState::default();
+        let id = state.rwlock_create();
+        assert_eq!(state.rwlock_try_read(id, 1), 0);
+        assert_eq!(state.rwlock_try_read(id, 2), 0);
+        assert!(
+            state
+                .register_wait(3, id, WaitKind::RwWrite)
+                .unwrap()
+                .is_empty()
+        );
+
+        let first_wake = state.task_finalized(1);
+        assert!(first_wake.is_empty());
+
+        let second_wake = state.task_finalized(2);
+        assert_eq!(second_wake, vec![3]);
+
+        let lock = state.rwlocks[id].as_ref().unwrap();
+        assert_eq!(lock.total_readers, 0);
+        assert!(lock.writer_waiters.contains(&3));
+
+        assert_eq!(state.rwlock_try_write(id, 3), 0);
+        let lock = state.rwlocks[id].as_ref().unwrap();
+        assert!(lock.writer_waiters.is_empty());
     }
 
     #[test]

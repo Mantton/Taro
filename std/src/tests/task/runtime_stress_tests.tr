@@ -1,0 +1,257 @@
+@cfg(family("unix"))
+static var RUNTIME_STRESS_SHARED_PIPE_READ: std.optional.Optional[std.io.task.AsyncStream] = .none
+
+func runtimeStressDurationToNanos(_ d: std.time.Duration) -> uint64 {
+    return (d.seconds() * 1000000000_u64) + (d.subsecNanos() as uint64)
+}
+
+func runtimeStressStringBytes(_ s: string) -> std.mem.Span[uint8] {
+    return std.mem.Span[uint8].from(std.string.stringData(s), std.string.stringLen(s))
+}
+
+@cfg(family("unix"))
+func runtimeStressSharedPipeReader() async -> int32 {
+    let reader = match RUNTIME_STRESS_SHARED_PIPE_READ {
+        case .some(value) => value
+        case .none => std.panic.panic("shared pipe reader should be seeded")
+    }
+
+    var byte: uint8 = 0
+    let readRes = await reader.read(std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1))
+    let count = match readRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("shared pipe reader should read one byte")
+    }
+
+    std.testing.assertEqual(count, 1 as usize, "shared pipe reader should receive one byte")
+    return byte as int32
+}
+
+@test
+@tag("runtime")
+func runtimeStressManySpawnedTasksYieldSleepAndJoin() async {
+    let taskCount = 64_i32
+    var tasks = std.collections.List[std.task.Task[int32]]()
+
+    var idx = 1_i32
+    while idx <= taskCount {
+        let captured = idx
+        let task = std.task.spawn(|| async {
+            await std.testing.yieldNow()
+            if captured % 3_i32 == 0_i32 {
+                await std.task.sleep(std.time.Duration.fromMillis(1_u64))
+            }
+            await std.testing.yieldNow()
+            return captured
+        })
+        tasks.append(task)
+        idx += 1_i32
+    }
+
+    var count = 0_i32
+    var sum = 0_i32
+    while !tasks.isEmpty() {
+        let task = match tasks.pop() {
+            case .some(value) => value
+            case .none => std.panic.panic("task list should not be empty")
+        }
+        sum += (await task.result()).unwrap()
+        count += 1_i32
+    }
+
+    std.testing.assertEqual(count, taskCount, "all spawned tasks should complete")
+    std.testing.assertEqual(sum, 2080_i32, "spawned task values should sum deterministically")
+}
+
+@test
+@tag("runtime")
+func runtimeStressTaskGroupCollectsEveryResult() async {
+    let result: (int32, int32, int32) = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
+        var idx = 0_i32
+        while idx < 64_i32 {
+            let captured = idx
+            group.spawn(|| async {
+                if captured % 5_i32 == 0_i32 {
+                    await std.testing.yieldNow()
+                }
+                return captured
+            })
+            idx += 1_i32
+        }
+
+        var count = 0_i32
+        var sum = 0_i32
+        var sumSquares = 0_i32
+        for await value in group {
+            count += 1_i32
+            sum += value
+            sumSquares += value * value
+        }
+        return (count, sum, sumSquares)
+    })
+
+    std.testing.assertEqual(result.0, 64_i32, "task group should yield every child result")
+    std.testing.assertEqual(result.1, 2016_i32, "task group sum should match 0..63")
+    std.testing.assertEqual(result.2, 85344_i32, "task group square sum should match 0..63")
+}
+
+@test
+@tag("runtime")
+func runtimeStressCancellationStormCompletesPromptly() async {
+    var tasks = std.collections.List[std.task.Task[int32]]()
+    var cancelled = std.collections.List[std.task.Task[int32]]()
+
+    var idx = 0_i32
+    while idx < 32_i32 {
+        let captured = idx
+        let task = std.task.spawn(|| async {
+            await std.task.sleep(std.time.Duration.fromSeconds(3_u64))
+            return captured
+        })
+        tasks.append(task)
+        idx += 1_i32
+    }
+
+    let start = std.time.Instant.now()
+    while !tasks.isEmpty() {
+        let task = match tasks.pop() {
+            case .some(value) => value
+            case .none => std.panic.panic("task list should not be empty")
+        }
+        task.cancel()
+        cancelled.append(task)
+    }
+
+    var seen = 0_i32
+    while !cancelled.isEmpty() {
+        let task = match cancelled.pop() {
+            case .some(value) => value
+            case .none => std.panic.panic("cancelled task list should not be empty")
+        }
+        let result = await task.result()
+        match result {
+            case .ok(_) => std.panic.panic("cancelled stress task should not succeed")
+            case .err(err) => match err {
+                case .cancelled => {}
+                case .panicked(_) => std.panic.panic("cancelled stress task should not panic")
+            }
+        }
+        seen += 1_i32
+    }
+
+    let elapsed = start.elapsed()
+    std.testing.assertEqual(seen, 32_i32, "all cancelled stress tasks should be observed")
+    std.testing.assertTrue(
+        runtimeStressDurationToNanos(elapsed) < 1500000000_u64,
+        "cancellation storm should not wait for long sleep deadlines",
+    )
+}
+
+@test
+@tag("runtime")
+func runtimeStressGcPreservesSuspendedTaskFrames() async {
+    var tasks = std.collections.List[std.task.Task[int32]]()
+
+    var idx = 1_i32
+    while idx <= 24_i32 {
+        let expected = idx
+        let payload = "async-frame-".concat("payload")
+
+        let task = std.task.spawn(|| async {
+            await std.task.sleep(std.time.Duration.fromMillis(2_u64))
+            std.testing.assertEqual(payload, "async-frame-payload", "captured string should survive suspension")
+            return expected + (std.string.stringLen(payload) as int32)
+        })
+        tasks.append(task)
+        idx += 1_i32
+    }
+
+    std.runtime.collect()
+
+    var sum = 0_i32
+    while !tasks.isEmpty() {
+        let task = match tasks.pop() {
+            case .some(value) => value
+            case .none => std.panic.panic("task list should not be empty")
+        }
+        sum += (await task.result()).unwrap()
+    }
+
+    std.testing.assertEqual(sum, 756_i32, "GC should preserve suspended task captures")
+}
+
+@cfg(family("unix"))
+@test
+@tag("runtime")
+func runtimeStressPipeCloseWakesBlockedReader() async {
+    let pipeRes = std.io.task.pipe()
+    let pair = match pipeRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe should be created")
+    }
+    let reader = pair.0
+    let writer = pair.1
+
+    let readerTask = std.task.spawn(|| async {
+        var byte: uint8 = 0
+        let readRes = await reader.read(std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1))
+        let count = match readRes {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("blocked pipe reader should wake with EOF")
+        }
+        match reader.close() {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("reader close should succeed")
+        }
+        return count as int32
+    })
+
+    await std.testing.yieldNow()
+    match writer.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("writer close should succeed")
+    }
+
+    let count = (await readerTask.result()).unwrap()
+    std.testing.assertEqual(count, 0_i32, "closing writer should wake blocked reader with EOF")
+}
+
+@cfg(family("unix"))
+@test
+@tag("runtime")
+func runtimeStressConcurrentPipeReadersReceiveDistinctBytes() async {
+    let pipeRes = std.io.task.pipe()
+    let pair = match pipeRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe should be created")
+    }
+
+    RUNTIME_STRESS_SHARED_PIPE_READ = .some(pair.0)
+    let writer = pair.1
+
+    let first = std.task.spawn(|| async { return await runtimeStressSharedPipeReader() })
+    let second = std.task.spawn(|| async { return await runtimeStressSharedPipeReader() })
+    let third = std.task.spawn(|| async { return await runtimeStressSharedPipeReader() })
+    let fourth = std.task.spawn(|| async { return await runtimeStressSharedPipeReader() })
+
+    await std.testing.yieldNow()
+    let writeRes = await writer.write(runtimeStressStringBytes("abcd"))
+    let written = match writeRes {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe writer should write payload")
+    }
+    std.testing.assertEqual(written, 4 as usize, "pipe writer should write four bytes")
+    match writer.close() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("pipe writer close should succeed")
+    }
+
+    let firstByte = (await first.result()).unwrap()
+    let secondByte = (await second.result()).unwrap()
+    let thirdByte = (await third.result()).unwrap()
+    let fourthByte = (await fourth.result()).unwrap()
+    let sum = firstByte + secondByte + thirdByte + fourthByte
+
+    std.testing.assertEqual(sum, 394_i32, "four readers should receive a/b/c/d exactly once")
+    RUNTIME_STRESS_SHARED_PIPE_READ = .none
+}

@@ -283,11 +283,24 @@ mod imp {
             if !waiters.contains(&task_token) {
                 waiters.push(task_token);
             }
+            debug_assert!(
+                waiters
+                    .iter()
+                    .filter(|waiter| **waiter == task_token)
+                    .count()
+                    == 1,
+                "async io waiter registered more than once for one interest"
+            );
 
+            // The source is armed only after the waiter is visible, so readiness
+            // that arrives immediately after arming has a task token to wake.
             self.arm_wait(source_id, interest)
         }
 
         fn cancel_task(&mut self, task_token: TaskToken) {
+            // Cancellation/finalization must remove the task from every source.
+            // Any remaining waiters are rearmed on Linux so one-shot readiness
+            // is not lost for other tasks.
             #[cfg(target_os = "linux")]
             let mut needs_rearm = Vec::new();
 
@@ -337,6 +350,7 @@ mod imp {
             let mut wake = Vec::new();
             extend_unique(&mut wake, &source.read_waiters);
             extend_unique(&mut wake, &source.write_waiters);
+            debug_assert_unique_tasks(&wake);
             (close_fd(source.fd), wake)
         }
 
@@ -389,6 +403,7 @@ mod imp {
                 }
             }
 
+            debug_assert_unique_tasks(&wake);
             wake
         }
 
@@ -416,6 +431,7 @@ mod imp {
                 }
             }
 
+            debug_assert_unique_tasks(&wake);
             wake
         }
 
@@ -568,6 +584,16 @@ mod imp {
     fn drain_unique(dst: &mut Vec<TaskToken>, src: &mut Vec<TaskToken>) {
         for task_token in src.drain(..) {
             push_unique(dst, task_token);
+        }
+    }
+
+    fn debug_assert_unique_tasks(_tasks: &[TaskToken]) {
+        #[cfg(debug_assertions)]
+        for (index, task) in _tasks.iter().enumerate() {
+            debug_assert!(
+                !_tasks[index + 1..].contains(task),
+                "async io wake batch contains duplicate task token"
+            );
         }
     }
 
