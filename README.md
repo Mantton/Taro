@@ -32,8 +32,20 @@ Taro is an experimental programming language that draws inspiration from Rust, S
 4. Run tests in a file:
 
    ```bash
-   python3 development/scripts/run_dist.py --test examples/test_example.tr
+   python3 development/scripts/run_dist.py --test std/src/tests/testing/testing_tests.tr
    ```
+
+## Status and Limitations
+
+Taro is experimental. Syntax, compiler metadata, standard library APIs, and package tooling can change between commits.
+
+- Most repository workflows assume a Unix-like shell with LLVM 16 available.
+- The standard library is an attached toolchain artifact. Rebuild `dist/` after compiler metadata changes or when attached std artifacts are missing.
+- Package management supports manifests, lockfiles, Git dependencies, and root-local path dependencies, but there is no public registry yet.
+- Incremental compilation reuses dependency artifacts; the root package is still cold-compiled/rechecked in v0.
+- Operator overloading is expressed through standard library interfaces such as `std.ops.Add`, not `operator` declarations.
+- The language server is an MVP surface: diagnostics, hover, go-to-definition, signature help, and lexical/member completions are supported; rename, formatting, references, semantic tokens, and code actions are not yet implemented.
+- `.taro_meta` files are binary internal compiler artifacts, not a stable interchange format.
 
 ## Build and Run
 
@@ -57,7 +69,7 @@ python3 development/scripts/run_dist.py examples/hello.tr foo bar
 To run a file's test suite instead, pass `--test`:
 
 ```bash
-python3 development/scripts/run_dist.py --test examples/test_example.tr
+python3 development/scripts/run_dist.py --test std/src/tests/testing/testing_tests.tr
 ```
 
 ### Manual CLI Usage
@@ -68,11 +80,38 @@ For a local repo `dist/` or any other portable/custom layout, set `TARO_HOME` ex
 
 ```bash
 export TARO_HOME=$(pwd)/dist
-taro build examples/hello.tr
-taro run examples/hello.tr -- foo bar
+dist/bin/taro build examples/hello.tr
+dist/bin/taro run examples/hello.tr -- foo bar
 ```
 
 When reading arguments in Taro, `std.env.argv()` / `std.env.args()` include `argv[0]`, which is the actual generated executable path for `taro run`.
+
+### CLI Cheatsheet
+
+Use `dist/bin/taro` with `TARO_HOME=$(pwd)/dist` for repo-local development. Use plain `taro` when running from an installed toolchain whose `bin/` directory is on `PATH`.
+
+| Task | Command |
+|------|---------|
+| Type-check a file | `dist/bin/taro check examples/hello.tr --std-path std` |
+| Build a file | `dist/bin/taro build examples/hello.tr --std-path std` |
+| Run a file with arguments | `dist/bin/taro run examples/hello.tr --std-path std -- foo bar` |
+| Run tests in a file | `dist/bin/taro test std/src/tests/testing/testing_tests.tr --std-path std` |
+| Run package tests | `dist/bin/taro test std --std-path std` |
+| Create a package | `dist/bin/taro new github.com/acme/app` |
+
+Common flags:
+
+| Flag | Use |
+|------|-----|
+| `--std-path <PATH>` | Point the compiler at std sources when using repo-local layouts. |
+| `--build-std` | Rebuild and publish attached std artifacts into `TARO_HOME`. |
+| `--release` | Build with the release profile. |
+| `--target <TRIPLE>` | Compile for a target triple override. |
+| `--timings` | Print compiler phase timings. |
+| `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
+| `--no-incremental` | Disable dependency artifact reuse. |
+| `--locked` | Require `package.lock` to match dependency resolution exactly. |
+| `--update-lock` | Refresh lockfile entries from current dependency sources. |
 
 ### Create a New Package
 
@@ -97,7 +136,7 @@ Manifests still recognize `kind = "both"`, but `taro new` does not scaffold that
 The VS Code extension is designed for an external Taro toolchain install:
 
 - put the toolchain `bin/` directory on your `PATH`
-- ensure the toolchain root contains attached std artifacts under `lib/taro/std/<target>/`
+- ensure the toolchain root contains attached std artifacts under `lib/taro/std/<target-triple>/`
 - use `taro.languageServer.path` only for custom `taro-lsp` locations
 - use `taro.languageServer.env` only for advanced overrides such as a custom `TARO_HOME`
 
@@ -109,7 +148,7 @@ For the daily-driver repo workflow, build the local toolchain and language serve
 make lsp
 ```
 
-This places both `taro` and `taro-lsp` under `dist/bin/`, with attached std artifacts under `dist/lib/taro/std/`.
+This places both `taro` and `taro-lsp` under `dist/bin/`, with attached std artifacts under `dist/lib/taro/std/<target-triple>/`.
 
 ### Language Server
 
@@ -178,13 +217,15 @@ Expected attached std artifact layout:
 - `TARO_HOME/lib/taro/std/<target-triple>/std.taro_meta`
 - `TARO_HOME/lib/taro/std/<target-triple>/std.o`
 
+For the repository-local distribution, this resolves to `dist/lib/taro/std/<target-triple>/...`.
+
 On missing/invalid std artifacts, the compiler errors with guidance to rebuild std explicitly.
 
 Use `--build-std` to rebuild and publish attached std artifacts from source.
 Attached std is built in a canonical release-like configuration per target (shared across debug/release user builds):
 
 ```bash
-taro check examples/hello.tr --build-std
+TARO_HOME=$(pwd)/dist dist/bin/taro check examples/hello.tr --std-path std --build-std
 ```
 
 Metadata reuse is guarded by format/version/compiler stamp/target/options/fingerprint/checksum validation for normal dependency caches.
@@ -214,7 +255,9 @@ make lsp
 make test
 make language-tests
 make std-tests
+make runtime-stress
 make all-tests
+make benchmark PACKAGE=std
 ```
 
 ### Panic Stack Traces
@@ -236,13 +279,15 @@ Here are a few examples to showcase the familiar yet distinct syntax.
 **Structs & Methods**
 
 ```rust
+import std.ops.Add
+
 struct Point {
     x: int32
     y: int32
 }
 
 impl Point {
-    // Static `new(...)` methods can also be called as `Point(...)`.
+    // Static `new(...)` methods can also be called as `Point(x: ..., y: ...)`.
     func new(x: int32, y: int32) -> Point {
         return Point { x, y } // shorthand for { x: x, y: y }
     }
@@ -250,9 +295,11 @@ impl Point {
     func distance_squared(self) -> int32 {
         self.x * self.x + self.y * self.y // implicit return
     }
+}
 
-    operator +(self, other: Point) -> Point {
-        Point { x: self.x + other.x, y: self.y + other.y }
+impl Add for Point {
+    func add(self, rhs: Point) -> Point {
+        Point { x: self.x + rhs.x, y: self.y + rhs.y }
     }
 }
 
@@ -274,9 +321,9 @@ enum Message {
 
 func process(msg: Message) {
     match msg {
-        case .quit => print("Quitting...\n")
-        case Message.move(x, y) => print("Moving player\n") // fully qualified
-        case .write(text) => print(text) // inferred
+        case .quit => std.print("Quitting...\n")
+        case Message.move(x, y) => std.print("Moving player\n") // fully qualified
+        case .write(text) => std.print(text) // inferred
     }
 }
 ```
@@ -292,12 +339,16 @@ Postfix `!` propagates `Optional[T]` and `Result[T, E]` values.
 - For awaited values, write `(await expr)!`.
 
 ```rust
+import std.io.Error
+import std.prelude.Optional
+import std.result.Result
+
 func nextPort(raw: Optional[int32]) -> Optional[int32] {
     let port = raw!
     return .some(port + 1)
 }
 
-func readCount(input: Result[int32, std.io.Error]) -> Result[int32, std.io.Error] {
+func readCount(input: Result[int32, Error]) -> Result[int32, Error] {
     let count = input!
     return .ok(count + 1)
 }
@@ -379,6 +430,8 @@ Rules:
 ### Test Example
 
 ```rust
+import std.testing.{assertEqual, assertTrue, fail}
+
 @test
 func testAddition() {
     assertEqual(1 + 2, 3, "basic addition")
@@ -418,7 +471,7 @@ running 5 tests
 
 test testAddition ... ok
 test testDivisionByZero ... ok
-test testNotYetReady ... SKIPPED (pending implementation)
+test testNotYetReady ... SKIPPED
 test CoreTests::testNamespaceTagInheritance ... ok
 test testTaggedFunction ... ok
 
@@ -474,7 +527,7 @@ Use `// TEST` to write language tests that exercise the test harness itself:
 // TEST
 @test
 func myTest() {
-    assertEqual(1 + 1, 2, "math works")
+    std.testing.assertEqual(1 + 1, 2, "math works")
 }
 ```
 
@@ -554,13 +607,14 @@ Taro includes a multithreaded async runtime:
 - `std.task.sleep` and `std.io.task.AsyncStream` provide timer and async I/O integration
 
 The executor uses worker threads with work stealing. Worker count defaults to logical CPU count and can be overridden with `TARO_WORKERS`.
+The runtime invariants are documented in [`docs/async-runtime.md`](docs/async-runtime.md), and `make runtime-stress` runs the async stress subset across multiple worker counts.
 
 ### Memory Management
 
 Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by Golang's approach but tailored for simplicity and performance.
 
 - **Structure**: It uses a segregated-fit allocator with size classes and spans to minimize fragmentation.
-- **Concurrency**: Currently single-threaded stop-the-world, with future plans for concurrent marking.
+- **Concurrency**: Stop-the-world collection coordinates with runtime worker safepoints, with future plans for concurrent marking.
 - **Safety**: The compiler emits shadow stack frames and root slots to precisely identify stack roots.
 
 ### Key Features
@@ -570,7 +624,7 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 - **Move Semantics**: Rust-style ownership and move semantics, with values moved by default and explicit copying for copyable types, but without a mutability uniqueness guarantee.
 - **Async Concurrency**: Multithreaded task runtime (`std.task.spawn`, cancellation, task groups, async sleep, async stream I/O).
 - **Diagnostics**: Rich, clear error messages to guide developers.
-- **Basic LSP**: Diagnostics, hover, go-to-definition, and signature help via `taro-lsp`.
+- **Basic LSP**: Diagnostics, hover, go-to-definition, signature help, and lexical/member completions via `taro-lsp`.
 - **Panic Reporting**: Compact Taro-first panic stacks by default, with `TARO_BACKTRACE=full` for raw native traces.
 - **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 - **Interoperability**: C ABI compatibility for easy FFI.
@@ -579,14 +633,18 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 ## Repository Structure
 
 - `compiler/`: The core compiler source code (parsing, HIR, THIR, MIR, codegen).
+- `compiler-cli/`: The command-line interface implementation.
+- `taro-bin/`: The `taro` binary crate.
+- `taro-lsp/`: Language server implementation.
 - `runtime/`: Runtime components (garbage collector, async executor, panic/unwind support).
 - `std/`: The standard library implementation.
 - `language_tests/`: Comprehensive test suite for language features.
-- `compiler-cli/`: The command-line interface implementation.
-- `taro-lsp/`: Language server implementation.
+- `development/scripts/`: Local build, test, and benchmark helper scripts.
+- `docs/`: Language and compiler internals documentation.
 - `editors/`: Editor integrations (VS Code, Zed).
+- `tree-sitter-taro/`: Tree-sitter grammar and editor syntax assets.
 
-## Roadmap and Status
+## Roadmap
 
 Taro is currently **experimental**.
 
@@ -598,6 +656,48 @@ Taro is currently **experimental**.
 - [x] Basic LSP support and editor integration (`taro-lsp`, VS Code, Zed)
 - [ ] Package manager polish and registry
 - [ ] Standard library expansion
+
+## Troubleshooting
+
+**`taro: command not found`**
+
+Use `dist/bin/taro` from the repository root, or put an installed toolchain's `bin/` directory on `PATH`.
+
+**Missing or invalid std artifacts**
+
+Build the local distribution again:
+
+```bash
+python3 development/scripts/build_dist.py
+```
+
+For a repo-local direct CLI call, make sure `TARO_HOME` points at `dist/`, then pass `--std-path std --build-std` when you want the compiler to rebuild std from the repository sources:
+
+```bash
+TARO_HOME=$(pwd)/dist dist/bin/taro check examples/hello.tr --std-path std --build-std
+```
+
+**Runtime or linker path errors**
+
+Prefer the distribution scripts while debugging local layout problems:
+
+```bash
+python3 development/scripts/run_dist.py examples/hello.tr
+```
+
+For manual CLI usage, verify that `TARO_HOME/lib/taro/runtime/libtaro_runtime.a` exists, or pass `--runtime-path` explicitly.
+
+**Unexpected cache or metadata behavior after compiler changes**
+
+Rebuild `dist/`, then retry with `--no-incremental` if a package-local cache is suspect. Metadata format bumps intentionally invalidate older `.taro_meta` files.
+
+**Lockfile drift in CI**
+
+`CI=true` behaves like strict lock mode. Run locally with `--update-lock` when dependency sources intentionally changed, then commit the updated `package.lock`.
+
+**Language server does not start or completions are stale**
+
+Run `make lsp`, confirm `dist/bin/taro-lsp` exists, and make sure the editor extension is using the same toolchain layout as the CLI.
 
 ## Contributing
 
