@@ -3519,12 +3519,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Some(value);
         }
 
-        if let (Some((_, _)), Some((to_int, to_signed))) =
+        if let (Some((_, from_signed)), Some((to_int, _))) =
             (self.int_type(from_ty), self.int_type(to_ty))
         {
+            // Widening extends based on the *source* signedness (as in C/Rust/Go):
+            // signed sources sign-extend, unsigned sources (incl. bool/rune) zero-extend.
             return Some(
                 self.builder
-                    .build_int_cast_sign_flag(value.into_int_value(), to_int, to_signed, "int_cast")
+                    .build_int_cast_sign_flag(value.into_int_value(), to_int, from_signed, "int_cast")
                     .unwrap()
                     .as_basic_value_enum(),
             );

@@ -129,6 +129,64 @@ func testLargeIntegerLiteralCasts() {
     assert(b == 18446744073709551615, "max uint64 cast")
 }
 
+func testMixedSignednessCasts() {
+    // Widening extends based on the source signedness: unsigned sources
+    // zero-extend, even into signed targets.
+    let a: uint8 = 200
+    assert((a as int16) == 200, "uint8 zero-extends to int16")
+    assert((a as int64) == 200, "uint8 zero-extends to int64")
+    assert((a as uint64) == 200, "uint8 zero-extends to uint64")
+
+    // Signed sources sign-extend, even into unsigned targets.
+    let b: int8 = -1
+    assert((b as int64) == -1, "int8 sign-extends to int64")
+    assert((b as uint64) == 18446744073709551615, "int8 sign-extends to uint64")
+
+    let c: int8 = -56
+    assert((c as int64) == 0 - 56, "negative int8 sign-extends to int64")
+    assert((c as uint16) == 65480, "negative int8 sign-extends to uint16")
+
+    // Same-width casts reinterpret the bits.
+    assert((a as int8) == c, "uint8 to int8 reinterprets bits")
+    assert((c as uint8) == a, "int8 to uint8 reinterprets bits")
+
+    // Truncation drops high bits regardless of signedness.
+    let d: uint16 = 511
+    assert((d as uint8) == 255, "uint16 truncates to uint8")
+
+    let e: int64 = -1
+    assert((e as uint8) == 255, "int64 truncates to uint8")
+
+    // Rune sources widen as unsigned values.
+    let r = 'A'
+    assert((r as int64) == 65, "rune widens to int64")
+    assert((r as uint64) == 65, "rune widens to uint64")
+}
+
+func testNegativeLiteralInference() {
+    // Unary minus on a literal infers from the annotation instead of
+    // defaulting to int32.
+    let a: int8 = -56
+    assert((a as uint8) == 200, "int8 annotation on negated literal")
+
+    let b: int16 = -32767
+    assert((b as uint16) == 32769, "int16 annotation on negated literal")
+
+    let c: int64 = -1
+    assert((c as uint64) == 18446744073709551615, "int64 annotation on negated literal")
+
+    let f: float = -1.5
+    let zero: float = 0.0
+    assert(zero - f == (1.5 as float), "float annotation on negated literal")
+
+    // A literal-only arithmetic expression unifies against a concrete side
+    // of a comparison instead of being rejected as unresolved.
+    assert(c == 0 - 1, "literal expression compares against int64")
+
+    let n = -5
+    assert(n + 5 == 0, "default-typed negated literal arithmetic")
+}
+
 func main() {
     usePlain()
     useLocalIdentifier()
@@ -141,6 +199,8 @@ func main() {
     testNonDecimalIntegerLiterals()
     testFloatCastToFloat()
     testLargeIntegerLiteralCasts()
+    testMixedSignednessCasts()
+    testNegativeLiteralInference()
 
     print("PASS: Primitives\n")
 }
