@@ -139,8 +139,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![obligation]);
         }
 
-        // If type is not yet resolved, defer
+        // Numeric literal vars are handled by the intrinsics, which tie the
+        // result to the operand var so `-56` stays an int literal var instead
+        // of defaulting to int32. Any other unresolved type defers.
         if ty.contains_inference() {
+            if matches!(
+                ty.kind(),
+                TyKind::Infer(InferTy::IntVar(_) | InferTy::FloatVar(_))
+            ) && let Some(obligations) = self.solve_unary_intrinsic(&data, ty)
+            {
+                return SolverResult::Solved(obligations);
+            }
             return SolverResult::Deferred;
         }
 
@@ -292,8 +301,27 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Solved(vec![obligation]);
         }
 
-        // If LHS type is not yet resolved, defer
+        // If LHS is unresolved, defer — unless it is a numeric literal var,
+        // which the intrinsic arms can still make progress on (e.g. `0 - 1`
+        // ties both literal vars together and stays a literal var instead of
+        // waiting for int defaulting).
         if lhs.is_infer() {
+            if matches!(
+                lhs.kind(),
+                TyKind::Infer(InferTy::IntVar(_) | InferTy::FloatVar(_))
+            ) && let Some(obligations) = self.solve_binary_intrinsic(&data, lhs, rhs)
+            {
+                return SolverResult::Solved(obligations);
+            }
+            return SolverResult::Deferred;
+        }
+
+        // If RHS is a plain type variable (e.g. the not-yet-solved result of a
+        // nested operator expression like `x == 0 - 1`), defer instead of
+        // rejecting: it may still resolve to a type the intrinsics accept.
+        // Literal vars (IntVar/FloatVar) fall through so the intrinsic arms
+        // can bind them eagerly.
+        if rhs.is_ty_var() {
             return SolverResult::Deferred;
         }
 

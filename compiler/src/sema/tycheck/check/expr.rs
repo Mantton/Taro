@@ -2959,7 +2959,14 @@ impl<'ctx> Checker<'ctx> {
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        let operand_ty = self.synth(operand, cs);
+        // For negate/bitwise-not the result type equals the operand type, so
+        // forward the expectation to help infer literal types
+        // (e.g. `let x: int8 = -56`), mirroring synth_binary_expression.
+        let operand_expectation = match operator {
+            hir::UnaryOperator::Negate | hir::UnaryOperator::BitwiseNot => expectation,
+            _ => None,
+        };
+        let operand_ty = self.synth_with_expectation(operand, operand_expectation, cs);
         if operand_ty.is_error() {
             return Ty::error(self.gcx());
         }
