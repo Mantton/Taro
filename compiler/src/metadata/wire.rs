@@ -6,9 +6,9 @@ use crate::{
     sema::{
         models::{
             AdtDef, AdtKind, AliasDefinition, AliasKind, AssociatedTypeBinding,
-            AssociatedTypeDefinition, CaptureKind, CapturedVar, ClosureCaptures, ClosureKind,
-            ConformanceRecord, ConformanceRecordId, Const, ConstKind, ConstValue, Constraint,
-            EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, FloatTy,
+            AssociatedTypeDefinition, CaptureAccessKind, CaptureKind, CapturedVar, ClosureCaptures,
+            ClosureKind, ConformanceRecord, ConformanceRecordId, Const, ConstKind, ConstValue,
+            Constraint, EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind, FloatTy,
             GenericArgument, GenericParameter, GenericParameterDefinition,
             GenericParameterDefinitionKind, Generics, InferTy, IntTy, InterfaceConstantRequirement,
             InterfaceDefinition, InterfaceMethodRequirement, InterfaceReference,
@@ -760,6 +760,7 @@ pub struct CapturedVarWire {
     pub name: SymbolIdWire,
     pub ty: TyWire,
     pub capture_kind: CaptureKindWire,
+    pub access_kind: CaptureAccessKindWire,
     pub field_index: u32,
 }
 
@@ -768,6 +769,13 @@ pub enum CaptureKindWire {
     ByCopy,
     ByRef { mutable: bool },
     ByMove,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CaptureAccessKindWire {
+    Read,
+    Mutate,
+    Move,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1930,6 +1938,24 @@ pub fn capture_kind_from_wire(v: &CaptureKindWire) -> CaptureKind {
         CaptureKindWire::ByCopy => CaptureKind::ByCopy,
         CaptureKindWire::ByRef { mutable } => CaptureKind::ByRef { mutable: *mutable },
         CaptureKindWire::ByMove => CaptureKind::ByMove,
+    }
+}
+
+#[inline]
+pub fn capture_access_kind_to_wire(v: CaptureAccessKind) -> CaptureAccessKindWire {
+    match v {
+        CaptureAccessKind::Read => CaptureAccessKindWire::Read,
+        CaptureAccessKind::Mutate => CaptureAccessKindWire::Mutate,
+        CaptureAccessKind::Move => CaptureAccessKindWire::Move,
+    }
+}
+
+#[inline]
+pub fn capture_access_kind_from_wire(v: &CaptureAccessKindWire) -> CaptureAccessKind {
+    match v {
+        CaptureAccessKindWire::Read => CaptureAccessKind::Read,
+        CaptureAccessKindWire::Mutate => CaptureAccessKind::Mutate,
+        CaptureAccessKindWire::Move => CaptureAccessKind::Move,
     }
 }
 
@@ -3120,6 +3146,7 @@ pub fn closure_captures_to_wire(
                 name: symbols.intern_symbol(capture.name),
                 ty: ty_to_wire(capture.ty),
                 capture_kind: capture_kind_to_wire(capture.capture_kind),
+                access_kind: capture_access_kind_to_wire(capture.access_kind),
                 field_index: capture.field_index.index() as u32,
             })
             .collect(),
@@ -3141,6 +3168,7 @@ pub fn closure_captures_from_wire<'a>(
                 name: Symbol::new(symbols.resolve_str(capture.name)),
                 ty: ty_from_wire(gcx, &capture.ty),
                 capture_kind: capture_kind_from_wire(&capture.capture_kind),
+                access_kind: capture_access_kind_from_wire(&capture.access_kind),
                 field_index: crate::thir::FieldIndex::from_raw(capture.field_index),
             })
             .collect(),

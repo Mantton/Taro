@@ -1,0 +1,4 @@
+error: type 'closure<FnOnce>(() -> int32)' does not conform to interface 'FnMut() -> int32'
+ -> language_tests/source_files/invalid/move_closure_fnonce_not_fnmut.tr:15:12
+	    let _ = applyMut(consuming)
+	            ^^^^^^^^

@@ -665,6 +665,51 @@ func testGenericClosureCopyCapture() {
     assert(result == 20, "copy generic capture via Fn called twice")
 }
 
+func testMoveClosureCopyCaptureByValue() {
+    var counter: int32 = 0
+    let captured = move || -> int32 { counter + 1 }
+    counter = 10
+    let sum = callTwice(captured)
+    assert(sum == 2, "move closure should copy copyable captures by value")
+    assert(counter == 10, "outer copyable variable should remain usable after move closure capture")
+}
+
+func testMoveClosureNonCopyReadIsReusable() {
+    var list = List[int32]()
+    list.append(1)
+
+    let captured = move || -> int32 { list.len() as int32 }
+    let sum = callTwice(captured)
+    assert(sum == 2, "move closure that only reads an owned non-copy capture should remain Fn")
+}
+
+func testMoveClosureMutatesOwnedCopy() {
+    var counter: int32 = 0
+    let inc = move || -> int32 {
+        counter = counter + 1
+        return counter
+    }
+
+    let sum = applyZeroMut(inc)
+    assert(sum == 6, "move closure should mutate its owned copy across calls")
+    assert(counter == 0, "move closure should not mutate the outer copyable variable")
+}
+
+func testMoveClosureMoveOutIsFnOnce() {
+    var list = List[int32]()
+    list.append(1)
+    list.append(2)
+
+    let consume = move || -> int32 {
+        let len = list.len() as int32
+        consumeListMove(list)
+        return len
+    }
+
+    let len = consumeViaOnce(consume)
+    assert(len == 2, "move closure that moves out of a capture should be FnOnce")
+}
+
 // === Main ===
 
 func main() {
@@ -694,6 +739,10 @@ func main() {
     testFnMutScalarCaptureWithArg()
     testGenericClosureNonCopyCapture()
     testGenericClosureCopyCapture()
+    testMoveClosureCopyCaptureByValue()
+    testMoveClosureNonCopyReadIsReusable()
+    testMoveClosureMutatesOwnedCopy()
+    testMoveClosureMoveOutIsFnOnce()
 
     std.print("PASS: closures\n")
 }

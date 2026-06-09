@@ -1,0 +1,6 @@
+func main() {
+    var list = std.collections.List[int32]()
+    let captured = move || -> int32 { list.len() as int32 }
+    let _ = list.len()
+    let _ = captured()
+}

@@ -3532,8 +3532,15 @@ impl Parser {
 
 impl Parser {
     fn parse_closure_expression(&mut self) -> R<Box<Expression>> {
+        self.parse_closure_expression_with_move(false, self.lo_span())
+    }
+
+    fn parse_closure_expression_with_move(
+        &mut self,
+        is_move: bool,
+        lo: Span,
+    ) -> R<Box<Expression>> {
         // |a| {} | || -> int {} | |x| async { await ok() } | |x| async -> int { ... }
-        let lo = self.lo_span();
         let mut prototype = self.parse_closure_prototype()?;
 
         let is_async = self.eat(Token::Async);
@@ -3559,6 +3566,7 @@ impl Parser {
         let closure = ClosureExpression {
             signature,
             is_async,
+            is_move,
             body,
             span: lo.to(self.hi_span()),
         };
@@ -3566,6 +3574,31 @@ impl Parser {
         let kind = ExpressionKind::Closure(closure);
         let expr = self.build_expr(kind, lo);
         Ok(expr)
+    }
+
+    fn try_parse_move_closure_expression(&mut self) -> R<Option<Box<Expression>>> {
+        if !self.matches_contextual_identifier("move") {
+            return Ok(None);
+        }
+
+        let checkpoint = self.checkpoint();
+        let error_checkpoint = self.errors.len();
+        let lo = self.lo_span();
+        self.bump();
+
+        if !matches!(self.current_token(), Token::Bar | Token::BarBar) {
+            self.restore(checkpoint);
+            return Ok(None);
+        }
+
+        match self.parse_closure_expression_with_move(true, lo) {
+            Ok(expr) => Ok(Some(expr)),
+            Err(_) => {
+                self.restore(checkpoint);
+                self.errors.truncate(error_checkpoint);
+                Ok(None)
+            }
+        }
     }
 
     fn parse_closure_prototype(&mut self) -> R<FunctionPrototype> {
@@ -3758,6 +3791,13 @@ impl Parser {
             | Token::False
             | Token::Nil => self.parse_literal(),
             Token::FStringStart => self.parse_fstring_expression(),
+            Token::Identifier { .. } if self.matches_contextual_identifier("move") => {
+                if let Some(expr) = self.try_parse_move_closure_expression()? {
+                    Ok(expr)
+                } else {
+                    self.parse_identifier_expression()
+                }
+            }
             Token::Identifier { .. } => self.parse_identifier_expression(),
             Token::Dot => self.parse_inferred_member_expression(),
             Token::LParen => self.parse_tuple_expr(),
@@ -6018,6 +6058,61 @@ mod tests {
     fn test_closure_expr_empty() {
         let expr = parse_expr_str("|| 42");
         assert!(matches!(expr.kind, ExpressionKind::Closure(_)));
+    }
+
+    #[test]
+    fn test_move_closure_expr_empty() {
+        let expr = parse_expr_str("move || 42");
+        match &expr.kind {
+            ExpressionKind::Closure(closure) => assert!(closure.is_move),
+            _ => panic!("Expected closure"),
+        }
+    }
+
+    #[test]
+    fn test_move_closure_expr() {
+        let expr = parse_expr_str("move |x| x");
+        match &expr.kind {
+            ExpressionKind::Closure(closure) => assert!(closure.is_move),
+            _ => panic!("Expected closure"),
+        }
+    }
+
+    #[test]
+    fn test_move_closure_typed_with_return_type() {
+        let expr = parse_expr_str("move |x: int32| -> int32 { x }");
+        match &expr.kind {
+            ExpressionKind::Closure(closure) => {
+                assert!(closure.is_move);
+                assert!(!closure.is_async);
+                assert!(closure.signature.prototype.output.is_some());
+            }
+            _ => panic!("Expected closure"),
+        }
+    }
+
+    #[test]
+    fn test_move_async_closure_expr_empty() {
+        let expr = parse_expr_str("move || async { 42 }");
+        match &expr.kind {
+            ExpressionKind::Closure(closure) => {
+                assert!(closure.is_move);
+                assert!(closure.is_async);
+            }
+            _ => panic!("Expected closure"),
+        }
+    }
+
+    #[test]
+    fn test_move_identifier_bit_or_is_not_move_closure() {
+        let expr = parse_expr_str("move | flags");
+        match &expr.kind {
+            ExpressionKind::Binary(BinaryOperator::BitOr, lhs, rhs) => {
+                assert!(matches!(lhs.kind, ExpressionKind::Identifier(_)));
+                assert!(matches!(rhs.kind, ExpressionKind::Identifier(_)));
+            }
+            _ => panic!("Expected bitwise-or expression"),
+        }
     }
 
     #[test]

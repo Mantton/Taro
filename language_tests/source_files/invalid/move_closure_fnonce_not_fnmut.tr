@@ -1,0 +1,16 @@
+func applyMut[F: FnMut() -> int32](_ f: F) -> int32 {
+    var f = f
+    f()
+}
+
+func consumeListMove(_ list: std.collections.List[int32]) {
+}
+
+func main() {
+    var list = std.collections.List[int32]()
+    let consuming = move || -> int32 {
+        consumeListMove(list)
+        return 0
+    }
+    let _ = applyMut(consuming)
+}

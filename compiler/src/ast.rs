@@ -571,6 +571,7 @@ pub struct PatternBindingCondition {
 pub struct ClosureExpression {
     pub signature: FunctionSignature,
     pub is_async: bool,
+    pub is_move: bool,
     pub body: Box<Expression>,
     pub span: Span,
 }

@@ -452,6 +452,12 @@ Anonymous functions.
     y + 1
 }
 
+// Move closure: capture referenced outer variables by value
+move |x| x + offset
+
+// Owned captures can still be reusable when the body only reads them
+let len = move || items.len()
+
 // Explicit async closure
 || async {
     await std.testing.yieldNow()
@@ -467,6 +473,8 @@ std.task.spawn(|| {
 // Trailing comma allowed
 |a, b,| a + b
 ```
+
+`move` affects how referenced outer variables enter the closure environment. It captures them by value, but it does not by itself make the closure one-shot: a `move` closure is `FnOnce` only when the body moves a captured value out of the closure.
 
 ---
 

@@ -419,6 +419,14 @@ pub enum CaptureKind {
     ByMove,
 }
 
+/// How a closure body uses a captured variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureAccessKind {
+    Read,
+    Mutate,
+    Move,
+}
+
 /// A variable captured by a closure
 #[derive(Debug, Clone, Copy)]
 pub struct CapturedVar<'arena> {
@@ -430,6 +438,8 @@ pub struct CapturedVar<'arena> {
     pub ty: Ty<'arena>,
     /// How this variable is captured.
     pub capture_kind: CaptureKind,
+    /// How this variable is used by the closure body.
+    pub access_kind: CaptureAccessKind,
     /// Field index in the environment struct
     pub field_index: crate::thir::FieldIndex,
 }

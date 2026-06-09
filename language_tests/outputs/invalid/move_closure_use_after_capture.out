@@ -1,0 +1,4 @@
+error: use of moved value 'list'
+ -> language_tests/source_files/invalid/move_closure_use_after_capture.tr:4:12
+	    let _ = list.len()
+	            ^^^^

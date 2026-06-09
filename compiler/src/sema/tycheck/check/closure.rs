@@ -189,13 +189,15 @@ impl<'ctx> Checker<'ctx> {
             // Get the type of the captured variable from local bindings
             let binding = self.get_local(*node_id);
             let ty = cs.infer_cx.resolve_vars_if_possible(binding.ty);
-            let capture_kind = classify_capture_kind(gcx, self.current_def, ty, info.usage);
+            let capture_kind =
+                classify_capture_kind(gcx, self.current_def, ty, info.usage, closure.is_move);
 
             captures.push(crate::sema::models::CapturedVar {
                 source_id: *node_id,
                 name: info.name,
                 ty,
                 capture_kind,
+                access_kind: info.usage.access_kind,
                 field_index: crate::thir::FieldIndex::from_raw(field_index as u32),
             });
         }
@@ -365,10 +367,19 @@ impl<'ctx> Checker<'ctx> {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct CaptureUsage {
-    moved: bool,
+    access_kind: crate::sema::models::CaptureAccessKind,
     by_ref: Option<hir::Mutability>,
+}
+
+impl Default for CaptureUsage {
+    fn default() -> Self {
+        Self {
+            access_kind: crate::sema::models::CaptureAccessKind::Read,
+            by_ref: None,
+        }
+    }
 }
 
 struct CaptureInfo {
@@ -423,6 +434,21 @@ struct CaptureCollector<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
+    fn stronger_access(
+        lhs: crate::sema::models::CaptureAccessKind,
+        rhs: crate::sema::models::CaptureAccessKind,
+    ) -> crate::sema::models::CaptureAccessKind {
+        use crate::sema::models::CaptureAccessKind;
+
+        match (lhs, rhs) {
+            (CaptureAccessKind::Move, _) | (_, CaptureAccessKind::Move) => CaptureAccessKind::Move,
+            (CaptureAccessKind::Mutate, _) | (_, CaptureAccessKind::Mutate) => {
+                CaptureAccessKind::Mutate
+            }
+            (CaptureAccessKind::Read, CaptureAccessKind::Read) => CaptureAccessKind::Read,
+        }
+    }
+
     fn record_capture(&mut self, id: NodeID, name: Symbol, usage: CaptureUsage) {
         let entry = self.info.entry(id).or_insert_with(|| {
             self.order.push(id);
@@ -431,9 +457,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 usage: CaptureUsage::default(),
             }
         });
-        if usage.moved {
-            entry.usage.moved = true;
-        }
+        entry.usage.access_kind = Self::stronger_access(entry.usage.access_kind, usage.access_kind);
         match (entry.usage.by_ref, usage.by_ref) {
             (_, Some(hir::Mutability::Mutable)) => {
                 entry.usage.by_ref = Some(hir::Mutability::Mutable);
@@ -453,7 +477,11 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
     ) -> CaptureUsage {
         match ctx {
             UseContext::Borrow { mutable } => CaptureUsage {
-                moved: false,
+                access_kind: if mutable {
+                    crate::sema::models::CaptureAccessKind::Mutate
+                } else {
+                    crate::sema::models::CaptureAccessKind::Read
+                },
                 by_ref: Some(if mutable {
                     hir::Mutability::Mutable
                 } else {
@@ -461,7 +489,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 }),
             },
             UseContext::Place => CaptureUsage {
-                moved: false,
+                access_kind: crate::sema::models::CaptureAccessKind::Mutate,
                 by_ref: Some(hir::Mutability::Mutable),
             },
             UseContext::Value => {
@@ -471,7 +499,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                         .any(|adj| matches!(adj, Adjustment::BorrowMutable))
                     {
                         return CaptureUsage {
-                            moved: false,
+                            access_kind: crate::sema::models::CaptureAccessKind::Mutate,
                             by_ref: Some(hir::Mutability::Mutable),
                         };
                     }
@@ -480,17 +508,22 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                         .any(|adj| matches!(adj, Adjustment::BorrowImmutable))
                     {
                         return CaptureUsage {
-                            moved: false,
+                            access_kind: crate::sema::models::CaptureAccessKind::Read,
                             by_ref: Some(hir::Mutability::Immutable),
                         };
                     }
                 }
 
                 CaptureUsage {
-                    moved: !self
+                    access_kind: if self
                         .checker
                         .gcx()
-                        .is_type_copyable_in_def(local_ty, self.checker.current_def),
+                        .is_type_copyable_in_def(local_ty, self.checker.current_def)
+                    {
+                        crate::sema::models::CaptureAccessKind::Read
+                    } else {
+                        crate::sema::models::CaptureAccessKind::Move
+                    },
                     by_ref: None,
                 }
             }
@@ -584,26 +617,39 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                         if self.local_decls.contains(&cap.source_id) {
                             continue;
                         }
-                        // Skip if we can't find the binding (shouldn't happen)
-                        if self.checker.try_get_local(cap.source_id).is_none() {
+                        let Some(binding) = self.checker.try_get_local(cap.source_id) else {
                             continue;
-                        }
+                        };
                         // Propagate the capture - the nested closure needs this variable,
                         // so we must capture it too to make it available
                         let usage = match cap.capture_kind {
                             crate::sema::models::CaptureKind::ByCopy => CaptureUsage::default(),
                             crate::sema::models::CaptureKind::ByRef { mutable } => CaptureUsage {
-                                moved: false,
+                                access_kind: if mutable {
+                                    crate::sema::models::CaptureAccessKind::Mutate
+                                } else {
+                                    crate::sema::models::CaptureAccessKind::Read
+                                },
                                 by_ref: Some(if mutable {
                                     hir::Mutability::Mutable
                                 } else {
                                     hir::Mutability::Immutable
                                 }),
                             },
-                            crate::sema::models::CaptureKind::ByMove => CaptureUsage {
-                                moved: true,
-                                by_ref: None,
-                            },
+                            crate::sema::models::CaptureKind::ByMove => {
+                                let copyable = self
+                                    .checker
+                                    .gcx()
+                                    .is_type_copyable_in_def(binding.ty, self.checker.current_def);
+                                CaptureUsage {
+                                    access_kind: if copyable {
+                                        crate::sema::models::CaptureAccessKind::Read
+                                    } else {
+                                        crate::sema::models::CaptureAccessKind::Move
+                                    },
+                                    by_ref: None,
+                                }
+                            }
                         };
                         self.record_capture(cap.source_id, cap.name, usage);
                     }
@@ -753,8 +799,18 @@ fn classify_capture_kind<'ctx>(
     owner: DefinitionID,
     ty: Ty<'ctx>,
     usage: CaptureUsage,
+    is_move_closure: bool,
 ) -> crate::sema::models::CaptureKind {
-    if usage.moved {
+    if is_move_closure {
+        if gcx.is_type_copyable_in_def(ty, owner) {
+            return crate::sema::models::CaptureKind::ByCopy;
+        }
+        return crate::sema::models::CaptureKind::ByMove;
+    }
+    if matches!(
+        usage.access_kind,
+        crate::sema::models::CaptureAccessKind::Move
+    ) {
         return crate::sema::models::CaptureKind::ByMove;
     }
     if let Some(mutability) = usage.by_ref {
@@ -787,23 +843,33 @@ fn infer_closure_kind(
     let mut kind = crate::sema::models::ClosureKind::Fn;
 
     for capture in captures {
-        match capture.capture_kind {
-            crate::sema::models::CaptureKind::ByMove => {
+        match capture.access_kind {
+            crate::sema::models::CaptureAccessKind::Move => {
                 return if is_async {
                     crate::sema::models::ClosureKind::AsyncFnOnce
                 } else {
                     crate::sema::models::ClosureKind::FnOnce
                 };
             }
-            crate::sema::models::CaptureKind::ByRef { mutable: true } => {
+            crate::sema::models::CaptureAccessKind::Mutate => {
                 kind = if is_async {
                     crate::sema::models::ClosureKind::AsyncFnMut
                 } else {
                     crate::sema::models::ClosureKind::FnMut
                 };
             }
-            crate::sema::models::CaptureKind::ByCopy
-            | crate::sema::models::CaptureKind::ByRef { mutable: false } => {}
+            crate::sema::models::CaptureAccessKind::Read => {
+                if matches!(
+                    capture.capture_kind,
+                    crate::sema::models::CaptureKind::ByRef { mutable: true }
+                ) {
+                    kind = if is_async {
+                        crate::sema::models::ClosureKind::AsyncFnMut
+                    } else {
+                        crate::sema::models::ClosureKind::FnMut
+                    };
+                }
+            }
         }
     }
 

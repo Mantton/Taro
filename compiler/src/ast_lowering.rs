@@ -2466,7 +2466,7 @@ impl Actor<'_, '_> {
             return_ty,
             is_async: closure.is_async,
             body,
-            is_move: false, // TODO: Support `move` keyword in parser
+            is_move: closure.is_move,
             span,
         })
     }
