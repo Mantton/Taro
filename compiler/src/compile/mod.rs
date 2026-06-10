@@ -142,6 +142,13 @@ impl<'state> Compiler<'state> {
             self.context
                 .cache_emitted_instances(self.context.package_index(), emitted_instances);
 
+            // Monomorphization-time passes (instance collection, devirtualize,
+            // codegen) report some errors through the diagnostics context
+            // without threading a `Result` back up (e.g. object-safety
+            // violations only discoverable once generic args are concrete).
+            // Fail here rather than linking a binary for an errored build.
+            self.context.dcx().ok()?;
+
             let phase_started_at = Instant::now();
             let exe = codegen::link::link_executable(self.context)?;
             timings.push_elapsed("link.executable", phase_started_at);
@@ -218,6 +225,10 @@ impl<'state> Compiler<'state> {
                 .collect();
             self.context
                 .cache_emitted_instances(self.context.package_index(), emitted_instances);
+
+            // Same gate as the normal build path: surface diagnostics emitted
+            // during monomorphization/codegen as a failed build before linking.
+            self.context.dcx().ok()?;
 
             let phase_started_at = Instant::now();
             let exe = codegen::link::link_executable(self.context)?;

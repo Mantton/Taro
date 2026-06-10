@@ -1,0 +1,27 @@
+// Test: the indirect route to calling a generic interface method on an
+// existential — passing `any Mapper` to a generic function bounded by the
+// interface — is rejected at monomorphization time. Typechecking cannot see
+// this case (the receiver's type is the parameter `M`, not an existential);
+// it only becomes visible once `M = any Mapper` is instantiated. This used
+// to silently dispatch through a null witness-table slot and segfault.
+
+interface Mapper {
+    func map[T](&self, v: T) -> T
+}
+
+struct Identity {}
+
+impl Mapper for Identity {
+    func map[T](&self, v: T) -> T {
+        v
+    }
+}
+
+func callMap[M: Mapper](m: M) -> int32 {
+    m.map(v: 3)
+}
+
+func main() {
+    let m: any Mapper = Identity {}
+    let _ = callMap(m: m)
+}

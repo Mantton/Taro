@@ -40,6 +40,34 @@ pub fn resolve_instance<'ctx>(
         return Instance::item(def_id, args);
     };
 
+    // Self is an existential, so this call must be dispatched through the
+    // witness table — but generic interface methods have no table slot (under
+    // monomorphization every instantiation is a distinct function, so there is
+    // no single pointer to store; see `ref_ops::method_is_dispatchable`).
+    //
+    // Tycheck already rejects direct calls like `e.map(v: 1)` on an existential
+    // receiver, but the receiver can also become existential only here, at
+    // monomorphization time: `func f[M: Mapper](m: M)` instantiated with
+    // `M = any Mapper`. Without this check that case used to silently fall
+    // back to a static instance (or, earlier, a null witness slot) and crash
+    // at runtime. Report it as a compile error instead; the `Instance::item`
+    // fallback below is a placeholder that lets compilation limp to the
+    // post-codegen diagnostics gate, where the build fails cleanly.
+    if gcx.generics_of(def_id).total_count() > 0 {
+        let method_name = gcx.symbol_text(gcx.definition_ident(def_id).symbol);
+        let iface_name = gcx.symbol_text(gcx.definition_ident(interface_id).symbol);
+        gcx.dcx().emit_error(
+            format!(
+                "cannot call generic interface method '{iface_name}.{method_name}' \
+                 through an existential value: methods with their own generic \
+                 parameters are not object-safe (this call was reached by \
+                 instantiating a generic bound with an `any {iface_name}` value)"
+            ),
+            None,
+        );
+        return Instance::item(def_id, args);
+    }
+
     let Some(slot) =
         crate::sema::impl_engine::ref_ops::interface_method_slot(gcx, interface_id, def_id)
     else {

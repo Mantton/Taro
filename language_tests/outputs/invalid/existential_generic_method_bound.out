@@ -1,0 +1,1 @@
+error: cannot call generic interface method 'Mapper.map' through an existential value: methods with their own generic parameters are not object-safe (this call was reached by instantiating a generic bound with an `any Mapper` value)
