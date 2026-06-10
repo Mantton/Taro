@@ -350,30 +350,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return self.context.ptr_type(AddressSpace::default()).const_null();
         }
 
-        let method_count = requirements
+        // Table layout: one pointer slot per dispatchable method (in
+        // requirements order), then one pointer per direct superface table.
+        // The filter below MUST match `ref_ops::method_is_dispatchable` — the
+        // same predicate drives slot numbering in sema and the field offsets
+        // used by every reader, so any divergence here silently shifts slots.
+        // Non-dispatchable methods (static or generic) get no slot at all:
+        // sema and monomorphization guarantee no virtual call to them exists.
+        let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::new();
+        let gcx = self.gcx;
+        for method in requirements
             .methods
             .iter()
-            .filter(|method| method.has_self)
-            .count();
-        let mut entries: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(method_count);
-        for method in requirements.methods.iter().filter(|method| method.has_self) {
-            // Generic interface methods are not materializable in runtime witness
-            // tables because method-level type/const arguments are unknown at
-            // metadata construction time.
-            if self.gcx.generics_of(method.id).total_count() > 0 {
-                self.debug_witness_subst(format!(
-                    "iface method {} has method-level generics; emitting null witness slot",
-                    self.gcx.symbol_text(method.name)
-                ));
-                entries.push(
-                    self.context
-                        .ptr_type(AddressSpace::default())
-                        .const_null()
-                        .into(),
-                );
-                continue;
-            }
-
+            .filter(|method| crate::sema::impl_engine::ref_ops::method_is_dispatchable(gcx, method))
+        {
             let method_target = if witness
                 .as_ref()
                 .and_then(|w| w.method_witnesses.get(&method.id))
@@ -420,6 +410,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         let table_ty = self.witness_table_struct_ty(iface.id);
+        // `const_named_struct` does not validate arity and LLVM's module
+        // verifier does not catch the mismatch either: an undersized
+        // initializer is accepted silently and reads of the missing fields
+        // return garbage at runtime. This assert turns any future drift
+        // between the writer above and `witness_table_struct_ty` into an
+        // immediate compiler panic instead of a miscompiled program.
+        assert_eq!(
+            entries.len() as u32,
+            table_ty.count_fields(),
+            "witness table entry count must match its struct type (interface {:?})",
+            iface.id
+        );
         let const_struct = table_ty.const_named_struct(&entries);
         let gv = self.module.add_global(
             table_ty,
@@ -663,10 +665,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         resolve_conformance_witness_with_mode(self.gcx, interface, SelectionMode::Codegen)
     }
 
-    pub(super) fn interface_method_count(&self, interface_id: hir::DefinitionID) -> usize {
-        self.interface_requirements(interface_id)
-            .map(|req| req.methods.len())
-            .unwrap_or(0)
+    /// Number of method slots in an interface's witness table. Superface
+    /// table pointers live directly after the method slots, so this is also
+    /// the base offset for superface fields. Delegates to sema so that table
+    /// layout and sema's slot numbering cannot drift apart (the previous
+    /// unfiltered `methods.len()` here disagreed with the filtered table
+    /// writer and corrupted every superface lookup).
+    pub(super) fn witness_method_slot_count(&self, interface_id: hir::DefinitionID) -> usize {
+        crate::sema::impl_engine::ref_ops::dispatchable_method_count(self.gcx, interface_id)
     }
 
     pub(super) fn interface_superfaces(
@@ -702,11 +708,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap_or(args)
     }
 
+    /// LLVM struct type for an interface's witness table:
+    /// `{ <dispatchable method slots...>, <direct superface table ptrs...> }`.
+    /// Must mirror the entry list built in `witness_table_ptr` exactly — the
+    /// arity assert there enforces it.
     pub(super) fn witness_table_struct_ty(
         &self,
         interface_id: hir::DefinitionID,
     ) -> StructType<'llvm> {
-        let method_count = self.interface_method_count(interface_id);
+        let method_count = self.witness_method_slot_count(interface_id);
         let super_count = self
             .interface_definition(interface_id)
             .map(|def| def.superfaces.len())
@@ -926,7 +936,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
                     .unwrap()
                     .into_pointer_value();
-                let field_index = self.interface_method_count(current_iface) + super_index;
+                // Superface table pointers are stored after the method slots,
+                // so the field offset is the dispatchable-method count (NOT
+                // the raw requirement count) plus the superface's position.
+                let field_index = self.witness_method_slot_count(current_iface) + super_index;
                 let field_ptr = self
                     .builder
                     .build_struct_gep(table_ty, typed_ptr, field_index as u32, "wt_super_ptr")

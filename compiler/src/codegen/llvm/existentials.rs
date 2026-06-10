@@ -138,7 +138,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .build_bit_cast(current_ptr, table_ptr_ty, "wt_cast")
                 .unwrap()
                 .into_pointer_value();
-            let field_index = self.interface_method_count(current_iface) + super_index;
+            // Superface table pointers are stored after the method slots, so
+            // the field offset is the dispatchable-method count (NOT the raw
+            // requirement count) plus the superface's position.
+            let field_index = self.witness_method_slot_count(current_iface) + super_index;
             let field_ptr = self
                 .builder
                 .build_struct_gep(table_ty, typed_ptr, field_index as u32, "wt_super_ptr")

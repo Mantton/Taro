@@ -68,18 +68,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
         })
     }
 
-    pub fn interface_method_slot(
-        &self,
-        interface_id: DefinitionID,
-        method_id: DefinitionID,
-    ) -> Option<usize> {
-        crate::sema::impl_engine::ref_ops::interface_method_slot(
-            self.gcx(),
-            interface_id,
-            method_id,
-        )
-    }
-
     pub fn collect_interface_with_supers(
         &self,
         root: InterfaceReference<'ctx>,

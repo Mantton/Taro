@@ -1,0 +1,81 @@
+// Test: witness-table layout for interfaces whose requirement lists contain
+// non-dispatchable methods (static methods and generic methods).
+//
+// Only methods that take `self` and have no method-level generics occupy
+// witness-table slots. The table writer, the table's struct type, superface
+// pointer offsets, and sema slot numbering must all agree on that filtered
+// numbering. They previously diverged: any interface mixing a non-self method
+// with a superface produced a malformed table and segfaulted at runtime
+// when the superface pointer was read past the initialized fields.
+//
+// The calls below go through opaque function boundaries so the devirtualizer
+// cannot optimize the virtual dispatch away (which would mask layout bugs).
+
+interface Area {
+    func area(&self) -> int32
+}
+
+// `describe` is static (no self) and declared FIRST so that, with unfiltered
+// numbering, every later slot would be off by one. `scale` carries method
+// generics, so it must not occupy a slot either.
+interface Shape: Area {
+    func describe() -> int32
+    func name(&self) -> int32
+    func scale[T](&self, factor: T) -> T
+}
+
+struct Square {
+    side: int32
+}
+
+impl Area for Square {
+    func area(&self) -> int32 {
+        self.side * self.side
+    }
+}
+
+impl Shape for Square {
+    func describe() -> int32 {
+        1
+    }
+
+    func name(&self) -> int32 {
+        7
+    }
+
+    func scale[T](&self, factor: T) -> T {
+        factor
+    }
+}
+
+// Virtual dispatch of a slot-0 method plus a superface-chain hop for `area`
+// (reads the superface table pointer stored after the method slots).
+func useShape(s: any Shape) -> int32 {
+    s.name() + s.area()
+}
+
+// Upcasting an existential walks the same superface pointers through a
+// different code path (existential projection) — cover it separately.
+func upcastAndUse(s: any Shape) -> int32 {
+    let a: any Area = s
+    a.area()
+}
+
+// Generic interface methods stay callable through static dispatch: with a
+// concrete `S` the call is monomorphized and never touches the table.
+func scaleConcrete[S: Shape](s: S, factor: int32) -> int32 {
+    s.scale(factor: factor)
+}
+
+func main() {
+    let virtual_sum = useShape(s: Square { side: 4 })
+    assert(virtual_sum == 23, "virtual name() + superface area() should dispatch correctly")
+
+    let upcast_area = upcastAndUse(s: Square { side: 3 })
+    assert(upcast_area == 9, "area() through an upcast existential should dispatch correctly")
+
+    let scaled = scaleConcrete(s: Square { side: 2 }, factor: 5)
+    assert(scaled == 5, "generic interface method should resolve statically")
+
+    std.print("PASS: witness table layout with non-dispatchable methods\n")
+}

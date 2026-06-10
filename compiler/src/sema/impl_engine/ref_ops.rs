@@ -233,6 +233,53 @@ pub fn interface_ref_matches<'ctx>(
     }
 }
 
+/// Whether an interface method occupies a slot in the runtime witness table,
+/// i.e. whether it can be virtually dispatched through an existential.
+///
+/// Two kinds of methods are excluded:
+/// - Methods without a `self` receiver: a virtual call works by extracting the
+///   existential's data pointer and passing it as `self`; with no receiver
+///   there is nothing to dispatch on, and such methods are always resolved
+///   statically (via path syntax or a generic bound).
+/// - Methods with their own generic parameters: Taro compiles generics by
+///   monomorphization, so each instantiation of the method is a distinct
+///   function. No single function pointer can represent all of them, so the
+///   method cannot have a table slot. Tycheck rejects direct calls to such
+///   methods on existential receivers (see object-safety check in
+///   `tycheck::solve::method`), and monomorphization rejects the indirect
+///   route through generic bounds (see `specialize::resolve_instance`).
+///
+/// IMPORTANT: this predicate is the single source of truth for witness-table
+/// layout. The table writer (`codegen::llvm::witness::witness_table_ptr`), the
+/// table's LLVM struct type, the superface-pointer field offsets, and the slot
+/// numbering below must all derive from it. These previously used divergent
+/// conventions (filtered vs. unfiltered method counts), which produced
+/// silently-malformed LLVM constants and runtime segfaults for any interface
+/// with a non-`self` method.
+pub fn method_is_dispatchable(
+    gcx: Gcx<'_>,
+    method: &crate::sema::models::InterfaceMethodRequirement<'_>,
+) -> bool {
+    method.has_self && gcx.generics_of(method.id).total_count() == 0
+}
+
+/// Number of method slots in an interface's witness table. Superface table
+/// pointers are stored immediately after these slots, so this count also
+/// defines where the superface fields begin.
+pub fn dispatchable_method_count(gcx: Gcx<'_>, interface_id: DefinitionID) -> usize {
+    gcx.get_interface_requirements(interface_id)
+        .map(|req| {
+            req.methods
+                .iter()
+                .filter(|method| method_is_dispatchable(gcx, method))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Witness-table slot of a method, counted among dispatchable methods only
+/// (see `method_is_dispatchable`). Returns `None` for methods that cannot be
+/// virtually dispatched — callers use that to fall back to static resolution.
 pub fn interface_method_slot(
     gcx: Gcx<'_>,
     interface_id: DefinitionID,
@@ -242,7 +289,7 @@ pub fn interface_method_slot(
     requirements
         .methods
         .iter()
-        .filter(|method| method.has_self)
+        .filter(|method| method_is_dispatchable(gcx, method))
         .position(|method| method.id == method_id)
 }
 

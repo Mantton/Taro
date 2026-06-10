@@ -747,9 +747,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         continue;
                     }
 
-                    let Some(slot) = self.interface_method_slot(iface_ref.id, method.id) else {
-                        continue;
-                    };
+                    // No witness-table slot is computed here. For existential
+                    // receivers every candidate that survives the checks above
+                    // is dispatchable (has `self`, no method generics) and the
+                    // slot is derived at monomorphization time. For abstract
+                    // receivers (generic params / projections) generic methods
+                    // are legitimate candidates even though they have no slot —
+                    // they resolve statically once the receiver is concrete, so
+                    // gating candidacy on a slot would reject valid calls.
 
                     // Only substitute interface-level args (e.g. `Self`) for receiver matching.
                     // Method-generic inference vars are created later, when a branch is selected.
@@ -765,7 +770,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         root_interface: root.id,
                         method_interface: iface_ref.id,
                         method_id: method.id,
-                        slot,
                         table_index,
                     };
 

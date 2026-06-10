@@ -114,12 +114,17 @@ pub struct BindOverloadGoalData<'ctx> {
     pub instantiation_args: Option<GenericArguments<'ctx>>,
 }
 
+/// Resolution record for a method call dispatched through an interface
+/// (existential receiver or generic bound). Deliberately does NOT carry a
+/// witness-table slot: the slot is computed at monomorphization time from
+/// `ref_ops::interface_method_slot` so that exactly one place encodes table
+/// layout. (A `slot` previously stored here was never read downstream and
+/// could silently drift from the real layout.)
 #[derive(Debug, Clone, Copy)]
 pub struct InterfaceCallInfo {
     pub root_interface: DefinitionID,
     pub method_interface: DefinitionID,
     pub method_id: DefinitionID,
-    pub slot: usize,
     pub table_index: usize,
 }
 
