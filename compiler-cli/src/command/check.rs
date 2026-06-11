@@ -257,7 +257,9 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
             no_std_prelude: package.no_std_prelude,
             is_script: false,
             profile: compile_options.profile,
-            overflow_checks: compile_options.overflow_checks,
+            // std intentionally relies on wrapping arithmetic (e.g. SipHash)
+            // and always compiles without overflow checks, like attached std.
+            overflow_checks: compile_options.overflow_checks && !is_std_package,
             debug: DebugOptions {
                 dump_mir: false,
                 dump_llvm: false,

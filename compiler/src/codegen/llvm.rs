@@ -26,6 +26,7 @@ use inkwell::{
     basic_block::BasicBlock,
     builder::Builder,
     context::Context,
+    intrinsics::Intrinsic,
     module::{Linkage, Module},
     passes::PassManager,
     targets::{FileType, TargetData},
@@ -2860,7 +2861,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 let dest_ty = self.place_ty(body, place);
 
-                if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
+                if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue, stmt.span)? {
                     self.store_place(place, body, locals, value)?;
                 }
             }
@@ -2988,6 +2989,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         locals: &mut [LocalStorage<'llvm>],
         dest_ty: Ty<'gcx>,
         rvalue: &mir::Rvalue<'gcx>,
+        span: crate::span::Span,
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match rvalue {
             mir::Rvalue::Use(op) => self.eval_operand(body, locals, op)?,
@@ -3008,7 +3010,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     Some(val) => val,
                     None => return Ok(None),
                 };
-                self.lower_binary(lhs_ty, *op, lhs, rhs)
+                self.lower_binary(lhs_ty, *op, lhs, rhs, span)
             }
             mir::Rvalue::Cast { operand, ty, kind } => {
                 let from_ty = self.operand_ty(body, operand);
@@ -3022,7 +3024,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             let value = self.lower_boxed_existential(from_ty, *ty, val)?;
                             return Ok(Some(value));
                         }
-                        return Ok(self.lower_cast(from_ty, *ty, val).or(Some(val)));
+                        let Some(value) = self.lower_cast(from_ty, *ty, val) else {
+                            panic!(
+                                "ICE: unhandled numeric cast from {} to {}",
+                                from_ty.format(self.gcx),
+                                ty.format(self.gcx)
+                            );
+                        };
+                        return Ok(Some(value));
                     }
                     mir::CastKind::BoxExistential => {
                         let value = self.lower_boxed_existential(from_ty, *ty, val)?;
@@ -3040,7 +3049,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         let value = self.lower_existential_try_cast(from_ty, *target, *ty, val)?;
                         return Ok(Some(value));
                     }
-                    mir::CastKind::Pointer => return Ok(self.lower_cast(from_ty, *ty, val)),
+                    mir::CastKind::Pointer => {
+                        let Some(value) = self.lower_cast(from_ty, *ty, val) else {
+                            panic!(
+                                "ICE: unhandled pointer cast from {} to {}",
+                                from_ty.format(self.gcx),
+                                ty.format(self.gcx)
+                            );
+                        };
+                        return Ok(Some(value));
+                    }
                     mir::CastKind::ClosureToFnPointer => {
                         let value = self.lower_closure_to_fn_pointer(from_ty, *ty)?;
                         return Ok(Some(value));
@@ -3370,6 +3388,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         op: mir::BinaryOperator,
         lhs: BasicValueEnum<'llvm>,
         rhs: BasicValueEnum<'llvm>,
+        span: crate::span::Span,
     ) -> Option<BasicValueEnum<'llvm>> {
         let result = match operand_ty.kind() {
             TyKind::Float(_) => {
@@ -3518,7 +3537,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let lhs = lhs.into_int_value();
                 let rhs = rhs.into_int_value();
                 let signed = is_signed(operand_ty);
+                let overflow_checks = self.gcx.config.overflow_checks;
                 match op {
+                    mir::BinaryOperator::Add if overflow_checks => {
+                        self.build_overflow_checked_arith("add", signed, lhs, rhs, span)
+                    }
+                    mir::BinaryOperator::Sub if overflow_checks => {
+                        self.build_overflow_checked_arith("sub", signed, lhs, rhs, span)
+                    }
+                    mir::BinaryOperator::Mul if overflow_checks => {
+                        self.build_overflow_checked_arith("mul", signed, lhs, rhs, span)
+                    }
                     mir::BinaryOperator::Add => self
                         .builder
                         .build_int_add(lhs, rhs, "add")
@@ -3575,16 +3604,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .build_xor(lhs, rhs, "xor")
                         .unwrap()
                         .as_basic_value_enum(),
-                    mir::BinaryOperator::BitShl => self
-                        .builder
-                        .build_left_shift(lhs, rhs, "shl")
-                        .unwrap()
-                        .as_basic_value_enum(),
-                    mir::BinaryOperator::BitShr => self
-                        .builder
-                        .build_right_shift(lhs, rhs, signed, "shr")
-                        .unwrap()
-                        .as_basic_value_enum(),
+                    mir::BinaryOperator::BitShl => {
+                        let amount = self.prepare_shift_amount(lhs, rhs, "left", span);
+                        self.builder
+                            .build_left_shift(lhs, amount, "shl")
+                            .unwrap()
+                            .as_basic_value_enum()
+                    }
+                    mir::BinaryOperator::BitShr => {
+                        let amount = self.prepare_shift_amount(lhs, rhs, "right", span);
+                        self.builder
+                            .build_right_shift(lhs, amount, signed, "shr")
+                            .unwrap()
+                            .as_basic_value_enum()
+                    }
                     mir::BinaryOperator::Eql => self
                         .builder
                         .build_int_compare(IntPredicate::EQ, lhs, rhs, "eq")
@@ -3658,6 +3691,124 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Some(result)
     }
 
+    /// Emit `llvm.{s,u}{op}.with.overflow` for `op` in `add`/`sub`/`mul` and
+    /// branch to a runtime panic when the operation overflows.
+    fn build_overflow_checked_arith(
+        &mut self,
+        op: &str,
+        signed: bool,
+        lhs: IntValue<'llvm>,
+        rhs: IntValue<'llvm>,
+        span: crate::span::Span,
+    ) -> BasicValueEnum<'llvm> {
+        let int_ty = lhs.get_type();
+        let name = format!("llvm.{}{op}.with.overflow", if signed { "s" } else { "u" });
+        let intrinsic =
+            Intrinsic::find(&name).unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {name}"));
+        let decl = intrinsic
+            .get_declaration(&self.module, &[int_ty.as_basic_type_enum()])
+            .unwrap_or_else(|| panic!("ICE: cannot declare LLVM intrinsic {name}"));
+        let call = self
+            .builder
+            .build_call(decl, &[lhs.into(), rhs.into()], op)
+            .unwrap();
+        let pair = call
+            .try_as_basic_value()
+            .basic()
+            .expect("overflow intrinsic returns {value, flag}")
+            .into_struct_value();
+        let result = self
+            .builder
+            .build_extract_value(pair, 0, "arith_val")
+            .unwrap();
+        let overflowed = self
+            .builder
+            .build_extract_value(pair, 1, "arith_ovf")
+            .unwrap()
+            .into_int_value();
+
+        let panic_bb = self.append_block_to_current_fn("arith_ovf_panic");
+        let cont_bb = self.append_block_to_current_fn("arith_ovf_cont");
+        let _ = self
+            .builder
+            .build_conditional_branch(overflowed, panic_bb, cont_bb)
+            .unwrap();
+        self.builder.position_at_end(panic_bb);
+        let verb = match op {
+            "add" => "add",
+            "sub" => "subtract",
+            "mul" => "multiply",
+            other => other,
+        };
+        self.emit_arith_panic(&format!("attempt to {verb} with overflow"), span);
+        self.builder.position_at_end(cont_bb);
+        result
+    }
+
+    /// Bound a shift amount so `x << y` can never be LLVM poison. With
+    /// overflow checks enabled an amount >= the operand bit width panics;
+    /// otherwise the amount is masked to the width (shift modulo bit width).
+    fn prepare_shift_amount(
+        &mut self,
+        lhs: IntValue<'llvm>,
+        rhs: IntValue<'llvm>,
+        direction: &str,
+        span: crate::span::Span,
+    ) -> IntValue<'llvm> {
+        let bits = lhs.get_type().get_bit_width() as u64;
+        if self.gcx.config.overflow_checks {
+            let limit = rhs.get_type().const_int(bits, false);
+            // An unsigned comparison also rejects negative amounts of signed types.
+            let too_big = self
+                .builder
+                .build_int_compare(IntPredicate::UGE, rhs, limit, "shift_ovf")
+                .unwrap();
+            let panic_bb = self.append_block_to_current_fn("shift_ovf_panic");
+            let cont_bb = self.append_block_to_current_fn("shift_ovf_cont");
+            let _ = self
+                .builder
+                .build_conditional_branch(too_big, panic_bb, cont_bb)
+                .unwrap();
+            self.builder.position_at_end(panic_bb);
+            self.emit_arith_panic(
+                &format!("attempt to shift {direction} with overflow"),
+                span,
+            );
+            self.builder.position_at_end(cont_bb);
+            rhs
+        } else {
+            let mask = rhs.get_type().const_int(bits - 1, false);
+            self.builder.build_and(rhs, mask, "shift_mask").unwrap()
+        }
+    }
+
+    /// Emit a diverging call to the runtime panic entry point. The builder
+    /// must be positioned in a dedicated panic block; this terminates it
+    /// with `unreachable`.
+    fn emit_arith_panic(&mut self, message: &str, span: crate::span::Span) {
+        let msg = self.const_string_value(message);
+        let file = self
+            .gcx
+            .dcx()
+            .file_path(span.file)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let file_val = self.const_string_value(&file);
+        let line = self.usize_ty.const_int((span.start.line + 1) as u64, false);
+        let column = self
+            .usize_ty
+            .const_int((span.start.offset + 1) as u64, false);
+        let _ = self
+            .builder
+            .build_call(
+                self.get_panic_unwind_at_fn(),
+                &[msg.into(), file_val.into(), line.into(), column.into()],
+                "arith_panic",
+            )
+            .unwrap();
+        let _ = self.builder.build_unreachable().unwrap();
+    }
+
     fn lower_cast(
         &mut self,
         from_ty: Ty<'gcx>,
@@ -3666,6 +3817,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ) -> Option<BasicValueEnum<'llvm>> {
         if from_ty == to_ty {
             return Some(value);
+        }
+
+        // Integer-to-bool compares against zero (`2 as bool == true`) rather
+        // than truncating to the low bit.
+        if matches!(to_ty.kind(), TyKind::Bool) && self.int_type(from_ty).is_some() {
+            let int_val = value.into_int_value();
+            let zero = int_val.get_type().const_zero();
+            return Some(
+                self.builder
+                    .build_int_compare(IntPredicate::NE, int_val, zero, "to_bool")
+                    .unwrap()
+                    .as_basic_value_enum(),
+            );
         }
 
         if let (Some((_, from_signed)), Some((to_int, _))) =
@@ -3725,18 +3889,31 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         if matches!(to_ty.kind(), TyKind::Pointer(..) | TyKind::Reference(..)) {
-            return Some(
-                self.builder
-                    .build_bit_cast(
-                        value,
-                        self.context
-                            .ptr_type(AddressSpace::default())
-                            .as_basic_type_enum(),
-                        "ptrcast",
-                    )
+            let ptr_ty = self.context.ptr_type(AddressSpace::default());
+            return Some(match value {
+                // Integer sources need inttoptr; a bitcast between an integer
+                // and a pointer is invalid LLVM IR.
+                BasicValueEnum::IntValue(int) => self
+                    .builder
+                    .build_int_to_ptr(int, ptr_ty, "inttoptr")
                     .unwrap()
-                    .into(),
-            );
+                    .as_basic_value_enum(),
+                _ => self
+                    .builder
+                    .build_bit_cast(value, ptr_ty.as_basic_type_enum(), "ptrcast")
+                    .unwrap(),
+            });
+        }
+
+        if matches!(from_ty.kind(), TyKind::Pointer(..) | TyKind::Reference(..)) {
+            if let Some((to_int, _)) = self.int_type(to_ty) {
+                return Some(
+                    self.builder
+                        .build_ptr_to_int(value.into_pointer_value(), to_int, "ptrtoint")
+                        .unwrap()
+                        .as_basic_value_enum(),
+                );
+            }
         }
 
         None

@@ -40,8 +40,10 @@ impl Span {
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Position {
+    /// 0-based line number.
     pub line: usize,
-    #[allow(unused)]
+    /// 0-based character offset within the line (i.e. a column, not a byte
+    /// offset into the file); the lexer resets it to 0 at every newline.
     pub offset: usize,
 }
 

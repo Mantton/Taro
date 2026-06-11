@@ -1,0 +1,16 @@
+func main() {
+    var value: int64 = 42
+    let p = unsafe { &mut value as *mut int64 }
+    let addr = unsafe { p as usize }
+    assert(addr != (0 as usize), "pointer address should be non-zero")
+
+    let q = unsafe { addr as *mut int64 }
+    unsafe { q.write(7) }
+    assert(value == 7, "round-tripped pointer should write through")
+
+    let null = unsafe { 0 as *mut uint8 }
+    let nullAddr = unsafe { null as usize }
+    assert(nullAddr == (0 as usize), "null pointer should be address 0")
+
+    std.print("PASS: ptr <-> int casts\n")
+}

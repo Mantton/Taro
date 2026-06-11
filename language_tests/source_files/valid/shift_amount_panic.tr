@@ -1,0 +1,10 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: attempt to shift left with overflow
+func shl(_ x: uint64, _ n: uint64) -> uint64 {
+    return x << n
+}
+
+func main() {
+    let v = shl(1, 64)
+    assert(v == 0, "unreachable: overflow checks should panic first")
+}

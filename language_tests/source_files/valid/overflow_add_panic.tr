@@ -1,0 +1,10 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: attempt to add with overflow
+func add(_ a: uint8, _ b: uint8) -> uint8 {
+    return a + b
+}
+
+func main() {
+    let c = add(255, 1)
+    assert(c == 0, "unreachable: overflow checks should panic first")
+}
