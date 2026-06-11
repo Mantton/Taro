@@ -3,7 +3,10 @@ use crate::{
         abi,
         mangle::{mangle, mangle_instance},
     },
-    compile::context::{Gcx, GlobalContext},
+    compile::{
+        config::BuildProfile,
+        context::{Gcx, GlobalContext},
+    },
     error::CompileResult,
     hir,
     mir::{self, Operand, Place},
@@ -1905,11 +1908,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     fn run_function_passes(&self) {
         let fpm = PassManager::create(&self.module);
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
-        fpm.add_gvn_pass();
-        fpm.add_cfg_simplification_pass();
+        // Every MIR local is lowered as an alloca, so the scalar passes only
+        // become effective after mem2reg promotes those allocas to SSA values.
         fpm.add_promote_memory_to_register_pass();
+        if matches!(self.gcx.config.profile, BuildProfile::Release) {
+            fpm.add_instruction_combining_pass();
+            fpm.add_reassociate_pass();
+            fpm.add_gvn_pass();
+            fpm.add_cfg_simplification_pass();
+        }
         fpm.initialize();
 
         for func in self.module.get_functions() {
