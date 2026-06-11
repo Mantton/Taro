@@ -873,10 +873,10 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
         };
 
         for field in &literal.fields {
-            let Some(index) = results.field_index(field.expression.id) else {
+            let Some(name) = struct_literal_field_name(field) else {
                 continue;
             };
-            let Some(field_def) = self.struct_field_for_ty(struct_ty, index) else {
+            let Some(field_def) = self.struct_field_by_name(struct_ty, name) else {
                 continue;
             };
             self.nav_data.hovers.push(HoverInfo {
@@ -899,16 +899,43 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
         };
 
         for field in &literal.fields {
-            let Some(index) = results.field_index(field.expression.id) else {
+            let Some(name) = struct_literal_field_name(field) else {
                 continue;
             };
-            let Some(field_def) = self.struct_field_for_ty(struct_ty, index) else {
+            let Some(field_def) = self.struct_field_by_name(struct_ty, name) else {
                 continue;
             };
             self.nav_data.definitions.push(DefinitionInfo {
                 source: struct_literal_field_navigation_span(field),
                 target: self.gcx.definition_ident(field_def.def_id).span,
             });
+        }
+    }
+
+    fn struct_field_by_name(
+        &self,
+        ty: Ty<'ctx>,
+        name: crate::span::Symbol,
+    ) -> Option<StructField<'ctx>> {
+        match ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                self.struct_field_by_name(inner, name)
+            }
+            TyKind::Alias { def_id, .. } => self
+                .gcx
+                .try_get_alias_type(def_id)
+                .and_then(|alias_ty| self.struct_field_by_name(alias_ty, name)),
+            TyKind::Adt(def, _) if def.kind == AdtKind::Struct => self
+                .gcx
+                .try_get_struct_definition(def.id)
+                .and_then(|struct_def| {
+                    struct_def
+                        .fields
+                        .iter()
+                        .find(|field| field.name == name)
+                        .copied()
+                }),
+            _ => None,
         }
     }
 
@@ -2275,6 +2302,20 @@ fn is_std_package_root(package_root: &Path, std_path: Option<PathBuf>) -> Result
     let manifest = Manifest::parse(package_root.join(MANIFEST_FILE))?;
     let package_name = normalize_module_path(&manifest.package.name)?;
     Ok(package_name == STD_PACKAGE_PATH)
+}
+
+fn struct_literal_field_name(field: &ExpressionField) -> Option<crate::span::Symbol> {
+    if let Some(label) = &field.label {
+        return Some(label.identifier.symbol);
+    }
+
+    match &field.expression.kind {
+        ExpressionKind::Path(ResolvedPath::Resolved(path)) => path
+            .segments
+            .last()
+            .map(|segment| segment.identifier.symbol),
+        _ => None,
+    }
 }
 
 fn struct_literal_field_navigation_span(field: &ExpressionField) -> Span {

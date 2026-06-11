@@ -45,26 +45,29 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                     destination,
                     ..
                 } => {
-                    use_operand(func, &mut in_set);
-                    for arg in args {
-                        use_operand(arg, &mut in_set);
-                    }
+                    // Kill the destination before adding argument uses: the
+                    // call reads its arguments before writing the destination,
+                    // so a local that is both (e.g. `x = f(x)`) is live in.
                     if destination.projection.is_empty() {
                         in_set.remove(&destination.local);
                     } else {
                         use_place(destination, &mut in_set);
+                    }
+                    use_operand(func, &mut in_set);
+                    for arg in args {
+                        use_operand(arg, &mut in_set);
                     }
                 }
                 TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, &mut in_set),
                 TerminatorKind::Yield {
                     value, resume_arg, ..
                 } => {
-                    use_operand(value, &mut in_set);
                     if resume_arg.projection.is_empty() {
                         in_set.remove(&resume_arg.local);
                     } else {
                         use_place(resume_arg, &mut in_set);
                     }
+                    use_operand(value, &mut in_set);
                 }
                 TerminatorKind::Return => {
                     in_set.insert(body.return_local);

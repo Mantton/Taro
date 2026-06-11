@@ -42,26 +42,30 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
                         destination,
                         ..
                     } => {
-                        use_operand(func, &mut live);
-                        for arg in args {
-                            use_operand(arg, &mut live);
-                        }
+                        // Kill the destination before adding argument uses:
+                        // the call reads its arguments before writing the
+                        // destination, so a local that is both (e.g.
+                        // `x = f(x)`) must stay live above the call.
                         if destination.projection.is_empty() {
                             live.remove(&destination.local);
                         } else {
                             use_place(destination, &mut live);
+                        }
+                        use_operand(func, &mut live);
+                        for arg in args {
+                            use_operand(arg, &mut live);
                         }
                     }
                     TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, &mut live),
                     TerminatorKind::Yield {
                         value, resume_arg, ..
                     } => {
-                        use_operand(value, &mut live);
                         if resume_arg.projection.is_empty() {
                             live.remove(&resume_arg.local);
                         } else {
                             use_place(resume_arg, &mut live);
                         }
+                        use_operand(value, &mut live);
                     }
                     TerminatorKind::Return => {
                         live.insert(body.return_local);

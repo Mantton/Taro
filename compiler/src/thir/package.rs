@@ -1177,6 +1177,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     unreachable!()
                 }
 
+                // Resolve each entry's slot by field name against the struct
+                // definition. The tycheck `field_index` table is keyed by the
+                // value expression's NodeID, which collides with the member
+                // access index when the value is itself a field read (e.g.
+                // `Pair { a: input.b }` would resolve to slot `b`).
+                let struct_def = self.gcx.get_struct_definition(definition.id);
                 let node = thir::AdtExpression {
                     definition,
                     variant_index: None,
@@ -1184,13 +1190,31 @@ impl<'ctx> FunctionLower<'ctx> {
                     fields: literal
                         .fields
                         .iter()
-                        .map(|f| thir::FieldExpression {
-                            expression: self.lower_expr(&f.expression),
-                            index: FieldIndex::from_usize(
-                                self.results
-                                    .field_index(f.expression.id)
-                                    .expect("Field Index"),
-                            ),
+                        .map(|f| {
+                            let name = match &f.label {
+                                Some(label) => label.identifier.symbol,
+                                None => match &f.expression.kind {
+                                    hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(
+                                        path,
+                                    )) => {
+                                        path.segments
+                                            .last()
+                                            .expect("path must have segments")
+                                            .identifier
+                                            .symbol
+                                    }
+                                    _ => unreachable!(),
+                                },
+                            };
+                            let index = struct_def
+                                .fields
+                                .iter()
+                                .position(|field| field.name == name)
+                                .expect("struct literal field must match a declared field");
+                            thir::FieldExpression {
+                                expression: self.lower_expr(&f.expression),
+                                index: FieldIndex::from_usize(index),
+                            }
                         })
                         .collect(),
                 };

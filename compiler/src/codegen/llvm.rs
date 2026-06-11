@@ -2084,6 +2084,86 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(Some(spill))
     }
 
+    /// Lower an indirectly passed argument by spilling it to a fresh stack
+    /// slot. The callee adopts the incoming pointer as the parameter's own
+    /// storage (see `allocate_locals`), so forwarding a raw place address
+    /// would let the callee mutate the caller's place through it and would
+    /// let the sret destination alias an argument (e.g. `x = f(x)`).
+    fn lower_indirect_call_arg_copy(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &[LocalStorage<'llvm>],
+        arg: &Operand<'gcx>,
+        arg_ty: Ty<'gcx>,
+    ) -> CompileResult<Option<PointerValue<'llvm>>> {
+        let Some(spill_ty) = self.lower_ty(arg_ty) else {
+            return Ok(None);
+        };
+
+        if let Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) = arg {
+            if let Some(src) = self.place_address(body, locals, place)? {
+                let spill = self
+                    .builder
+                    .build_alloca(spill_ty, "indirect_arg_copy")
+                    .unwrap();
+                let size = self.target_data.get_store_size(&spill_ty);
+                let align = self.target_data.get_abi_alignment(&spill_ty).max(1);
+                let count = self.usize_ty.const_int(size, false);
+                let _ = self
+                    .builder
+                    .build_memcpy(spill, align, src, align, count)
+                    .unwrap();
+                return Ok(Some(spill));
+            }
+        }
+
+        let Some(value) = self.eval_operand(body, locals, arg)? else {
+            return Ok(None);
+        };
+        let spill = self.builder.build_alloca(spill_ty, "indirect_arg").unwrap();
+        let _ = self.builder.build_store(spill, value).unwrap();
+        Ok(Some(spill))
+    }
+
+    /// Whether an indirectly passed argument may forward the address of its
+    /// MIR place instead of a defensive copy. Since the callee treats the
+    /// pointer as its own storage, this is only sound for a moved,
+    /// projection-free temporary that nothing else at the call site (another
+    /// argument or the return destination) can alias.
+    fn indirect_arg_may_share_storage(
+        &self,
+        body: &mir::Body<'gcx>,
+        args: &[Operand<'gcx>],
+        arg_index: usize,
+        destination: &Place<'gcx>,
+    ) -> bool {
+        let Operand::Move(place) = &args[arg_index] else {
+            return false;
+        };
+        if !place.projection.is_empty() {
+            return false;
+        }
+        if !matches!(body.locals[place.local].kind, mir::LocalKind::Temp) {
+            return false;
+        }
+        if destination.local == place.local
+            || destination
+                .projection
+                .iter()
+                .any(|proj| matches!(proj, mir::PlaceElem::Deref))
+        {
+            return false;
+        }
+        args.iter().enumerate().all(|(index, other)| {
+            index == arg_index
+                || !matches!(
+                    other,
+                    Operand::Copy(p) | Operand::Move(p) | Operand::CopyWith(p, _)
+                        if p.local == place.local
+                )
+        })
+    }
+
     fn place_address(
         &self,
         body: &mir::Body<'gcx>,
@@ -2177,7 +2257,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let arg_ty = abi_arg
                         .map(|a| a.ty)
                         .unwrap_or_else(|| self.operand_ty(body, arg));
-                    if let Some(ptr) = self.lower_indirect_call_arg(body, locals, arg, arg_ty)? {
+                    let ptr = if self.indirect_arg_may_share_storage(body, args, index, destination)
+                    {
+                        self.lower_indirect_call_arg(body, locals, arg, arg_ty)?
+                    } else {
+                        self.lower_indirect_call_arg_copy(body, locals, arg, arg_ty)?
+                    };
+                    if let Some(ptr) = ptr {
                         lowered.push(ptr.as_basic_value_enum());
                     }
                 }
@@ -2387,6 +2473,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let Some(arg) = params.next() else {
                         continue;
                     };
+                    // Adopt the incoming pointer as the parameter's storage.
+                    // This relies on callers passing a pointer the callee may
+                    // treat as its own (a defensive copy or a dead temporary;
+                    // see `lower_indirect_call_arg_copy` /
+                    // `indirect_arg_may_share_storage`), so writes to the
+                    // parameter never leak back into a caller place.
                     locals[local_index] = LocalStorage::Stack(arg.into_pointer_value());
                 }
             }

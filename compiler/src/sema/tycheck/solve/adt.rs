@@ -63,7 +63,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     found = true;
                     used_fields[idx] = true;
 
-                    self.record_field_index(provided_field.node_id, idx);
+                    // Do not record the entry's slot index here: it would be
+                    // keyed by the value expression's NodeID and clobber that
+                    // expression's own field index when the value is itself a
+                    // member access (e.g. `Pair { a: input.b }`). Consumers
+                    // resolve literal entries by field name instead.
 
                     // Create coercion constraint: provided type -> expected type
                     obligations.push(Obligation {
