@@ -963,6 +963,25 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         builder.build_store(argv_global, argv).unwrap();
     }
 
+    /// Assert that an entry/test function can be called with an empty argument
+    /// list, as the shims below do. Sema restricts these functions to
+    /// `() -> void`, so their computed ABI must not expect any parameters — in
+    /// particular no hidden sret pointer, which the callee would otherwise
+    /// write its return through while reading garbage as the destination.
+    fn assert_entry_abi_takes_no_args(&self, fn_abi: &abi::FnAbi<'gcx>, what: &str) {
+        assert!(
+            !matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }),
+            "{what} must not return indirectly (sret); sema restricts it to `() -> void`"
+        );
+        assert!(
+            fn_abi
+                .args
+                .iter()
+                .all(|arg| matches!(arg.mode, abi::PassMode::Ignore)),
+            "{what} must not take ABI arguments; sema restricts it to `() -> void`"
+        );
+    }
+
     /// Emit the `taro_start` / `main` entry shim for a normal (non-test) binary.
     ///
     /// `taro_start` invokes the user's `main` function via an `invoke` instruction so
@@ -981,6 +1000,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let Some(&user_fn) = self.functions.get(&entry_instance) else {
             return;
         };
+        let entry_fn_abi = self
+            .fn_abis
+            .get(&entry_instance)
+            .expect("declared entry function must have a computed ABI");
+        self.assert_entry_abi_takes_no_args(entry_fn_abi, "entry point `main`");
         let entry_sig = self.gcx.get_signature(entry);
         let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
 
@@ -1185,10 +1209,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.build_global_cstring(&skipped_msg, &format!("skipped_msg_{}", idx));
             skipped_msg_ptrs.push(skipped_global);
 
+            let test_fn_abi = self
+                .fn_abis
+                .get(&test_instance)
+                .expect("declared test function must have a computed ABI");
             let fn_ptr = if test.is_async {
-                self.emit_async_test_wrapper(test_fn, async_run_root_fn, idx)
+                self.emit_async_test_wrapper(test_fn, test_fn_abi, async_run_root_fn, idx)
             } else {
-                self.emit_sync_test_wrapper(test_fn, finish_rootless_fn, idx)
+                self.emit_sync_test_wrapper(test_fn, test_fn_abi, finish_rootless_fn, idx)
             };
             fn_ptrs.push(fn_ptr);
             expect_flags.push(if test.expect_panic { 1 } else { 0 });
@@ -1661,9 +1689,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn emit_sync_test_wrapper(
         &self,
         sync_test_fn: FunctionValue<'llvm>,
+        sync_test_abi: &abi::FnAbi<'gcx>,
         finish_rootless_fn: FunctionValue<'llvm>,
         index: usize,
     ) -> PointerValue<'llvm> {
+        self.assert_entry_abi_takes_no_args(sync_test_abi, "sync `@test` function");
         let wrapper_ty = self.context.void_type().fn_type(&[], false);
         let wrapper = self.module.add_function(
             &format!("__taro_sync_test_wrapper_{index}"),
@@ -1685,9 +1715,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     fn emit_async_test_wrapper(
         &self,
         async_test_fn: FunctionValue<'llvm>,
+        async_test_abi: &abi::FnAbi<'gcx>,
         async_run_root_fn: FunctionValue<'llvm>,
         index: usize,
     ) -> PointerValue<'llvm> {
+        // The async entry returns a runtime handle pointer, which is always
+        // scalar-sized; an indirect return here would mean the ABI no longer
+        // matches the handle-based protocol this wrapper is built around.
+        self.assert_entry_abi_takes_no_args(async_test_abi, "async `@test` function");
         let wrapper_ty = self.context.void_type().fn_type(&[], false);
         let wrapper = self.module.add_function(
             &format!("__taro_async_test_wrapper_{index}"),
