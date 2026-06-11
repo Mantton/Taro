@@ -2052,6 +2052,26 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
     }
 
+    /// Build an alloca in the entry block of the function currently being
+    /// emitted. Temporaries must not be allocated at the builder's insertion
+    /// point: an alloca there executes every time control reaches it, so a
+    /// hot loop would grow the stack each iteration, released only at
+    /// function return.
+    fn build_entry_alloca<T: BasicType<'llvm>>(&self, ty: T, name: &str) -> PointerValue<'llvm> {
+        let entry = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .and_then(|func| func.get_first_basic_block())
+            .expect("builder must be positioned inside a function");
+        let alloc_builder = self.context.create_builder();
+        match entry.get_terminator() {
+            Some(terminator) => alloc_builder.position_before(&terminator),
+            None => alloc_builder.position_at_end(entry),
+        }
+        alloc_builder.build_alloca(ty, name).unwrap()
+    }
+
     fn append_block_to_current_fn(&self, name: &str) -> inkwell::basic_block::BasicBlock<'llvm> {
         let function = self.current_fn.expect("current function must be set");
         self.context.append_basic_block(function, name)
@@ -2114,7 +2134,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let Some(spill_ty) = self.lower_ty(arg_ty) else {
             return Ok(None);
         };
-        let spill = self.builder.build_alloca(spill_ty, "indirect_arg").unwrap();
+        let spill = self.build_entry_alloca(spill_ty, "indirect_arg");
         let _ = self.builder.build_store(spill, value).unwrap();
         Ok(Some(spill))
     }
@@ -2137,10 +2157,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         if let Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) = arg {
             if let Some(src) = self.place_address(body, locals, place)? {
-                let spill = self
-                    .builder
-                    .build_alloca(spill_ty, "indirect_arg_copy")
-                    .unwrap();
+                let spill = self.build_entry_alloca(spill_ty, "indirect_arg_copy");
                 let size = self.target_data.get_store_size(&spill_ty);
                 let align = self.target_data.get_abi_alignment(&spill_ty).max(1);
                 let count = self.usize_ty.const_int(size, false);
@@ -2155,7 +2172,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let Some(value) = self.eval_operand(body, locals, arg)? else {
             return Ok(None);
         };
-        let spill = self.builder.build_alloca(spill_ty, "indirect_arg").unwrap();
+        let spill = self.build_entry_alloca(spill_ty, "indirect_arg");
         let _ = self.builder.build_store(spill, value).unwrap();
         Ok(Some(spill))
     }
@@ -3040,9 +3057,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     || place_has_no_storage
                 {
                     // Keep references non-null even for zero-sized pointees.
-                    self.builder
-                        .build_alloca(self.context.i8_type(), "ref_dummy")
-                        .unwrap()
+                    self.build_entry_alloca(self.context.i8_type(), "ref_dummy")
                 } else {
                     self.project_place(place, body, locals)?
                 };

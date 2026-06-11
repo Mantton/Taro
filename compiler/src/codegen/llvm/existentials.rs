@@ -422,10 +422,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             );
         };
 
-        let enum_ptr = self
-            .builder
-            .build_alloca(enum_struct_ty, "opt_tmp")
-            .unwrap();
+        let enum_ptr = self.build_entry_alloca(enum_struct_ty, "opt_tmp");
         let _ = self
             .builder
             .build_store(enum_ptr, enum_struct_ty.const_zero())
@@ -570,10 +567,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         result_ty.format(self.gcx)
                     );
                 };
-                let tmp_ptr = self
-                    .builder
-                    .build_alloca(result_llvm_ty, "exist_try_cast_tmp")
-                    .unwrap();
+                let tmp_ptr = self.build_entry_alloca(result_llvm_ty, "exist_try_cast_tmp");
                 let parent = self
                     .current_fn
                     .expect("active function for existential try cast");
