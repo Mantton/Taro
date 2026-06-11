@@ -5240,69 +5240,82 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Operand::Constant(c) = func {
             if let mir::ConstantKind::Function(def_id, args, _) = c.value {
                 let instance = self.instance_for_call(def_id, args);
-                let resolved_def_id = match instance.kind() {
-                    InstanceKind::Item(def_id) => def_id,
-                    InstanceKind::Virtual(_) => {
-                        unreachable!(
-                            "ICE: virtual call instance reached lower_callable_with_abi; \
+                if let InstanceKind::Virtual(_) = instance.kind() {
+                    unreachable!(
+                        "ICE: virtual call instance reached lower_callable_with_abi; \
                          Call terminators should route virtual calls through lower_virtual_call"
-                        );
-                    }
-                };
-
-                let existing_fn = self.functions.get(&instance).copied();
-                if let Some(&f) = self.functions.get(&instance) {
-                    if let Some(fn_abi) = self.fn_abis.get(&instance).cloned() {
-                        return (f, fn_abi);
-                    }
+                    );
                 }
-
-                let prev_subst = self.current_subst;
-                self.current_subst = instance.args();
-                let fn_abi = self.compute_instance_fn_abi(instance, resolved_def_id);
-                let name = mangle_instance(self.gcx, instance);
-                self.current_subst = prev_subst;
-
-                if let Some(f) = existing_fn {
-                    self.fn_abis.insert(instance, fn_abi.clone());
-                    return (f, fn_abi);
-                }
-
-                if self.is_foreign_function(resolved_def_id) {
-                    let f = self.declare_foreign_function(resolved_def_id);
-                    self.functions.insert(instance, f);
-                    self.fn_abis.insert(instance, fn_abi.clone());
-                    return (f, fn_abi);
-                }
-
-                if !self.instance_has_mir_body(instance)
-                    && self.is_interface_requirement_method(resolved_def_id)
-                {
-                    let prev_subst = self.current_subst;
-                    self.current_subst = instance.args();
-                    let fn_ty = self.lower_fn_abi(&fn_abi);
-                    self.current_subst = prev_subst;
-                    let f = self.declare_unreachable_stub(&name, fn_ty);
-                    self.functions.insert(instance, f);
-                    self.fn_abis.insert(instance, fn_abi.clone());
-                    return (f, fn_abi);
-                }
-
-                // Not declared yet (likely from another package); declare as external.
-                let prev_subst = self.current_subst;
-                self.current_subst = instance.args();
-                let fn_ty = self.lower_fn_abi(&fn_abi);
-                let f = self
-                    .module
-                    .add_function(&name, fn_ty, Some(Linkage::External));
-                self.current_subst = prev_subst;
-                self.functions.insert(instance, f);
-                self.fn_abis.insert(instance, fn_abi.clone());
-                return (f, fn_abi);
+                return self.instance_function_with_abi(instance);
             }
         }
 
         panic!("ICE: unable to lower callable operand: {:?}", func);
+    }
+
+    /// Resolve an instance to its LLVM function and ABI, declaring the
+    /// function in this module on demand (e.g. a concrete function defined in
+    /// another package that has not been referenced yet).
+    fn instance_function_with_abi(
+        &mut self,
+        instance: Instance<'gcx>,
+    ) -> (FunctionValue<'llvm>, abi::FnAbi<'gcx>) {
+        let resolved_def_id = match instance.kind() {
+            InstanceKind::Item(def_id) => def_id,
+            InstanceKind::Virtual(_) => {
+                unreachable!("ICE: virtual instance has no concrete function value");
+            }
+        };
+
+        let existing_fn = self.functions.get(&instance).copied();
+        if let Some(&f) = self.functions.get(&instance) {
+            if let Some(fn_abi) = self.fn_abis.get(&instance).cloned() {
+                return (f, fn_abi);
+            }
+        }
+
+        let prev_subst = self.current_subst;
+        self.current_subst = instance.args();
+        let fn_abi = self.compute_instance_fn_abi(instance, resolved_def_id);
+        let name = mangle_instance(self.gcx, instance);
+        self.current_subst = prev_subst;
+
+        if let Some(f) = existing_fn {
+            self.fn_abis.insert(instance, fn_abi.clone());
+            return (f, fn_abi);
+        }
+
+        if self.is_foreign_function(resolved_def_id) {
+            let f = self.declare_foreign_function(resolved_def_id);
+            self.functions.insert(instance, f);
+            self.fn_abis.insert(instance, fn_abi.clone());
+            return (f, fn_abi);
+        }
+
+        if !self.instance_has_mir_body(instance)
+            && self.is_interface_requirement_method(resolved_def_id)
+        {
+            let prev_subst = self.current_subst;
+            self.current_subst = instance.args();
+            let fn_ty = self.lower_fn_abi(&fn_abi);
+            self.current_subst = prev_subst;
+            let f = self.declare_unreachable_stub(&name, fn_ty);
+            self.functions.insert(instance, f);
+            self.fn_abis.insert(instance, fn_abi.clone());
+            return (f, fn_abi);
+        }
+
+        // Not declared yet (likely from another package); declare as external.
+        let prev_subst = self.current_subst;
+        self.current_subst = instance.args();
+        let fn_ty = self.lower_fn_abi(&fn_abi);
+        let f = self
+            .module
+            .add_function(&name, fn_ty, Some(Linkage::External));
+        self.current_subst = prev_subst;
+        self.functions.insert(instance, f);
+        self.fn_abis.insert(instance, fn_abi.clone());
+        (f, fn_abi)
     }
 
     fn is_interface_requirement_method(&self, def_id: hir::DefinitionID) -> bool {
@@ -5816,9 +5829,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                          frontend/typecheck should reject or lower this before codegen"
                     );
                 }
-                self.functions
-                    .get(&instance)
-                    .map(|f| f.as_global_value().as_pointer_value().as_basic_value_enum())
+                // Declare on demand: concrete functions from other packages are
+                // not pre-declared, and returning None here would silently drop
+                // the function pointer value.
+                let (f, _) = self.instance_function_with_abi(instance);
+                Some(f.as_global_value().as_pointer_value().as_basic_value_enum())
             }
             mir::ConstantKind::GlobalVariableAddress(def_id) => {
                 Some(self.global_variable_address(*def_id).as_basic_value_enum())

@@ -985,27 +985,36 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap()
             .into_pointer_value();
 
-        let mut lowered_args: Vec<BasicValueEnum<'llvm>> = Vec::with_capacity(args.len() + 1);
-        let ret_mode = self
-            .compute_fn_pointer_abi(&[], self.place_ty(body, destination))
-            .ret
-            .mode;
-        if matches!(ret_mode, abi::PassMode::Indirect { .. }) {
-            let Some(sret_dest) = self.place_address(body, locals, destination)? else {
-                self.gcx.dcx().emit_error(
-                    "virtual call with indirect return requires an addressable destination".into(),
-                    None,
-                );
-                return Err(crate::error::ReportedError);
-            };
-            lowered_args.push(sret_dest.as_basic_value_enum());
-        }
-        lowered_args.push(data_ptr.as_basic_value_enum());
-        for arg in args.iter().skip(1) {
-            if let Some(val) = self.eval_operand(body, locals, arg)? {
-                lowered_args.push(val);
-            }
-        }
+        // Classify the non-receiver arguments and the return with the same ABI
+        // rules the witness thunk uses for its parameters (witness_method_thunk),
+        // so large aggregates are passed indirectly on both sides of the
+        // virtual-call boundary instead of the caller handing a value where the
+        // thunk expects a pointer.
+        let arg_input_tys: Vec<_> = args
+            .iter()
+            .skip(1)
+            .map(|arg| self.mono_ty_if_resolved(self.operand_ty(body, arg)))
+            .collect();
+        let output = self.mono_ty_if_resolved(self.place_ty(body, destination));
+        let virt_fn_abi = abi::compute_fn_abi_from_tys(
+            &arg_input_tys,
+            output,
+            false,
+            |ty| self.type_layout(ty),
+            abi::AbiPolicy {
+                enable_indirect_returns: true,
+                indirect_return_threshold_bytes: self.indirect_return_threshold_bytes,
+                enable_indirect_args: true,
+                indirect_arg_threshold_bytes: self.indirect_arg_threshold_bytes,
+            },
+        );
+        let ret_mode = virt_fn_abi.ret.mode;
+        let mut lowered_args =
+            self.lower_call_args_with_fn_abi(body, locals, &args[1..], destination, &virt_fn_abi)?;
+        // The existential data pointer takes the receiver slot, right after the
+        // sret parameter when the return is indirect.
+        let receiver_index = usize::from(matches!(ret_mode, abi::PassMode::Indirect { .. }));
+        lowered_args.insert(receiver_index, data_ptr.as_basic_value_enum());
 
         let param_types: Vec<BasicMetadataTypeEnum<'llvm>> = lowered_args
             .iter()
