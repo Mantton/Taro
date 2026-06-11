@@ -2861,7 +2861,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 let dest_ty = self.place_ty(body, place);
 
-                if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue, stmt.span)? {
+                if let Some(value) = self.lower_rvalue(body, locals, dest_ty, rvalue)? {
                     self.store_place(place, body, locals, value)?;
                 }
             }
@@ -2989,7 +2989,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         locals: &mut [LocalStorage<'llvm>],
         dest_ty: Ty<'gcx>,
         rvalue: &mir::Rvalue<'gcx>,
-        span: crate::span::Span,
     ) -> CompileResult<Option<BasicValueEnum<'llvm>>> {
         let value = match rvalue {
             mir::Rvalue::Use(op) => self.eval_operand(body, locals, op)?,
@@ -3010,7 +3009,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     Some(val) => val,
                     None => return Ok(None),
                 };
-                self.lower_binary(lhs_ty, *op, lhs, rhs, span)
+                self.lower_binary(lhs_ty, *op, lhs, rhs)
             }
             mir::Rvalue::Cast { operand, ty, kind } => {
                 let from_ty = self.operand_ty(body, operand);
@@ -3388,7 +3387,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         op: mir::BinaryOperator,
         lhs: BasicValueEnum<'llvm>,
         rhs: BasicValueEnum<'llvm>,
-        span: crate::span::Span,
     ) -> Option<BasicValueEnum<'llvm>> {
         let result = match operand_ty.kind() {
             TyKind::Float(_) => {
@@ -3537,17 +3535,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let lhs = lhs.into_int_value();
                 let rhs = rhs.into_int_value();
                 let signed = is_signed(operand_ty);
-                let overflow_checks = self.gcx.config.overflow_checks;
                 match op {
-                    mir::BinaryOperator::Add if overflow_checks => {
-                        self.build_overflow_checked_arith("add", signed, lhs, rhs, span)
-                    }
-                    mir::BinaryOperator::Sub if overflow_checks => {
-                        self.build_overflow_checked_arith("sub", signed, lhs, rhs, span)
-                    }
-                    mir::BinaryOperator::Mul if overflow_checks => {
-                        self.build_overflow_checked_arith("mul", signed, lhs, rhs, span)
-                    }
                     mir::BinaryOperator::Add => self
                         .builder
                         .build_int_add(lhs, rhs, "add")
@@ -3605,14 +3593,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .unwrap()
                         .as_basic_value_enum(),
                     mir::BinaryOperator::BitShl => {
-                        let amount = self.prepare_shift_amount(lhs, rhs, "left", span);
+                        let amount = self.mask_shift_amount(lhs, rhs);
                         self.builder
                             .build_left_shift(lhs, amount, "shl")
                             .unwrap()
                             .as_basic_value_enum()
                     }
                     mir::BinaryOperator::BitShr => {
-                        let amount = self.prepare_shift_amount(lhs, rhs, "right", span);
+                        let amount = self.mask_shift_amount(lhs, rhs);
                         self.builder
                             .build_right_shift(lhs, amount, signed, "shr")
                             .unwrap()
@@ -3691,101 +3679,157 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Some(result)
     }
 
-    /// Emit `llvm.{s,u}{op}.with.overflow` for `op` in `add`/`sub`/`mul` and
-    /// branch to a runtime panic when the operation overflows.
-    fn build_overflow_checked_arith(
+    /// Mask a shift amount to the operand bit width so unchecked shifts wrap
+    /// (shift modulo width) instead of producing LLVM poison. Checked shifts
+    /// are lowered through `__intrinsic_checked_shl`/`shr` and panic before
+    /// an out-of-range amount reaches the shift instruction.
+    fn mask_shift_amount(
         &mut self,
-        op: &str,
-        signed: bool,
         lhs: IntValue<'llvm>,
         rhs: IntValue<'llvm>,
+    ) -> IntValue<'llvm> {
+        let bits = lhs.get_type().get_bit_width() as u64;
+        let mask = rhs.get_type().const_int(bits - 1, false);
+        self.builder.build_and(rhs, mask, "shift_mask").unwrap()
+    }
+
+    /// Lower `__intrinsic_checked_{add,sub,mul,shl,shr}` calls emitted by the
+    /// MIR builder when overflow checks are enabled. The overflow branch
+    /// panics through the call's unwind edge, so defers and the logical
+    /// stack unwind like any other panic.
+    fn try_lower_checked_arith_call(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
         span: crate::span::Span,
-    ) -> BasicValueEnum<'llvm> {
-        let int_ty = lhs.get_type();
-        let name = format!("llvm.{}{op}.with.overflow", if signed { "s" } else { "u" });
-        let intrinsic =
-            Intrinsic::find(&name).unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {name}"));
-        let decl = intrinsic
-            .get_declaration(&self.module, &[int_ty.as_basic_type_enum()])
-            .unwrap_or_else(|| panic!("ICE: cannot declare LLVM intrinsic {name}"));
-        let call = self
-            .builder
-            .build_call(decl, &[lhs.into(), rhs.into()], op)
-            .unwrap();
-        let pair = call
-            .try_as_basic_value()
-            .basic()
-            .expect("overflow intrinsic returns {value, flag}")
-            .into_struct_value();
-        let result = self
-            .builder
-            .build_extract_value(pair, 0, "arith_val")
-            .unwrap();
-        let overflowed = self
-            .builder
-            .build_extract_value(pair, 1, "arith_ovf")
-            .unwrap()
+        func: &Operand<'gcx>,
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+        normal_bb: BasicBlock<'llvm>,
+        unwind_bb: Option<BasicBlock<'llvm>>,
+    ) -> CompileResult<bool> {
+        let Operand::Constant(c) = func else {
+            return Ok(false);
+        };
+        let mir::ConstantKind::Function(def_id, _, _) = c.value else {
+            return Ok(false);
+        };
+        let Some(hir::Abi::Intrinsic) = self.gcx.get_signature(def_id).abi else {
+            return Ok(false);
+        };
+        let ident = self.gcx.definition_ident(def_id);
+        let name = self.gcx.symbol_text(ident.symbol);
+        let op = match name.as_str() {
+            "__intrinsic_checked_add" => "add",
+            "__intrinsic_checked_sub" => "sub",
+            "__intrinsic_checked_mul" => "mul",
+            "__intrinsic_checked_shl" => "shl",
+            "__intrinsic_checked_shr" => "shr",
+            _ => return Ok(false),
+        };
+
+        let operand_ty = self.operand_ty(body, &args[0]);
+        let signed = is_signed(operand_ty);
+        let lhs = self
+            .eval_operand(body, locals, &args[0])?
+            .expect("checked arithmetic operand must have a value")
+            .into_int_value();
+        let rhs = self
+            .eval_operand(body, locals, &args[1])?
+            .expect("checked arithmetic operand must have a value")
             .into_int_value();
 
         let panic_bb = self.append_block_to_current_fn("arith_ovf_panic");
         let cont_bb = self.append_block_to_current_fn("arith_ovf_cont");
-        let _ = self
-            .builder
-            .build_conditional_branch(overflowed, panic_bb, cont_bb)
-            .unwrap();
-        self.builder.position_at_end(panic_bb);
-        let verb = match op {
-            "add" => "add",
-            "sub" => "subtract",
-            "mul" => "multiply",
-            other => other,
+
+        let (result, message) = match op {
+            "add" | "sub" | "mul" => {
+                let intrinsic_name =
+                    format!("llvm.{}{op}.with.overflow", if signed { "s" } else { "u" });
+                let intrinsic = Intrinsic::find(&intrinsic_name)
+                    .unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {intrinsic_name}"));
+                let decl = intrinsic
+                    .get_declaration(&self.module, &[lhs.get_type().as_basic_type_enum()])
+                    .unwrap_or_else(|| {
+                        panic!("ICE: cannot declare LLVM intrinsic {intrinsic_name}")
+                    });
+                let call = self
+                    .builder
+                    .build_call(decl, &[lhs.into(), rhs.into()], op)
+                    .unwrap();
+                let pair = call
+                    .try_as_basic_value()
+                    .basic()
+                    .expect("overflow intrinsic returns {value, flag}")
+                    .into_struct_value();
+                let result = self
+                    .builder
+                    .build_extract_value(pair, 0, "arith_val")
+                    .unwrap();
+                let overflowed = self
+                    .builder
+                    .build_extract_value(pair, 1, "arith_ovf")
+                    .unwrap()
+                    .into_int_value();
+                let _ = self
+                    .builder
+                    .build_conditional_branch(overflowed, panic_bb, cont_bb)
+                    .unwrap();
+                let verb = match op {
+                    "add" => "add",
+                    "sub" => "subtract",
+                    _ => "multiply",
+                };
+                (result, format!("attempt to {verb} with overflow"))
+            }
+            _ => {
+                // Shifts: panic when the amount reaches the bit width. The
+                // unsigned comparison also rejects negative amounts of
+                // signed types. The shift itself is emitted in the guarded
+                // continuation block, where the amount is known in range.
+                let bits = lhs.get_type().get_bit_width() as u64;
+                let limit = rhs.get_type().const_int(bits, false);
+                let too_big = self
+                    .builder
+                    .build_int_compare(IntPredicate::UGE, rhs, limit, "shift_ovf")
+                    .unwrap();
+                let _ = self
+                    .builder
+                    .build_conditional_branch(too_big, panic_bb, cont_bb)
+                    .unwrap();
+                self.builder.position_at_end(cont_bb);
+                let (result, direction) = if op == "shl" {
+                    let val = self.builder.build_left_shift(lhs, rhs, "shl").unwrap();
+                    (val.as_basic_value_enum(), "left")
+                } else {
+                    let val = self
+                        .builder
+                        .build_right_shift(lhs, rhs, signed, "shr")
+                        .unwrap();
+                    (val.as_basic_value_enum(), "right")
+                };
+                (result, format!("attempt to shift {direction} with overflow"))
+            }
         };
-        self.emit_arith_panic(&format!("attempt to {verb} with overflow"), span);
+
+        self.builder.position_at_end(panic_bb);
+        self.emit_arith_panic(&message, span, unwind_bb)?;
+
         self.builder.position_at_end(cont_bb);
-        result
+        self.store_place(destination, body, locals, result)?;
+        let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+        Ok(true)
     }
 
-    /// Bound a shift amount so `x << y` can never be LLVM poison. With
-    /// overflow checks enabled an amount >= the operand bit width panics;
-    /// otherwise the amount is masked to the width (shift modulo bit width).
-    fn prepare_shift_amount(
+    /// Emit a diverging call to the runtime panic entry point, honoring the
+    /// surrounding call's unwind edge so cleanups run. The builder must be
+    /// positioned in a dedicated panic block; the block ends `unreachable`.
+    fn emit_arith_panic(
         &mut self,
-        lhs: IntValue<'llvm>,
-        rhs: IntValue<'llvm>,
-        direction: &str,
+        message: &str,
         span: crate::span::Span,
-    ) -> IntValue<'llvm> {
-        let bits = lhs.get_type().get_bit_width() as u64;
-        if self.gcx.config.overflow_checks {
-            let limit = rhs.get_type().const_int(bits, false);
-            // An unsigned comparison also rejects negative amounts of signed types.
-            let too_big = self
-                .builder
-                .build_int_compare(IntPredicate::UGE, rhs, limit, "shift_ovf")
-                .unwrap();
-            let panic_bb = self.append_block_to_current_fn("shift_ovf_panic");
-            let cont_bb = self.append_block_to_current_fn("shift_ovf_cont");
-            let _ = self
-                .builder
-                .build_conditional_branch(too_big, panic_bb, cont_bb)
-                .unwrap();
-            self.builder.position_at_end(panic_bb);
-            self.emit_arith_panic(
-                &format!("attempt to shift {direction} with overflow"),
-                span,
-            );
-            self.builder.position_at_end(cont_bb);
-            rhs
-        } else {
-            let mask = rhs.get_type().const_int(bits - 1, false);
-            self.builder.build_and(rhs, mask, "shift_mask").unwrap()
-        }
-    }
-
-    /// Emit a diverging call to the runtime panic entry point. The builder
-    /// must be positioned in a dedicated panic block; this terminates it
-    /// with `unreachable`.
-    fn emit_arith_panic(&mut self, message: &str, span: crate::span::Span) {
+        unwind_bb: Option<BasicBlock<'llvm>>,
+    ) -> CompileResult<()> {
         let msg = self.const_string_value(message);
         let file = self
             .gcx
@@ -3798,15 +3842,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let column = self
             .usize_ty
             .const_int((span.start.offset + 1) as u64, false);
-        let _ = self
+        let current_bb = self
             .builder
-            .build_call(
-                self.get_panic_unwind_at_fn(),
-                &[msg.into(), file_val.into(), line.into(), column.into()],
-                "arith_panic",
-            )
-            .unwrap();
+            .get_insert_block()
+            .expect("builder must be positioned in the panic block");
+        let panic_fn = self.get_panic_unwind_at_fn();
+        let _ = self.emit_direct_call_maybe_unwind(
+            panic_fn,
+            &[msg, file_val, line.into(), column.into()],
+            current_bb,
+            unwind_bb,
+            "arith_panic",
+        )?;
         let _ = self.builder.build_unreachable().unwrap();
+        Ok(())
     }
 
     fn lower_cast(
@@ -4227,18 +4276,29 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 target,
                 unwind,
             } => {
-                if self.try_lower_intrinsic_call(body, locals, func, args, destination)? {
-                    let _ = self
-                        .builder
-                        .build_unconditional_branch(blocks[target.index()])
-                        .unwrap();
-                    return Ok(());
-                }
                 let normal_bb = blocks[target.index()];
                 let unwind_bb = match unwind {
                     mir::CallUnwindAction::Cleanup(bb) => Some(blocks[bb.index()]),
                     mir::CallUnwindAction::Terminate => None,
                 };
+                // Checked arithmetic needs the unwind edge for its panic path,
+                // so it is intercepted before the generic intrinsic dispatch.
+                if self.try_lower_checked_arith_call(
+                    body,
+                    locals,
+                    terminator.span,
+                    func,
+                    args,
+                    destination,
+                    normal_bb,
+                    unwind_bb,
+                )? {
+                    return Ok(());
+                }
+                if self.try_lower_intrinsic_call(body, locals, func, args, destination)? {
+                    let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+                    return Ok(());
+                }
                 if self.try_lower_std_panic_call(
                     body,
                     locals,

@@ -1,9 +1,11 @@
 use crate::{
     mir::{
         AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
-        Category, Constant, ConstantKind, Operand, Place, Rvalue, RvalueFunc, builder::MirBuilder,
+        Category, Constant, ConstantKind, Operand, Place, Rvalue, RvalueFunc, TerminatorKind,
+        builder::MirBuilder, optimize::async_transform::find_std_function,
     },
-    sema::models::TyKind,
+    sema::models::{GenericArgument, Ty, TyKind},
+    span::Span,
     thir::{ExprId, ExprKind, FieldIndex},
     unpack,
 };
@@ -85,9 +87,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }
             ExprKind::Make { .. } => unreachable!("make should be handled in into_dest"),
             ExprKind::Binary { op, lhs, rhs } => {
+                let operand_ty = self.thir.exprs[*lhs].ty;
                 let lhs = unpack!(block = self.as_operand(block, *lhs));
                 let rhs = unpack!(block = self.as_operand(block, *rhs));
-                self.build_binary_op(block, *op, lhs, rhs)
+                self.build_binary_op(block, *op, operand_ty, expr.span, lhs, rhs)
             }
             ExprKind::Tuple { fields } => {
                 let mut ops = Vec::with_capacity(fields.len());
@@ -185,13 +188,83 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         &mut self,
         block: BasicBlockId,
         op: BinaryOperator,
+        operand_ty: Ty<'ctx>,
+        span: Span,
         lhs: Operand<'ctx>,
         rhs: Operand<'ctx>,
     ) -> BlockAnd<Rvalue<'ctx>> {
-        let rv = match op {
-            _ => Rvalue::BinaryOp { op, lhs, rhs },
-        };
+        if self.should_check_overflow(op, operand_ty) {
+            return self.build_overflow_checked_op(block, op, operand_ty, span, lhs, rhs);
+        }
+        block.and(Rvalue::BinaryOp { op, lhs, rhs })
+    }
 
-        block.and(rv)
+    /// Whether `op` on `operand_ty` must be lowered through a checked
+    /// arithmetic intrinsic instead of a plain `BinaryOp`.
+    fn should_check_overflow(&self, op: BinaryOperator, operand_ty: Ty<'ctx>) -> bool {
+        self.gcx.config.overflow_checks
+            && matches!(
+                op,
+                BinaryOperator::Add
+                    | BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::BitShl
+                    | BinaryOperator::BitShr
+            )
+            && matches!(operand_ty.kind(), TyKind::Int(_) | TyKind::UInt(_))
+            && self.gcx.std_package_index().is_some()
+    }
+
+    /// Lower a checked integer operation as a call to the matching
+    /// `__intrinsic_checked_*` std intrinsic. Routing the panic through a
+    /// real `Call` terminator gives it the enclosing cleanup chain
+    /// (defers, logical stack pop) via `call_unwind_action`, which a plain
+    /// `BinaryOp` statement cannot carry.
+    fn build_overflow_checked_op(
+        &mut self,
+        block: BasicBlockId,
+        op: BinaryOperator,
+        operand_ty: Ty<'ctx>,
+        span: Span,
+        lhs: Operand<'ctx>,
+        rhs: Operand<'ctx>,
+    ) -> BlockAnd<Rvalue<'ctx>> {
+        let name = match op {
+            BinaryOperator::Add => "__intrinsic_checked_add",
+            BinaryOperator::Sub => "__intrinsic_checked_sub",
+            BinaryOperator::Mul => "__intrinsic_checked_mul",
+            BinaryOperator::BitShl => "__intrinsic_checked_shl",
+            BinaryOperator::BitShr => "__intrinsic_checked_shr",
+            _ => unreachable!("not an overflow-checked operator"),
+        };
+        let Ok(intrinsic_id) = find_std_function(self.gcx, "intrinsic", name, span) else {
+            // Diagnostic already emitted; keep building so further errors surface.
+            return block.and(Rvalue::BinaryOp { op, lhs, rhs });
+        };
+        let intrinsic_ty = self.gcx.get_type(intrinsic_id);
+        let generic_args = self
+            .gcx
+            .store
+            .interners
+            .intern_generic_args(vec![GenericArgument::Type(operand_ty)]);
+        let dest = self.new_temp_with_ty(operand_ty, span);
+        let target = self.new_block();
+        let unwind = self.call_unwind_action(span);
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: intrinsic_ty,
+                    value: ConstantKind::Function(intrinsic_id, generic_args, intrinsic_ty),
+                }),
+                args: vec![lhs, rhs],
+                devirt_hint: None,
+                destination: Place::from_local(dest),
+                target,
+                unwind,
+            },
+        );
+        target.and(Rvalue::Use(Operand::Copy(Place::from_local(dest))))
     }
 }

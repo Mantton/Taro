@@ -46,8 +46,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 };
 
                 // Compute binary op result
-                let result =
-                    unpack!(block = self.build_binary_op(block, *op, lhs_operand, rhs_operand));
+                let result = unpack!(
+                    block = self.build_binary_op(
+                        block,
+                        *op,
+                        lhs_ty,
+                        expression.span,
+                        lhs_operand,
+                        rhs_operand
+                    )
+                );
 
                 // Assign result back to LHS
                 self.push_assign(block, lhs_place, result, expression.span);

@@ -1,0 +1,11 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: attempt to multiply with overflow
+func mul(_ a: int64, _ b: int64) -> int64 {
+    defer { std.print("defer ran\n") }
+    return a * b
+}
+
+func main() {
+    let c = mul(0x4000000000000000, 4)
+    assert(c == 0, "unreachable: overflow checks should panic first")
+}

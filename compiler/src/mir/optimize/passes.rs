@@ -323,7 +323,7 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
         "InsertSafepoints"
     }
 
-    fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
         let mut targets: FxHashSet<BasicBlockId> = FxHashSet::default();
         targets.insert(body.start_block);
 
@@ -359,7 +359,13 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
 
         for bb in body.basic_blocks.iter_mut() {
             let Some(term) = &bb.terminator else { continue };
-            if !matches!(term.kind, TerminatorKind::Call { .. }) {
+            let TerminatorKind::Call { func, .. } = &term.kind else {
+                continue;
+            };
+            // Checked arithmetic intrinsics lower to a few inline
+            // instructions, not a real call; a poll per arithmetic op
+            // would dominate debug builds.
+            if is_checked_arith_callee(gcx, func) {
                 continue;
             }
             let needs = bb
@@ -376,6 +382,27 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
         }
         Ok(())
     }
+}
+
+/// Whether a call operand targets one of the `__intrinsic_checked_*`
+/// arithmetic intrinsics emitted for overflow checking.
+fn is_checked_arith_callee<'ctx>(gcx: Gcx<'ctx>, func: &Operand<'ctx>) -> bool {
+    let Operand::Constant(c) = func else {
+        return false;
+    };
+    let crate::mir::ConstantKind::Function(def_id, _, _) = c.value else {
+        return false;
+    };
+    if !matches!(
+        gcx.get_signature(def_id).abi,
+        Some(crate::hir::Abi::Intrinsic)
+    ) {
+        return false;
+    }
+    let ident = gcx.definition_ident(def_id);
+    gcx.symbol_text(ident.symbol)
+        .as_str()
+        .starts_with("__intrinsic_checked_")
 }
 
 fn aggregate_field_operand<'ctx>(

@@ -15,6 +15,15 @@ extern "taro_intrinsic" {
     func __intrinsic_align_of[T]() -> usize
     func __intrinsic_maybe_uninit[T]() -> std.mem.MaybeUninit[T]
 
+    // Checked integer arithmetic. The compiler emits calls to these when
+    // overflow checks are enabled; they panic (unwinding, so defers run)
+    // when the operation overflows or a shift amount reaches the bit width.
+    func __intrinsic_checked_add[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_checked_sub[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_checked_mul[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_checked_shl[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_checked_shr[T](_ lhs: T, _ rhs: T) -> T
+
     // Floating-point math intrinsics (typed ABI symbols).
     // f32 unary
     func __intrinsic_sqrt_f32(_ x: float) -> float
