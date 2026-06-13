@@ -73,6 +73,16 @@ fn indirect_return_threshold_for_triple(triple: &str) -> u64 {
     }
 }
 
+fn static_initializer_value_for_codegen(name: &str, kind: Option<ConstKind>) -> ConstValue {
+    let Some(kind) = kind else {
+        panic!("ICE: local static `{name}` reached codegen without a cached constant initializer");
+    };
+    let ConstKind::Value(value) = kind else {
+        panic!("ICE: local static `{name}` initializer reached codegen as {kind:?}");
+    };
+    value
+}
+
 /// Lower MIR for a package into a single LLVM module and cache its IR.
 pub fn emit_package<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
@@ -744,14 +754,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         global.set_constant(is_immutable);
         global.set_linkage(Linkage::External);
 
-        let initializer = self
-            .gcx
-            .try_get_static_initializer(def_id)
-            .and_then(|konst| match konst.kind {
-                ConstKind::Value(value) => self.lower_const_value_with_ty(ty, value),
-                _ => None,
-            })
-            .unwrap_or_else(|| llvm_ty.const_zero().as_basic_value_enum());
+        // Sema only caches a static initializer after successful const evaluation.
+        // Falling back to zero here would turn a broken invariant into a miscompile.
+        let value = static_initializer_value_for_codegen(
+            &name,
+            self.gcx
+                .try_get_static_initializer(def_id)
+                .map(|konst| konst.kind),
+        );
+        let Some(initializer) = self.lower_const_value_with_ty(ty, value) else {
+            panic!(
+                "ICE: local static `{name}` initializer value {:?} could not be lowered as an LLVM constant",
+                value
+            );
+        };
         global.set_initializer(&initializer);
 
         let ptr = global.as_pointer_value();
@@ -6875,7 +6891,8 @@ mod struct_layout_tests {
     use super::{
         AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
         concrete_array_len_for_gc_offsets, indirect_return_threshold_for_triple,
-        logical_to_physical_map, packed_field_order, target_is_aarch64,
+        logical_to_physical_map, packed_field_order, static_initializer_value_for_codegen,
+        target_is_aarch64,
     };
     use crate::{
         sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
@@ -6923,6 +6940,41 @@ mod struct_layout_tests {
             indirect_return_threshold_for_triple("x86_64-unknown-linux-gnu"),
             NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
         );
+    }
+
+    #[test]
+    fn static_initializer_value_accepts_concrete_values() {
+        assert_eq!(
+            static_initializer_value_for_codegen(
+                "S",
+                Some(ConstKind::Value(ConstValue::Integer(12)))
+            ),
+            ConstValue::Integer(12)
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "ICE: local static `S` reached codegen without a cached constant initializer"
+    )]
+    fn static_initializer_value_rejects_missing_initializer() {
+        static_initializer_value_for_codegen("S", None);
+    }
+
+    #[test]
+    #[should_panic(expected = "ICE: local static `S` initializer reached codegen as Param")]
+    fn static_initializer_value_rejects_const_parameters() {
+        let param = GenericParameter {
+            index: 0,
+            name: Symbol::new("N"),
+        };
+        static_initializer_value_for_codegen("S", Some(ConstKind::Param(param)));
+    }
+
+    #[test]
+    #[should_panic(expected = "ICE: local static `S` initializer reached codegen as Infer")]
+    fn static_initializer_value_rejects_inferred_consts() {
+        static_initializer_value_for_codegen("S", Some(ConstKind::Infer(ConstVarID::from_raw(0))));
     }
 
     #[test]
