@@ -6374,7 +6374,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn gc_root_offsets_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<u64> {
-        let ty = self.mono_ty_if_resolved(ty);
+        let ty = self.mono_ty(ty);
         let mut offsets = Vec::new();
         self.append_gc_root_offsets(ty, 0, &mut offsets);
         offsets.sort_unstable();
@@ -6386,7 +6386,25 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
 
         match ty.kind() {
-            TyKind::Parameter(_) | TyKind::Alias { .. } => {}
+            TyKind::Parameter(_) => {
+                panic!(
+                    "ICE: unresolved type parameter while computing GC root offsets: {}",
+                    ty.format(self.gcx)
+                )
+            }
+            TyKind::Alias { .. } => {
+                panic!(
+                    "ICE: unnormalized type alias while computing GC root offsets: {}",
+                    ty.format(self.gcx)
+                )
+            }
+            TyKind::Infer(_) => {
+                panic!(
+                    "ICE: unresolved inference variable while computing GC root offsets: {}",
+                    ty.format(self.gcx)
+                )
+            }
+            TyKind::Error => panic!("ICE: error type while computing GC root offsets"),
             TyKind::Pointer(..)
             | TyKind::Reference(..)
             | TyKind::String
@@ -6493,21 +6511,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
             TyKind::Array { element, len } => {
                 let element = crate::sema::tycheck::utils::normalize_aliases(self.gcx, element);
+                let n = concrete_array_len_for_gc_offsets(len.kind);
                 let element_offsets = self.gc_root_offsets_for_ty(element);
-                if element_offsets.is_empty() {
+                if n == 0 || element_offsets.is_empty() {
                     return;
                 }
-                if let ConstKind::Value(ConstValue::Integer(n)) = len.kind {
-                    if n == 0 {
-                        return;
-                    }
-                    let elem_ty = self.lower_ty(element).expect("array element type");
-                    let elem_size = self.target_data.get_store_size(&elem_ty);
-                    for i in 0..(n as u64) {
-                        let elem_base = base + (i * elem_size);
-                        for elem_offset in &element_offsets {
-                            offsets.push(elem_base + elem_offset);
-                        }
+                let elem_ty = self.lower_ty(element).expect("array element type");
+                let elem_size = self.target_data.get_store_size(&elem_ty);
+                for i in 0..n {
+                    let elem_base = base + (i * elem_size);
+                    for elem_offset in &element_offsets {
+                        offsets.push(elem_base + elem_offset);
                     }
                 }
             }
@@ -6839,12 +6853,33 @@ fn struct_field_layout<'llvm, 'gcx>(
     }
 }
 
+fn concrete_array_len_for_gc_offsets(len: ConstKind) -> u64 {
+    match len {
+        ConstKind::Value(ConstValue::Integer(n)) => u64::try_from(n).unwrap_or_else(|_| {
+            panic!("ICE: invalid array length while computing GC root offsets: {n}")
+        }),
+        ConstKind::Value(value) => {
+            panic!("ICE: non-integer array length while computing GC root offsets: {value:?}")
+        }
+        ConstKind::Param(param) => {
+            panic!("ICE: unresolved const parameter while computing GC root offsets: {param:?}")
+        }
+        ConstKind::Infer(var) => {
+            panic!("ICE: unresolved inferred const while computing GC root offsets: {var:?}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod struct_layout_tests {
     use super::{
         AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
-        indirect_return_threshold_for_triple, logical_to_physical_map, packed_field_order,
-        target_is_aarch64,
+        concrete_array_len_for_gc_offsets, indirect_return_threshold_for_triple,
+        logical_to_physical_map, packed_field_order, target_is_aarch64,
+    };
+    use crate::{
+        sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
+        span::Symbol,
     };
 
     #[test]
@@ -6888,6 +6923,46 @@ mod struct_layout_tests {
             indirect_return_threshold_for_triple("x86_64-unknown-linux-gnu"),
             NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
         );
+    }
+
+    #[test]
+    fn gc_array_len_accepts_concrete_integer_lengths() {
+        assert_eq!(
+            concrete_array_len_for_gc_offsets(ConstKind::Value(ConstValue::Integer(0))),
+            0
+        );
+        assert_eq!(
+            concrete_array_len_for_gc_offsets(ConstKind::Value(ConstValue::Integer(3))),
+            3
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ICE: invalid array length while computing GC root offsets")]
+    fn gc_array_len_rejects_negative_lengths() {
+        concrete_array_len_for_gc_offsets(ConstKind::Value(ConstValue::Integer(-1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "ICE: non-integer array length while computing GC root offsets")]
+    fn gc_array_len_rejects_non_integer_values() {
+        concrete_array_len_for_gc_offsets(ConstKind::Value(ConstValue::Bool(true)));
+    }
+
+    #[test]
+    #[should_panic(expected = "ICE: unresolved const parameter while computing GC root offsets")]
+    fn gc_array_len_rejects_const_parameters() {
+        let param = GenericParameter {
+            index: 0,
+            name: Symbol::new("N"),
+        };
+        concrete_array_len_for_gc_offsets(ConstKind::Param(param));
+    }
+
+    #[test]
+    #[should_panic(expected = "ICE: unresolved inferred const while computing GC root offsets")]
+    fn gc_array_len_rejects_inferred_consts() {
+        concrete_array_len_for_gc_offsets(ConstKind::Infer(ConstVarID::from_raw(0)));
     }
 }
 
