@@ -362,41 +362,6 @@ pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
     }
 }
 
-/// Best-effort cleanup for task-frame teardown paths.
-///
-/// If a frame is still linked in the current thread's shadow stack when its
-/// async handle is about to be destroyed, unlink it so later collections do
-/// not dereference freed frame memory.
-pub(crate) fn unlink_shadow_frame_if_present(frame: *mut GcShadowFrame) {
-    if frame.is_null() {
-        return;
-    }
-
-    let reached_thread_root = GC_SHADOW_TOP.with(|top| {
-        if top.get() == frame {
-            let prev = unsafe { (*frame).prev };
-            top.set(prev);
-            return prev.is_null();
-        }
-
-        let mut current = top.get();
-        while !current.is_null() {
-            let prev = unsafe { (*current).prev };
-            if prev == frame {
-                unsafe { (*current).prev = (*frame).prev };
-                return false;
-            }
-            current = prev;
-        }
-
-        false
-    });
-
-    if reached_thread_root {
-        enter_safepoint();
-    }
-}
-
 /// Allocate a GC-managed object with a payload of `size` bytes.
 ///
 /// The descriptor controls pointer tracing and determines scan/noscan lane.

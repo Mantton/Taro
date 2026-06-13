@@ -2035,6 +2035,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
         let rethrow_ty = self.gcx.get_type(rethrow_id);
         let next = self.new_block();
+        let unwind = self.call_unwind_action(span);
         self.terminate(
             block,
             span,
@@ -2051,7 +2052,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 devirt_hint: None,
                 destination,
                 target: next,
-                unwind: mir::CallUnwindAction::Terminate,
+                // The runtime helper re-raises the captured panic, so the
+                // wrapper must run active cleanup scopes before unwinding to
+                // its caller. That includes compiler-emitted GC shadow pops.
+                unwind,
             },
         );
         next.unit()

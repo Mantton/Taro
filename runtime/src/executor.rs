@@ -730,9 +730,6 @@ impl Scheduler {
         crate::sync::task_finalized(task_token);
         self.clear_task_timer(task_token);
         if !frame.is_null() {
-            crate::garbage_collector::unlink_shadow_frame_if_present(
-                frame as *mut crate::garbage_collector::GcShadowFrame,
-            );
             with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
         }
         if !handle.is_null() {
@@ -812,9 +809,6 @@ impl Scheduler {
         crate::sync::task_finalized(task_token);
         self.clear_task_timer(task_token);
         if !frame.is_null() {
-            crate::garbage_collector::unlink_shadow_frame_if_present(
-                frame as *mut crate::garbage_collector::GcShadowFrame,
-            );
             with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
         }
         if !handle.is_null() {
@@ -875,9 +869,6 @@ impl Scheduler {
         crate::sync::task_finalized(task_token);
         self.clear_task_timer(task_token);
         if !frame.is_null() {
-            crate::garbage_collector::unlink_shadow_frame_if_present(
-                frame as *mut crate::garbage_collector::GcShadowFrame,
-            );
             with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
         }
         if !handle.is_null() {
@@ -1337,9 +1328,6 @@ impl Scheduler {
             crate::sync::task_finalized(task_token);
             self.clear_task_timer(task_token);
             if !frame.is_null() {
-                crate::garbage_collector::unlink_shadow_frame_if_present(
-                    frame as *mut crate::garbage_collector::GcShadowFrame,
-                );
                 with_gc(|gc| gc.remove_persistent_root(frame as *const u8));
             }
             if !handle.is_null() {
