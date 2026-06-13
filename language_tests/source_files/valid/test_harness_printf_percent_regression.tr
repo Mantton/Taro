@@ -1,0 +1,12 @@
+// TEST
+// EXPECT_STDOUT_CONTAINS: test percent %s test ... ok
+// EXPECT_STDOUT_CONTAINS: test skippedPercentReason ... SKIPPED (reason has %s)
+
+@test
+func `percent %s test`() {
+}
+
+@test
+@skip("reason has %s")
+func skippedPercentReason() {
+}

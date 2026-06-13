@@ -98,6 +98,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // TEST                      — run with `taro test` instead of `taro run`; passes if exit 0
       // ARGS: <values...>         — forward runtime args to `taro run` after `--`
       // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
+      // EXPECT_STDOUT_CONTAINS: … — assert this substring appears in stdout
       // EXPECT_STDERR_CONTAINS: … — assert this substring appears in stderr
     """
     result = {
@@ -106,6 +107,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "run_as_test": False,
         "args": [],
         "expect_exit": None,
+        "expect_stdout_contains": [],
         "expect_stderr_contains": [],
     }
     try:
@@ -130,6 +132,10 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                         result["expect_exit"] = int(code)
                     except ValueError:
                         pass
+                elif line.startswith("// EXPECT_STDOUT_CONTAINS:"):
+                    needle = line[len("// EXPECT_STDOUT_CONTAINS:") :].strip()
+                    if needle:
+                        result["expect_stdout_contains"].append(needle)
                 elif line.startswith("// EXPECT_STDERR_CONTAINS:"):
                     needle = line[len("// EXPECT_STDERR_CONTAINS:") :].strip()
                     if needle:
@@ -163,6 +169,7 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         is_run_as_test = directives["run_as_test"]
         program_args = directives["args"]
         expected_exit = directives["expect_exit"]
+        expected_stdout_contains = directives["expect_stdout_contains"]
         expected_stderr_contains = directives["expect_stderr_contains"]
 
         # Choose sub-command:
@@ -247,6 +254,17 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
                         "actual_exit": result.returncode,
                     },
                 )
+
+            for needle in expected_stdout_contains:
+                if needle not in result.stdout:
+                    return (
+                        False,
+                        "Missing expected stdout fragment",
+                        {
+                            "stdout": result.stdout,
+                            "missing": needle,
+                        },
+                    )
 
             for needle in expected_stderr_contains:
                 if needle not in result.stderr:
@@ -457,12 +475,20 @@ def main():
                 if not failed_details:
                     continue
                 stderr = failed_details.get("stderr")
+                stdout = failed_details.get("stdout")
                 expected = failed_details.get("expected")
                 actual = failed_details.get("actual")
                 error = failed_details.get("error")
+                missing = failed_details.get("missing")
+                if missing:
+                    print("--- Missing ---")
+                    print(missing)
                 if stderr:
                     print("--- Stderr ---")
                     print(stderr)
+                if stdout:
+                    print("--- Stdout ---")
+                    print(stdout)
                 if expected is not None:
                     print("--- Expected ---")
                     print(expected)

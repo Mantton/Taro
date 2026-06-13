@@ -519,6 +519,7 @@ Test files in `language_tests/source_files/` can contain directive comments that
 | `// CHECK_ONLY` | Type-check only via `taro check`. No binary is produced or run. |
 | `// TARGET: <triple>` | Cross-compile for the given target triple. |
 | `// EXPECT_EXIT: <code>` | Expect the given exit code instead of 0. |
+| `// EXPECT_STDOUT_CONTAINS: <text>` | Assert that `<text>` appears in stdout. |
 | `// EXPECT_STDERR_CONTAINS: <text>` | Assert that `<text>` appears in stderr output. |
 
 Use `// TEST` to write language tests that exercise the test harness itself:

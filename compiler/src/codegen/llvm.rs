@@ -1247,6 +1247,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             "FAILED (expected panic but test completed normally)\n",
             "test_fail_expected_msg",
         );
+        let string_fmt = self.build_global_cstring("%s", "test_string_fmt");
 
         if test_count > 0 {
             let fn_table = self.build_global_ptr_array(&fn_ptrs, "test_fn_table");
@@ -1313,7 +1314,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .unwrap()
                 .into_pointer_value();
             builder
-                .build_call(printf_fn, &[prefix_ptr.into()], "test_prefix_print")
+                .build_call(
+                    printf_fn,
+                    &[string_fmt.into(), prefix_ptr.into()],
+                    "test_prefix_print",
+                )
                 .unwrap();
 
             let skipped_flag_ptr = unsafe {
@@ -1358,7 +1363,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .unwrap()
                 .into_pointer_value();
             builder
-                .build_call(printf_fn, &[skipped_msg_ptr.into()], "test_skipped_print")
+                .build_call(
+                    printf_fn,
+                    &[string_fmt.into(), skipped_msg_ptr.into()],
+                    "test_skipped_print",
+                )
                 .unwrap();
             self.increment_counter(&builder, skipped_ptr, i32_ty);
             builder.build_unconditional_branch(loop_next).unwrap();
@@ -1428,7 +1437,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .build_select(passed_case, ok_msg, fail_msg, "test_result_msg")
                 .unwrap();
             builder
-                .build_call(printf_fn, &[result_msg.into()], "test_result_print")
+                .build_call(
+                    printf_fn,
+                    &[string_fmt.into(), result_msg.into()],
+                    "test_result_print",
+                )
                 .unwrap();
 
             let pass_inc = builder
