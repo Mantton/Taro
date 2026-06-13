@@ -1,6 +1,9 @@
 use super::{Emitter, LocalStorage};
 use crate::{
-    codegen::{abi, mangle::mangle_instance},
+    codegen::{
+        abi,
+        mangle::{interface_ref_key, mangle_instance, stable_hash_u64, ty_key},
+    },
     error::CompileResult,
     hir,
     mir::{self, Operand, Place},
@@ -16,14 +19,14 @@ use crate::{
             utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
         },
     },
-    specialize::{Instance, InstanceKind, resolve_instance},
+    specialize::{resolve_instance, Instance, InstanceKind},
 };
 use inkwell::{
-    AddressSpace,
     basic_block::BasicBlock,
     module::Linkage,
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType},
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, PointerValue},
+    AddressSpace,
 };
 use rustc_hash::FxHashSet;
 
@@ -70,9 +73,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return *ptr;
         }
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&canonical, &mut hasher);
-        let key = std::hash::Hasher::finish(&hasher);
+        let key = stable_hash_u64(&interface_ref_key(self.gcx, canonical));
         let symbol = format!("__rt_iface_desc_{key:016x}");
 
         let gv = if let Some(existing) = self.module.get_global(&symbol) {
@@ -261,9 +262,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return null_ptr;
         };
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&concrete_ty, &mut hasher);
-        let type_key = std::hash::Hasher::finish(&hasher);
+        let type_key = stable_hash_u64(&ty_key(self.gcx, concrete_ty));
         let interfaces = self.collect_conformance_interfaces_for_metadata(concrete_ty, type_head);
 
         let mut entry_values = Vec::new();

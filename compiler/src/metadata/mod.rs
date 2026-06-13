@@ -1,11 +1,11 @@
 use crate::{
-    PackageIndex,
     compile::{
         config::{BuildProfile, Config},
         context::GlobalContext,
     },
     hir::{Abi, DefinitionID, DefinitionKind, KnownAttribute},
     mir::Body,
+    PackageIndex,
 };
 use rustc_hash::FxHashSet;
 use std::{
@@ -18,7 +18,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 9;
+const META_FORMAT_VERSION: u32 = 10;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
