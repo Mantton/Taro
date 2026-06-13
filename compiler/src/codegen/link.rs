@@ -5,17 +5,17 @@ use crate::{compile::config::PackageKind, compile::context::GlobalContext, error
 /// Link all known object files into a single executable for the current package.
 /// Assumes `taro_start`/`main` are already present in the LLVM output.
 pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
+    // Only produce an executable for executable/both packages.
+    match gcx.config.kind {
+        PackageKind::Executable | PackageKind::Both => {}
+        PackageKind::Library => return Ok(None),
+    }
+
     let objects = gcx.all_object_files();
     if objects.is_empty() {
         gcx.dcx()
             .emit_error("no object files available for linking".into(), None);
         return Err(crate::error::ReportedError);
-    }
-
-    // Only produce an executable for executable/both packages.
-    match gcx.config.kind {
-        PackageKind::Executable | PackageKind::Both => {}
-        PackageKind::Library => return Ok(None),
     }
 
     let mut obj_inputs: Vec<PathBuf> = vec![];
@@ -108,5 +108,85 @@ fn macos_sdk_path() -> Option<PathBuf> {
         None
     } else {
         Some(PathBuf::from(path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::link_executable;
+    use crate::{
+        PackageIndex,
+        compile::{
+            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+            context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
+        },
+        diagnostics::DiagCtx,
+    };
+    use rustc_hash::FxHashMap;
+    use std::{path::PathBuf, rc::Rc};
+
+    fn with_test_gcx<R>(kind: PackageKind, f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
+        let root = std::env::temp_dir().join(format!(
+            "taro-link-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir");
+
+        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
+        let arenas = CompilerArenas::new();
+        let store = CompilerStore::new(&arenas, root, &dcx, None, BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("store"));
+        let icx = CompilerContext::new(dcx, store);
+        let config = icx.store.arenas.configs.alloc(Config {
+            name: "link-test".into(),
+            identifier: "link-test".into(),
+            src: PathBuf::from("link-test.tr"),
+            dependencies: FxHashMap::default(),
+            index: PackageIndex::new(1),
+            kind,
+            executable_out: None,
+            no_std_prelude: true,
+            is_script: true,
+            profile: BuildProfile::Debug,
+            overflow_checks: false,
+            debug: DebugOptions {
+                dump_mir: false,
+                dump_llvm: false,
+                timings: false,
+            },
+            test_mode: false,
+            std_mode: StdMode::BootstrapStd,
+            is_std_provider: false,
+        });
+
+        f(Gcx::new(&icx, config))
+    }
+
+    #[test]
+    fn library_without_object_files_skips_linking() {
+        with_test_gcx(PackageKind::Library, |gcx| {
+            let result = link_executable(gcx);
+
+            match result {
+                Ok(None) => {}
+                Ok(Some(path)) => panic!("library unexpectedly linked {}", path.display()),
+                Err(_) => panic!("library link should be skipped"),
+            }
+            assert_eq!(gcx.dcx().error_count(), 0);
+        });
+    }
+
+    #[test]
+    fn executable_without_object_files_errors() {
+        with_test_gcx(PackageKind::Executable, |gcx| {
+            let result = link_executable(gcx);
+
+            assert!(result.is_err());
+            assert_eq!(gcx.dcx().error_count(), 1);
+        });
     }
 }
