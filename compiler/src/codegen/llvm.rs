@@ -3693,10 +3693,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.builder.build_and(rhs, mask, "shift_mask").unwrap()
     }
 
-    /// Lower `__intrinsic_checked_{add,sub,mul,shl,shr}` calls emitted by the
-    /// MIR builder when overflow checks are enabled. The overflow branch
-    /// panics through the call's unwind edge, so defers and the logical
-    /// stack unwind like any other panic.
+    /// Lower `__intrinsic_checked_{add,sub,mul,div,rem,shl,shr,neg}` calls
+    /// emitted by the MIR builder when overflow checks are enabled. The
+    /// panic branches go through the call's unwind edge, so defers and the
+    /// logical stack unwind like any other panic.
     fn try_lower_checked_arith_call(
         &mut self,
         body: &mir::Body<'gcx>,
@@ -3723,8 +3723,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             "__intrinsic_checked_add" => "add",
             "__intrinsic_checked_sub" => "sub",
             "__intrinsic_checked_mul" => "mul",
+            "__intrinsic_checked_div" => "div",
+            "__intrinsic_checked_rem" => "rem",
             "__intrinsic_checked_shl" => "shl",
             "__intrinsic_checked_shr" => "shr",
+            "__intrinsic_checked_neg" => "neg",
             _ => return Ok(false),
         };
 
@@ -3734,22 +3737,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .eval_operand(body, locals, &args[0])?
             .expect("checked arithmetic operand must have a value")
             .into_int_value();
-        let rhs = self
-            .eval_operand(body, locals, &args[1])?
-            .expect("checked arithmetic operand must have a value")
-            .into_int_value();
+        let int_ty = lhs.get_type();
+        let bits = int_ty.get_bit_width() as u64;
 
-        let panic_bb = self.append_block_to_current_fn("arith_ovf_panic");
-        let cont_bb = self.append_block_to_current_fn("arith_ovf_cont");
+        let cont_bb = self.append_block_to_current_fn("checked_cont");
 
-        let (result, message) = match op {
+        let result = match op {
             "add" | "sub" | "mul" => {
+                let rhs = self
+                    .eval_operand(body, locals, &args[1])?
+                    .expect("checked arithmetic operand must have a value")
+                    .into_int_value();
                 let intrinsic_name =
                     format!("llvm.{}{op}.with.overflow", if signed { "s" } else { "u" });
                 let intrinsic = Intrinsic::find(&intrinsic_name)
                     .unwrap_or_else(|| panic!("ICE: missing LLVM intrinsic {intrinsic_name}"));
                 let decl = intrinsic
-                    .get_declaration(&self.module, &[lhs.get_type().as_basic_type_enum()])
+                    .get_declaration(&self.module, &[int_ty.as_basic_type_enum()])
                     .unwrap_or_else(|| {
                         panic!("ICE: cannot declare LLVM intrinsic {intrinsic_name}")
                     });
@@ -3771,6 +3775,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .build_extract_value(pair, 1, "arith_ovf")
                     .unwrap()
                     .into_int_value();
+                let panic_bb = self.append_block_to_current_fn("arith_ovf_panic");
                 let _ = self
                     .builder
                     .build_conditional_branch(overflowed, panic_bb, cont_bb)
@@ -3780,40 +3785,154 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     "sub" => "subtract",
                     _ => "multiply",
                 };
-                (result, format!("attempt to {verb} with overflow"))
+                self.builder.position_at_end(panic_bb);
+                self.emit_arith_panic(
+                    &format!("attempt to {verb} with overflow"),
+                    span,
+                    unwind_bb,
+                )?;
+                result
             }
-            _ => {
-                // Shifts: panic when the amount reaches the bit width. The
-                // unsigned comparison also rejects negative amounts of
-                // signed types. The shift itself is emitted in the guarded
-                // continuation block, where the amount is known in range.
-                let bits = lhs.get_type().get_bit_width() as u64;
+            "div" | "rem" => {
+                let rhs = self
+                    .eval_operand(body, locals, &args[1])?
+                    .expect("checked arithmetic operand must have a value")
+                    .into_int_value();
+                let (zero_msg, ovf_msg) = if op == "div" {
+                    (
+                        "attempt to divide by zero",
+                        "attempt to divide with overflow",
+                    )
+                } else {
+                    (
+                        "attempt to calculate the remainder with a divisor of zero",
+                        "attempt to calculate the remainder with overflow",
+                    )
+                };
+                let zero_panic_bb = self.append_block_to_current_fn("div_zero_panic");
+                let is_zero = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, rhs, int_ty.const_zero(), "div_zero")
+                    .unwrap();
+                if signed {
+                    // Signed division also overflows for MIN / -1.
+                    let ovf_check_bb = self.append_block_to_current_fn("div_ovf_check");
+                    let _ = self
+                        .builder
+                        .build_conditional_branch(is_zero, zero_panic_bb, ovf_check_bb)
+                        .unwrap();
+                    self.builder.position_at_end(ovf_check_bb);
+                    let min = int_ty.const_int(1u64 << (bits - 1), false);
+                    let is_min = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, lhs, min, "div_lhs_min")
+                        .unwrap();
+                    let is_neg_one = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            rhs,
+                            int_ty.const_all_ones(),
+                            "div_rhs_m1",
+                        )
+                        .unwrap();
+                    let overflows = self
+                        .builder
+                        .build_and(is_min, is_neg_one, "div_ovf")
+                        .unwrap();
+                    let ovf_panic_bb = self.append_block_to_current_fn("div_ovf_panic");
+                    let _ = self
+                        .builder
+                        .build_conditional_branch(overflows, ovf_panic_bb, cont_bb)
+                        .unwrap();
+                    self.builder.position_at_end(ovf_panic_bb);
+                    self.emit_arith_panic(ovf_msg, span, unwind_bb)?;
+                } else {
+                    let _ = self
+                        .builder
+                        .build_conditional_branch(is_zero, zero_panic_bb, cont_bb)
+                        .unwrap();
+                }
+                self.builder.position_at_end(zero_panic_bb);
+                self.emit_arith_panic(zero_msg, span, unwind_bb)?;
+
+                self.builder.position_at_end(cont_bb);
+                let val = match (op, signed) {
+                    ("div", true) => self.builder.build_int_signed_div(lhs, rhs, "div").unwrap(),
+                    ("div", false) => self
+                        .builder
+                        .build_int_unsigned_div(lhs, rhs, "div")
+                        .unwrap(),
+                    (_, true) => self.builder.build_int_signed_rem(lhs, rhs, "rem").unwrap(),
+                    (_, false) => self
+                        .builder
+                        .build_int_unsigned_rem(lhs, rhs, "rem")
+                        .unwrap(),
+                };
+                val.as_basic_value_enum()
+            }
+            "shl" | "shr" => {
+                let rhs = self
+                    .eval_operand(body, locals, &args[1])?
+                    .expect("checked arithmetic operand must have a value")
+                    .into_int_value();
+                // Panic when the amount reaches the bit width. The unsigned
+                // comparison also rejects negative amounts of signed types.
+                // The shift itself is emitted in the guarded continuation
+                // block, where the amount is known in range.
                 let limit = rhs.get_type().const_int(bits, false);
                 let too_big = self
                     .builder
                     .build_int_compare(IntPredicate::UGE, rhs, limit, "shift_ovf")
                     .unwrap();
+                let panic_bb = self.append_block_to_current_fn("shift_ovf_panic");
                 let _ = self
                     .builder
                     .build_conditional_branch(too_big, panic_bb, cont_bb)
                     .unwrap();
+                let direction = if op == "shl" { "left" } else { "right" };
+                self.builder.position_at_end(panic_bb);
+                self.emit_arith_panic(
+                    &format!("attempt to shift {direction} with overflow"),
+                    span,
+                    unwind_bb,
+                )?;
+
                 self.builder.position_at_end(cont_bb);
-                let (result, direction) = if op == "shl" {
-                    let val = self.builder.build_left_shift(lhs, rhs, "shl").unwrap();
-                    (val.as_basic_value_enum(), "left")
+                if op == "shl" {
+                    self.builder
+                        .build_left_shift(lhs, rhs, "shl")
+                        .unwrap()
+                        .as_basic_value_enum()
                 } else {
-                    let val = self
-                        .builder
+                    self.builder
                         .build_right_shift(lhs, rhs, signed, "shr")
-                        .unwrap();
-                    (val.as_basic_value_enum(), "right")
-                };
-                (result, format!("attempt to shift {direction} with overflow"))
+                        .unwrap()
+                        .as_basic_value_enum()
+                }
+            }
+            _ => {
+                // Negation: only the minimum signed value overflows.
+                let min = int_ty.const_int(1u64 << (bits - 1), false);
+                let is_min = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, lhs, min, "neg_min")
+                    .unwrap();
+                let panic_bb = self.append_block_to_current_fn("neg_ovf_panic");
+                let _ = self
+                    .builder
+                    .build_conditional_branch(is_min, panic_bb, cont_bb)
+                    .unwrap();
+                self.builder.position_at_end(panic_bb);
+                self.emit_arith_panic("attempt to negate with overflow", span, unwind_bb)?;
+
+                self.builder.position_at_end(cont_bb);
+                self.builder
+                    .build_int_neg(lhs, "neg")
+                    .unwrap()
+                    .as_basic_value_enum()
             }
         };
-
-        self.builder.position_at_end(panic_bb);
-        self.emit_arith_panic(&message, span, unwind_bb)?;
 
         self.builder.position_at_end(cont_bb);
         self.store_place(destination, body, locals, result)?;

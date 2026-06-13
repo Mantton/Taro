@@ -1,0 +1,11 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: attempt to negate with overflow
+func negate(_ a: int32) -> int32 {
+    return -a
+}
+
+func main() {
+    let min = (1 as int32) << 31
+    let n = negate(min)
+    assert(n == min, "unreachable: negating MIN should panic first")
+}

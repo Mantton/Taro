@@ -21,8 +21,11 @@ extern "taro_intrinsic" {
     func __intrinsic_checked_add[T](_ lhs: T, _ rhs: T) -> T
     func __intrinsic_checked_sub[T](_ lhs: T, _ rhs: T) -> T
     func __intrinsic_checked_mul[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_checked_div[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_checked_rem[T](_ lhs: T, _ rhs: T) -> T
     func __intrinsic_checked_shl[T](_ lhs: T, _ rhs: T) -> T
     func __intrinsic_checked_shr[T](_ lhs: T, _ rhs: T) -> T
+    func __intrinsic_checked_neg[T](_ value: T) -> T
 
     // Floating-point math intrinsics (typed ABI symbols).
     // f32 unary

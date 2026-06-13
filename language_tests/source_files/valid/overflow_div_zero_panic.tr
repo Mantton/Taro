@@ -1,0 +1,10 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: attempt to divide by zero
+func div(_ a: uint32, _ b: uint32) -> uint32 {
+    return a / b
+}
+
+func main() {
+    let q = div(10, 0)
+    assert(q == 0, "unreachable: division by zero should panic first")
+}

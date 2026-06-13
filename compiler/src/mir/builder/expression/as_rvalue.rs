@@ -2,7 +2,7 @@ use crate::{
     mir::{
         AggregateKind, BasicBlockId, BinaryOperator, BlockAnd, BlockAndExtension, CastKind,
         Category, Constant, ConstantKind, Operand, Place, Rvalue, RvalueFunc, TerminatorKind,
-        builder::MirBuilder, optimize::async_transform::find_std_function,
+        UnaryOperator, builder::MirBuilder, optimize::async_transform::find_std_function,
     },
     sema::models::{GenericArgument, Ty, TyKind},
     span::Span,
@@ -31,7 +31,23 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 })))
             }
             ExprKind::Unary { op, operand } => {
+                let operand_ty = self.thir.exprs[*operand].ty;
                 let operand = unpack!(block = self.as_operand(block, *operand));
+                // Signed negation overflows for the minimum value; route it
+                // through the checked intrinsic like binary arithmetic.
+                if matches!(op, UnaryOperator::Negate)
+                    && self.gcx.config.overflow_checks
+                    && matches!(operand_ty.kind(), TyKind::Int(_))
+                    && self.gcx.std_package_index().is_some()
+                {
+                    return self.build_checked_intrinsic(
+                        block,
+                        "__intrinsic_checked_neg",
+                        operand_ty,
+                        expr.span,
+                        vec![operand],
+                    );
+                }
                 block.and(Rvalue::UnaryOp { op: *op, operand })
             }
             ExprKind::Cast { value } => {
@@ -208,6 +224,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 BinaryOperator::Add
                     | BinaryOperator::Sub
                     | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                    | BinaryOperator::Rem
                     | BinaryOperator::BitShl
                     | BinaryOperator::BitShr
             )
@@ -215,11 +233,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             && self.gcx.std_package_index().is_some()
     }
 
-    /// Lower a checked integer operation as a call to the matching
-    /// `__intrinsic_checked_*` std intrinsic. Routing the panic through a
-    /// real `Call` terminator gives it the enclosing cleanup chain
-    /// (defers, logical stack pop) via `call_unwind_action`, which a plain
-    /// `BinaryOp` statement cannot carry.
     fn build_overflow_checked_op(
         &mut self,
         block: BasicBlockId,
@@ -233,13 +246,33 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             BinaryOperator::Add => "__intrinsic_checked_add",
             BinaryOperator::Sub => "__intrinsic_checked_sub",
             BinaryOperator::Mul => "__intrinsic_checked_mul",
+            BinaryOperator::Div => "__intrinsic_checked_div",
+            BinaryOperator::Rem => "__intrinsic_checked_rem",
             BinaryOperator::BitShl => "__intrinsic_checked_shl",
             BinaryOperator::BitShr => "__intrinsic_checked_shr",
             _ => unreachable!("not an overflow-checked operator"),
         };
+        self.build_checked_intrinsic(block, name, operand_ty, span, vec![lhs, rhs])
+    }
+
+    /// Lower a checked integer operation as a call to the matching
+    /// `__intrinsic_checked_*` std intrinsic. Routing the panic through a
+    /// real `Call` terminator gives it the enclosing cleanup chain
+    /// (defers, logical stack pop) via `call_unwind_action`, which a plain
+    /// `BinaryOp`/`UnaryOp` statement cannot carry.
+    fn build_checked_intrinsic(
+        &mut self,
+        block: BasicBlockId,
+        name: &str,
+        operand_ty: Ty<'ctx>,
+        span: Span,
+        args: Vec<Operand<'ctx>>,
+    ) -> BlockAnd<Rvalue<'ctx>> {
         let Ok(intrinsic_id) = find_std_function(self.gcx, "intrinsic", name, span) else {
-            // Diagnostic already emitted; keep building so further errors surface.
-            return block.and(Rvalue::BinaryOp { op, lhs, rhs });
+            // Diagnostic already emitted; produce a placeholder of the right
+            // type so building continues and further errors surface.
+            let placeholder = args.into_iter().next().expect("checked op has operands");
+            return block.and(Rvalue::Use(placeholder));
         };
         let intrinsic_ty = self.gcx.get_type(intrinsic_id);
         let generic_args = self
@@ -258,7 +291,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ty: intrinsic_ty,
                     value: ConstantKind::Function(intrinsic_id, generic_args, intrinsic_ty),
                 }),
-                args: vec![lhs, rhs],
+                args,
                 devirt_hint: None,
                 destination: Place::from_local(dest),
                 target,
