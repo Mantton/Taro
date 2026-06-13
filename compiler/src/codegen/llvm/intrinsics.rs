@@ -545,12 +545,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         _call_args: GenericArguments<'gcx>,
         args: &[Operand<'gcx>],
     ) -> CompileResult<()> {
-        // args: src, dst, count (bytes)
-        let src = self
+        // args: dst, src, count (bytes)
+        let dst = self
             .eval_operand(body, locals, args.get(0).unwrap())?
             .unwrap()
             .into_pointer_value();
-        let dst = self
+        let src = self
             .eval_operand(body, locals, args.get(1).unwrap())?
             .unwrap()
             .into_pointer_value();
@@ -572,11 +572,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         _call_args: GenericArguments<'gcx>,
         args: &[Operand<'gcx>],
     ) -> CompileResult<()> {
-        let src = self
+        let dst = self
             .eval_operand(body, locals, args.get(0).unwrap())?
             .unwrap()
             .into_pointer_value();
-        let dst = self
+        let src = self
             .eval_operand(body, locals, args.get(1).unwrap())?
             .unwrap()
             .into_pointer_value();

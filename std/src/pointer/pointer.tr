@@ -38,15 +38,15 @@ impl[T] *T {
     }
 
     public func copyTo(self, _ dst: *mut T, _ count: usize) {
-        unsafe { __intrinsic_memmove(self, dst, count * sizeOf[T]()) }
+        unsafe { __intrinsic_memmove(dst, self, count * sizeOf[T]()) }
     }
 
     public func copyToNonoverlapping(self, _ dst: *mut T, _ count: usize) {
-        unsafe { __intrinsic_memcpy(self, dst, count * sizeOf[T]()) }
+        unsafe { __intrinsic_memcpy(dst, self, count * sizeOf[T]()) }
     }
 
     public func readBytes(self, _ dst: *mut uint8, _ count: usize) {
-        unsafe { __intrinsic_memcpy(self as *uint8, dst, count) }
+        unsafe { __intrinsic_memcpy(dst, self as *uint8, count) }
     }
 
     public func null() -> *T {
@@ -85,11 +85,11 @@ impl[T] *mut T {
     }
 
     public func copyTo(self, _ dst: *mut T, _ count: usize) {
-        unsafe { __intrinsic_memmove(self, dst, count * sizeOf[T]()) }
+        unsafe { __intrinsic_memmove(dst, self, count * sizeOf[T]()) }
     }
 
     public func copyToNonoverlapping(self, _ dst: *mut T, _ count: usize) {
-        unsafe { __intrinsic_memcpy(self, dst, count * sizeOf[T]()) }
+        unsafe { __intrinsic_memcpy(dst, self, count * sizeOf[T]()) }
     }
 
     public func writeBytes(self, _ val: uint8, _ count: usize) {
@@ -97,7 +97,7 @@ impl[T] *mut T {
     }
 
     public func readBytes(self, _ dst: *mut uint8, _ count: usize) {
-        unsafe { __intrinsic_memcpy(self as *uint8, dst, count) }
+        unsafe { __intrinsic_memcpy(dst, self as *uint8, count) }
     }
 
     public func null() -> *mut T {

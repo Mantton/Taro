@@ -46,18 +46,6 @@ pub struct AbiPolicy {
     pub indirect_arg_threshold_bytes: u64,
 }
 
-impl Default for AbiPolicy {
-    fn default() -> Self {
-        AbiPolicy {
-            // Phase A: keep behavior unchanged.
-            enable_indirect_returns: false,
-            indirect_return_threshold_bytes: 0,
-            enable_indirect_args: false,
-            indirect_arg_threshold_bytes: 0,
-        }
-    }
-}
-
 pub fn compute_fn_abi<'gcx>(
     sig: &LabeledFunctionSignature<'gcx>,
     layout_of: impl FnMut(Ty<'gcx>) -> Option<TypeLayout>,
