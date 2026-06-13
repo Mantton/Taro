@@ -456,8 +456,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         if self.is_foreign_function(def_id) {
             let f = self.declare_foreign_function(def_id);
-            self.functions.insert(instance, f);
-            self.fn_abis.insert(instance, fn_abi);
+            self.insert_function_instance(instance, f, fn_abi);
             return f.as_global_value().as_pointer_value();
         }
 
@@ -468,8 +467,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let f = self
             .module
             .add_function(&name, fn_ty, Some(Linkage::External));
-        self.functions.insert(instance, f);
-        self.fn_abis.insert(instance, fn_abi);
+        self.insert_function_instance(instance, f, fn_abi);
         self.current_subst = prev_subst;
         f.as_global_value().as_pointer_value()
     }

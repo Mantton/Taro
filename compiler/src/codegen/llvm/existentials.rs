@@ -1,4 +1,4 @@
-use super::{Emitter, enum_layout, enum_variant_tuple_ty};
+use super::{Emitter, enum_variant_tuple_ty};
 use crate::{
     error::CompileResult,
     hir,
@@ -399,14 +399,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 optional_ty.format(self.gcx)
             );
         };
-        let layout = enum_layout(
-            self.context,
-            self.gcx,
-            &self.target_data,
-            def.id,
-            adt_args,
-            self.current_subst,
-        );
+        let layout = self.enum_layout_for(def.id, adt_args);
         if let Some(npo) = layout.npo {
             if variant_index == npo.null_variant {
                 let enum_ty = self.lower_ty(optional_ty).expect("NPO Optional LLVM type");

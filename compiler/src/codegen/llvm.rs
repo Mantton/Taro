@@ -238,6 +238,14 @@ struct Emitter<'llvm, 'gcx> {
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
+    enum_layouts: FxHashMap<
+        (
+            hir::DefinitionID,
+            GenericArguments<'gcx>,
+            GenericArguments<'gcx>,
+        ),
+        EnumLayout<'llvm>,
+    >,
     witness_tables: FxHashMap<(TypeHead, InterfaceReference<'gcx>), PointerValue<'llvm>>,
     interface_descriptors: FxHashMap<InterfaceReference<'gcx>, PointerValue<'llvm>>,
     type_metadata: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
@@ -262,6 +270,7 @@ struct Emitter<'llvm, 'gcx> {
     current_subst: GenericArguments<'gcx>,
     env_argc_storage: Option<PointerValue<'llvm>>,
     env_argv_storage: Option<PointerValue<'llvm>>,
+    new_function_instances: Vec<Instance<'gcx>>,
 }
 
 #[derive(Clone, Copy)]
@@ -342,6 +351,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             strings: FxHashMap::default(),
             target_data,
             gc_descs: FxHashMap::default(),
+            enum_layouts: FxHashMap::default(),
             witness_tables: FxHashMap::default(),
             interface_descriptors: FxHashMap::default(),
             type_metadata: FxHashMap::default(),
@@ -363,6 +373,43 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             current_subst: GenericArguments::empty(),
             env_argc_storage: None,
             env_argv_storage: None,
+            new_function_instances: Vec::new(),
+        }
+    }
+
+    fn enum_layout_for(
+        &mut self,
+        def_id: hir::DefinitionID,
+        adt_args: GenericArguments<'gcx>,
+    ) -> EnumLayout<'llvm> {
+        let subst = self.current_subst;
+        let key = (def_id, adt_args, subst);
+        if let Some(&layout) = self.enum_layouts.get(&key) {
+            return layout;
+        }
+
+        let layout = enum_layout(
+            self.context,
+            self.gcx,
+            &self.target_data,
+            def_id,
+            adt_args,
+            subst,
+        );
+        self.enum_layouts.insert(key, layout);
+        layout
+    }
+
+    fn insert_function_instance(
+        &mut self,
+        instance: Instance<'gcx>,
+        function: FunctionValue<'llvm>,
+        fn_abi: abi::FnAbi<'gcx>,
+    ) {
+        let inserted = self.functions.insert(instance, function).is_none();
+        self.fn_abis.insert(instance, fn_abi);
+        if inserted {
+            self.new_function_instances.push(instance);
         }
     }
 
@@ -551,8 +598,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let name = mangle_instance(self.gcx, instance);
 
             let f = self.module.add_function(&name, fn_ty, None);
-            self.functions.insert(instance, f);
-            self.fn_abis.insert(instance, fn_abi);
+            self.insert_function_instance(instance, f, fn_abi);
         }
     }
 
@@ -589,14 +635,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return None;
         }
 
-        let layout = enum_layout(
-            self.context,
-            self.gcx,
-            &self.target_data,
-            def.id,
-            adt_args,
-            self.current_subst,
-        );
+        let layout = self.enum_layout_for(def.id, adt_args);
 
         // NPO: the unit variant is represented as the all-zero bit pattern.
         if let Some(npo) = layout.npo {
@@ -829,6 +868,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.declare_local_static_globals();
         let mut pending = self.gcx.specializations_of(self.gcx.package_index());
         let mut queued: FxHashSet<Instance<'gcx>> = pending.iter().copied().collect();
+        self.new_function_instances.clear();
         let mut cursor = 0usize;
 
         while cursor < pending.len() {
@@ -865,19 +905,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.gcx.mark_instance_compiled(instance);
 
             // New instances can be discovered while lowering (e.g., witness table thunks
-            // materializing synthetic methods). Enqueue any item instances that have MIR
-            // bodies available in their owning package.
-            let discovered: Vec<_> = self
-                .functions
-                .keys()
-                .copied()
-                .filter(|instance| {
-                    matches!(instance.kind(), InstanceKind::Item(_))
-                        && self.instance_has_mir_body(*instance)
-                })
-                .filter(|instance| !queued.contains(instance))
-                .collect();
+            // materializing synthetic methods). Only inspect instances inserted since the
+            // last lowered body rather than rescanning the full function map.
+            let discovered: Vec<_> = self.new_function_instances.drain(..).collect();
             for instance in discovered {
+                if queued.contains(&instance)
+                    || !matches!(instance.kind(), InstanceKind::Item(_))
+                    || !self.instance_has_mir_body(instance)
+                {
+                    continue;
+                }
                 queued.insert(instance);
                 pending.push(instance);
             }
@@ -2238,7 +2275,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn place_address(
-        &self,
+        &mut self,
         body: &mir::Body<'gcx>,
         locals: &[LocalStorage<'llvm>],
         place: &Place<'gcx>,
@@ -2902,14 +2939,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         place_ty.format(self.gcx)
                     ),
                 };
-                let layout = enum_layout(
-                    self.context,
-                    self.gcx,
-                    &self.target_data,
-                    def.id,
-                    adt_args,
-                    self.current_subst,
-                );
+                let layout = self.enum_layout_for(def.id, adt_args);
                 if let Some(npo) = layout.npo {
                     // NPO: setting to the null/unit variant stores all-zero bits;
                     // setting to the payload variant is a no-op (the value itself
@@ -3112,14 +3142,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         place_ty.format(self.gcx)
                     ),
                 };
-                let layout = enum_layout(
-                    self.context,
-                    self.gcx,
-                    &self.target_data,
-                    def.id,
-                    adt_args,
-                    self.current_subst,
-                );
+                let layout = self.enum_layout_for(def.id, adt_args);
                 if let Some(npo) = layout.npo {
                     // NPO: discriminant is derived from a null check on the niche pointer.
                     let npo_ty = self.lower_ty(place_ty).expect("npo enum type");
@@ -4164,8 +4187,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let f = self
                 .module
                 .add_function(&name, fn_ty, Some(Linkage::External));
-            self.functions.insert(closure_instance, f);
-            self.fn_abis.insert(closure_instance, fn_abi.clone());
+            self.insert_function_instance(closure_instance, f, fn_abi.clone());
             self.current_subst = prev_subst;
             (f, fn_abi)
         };
@@ -5656,8 +5678,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         if self.is_foreign_function(resolved_def_id) {
             let f = self.declare_foreign_function(resolved_def_id);
-            self.functions.insert(instance, f);
-            self.fn_abis.insert(instance, fn_abi.clone());
+            self.insert_function_instance(instance, f, fn_abi.clone());
             return (f, fn_abi);
         }
 
@@ -5669,8 +5690,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let fn_ty = self.lower_fn_abi(&fn_abi);
             self.current_subst = prev_subst;
             let f = self.declare_unreachable_stub(&name, fn_ty);
-            self.functions.insert(instance, f);
-            self.fn_abis.insert(instance, fn_abi.clone());
+            self.insert_function_instance(instance, f, fn_abi.clone());
             return (f, fn_abi);
         }
 
@@ -5682,8 +5702,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .module
             .add_function(&name, fn_ty, Some(Linkage::External));
         self.current_subst = prev_subst;
-        self.functions.insert(instance, f);
-        self.fn_abis.insert(instance, fn_abi.clone());
+        self.insert_function_instance(instance, f, fn_abi.clone());
         (f, fn_abi)
     }
 
@@ -5817,8 +5836,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let name = mangle_instance(self.gcx, instance);
         let linkage = Some(Linkage::External);
         let f = self.module.add_function(&name, fn_ty, linkage);
-        self.functions.insert(instance, f);
-        self.fn_abis.insert(instance, fn_abi.clone());
+        self.insert_function_instance(instance, f, fn_abi.clone());
         self.current_subst = prev_subst;
         Some((f, fn_abi))
     }
@@ -5855,7 +5873,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn load_place(
-        &self,
+        &mut self,
         body: &mir::Body<'gcx>,
         locals: &[LocalStorage<'llvm>],
         place: &mir::Place<'gcx>,
@@ -5924,7 +5942,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn project_place(
-        &self,
+        &mut self,
         place: &mir::Place<'gcx>,
         body: &mir::Body<'gcx>,
         locals: &[LocalStorage<'llvm>],
@@ -6052,14 +6070,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         }
                         _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
                     };
-                    let layout = enum_layout(
-                        self.context,
-                        self.gcx,
-                        &self.target_data,
-                        def.id,
-                        adt_args,
-                        self.current_subst,
-                    );
+                    let layout = self.enum_layout_for(def.id, adt_args);
 
                     let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
 
@@ -6412,14 +6423,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 crate::sema::models::AdtKind::Enum => {
                     let defn = self.gcx.get_enum_definition(def.id);
-                    let layout = enum_layout(
-                        self.context,
-                        self.gcx,
-                        &self.target_data,
-                        def.id,
-                        adt_args,
-                        self.current_subst,
-                    );
+                    let layout = self.enum_layout_for(def.id, adt_args);
 
                     if let Some(npo) = layout.npo {
                         // NPO: the entire value is the single payload field at offset 0.
