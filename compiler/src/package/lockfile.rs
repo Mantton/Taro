@@ -2,7 +2,7 @@ use crate::compile::config::PackageKind;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, os::unix::ffi::OsStrExt, path::Path};
 
-pub const LOCKFILE_VERSION: u32 = 1;
+pub const LOCKFILE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockFile {
@@ -23,7 +23,7 @@ pub struct LockPackage {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    pub requested: String,
+    pub requests: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,6 +51,8 @@ impl LockFile {
     pub fn normalized(mut self) -> Self {
         self.package.sort_by(|a, b| a.node.cmp(&b.node));
         for package in &mut self.package {
+            package.requests.sort();
+            package.requests.dedup();
             package.deps = package
                 .deps
                 .iter()
@@ -70,7 +72,23 @@ impl LockFile {
             entry.source_type == LockSourceType::Git
                 && entry.name == name
                 && entry.url.as_deref() == Some(canonical_url)
-                && entry.requested == requested
+                && entry.requests.iter().any(|request| request == requested)
+        })
+    }
+
+    pub fn find_git_requests(
+        &self,
+        name: &str,
+        canonical_url: &str,
+        requests: &[String],
+    ) -> Option<&LockPackage> {
+        self.package.iter().find(|entry| {
+            entry.source_type == LockSourceType::Git
+                && entry.name == name
+                && entry.url.as_deref() == Some(canonical_url)
+                && requests
+                    .iter()
+                    .all(|request| entry.requests.iter().any(|locked| locked == request))
         })
     }
 
@@ -93,15 +111,27 @@ pub fn load(path: &Path) -> Result<Option<LockFile>, String> {
 
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read lockfile '{}': {}", path.display(), e))?;
-    let lock = toml::from_str::<LockFile>(&text)
+    let value = toml::from_str::<toml::Value>(&text)
         .map_err(|e| format!("failed to parse lockfile '{}': {}", path.display(), e))?;
-
-    if lock.version != LOCKFILE_VERSION {
+    let version = value
+        .get("version")
+        .and_then(toml::Value::as_integer)
+        .ok_or_else(|| {
+            format!(
+                "failed to parse lockfile '{}': missing version",
+                path.display()
+            )
+        })?;
+    if version != i64::from(LOCKFILE_VERSION) {
         return Err(format!(
             "unsupported lockfile version {} (expected {})",
-            lock.version, LOCKFILE_VERSION
+            version, LOCKFILE_VERSION
         ));
     }
+
+    let lock = value
+        .try_into::<LockFile>()
+        .map_err(|e| format!("failed to parse lockfile '{}': {}", path.display(), e))?;
 
     Ok(Some(lock.normalized()))
 }
@@ -168,7 +198,7 @@ mod tests {
             source_type: LockSourceType::Git,
             url: Some("https://github.com/example/b.git".into()),
             path: None,
-            requested: "tag:v1.0.0".into(),
+            requests: vec!["tag:v1.0.0".into(), "version:^1.0".into()],
             revision: Some("0123456789abcdef0123456789abcdef01234567".into()),
             tree_hash: Some("blake3:abc".into()),
             deps: BTreeMap::new(),
@@ -181,7 +211,7 @@ mod tests {
             source_type: LockSourceType::Path,
             url: None,
             path: Some("/tmp/a".into()),
-            requested: "path".into(),
+            requests: vec!["path".into()],
             revision: None,
             tree_hash: None,
             deps: [("b".to_string(), "b".to_string())].into_iter().collect(),
@@ -199,6 +229,28 @@ mod tests {
         write(&path, &file).expect("write");
         let loaded = super::load(&path).expect("load").expect("exists");
         assert!(equivalent(&file, &loaded));
+
+        std::fs::remove_file(PathBuf::from(path)).expect("cleanup");
+    }
+
+    #[test]
+    fn lockfile_rejects_v1_before_shape_validation() {
+        let path = std::env::temp_dir().join(format!(
+            "taro-lockfile-v1-test-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "version = 1\ngenerated_by = \"taro 0.1.0\"\n\n[[package]]\nnode = \"dep\"\nname = \"github.com/example/dep\"\nkind = \"library\"\nno_std_prelude = false\nsource_type = \"git\"\nurl = \"https://github.com/example/dep.git\"\nrequested = \"tag:v1.0.0\"\nrevision = \"0123456789abcdef0123456789abcdef01234567\"\n",
+        )
+        .expect("write v1");
+
+        let err = super::load(&path).expect_err("v1 should fail");
+        assert!(err.contains("unsupported lockfile version 1 (expected 2)"));
 
         std::fs::remove_file(PathBuf::from(path)).expect("cleanup");
     }

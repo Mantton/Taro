@@ -83,7 +83,7 @@ impl ReadonlyPackageLoader {
     }
 
     fn load(mut self, root: PathBuf) -> Result<Vec<ReadonlyPackage>, String> {
-        self.visit_package(root, ReadonlyPackageSource::Path)?;
+        self.visit_package(root, ReadonlyPackageSource::Path, true)?;
         Ok(self.ordered)
     }
 
@@ -91,6 +91,7 @@ impl ReadonlyPackageLoader {
         &mut self,
         root: PathBuf,
         source: ReadonlyPackageSource,
+        is_root_manifest: bool,
     ) -> Result<ReadonlyPackage, String> {
         let root = root
             .canonicalize()
@@ -112,6 +113,12 @@ impl ReadonlyPackageLoader {
         let mut dependencies = FxHashMap::default();
 
         for (alias, dependency) in manifest.dependencies {
+            if matches!(dependency.source, SourceSpec::Path { .. }) && !is_root_manifest {
+                return Err(format!(
+                    "dependency '{}' declares a transitive path dependency ('{}'), but path dependencies are only allowed in the root manifest",
+                    manifest.path.0, dependency.package.0
+                ));
+            }
             let (dep_root, dep_source) = match dependency.source {
                 SourceSpec::Path { abs } => (abs, ReadonlyPackageSource::Path),
                 SourceSpec::Git { url, refspec } => {
@@ -125,7 +132,7 @@ impl ReadonlyPackageLoader {
                 }
             };
 
-            let dependency = self.visit_package(dep_root, dep_source)?;
+            let dependency = self.visit_package(dep_root, dep_source, false)?;
             let identifier = dependency.unique_identifier()?;
             if dependencies.insert(alias.clone(), identifier).is_some() {
                 return Err(format!(
@@ -251,7 +258,7 @@ mod tests {
 
         write_manifest(
             &dep,
-            "[package]\nname = \"github.com/example/dep\"\nkind = \"library\"\n",
+            "[package]\nname = \"github.com/example/dep\"\nkind = \"both\"\n",
         );
         write_manifest(
             &root,
@@ -267,6 +274,32 @@ mod tests {
             &ordered[0].unique_identifier().expect("dep id")
         );
         assert!(matches!(ordered[0].source, ReadonlyPackageSource::Path));
+        assert_eq!(ordered[0].kind, crate::compile::config::PackageKind::Both);
+    }
+
+    #[test]
+    fn rejects_transitive_path_dependencies() {
+        let workspace = temp_dir("transitive-path");
+        let transitive = workspace.join("transitive");
+        let dep = workspace.join("dep");
+        let root = workspace.join("root");
+
+        write_manifest(
+            &transitive,
+            "[package]\nname = \"github.com/example/transitive\"\nkind = \"library\"\n",
+        );
+        write_manifest(
+            &dep,
+            "[package]\nname = \"github.com/example/dep\"\nkind = \"library\"\n\n[require]\n\"github.com/example/transitive\" = { path = \"../transitive\" }\n",
+        );
+        write_manifest(
+            &root,
+            "[package]\nname = \"github.com/example/root\"\nkind = \"executable\"\n\n[require]\n\"github.com/example/dep\" = { path = \"../dep\" }\n",
+        );
+
+        let err = load_package_graph_with_language_home(&root, None)
+            .expect_err("transitive path dependency should fail");
+        assert!(err.contains("transitive path dependency"));
     }
 
     #[test]
@@ -298,7 +331,7 @@ mod tests {
             source_type: LockSourceType::Git,
             url: Some("https://github.com/example/dep.git".into()),
             path: None,
-            requested: "version:^1.2".into(),
+            requests: vec!["version:^1.2".into()],
             revision: Some(revision.into()),
             tree_hash: Some("blake3:abc".into()),
             deps: Default::default(),
@@ -339,7 +372,7 @@ mod tests {
             source_type: LockSourceType::Git,
             url: Some("https://github.com/example/dep.git".into()),
             path: None,
-            requested: "tag:v1.2.0".into(),
+            requests: vec!["tag:v1.2.0".into()],
             revision: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
             tree_hash: Some("blake3:a".into()),
             deps: Default::default(),
@@ -352,7 +385,7 @@ mod tests {
             source_type: LockSourceType::Git,
             url: Some("https://github.com/example/dep.git".into()),
             path: None,
-            requested: "tag:v1.2.1".into(),
+            requests: vec!["tag:v1.2.1".into()],
             revision: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
             tree_hash: Some("blake3:b".into()),
             deps: Default::default(),

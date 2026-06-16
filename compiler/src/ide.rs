@@ -425,7 +425,7 @@ fn analyze_package_owner<'a>(
     let total = packages.len();
     for (index, package) in packages.iter().enumerate() {
         let is_root = index + 1 == total;
-        if !is_root && package.kind != PackageKind::Library {
+        if !is_root && !matches!(package.kind, PackageKind::Library | PackageKind::Both) {
             return Err(format!(
                 "dependency `{}` must be a library (found {:?})",
                 package.package_path, package.kind

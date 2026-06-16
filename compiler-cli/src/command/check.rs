@@ -177,7 +177,7 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
     let total = graph.ordered.len();
     for (index, package) in graph.ordered.iter().enumerate() {
         let is_root = index + 1 == total;
-        if !is_root && package.kind != PackageKind::Library {
+        if !is_root && !matches!(package.kind, PackageKind::Library | PackageKind::Both) {
             icx.dcx.emit_error(
                 format!(
                     "dependency `{}` must be a library (found {:?})",

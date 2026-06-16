@@ -110,7 +110,7 @@ Common flags:
 | `--timings` | Print compiler phase timings. |
 | `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
 | `--no-incremental` | Disable dependency artifact reuse. |
-| `--locked` | Require `package.lock` to match dependency resolution exactly. |
+| `--locked` | Require `package.lock` to match dependency resolution exactly; use cached locked Git revisions without fetching when available. |
 | `--update-lock` | Refresh lockfile entries from current dependency sources. |
 
 ### Create a New Package
@@ -129,7 +129,7 @@ Generated templates currently support:
 - `--kind executable` (default): writes `src/main.tr`
 - `--kind library`: writes `src/lib.tr`
 
-Manifests still recognize `kind = "both"`, but `taro new` does not scaffold that layout yet.
+Manifests still recognize `kind = "both"` as a library plus executable package, but `taro new` does not scaffold that layout yet.
 
 ### VS Code Extension
 
@@ -540,15 +540,15 @@ Taro features a built-in package manager that feels familiar to users of Cargo o
 
 - **Manifest**: Packages are defined in a TOML manifest.
 - **Dependencies**: Supports Git-based dependencies (tags, branches, commits) and local paths.
-- **Resolution**: Uses semver-aware selection with dependency graph validation (via `semver` and `petgraph`) to resolve dependency graphs.
-- **Locking**: Generates `package.lock` with resolved revisions and dependency tree hashes for reproducible builds.
+- **Resolution**: Selects one Git revision per package source, requiring that it satisfy every reachable semver request; incompatible requests fail with a conflict error.
+- **Locking**: Generates `package.lock` v2 with resolved revisions, dependency tree hashes, and the request list each locked package satisfies.
 - **Integrity**: Verifies installed Git dependencies against locked content hashes and fails on tampering.
 
 ### Lockfile and Strict Mode
 
 `package.lock` is generated automatically on dependency sync (`build`, `check`, `run`, `test` for package roots).
 
-- `--locked`: Require `package.lock` to be present and up to date; do not rewrite it.
+- `--locked`: Require `package.lock` to be present and up to date; do not rewrite it. Locked Git revisions are used from the local cache when available, and Git is contacted only if the locked revision is missing.
 - `--update-lock`: Force lockfile refresh from current dependency sources.
 - `CI=true`: Enables strict lock behavior (same drift checks as `--locked`).
 
@@ -556,6 +556,7 @@ Security policy in this phase:
 
 - Transitive `path` dependencies are rejected. Only the root manifest may declare `path` dependencies.
 - Git cache identity is bound to canonical URL + package name, and cached repositories are origin-validated.
+- Existing v1 lockfiles must be regenerated; v2 lockfiles store `requests = [...]` for each locked package.
 
 ### Package Structure
 
@@ -571,10 +572,10 @@ my-package/
 
 ### Manifest Format
 
-The `package.toml` file must include a `[package]` section with a `name` field following the `<host>/<author>/<project>` convention.
+The `package.toml` file must include a `[package]` section with a `name` field following the exact `<host>/<author>/<project>` convention. Extra path segments are not accepted yet.
 
 `kind` is optional and defaults to `executable`. Supported values are
-`library`, `executable`, and `both`.
+`library`, `executable`, and `both`. Dependency packages may be `library` or `both`; `both` keeps its executable entry behavior when built as the root package.
 
 ```toml
 [package]
@@ -694,7 +695,7 @@ Rebuild `dist/`, then retry with `--no-incremental` if a package-local cache is 
 
 **Lockfile drift in CI**
 
-`CI=true` behaves like strict lock mode. Run locally with `--update-lock` when dependency sources intentionally changed, then commit the updated `package.lock`.
+`CI=true` behaves like strict lock mode. Run locally with `--update-lock` when dependency sources intentionally changed, then commit the updated v2 `package.lock`.
 
 **Language server does not start or completions are stale**
 

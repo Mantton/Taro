@@ -105,6 +105,10 @@ pub fn checkout_revision(repo: &Repository, revision: Oid) -> Result<(), String>
         .map_err(|e| format!("failed to checkout locked revision {}: {}", revision, e))
 }
 
+pub fn revision_exists(repo: &Repository, revision: Oid) -> bool {
+    repo.find_commit(revision).is_ok()
+}
+
 pub fn checkout_refspec(
     repo: &Repository,
     refspec: &RefSpec,
@@ -165,7 +169,14 @@ fn checkout_version_req(
     repo: &Repository,
     req: &semver::VersionReq,
 ) -> Result<(Oid, EcoString), git2::Error> {
-    let tag = best_tag_for_version_req(repo, req)?;
+    checkout_version_reqs(repo, std::slice::from_ref(req))
+}
+
+pub fn checkout_version_reqs(
+    repo: &Repository,
+    reqs: &[semver::VersionReq],
+) -> Result<(Oid, EcoString), git2::Error> {
+    let tag = best_tag_for_version_reqs(repo, reqs)?;
     let obj = repo
         .revparse_single(&format!("refs/tags/{tag}"))
         .or_else(|_| repo.revparse_single(&tag))?; // fallback if tag is peeled
@@ -173,16 +184,16 @@ fn checkout_version_req(
     checkout_detached(repo, &commit).map(|oid| (oid, tag.into()))
 }
 
-fn best_tag_for_version_req(
+fn best_tag_for_version_reqs(
     repo: &Repository,
-    req: &semver::VersionReq,
+    reqs: &[semver::VersionReq],
 ) -> Result<String, git2::Error> {
     let names = repo.tag_names(None)?; // all tag names
     let mut candidates: Vec<(semver::Version, String)> = Vec::new();
 
     for name in names.iter().flatten() {
         if let Some(ver) = parse_tag_version(name) {
-            if req.matches(&ver) {
+            if reqs.iter().all(|req| req.matches(&ver)) {
                 candidates.push((ver, name.to_string()));
             }
         }
@@ -190,7 +201,11 @@ fn best_tag_for_version_req(
 
     if candidates.is_empty() {
         return Err(git2::Error::from_str(&format!(
-            "No tag satisfies version requirement: {req}"
+            "No tag satisfies version requirements: {}",
+            reqs.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         )));
     }
 

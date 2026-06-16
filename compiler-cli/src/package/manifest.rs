@@ -56,7 +56,7 @@ pub enum ResolvedSource {
         url: EcoString,
         revision: git2::Oid,
         selector: Selector,
-        requested: EcoString,
+        requests: Vec<EcoString>,
     },
 }
 

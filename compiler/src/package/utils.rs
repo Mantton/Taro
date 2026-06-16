@@ -2,6 +2,11 @@ use crate::constants::LANGUAGE_HOME;
 use ecow::EcoString;
 use std::path::{Path, PathBuf};
 
+/// Normalize a package identifier into the canonical `host/owner/repo` form.
+///
+/// Taro package identifiers intentionally do not support extra path segments
+/// yet. Monorepo-style package IDs need a separate source-root policy before
+/// they can be accepted safely.
 pub fn normalize_module_path(input: &str) -> Result<String, String> {
     let mut s = input.trim().replace('\\', "/");
 
@@ -31,12 +36,11 @@ pub fn normalize_module_path(input: &str) -> Result<String, String> {
     let host = host.to_ascii_lowercase();
 
     let mut parts: Vec<&str> = rest.split('/').collect();
-    if parts.len() < 2 {
-        return Err("module path must include owner/repo".into());
+    if parts.len() != 2 {
+        return Err("module path must be host/owner/repo".into());
     }
 
-    let repo_idx = 1.min(parts.len() - 1);
-    parts[repo_idx] = parts[repo_idx].trim_end_matches(".git");
+    parts[1] = parts[1].trim_end_matches(".git");
 
     if !host
         .chars()

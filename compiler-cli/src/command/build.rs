@@ -188,7 +188,7 @@ fn run_package(
 
     for (index, package) in graph.ordered.iter().enumerate() {
         let is_root = index + 1 == total;
-        if !is_root && package.kind != PackageKind::Library {
+        if !is_root && !matches!(package.kind, PackageKind::Library | PackageKind::Both) {
             icx.dcx.emit_error(
                 format!(
                     "dependency `{}` must be a library (found {:?})",
@@ -701,7 +701,7 @@ fn run_package_test(
 
         // Non-root packages are compiled normally (as libraries)
         if !is_root {
-            if package.kind != PackageKind::Library {
+            if !matches!(package.kind, PackageKind::Library | PackageKind::Both) {
                 icx.dcx.emit_error(
                     format!(
                         "dependency `{}` must be a library (found {:?})",

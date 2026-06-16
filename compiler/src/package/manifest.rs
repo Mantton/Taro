@@ -146,6 +146,15 @@ impl ManifestDependency {
                         "`tag` cannot be combined with `branch` for `{package}`"
                     ));
                 }
+                let selector_count = version.is_some() as usize
+                    + tag.is_some() as usize
+                    + branch.is_some() as usize
+                    + commit.is_some() as usize;
+                if selector_count > 1 {
+                    return Err(format!(
+                        "`version`, `tag`, `branch`, and `commit` are mutually exclusive for `{package}`"
+                    ));
+                }
 
                 if let Some(p) = path.clone() {
                     let abs = canonicalize_rel(base_url, p)?;
@@ -189,7 +198,7 @@ impl ManifestDependency {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NormalizedManifest {
     pub path: PackageIdentifier,
     pub dependencies: FxHashMap<EcoString, UnresolvedDependency>,
@@ -220,7 +229,7 @@ impl Manifest {
                         return Err(format!("multiple dependencies with name/alias '{}'", alias));
                     } else if alias == root_package_name {
                         errs.push(format!(
-                            "dependnecy `{}`: Cannot have alias/name matching that of package",
+                            "dependency `{}`: cannot have alias/name matching that of package",
                             spec.package.0,
                         ));
                     }
@@ -240,5 +249,80 @@ impl Manifest {
         } else {
             Err(errs.join("\n"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Manifest;
+    use std::{fs::create_dir_all, path::PathBuf};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "taro-manifest-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        create_dir_all(&path).expect("temp dir");
+        path
+    }
+
+    fn normalize_manifest(source: &str) -> Result<super::NormalizedManifest, String> {
+        let manifest = toml::from_str::<Manifest>(source).expect("manifest");
+        manifest.normalize(temp_dir("base"))
+    }
+
+    #[test]
+    fn rejects_package_ids_with_extra_path_segments() {
+        let err = normalize_manifest(
+            "[package]\nname = \"github.com/example/root/subpkg\"\nkind = \"library\"\n",
+        )
+        .expect_err("extra package path should fail");
+
+        assert!(err.contains("host/owner/repo"));
+    }
+
+    #[test]
+    fn rejects_conflicting_git_selectors() {
+        let err = normalize_manifest(
+            "[package]\nname = \"github.com/example/root\"\nkind = \"library\"\n\n[require]\n\"github.com/example/dep\" = { version = \"^1.0\", tag = \"v1.2.0\" }\n",
+        )
+        .expect_err("conflicting selectors should fail");
+
+        assert!(err.contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn rejects_path_combined_with_git_fields() {
+        let err = normalize_manifest(
+            "[package]\nname = \"github.com/example/root\"\nkind = \"library\"\n\n[require]\n\"github.com/example/dep\" = { path = \"../dep\", git = \"https://github.com/example/dep.git\" }\n",
+        )
+        .expect_err("path plus git should fail");
+
+        assert!(err.contains("`path` cannot be combined"));
+    }
+
+    #[test]
+    fn rejects_duplicate_aliases() {
+        let err = normalize_manifest(
+            "[package]\nname = \"github.com/example/root\"\nkind = \"library\"\n\n[require]\n\"github.com/example/a\" = { version = \"^1.0\", alias = \"dep\" }\n\"github.com/example/b\" = { version = \"^1.0\", alias = \"dep\" }\n",
+        )
+        .expect_err("duplicate alias should fail");
+
+        assert!(err.contains("multiple dependencies with name/alias 'dep'"));
+    }
+
+    #[test]
+    fn rejects_dependency_alias_matching_root_package() {
+        let err = normalize_manifest(
+            "[package]\nname = \"github.com/example/root\"\nkind = \"library\"\n\n[require]\n\"github.com/example/dep\" = { version = \"^1.0\", alias = \"root\" }\n",
+        )
+        .expect_err("root alias should fail");
+
+        assert!(err.contains("cannot have alias/name matching"));
     }
 }

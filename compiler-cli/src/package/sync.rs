@@ -1,10 +1,10 @@
 use crate::package::{
-    git::{self, checkout_refspec, fetch_repo, parse_tag_version},
+    git::{self, checkout_refspec, fetch_repo},
     integrity,
     lockfile::{self, LockFile, LockPackage, LockSourceType},
     manifest::{
         DependencyGraph, DependencyGraphEdge, Manifest, NormalizedManifest, PackageIdentifier,
-        ResolvedPackage, ResolvedSource, Selector, SourceSpec, UnresolvedDependency,
+        RefSpec, ResolvedPackage, ResolvedSource, Selector, SourceSpec, UnresolvedDependency,
         ValidatedDependencyGraph,
     },
     utils::{canonicalize_git_url, language_home},
@@ -70,6 +70,7 @@ pub fn sync_dependencies(
         root_package: None,
         package_selections: Default::default(),
         resolution_map: Default::default(),
+        package_manifests: Default::default(),
         package_dependencies: Default::default(),
         resolved_package_dependencies: Default::default(),
         expected_tree_hashes: Default::default(),
@@ -123,8 +124,8 @@ struct Actor<'arena> {
     resolution_map: FxHashMap<UPkg<'arena>, RPkg<'arena>>,
     package_selections: FxHashMap<PackageIdentifier, Vec<RPkg<'arena>>>,
 
-    package_dependencies:
-        FxHashMap<RPkg<'arena>, FxHashMap<PackageIdentifier, (EcoString, UPkg<'arena>)>>,
+    package_manifests: FxHashMap<RPkg<'arena>, NormalizedManifest>,
+    package_dependencies: FxHashMap<RPkg<'arena>, Vec<(EcoString, UPkg<'arena>)>>,
     resolved_package_dependencies: FxHashMap<RPkg<'arena>, FxHashMap<EcoString, RPkg<'arena>>>,
 
     expected_tree_hashes: FxHashMap<RPkg<'arena>, String>,
@@ -140,10 +141,17 @@ struct Arenas {
 type UPkg<'a> = internment::ArenaIntern<'a, UnresolvedDependency>;
 type RPkg<'a> = internment::ArenaIntern<'a, ResolvedPackage>;
 
-struct PendingManifest<'a> {
-    manifest: NormalizedManifest,
-    package: RPkg<'a>,
-    is_root_manifest: bool,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GitGroupKey {
+    package: PackageIdentifier,
+    canonical_url: EcoString,
+}
+
+#[derive(Clone)]
+struct GitRequest<'a> {
+    udep: UPkg<'a>,
+    refspec: RefSpec,
+    requested: EcoString,
 }
 
 impl<'a> Actor<'a> {
@@ -158,8 +166,8 @@ impl<'a> Actor<'a> {
 
 impl<'a> Actor<'a> {
     fn sync(&mut self, root: PathBuf) -> CompileResult<ValidatedDependencyGraph> {
-        let dependencies = self.download_packages(root)?;
-        self.select_versions(dependencies);
+        let root_package = self.load_root_package(root)?;
+        self.resolve_package_selections(root_package)?;
         self.install_dependencies()?;
         self.cache_package_resolution_map();
         let graph = self.build_dependency_graph()?;
@@ -181,10 +189,7 @@ impl<'a> Actor<'a> {
 }
 
 impl<'a> Actor<'a> {
-    fn download_packages(&mut self, root_path: PathBuf) -> CompileResult<Vec<RPkg<'a>>> {
-        let mut seen = FxHashSet::default();
-        let mut packages = vec![];
-
+    fn load_root_package(&mut self, root_path: PathBuf) -> CompileResult<RPkg<'a>> {
         let root_manifest = Manifest::parse(root_path.join(MANIFEST_FILE)).map_err(|e| {
             eprintln!(
                 "error: failed to parse manifest at '{}': {}",
@@ -210,167 +215,244 @@ impl<'a> Actor<'a> {
             no_std_prelude: root_manifest.no_std_prelude,
         });
         self.root_package = Some(root_package);
-
-        let mut manifests = vec![PendingManifest {
-            manifest: root_manifest,
-            package: root_package,
-            is_root_manifest: true,
-        }];
-
-        while let Some(pending) = manifests.pop() {
-            packages.push(pending.package);
-            let mut udeps_for_instance = FxHashMap::default();
-
-            for (name, dependency) in pending.manifest.dependencies.clone().into_iter() {
-                if matches!(dependency.source, SourceSpec::Path { .. }) && !pending.is_root_manifest
-                {
-                    eprintln!(
-                        "error: dependency '{}' declares a transitive path dependency ('{}'), but path dependencies are only allowed in the root manifest",
-                        pending.manifest.path.0, dependency.package.0
-                    );
-                    return Err(ReportedError);
-                }
-
-                let udep = self.intern_udep(dependency);
-                if udeps_for_instance
-                    .insert(udep.package.clone(), (name, udep))
-                    .is_some()
-                {
-                    eprintln!(
-                        "warning: package '{}' has multiple dependency entries targeting '{}'",
-                        pending.manifest.path.0, udep.package.0
-                    );
-                };
-
-                if seen.insert(udep) {
-                    let (dependency_resolution, dependency_manifest) =
-                        self.download_dependency(udep).map_err(|err| {
-                            eprintln!("error: failed to download dependency: {}", err);
-                            ReportedError
-                        })?;
-
-                    self.resolution_map.insert(udep, dependency_resolution);
-
-                    manifests.push(PendingManifest {
-                        manifest: dependency_manifest,
-                        package: dependency_resolution,
-                        is_root_manifest: false,
-                    });
-                }
-            }
-
-            self.package_dependencies
-                .insert(pending.package, udeps_for_instance);
-        }
-
-        Ok(packages)
+        self.package_manifests.insert(root_package, root_manifest);
+        Ok(root_package)
     }
 
-    fn download_dependency(
-        &mut self,
-        dependency: UPkg<'a>,
-    ) -> Result<(RPkg<'a>, NormalizedManifest), String> {
-        match &dependency.source {
-            SourceSpec::Path { abs } => {
-                let manifest = Manifest::parse(abs.join(MANIFEST_FILE))?;
-                let manifest = manifest.normalize(abs.clone())?;
-                let dependency = self.intern_rdep(ResolvedPackage {
-                    package: dependency.package.clone(),
-                    source: ResolvedSource::Path { abs: abs.clone() },
-                    kind: manifest.kind,
-                    no_std_prelude: manifest.no_std_prelude,
-                });
-                Ok((dependency, manifest))
+    fn resolve_package_selections(&mut self, root_package: RPkg<'a>) -> CompileResult<()> {
+        let mut active_git_selections = FxHashMap::<GitGroupKey, RPkg<'a>>::default();
+
+        for _ in 0..64 {
+            self.resolution_map.clear();
+            self.package_selections.clear();
+            self.package_dependencies.clear();
+            self.resolved_package_dependencies.clear();
+            self.expected_tree_hashes.clear();
+
+            let mut pending = vec![root_package];
+            let mut seen_packages = FxHashSet::default();
+            let mut git_groups = FxHashMap::<GitGroupKey, Vec<GitRequest<'a>>>::default();
+
+            while let Some(package) = pending.pop() {
+                if !seen_packages.insert(package) {
+                    continue;
+                }
+
+                self.package_selections
+                    .entry(package.package.clone())
+                    .or_default()
+                    .push(package);
+
+                let manifest = self
+                    .package_manifests
+                    .get(&package)
+                    .ok_or_else(|| {
+                        eprintln!(
+                            "error: internal resolver missing manifest for '{}'",
+                            package.package.0
+                        );
+                        ReportedError
+                    })?
+                    .clone();
+                let is_root_manifest = Some(package) == self.root_package;
+                let mut deps_for_package = Vec::new();
+
+                for (alias, dependency) in manifest.dependencies.clone().into_iter() {
+                    if matches!(dependency.source, SourceSpec::Path { .. }) && !is_root_manifest {
+                        eprintln!(
+                            "error: dependency '{}' declares a transitive path dependency ('{}'), but path dependencies are only allowed in the root manifest",
+                            manifest.path.0, dependency.package.0
+                        );
+                        return Err(ReportedError);
+                    }
+
+                    let udep = self.intern_udep(dependency);
+                    deps_for_package.push((alias, udep));
+
+                    match &udep.source {
+                        SourceSpec::Path { .. } => {
+                            let selection = self.resolve_path_dependency(udep).map_err(|err| {
+                                eprintln!("error: failed to resolve path dependency: {}", err);
+                                ReportedError
+                            })?;
+                            self.resolution_map.insert(udep, selection);
+                            pending.push(selection);
+                        }
+                        SourceSpec::Git { url, refspec } => {
+                            let canonical_url = canonicalize_git_url(url).map_err(|err| {
+                                eprintln!("error: failed to resolve git dependency: {}", err);
+                                ReportedError
+                            })?;
+                            let key = GitGroupKey {
+                                package: udep.package.clone(),
+                                canonical_url: canonical_url.into(),
+                            };
+                            let requested = refspec.request_string();
+                            git_groups.entry(key.clone()).or_default().push(GitRequest {
+                                udep,
+                                refspec: refspec.clone(),
+                                requested,
+                            });
+
+                            if let Some(selection) = active_git_selections.get(&key) {
+                                pending.push(*selection);
+                            }
+                        }
+                    }
+                }
+
+                self.package_dependencies.insert(package, deps_for_package);
             }
-            SourceSpec::Git { url, refspec } => {
-                let canonical_url = canonicalize_git_url(url)?;
-                let package_source =
-                    self.ensure_package_cache(&dependency.package, &canonical_url)?;
 
-                let repo = git2::Repository::open(&package_source).map_err(|err| {
-                    format!(
-                        "failed to open package cache for '{}' at '{}': {}",
-                        dependency.package.0,
-                        package_source.display(),
-                        err
-                    )
-                })?;
+            let mut next_git_selections = FxHashMap::<GitGroupKey, RPkg<'a>>::default();
+            for (key, requests) in git_groups {
+                let (selection, manifest, expected_tree_hash) =
+                    self.resolve_git_group(&key, &requests).map_err(|err| {
+                        eprintln!("error: failed to resolve git dependency: {}", err);
+                        ReportedError
+                    })?;
 
-                if refspec.is_mutable() {
-                    self.warn_once(format!(
-                        "dependency '{}' uses mutable selector '{}'",
-                        dependency.package.0,
-                        refspec.request_string()
-                    ));
+                for request in requests {
+                    self.resolution_map.insert(request.udep, selection);
                 }
 
-                let requested = refspec.request_string();
-                let lock_hit = if self.options.update_lock {
-                    None
-                } else {
-                    self.lockfile.as_ref().and_then(|lock| {
-                        lock.find_git_request(
-                            &dependency.package.0,
-                            &canonical_url,
-                            requested.as_ref(),
-                        )
-                    })
-                };
-
-                let (revision, selector, expected_tree_hash) = if let Some(entry) = lock_hit {
-                    let revision_str = entry.revision.as_ref().ok_or_else(|| {
-                        format!(
-                            "lockfile entry for '{}' is missing revision",
-                            dependency.package.0
-                        )
-                    })?;
-                    let revision = git2::Oid::from_str(revision_str).map_err(|e| {
-                        format!(
-                            "invalid lockfile revision '{}' for '{}': {}",
-                            revision_str, dependency.package.0, e
-                        )
-                    })?;
-
-                    git::checkout_revision(&repo, revision)?;
-                    (
-                        revision,
-                        Selector::Commit(revision),
-                        entry.tree_hash.clone(),
-                    )
-                } else {
-                    let (revision, selector) = checkout_refspec(&repo, refspec)
-                        .map_err(|err| format!("failed to checkout dependency – {}", err))?;
-                    (revision, selector, None)
-                };
-
-                let manifest = Manifest::parse(package_source.join(MANIFEST_FILE))?;
-                let manifest = manifest.normalize(package_source.clone())?;
-
-                let dependency = self.intern_rdep(ResolvedPackage {
-                    package: dependency.package.clone(),
-                    source: ResolvedSource::Git {
-                        url: canonical_url.clone().into(),
-                        revision,
-                        selector,
-                        requested,
-                    },
-                    kind: manifest.kind,
-                    no_std_prelude: manifest.no_std_prelude,
-                });
-
+                self.package_manifests.entry(selection).or_insert(manifest);
+                self.package_selections
+                    .entry(selection.package.clone())
+                    .or_default()
+                    .push(selection);
                 if let Some(hash) = expected_tree_hash {
-                    self.expected_tree_hashes.insert(dependency, hash);
+                    self.expected_tree_hashes.insert(selection, hash);
                 }
+                next_git_selections.insert(key, selection);
+            }
 
-                Ok((dependency, manifest))
+            self.normalize_package_selections();
+            let selected_manifest_not_traversed = next_git_selections
+                .values()
+                .any(|selection| !seen_packages.contains(selection));
+            if next_git_selections == active_git_selections && !selected_manifest_not_traversed {
+                return Ok(());
+            }
+
+            active_git_selections = next_git_selections;
+        }
+
+        eprintln!("error: dependency resolution did not converge");
+        Err(ReportedError)
+    }
+
+    fn resolve_path_dependency(&mut self, dependency: UPkg<'a>) -> Result<RPkg<'a>, String> {
+        let SourceSpec::Path { abs } = &dependency.source else {
+            return Err(format!(
+                "dependency '{}' is not a path dependency",
+                dependency.package.0
+            ));
+        };
+        let manifest = Manifest::parse(abs.join(MANIFEST_FILE))?;
+        let manifest = manifest.normalize(abs.clone())?;
+        let dependency = self.intern_rdep(ResolvedPackage {
+            package: dependency.package.clone(),
+            source: ResolvedSource::Path { abs: abs.clone() },
+            kind: manifest.kind,
+            no_std_prelude: manifest.no_std_prelude,
+        });
+        self.package_manifests.entry(dependency).or_insert(manifest);
+        Ok(dependency)
+    }
+
+    fn resolve_git_group(
+        &mut self,
+        key: &GitGroupKey,
+        requests: &[GitRequest<'a>],
+    ) -> Result<(RPkg<'a>, NormalizedManifest, Option<String>), String> {
+        let request_strings = normalized_request_strings(requests);
+        for request in requests {
+            if request.refspec.is_mutable() {
+                self.warn_once(format!(
+                    "dependency '{}' uses mutable selector '{}'",
+                    key.package.0, request.requested
+                ));
             }
         }
+
+        let lock_hit = if self.options.update_lock {
+            None
+        } else {
+            self.lockfile.as_ref().and_then(|lock| {
+                lock.find_git_requests(&key.package.0, key.canonical_url.as_ref(), &request_strings)
+            })
+        };
+
+        let (package_source, revision, selector, expected_tree_hash) = if let Some(entry) = lock_hit
+        {
+            let revision_str = entry.revision.as_ref().ok_or_else(|| {
+                format!("lockfile entry for '{}' is missing revision", key.package.0)
+            })?;
+            let revision = git2::Oid::from_str(revision_str).map_err(|e| {
+                format!(
+                    "invalid lockfile revision '{}' for '{}': {}",
+                    revision_str, key.package.0, e
+                )
+            })?;
+            let package_source = self.ensure_package_cache(
+                &key.package,
+                key.canonical_url.as_ref(),
+                Some(revision),
+            )?;
+            let repo = git2::Repository::open(&package_source).map_err(|err| {
+                format!(
+                    "failed to open package cache for '{}' at '{}': {}",
+                    key.package.0,
+                    package_source.display(),
+                    err
+                )
+            })?;
+            git::checkout_revision(&repo, revision)?;
+            (
+                package_source,
+                revision,
+                Selector::Commit(revision),
+                entry.tree_hash.clone(),
+            )
+        } else {
+            let package_source =
+                self.ensure_package_cache(&key.package, key.canonical_url.as_ref(), None)?;
+            let repo = git2::Repository::open(&package_source).map_err(|err| {
+                format!(
+                    "failed to open package cache for '{}' at '{}': {}",
+                    key.package.0,
+                    package_source.display(),
+                    err
+                )
+            })?;
+            let (revision, selector) = checkout_group_requests(&repo, key, requests)
+                .map_err(|err| format!("failed to checkout dependency – {}", err))?;
+            (package_source, revision, selector, None)
+        };
+
+        let manifest = Manifest::parse(package_source.join(MANIFEST_FILE))?;
+        let manifest = manifest.normalize(package_source.clone())?;
+        let dependency = self.intern_rdep(ResolvedPackage {
+            package: key.package.clone(),
+            source: ResolvedSource::Git {
+                url: key.canonical_url.clone(),
+                revision,
+                selector,
+                requests: request_strings.into_iter().map(EcoString::from).collect(),
+            },
+            kind: manifest.kind,
+            no_std_prelude: manifest.no_std_prelude,
+        });
+
+        Ok((dependency, manifest, expected_tree_hash))
     }
 
     fn ensure_package_cache(
         &self,
         package: &PackageIdentifier,
         canonical_url: &str,
+        required_revision: Option<git2::Oid>,
     ) -> Result<PathBuf, String> {
         let store_root = language_home()?.join(PACKAGE_STORE);
         std::fs::create_dir_all(&store_root).map_err(|e| {
@@ -427,6 +509,11 @@ impl<'a> Actor<'a> {
                     e
                 )
             })?;
+            if let Some(revision) = required_revision
+                && git::revision_exists(&repo, revision)
+            {
+                return Ok(cache_path);
+            }
             fetch_repo(&repo).map_err(|err| {
                 format!(
                     "failed to fetch repository '{}' from '{}': {}",
@@ -441,77 +528,37 @@ impl<'a> Actor<'a> {
                 .map_err(|err| format!("failed to clone '{}': {}", canonical_url, err))?;
         }
 
-        Ok(cache_path)
-    }
-
-    fn select_versions(&mut self, packages: Vec<RPkg<'a>>) {
-        let mut by_package: FxHashMap<PackageIdentifier, Vec<RPkg<'a>>> = Default::default();
-
-        for dep in packages {
-            by_package.entry(dep.package.clone()).or_default().push(dep);
-        }
-
-        let pairs: FxHashMap<PackageIdentifier, Vec<RPkg<'a>>> = by_package
-            .iter()
-            .map(|(package, usages)| (package.clone(), self.select_versions_of(usages)))
-            .collect();
-
-        self.package_selections = pairs;
-    }
-
-    fn select_versions_of(&self, usages: &[RPkg<'a>]) -> Vec<RPkg<'a>> {
-        let mut local_selections = FxHashMap::<PathBuf, RPkg<'a>>::default();
-        let mut revision_selections = FxHashMap::<(EcoString, git2::Oid), RPkg<'a>>::default();
-        let mut tag_selections =
-            FxHashMap::<(EcoString, u64), (semver::Version, RPkg<'a>)>::default();
-
-        for &usage in usages {
-            match &usage.source {
-                ResolvedSource::Path { abs } => {
-                    local_selections.entry(abs.clone()).or_insert(usage);
-                }
-                ResolvedSource::Git {
-                    url,
+        if let Some(revision) = required_revision {
+            let repo = git2::Repository::open(&cache_path).map_err(|err| {
+                format!(
+                    "failed to open package cache '{}': {}",
+                    cache_path.display(),
+                    err
+                )
+            })?;
+            if !git::revision_exists(&repo, revision) {
+                return Err(format!(
+                    "locked revision {} for '{}' is unavailable in cache '{}'",
                     revision,
-                    selector,
-                    ..
-                } => match selector {
-                    Selector::Tag(raw) => {
-                        if let Some(version) = parse_tag_version(raw) {
-                            let major = version.major;
-
-                            match tag_selections.entry((url.clone(), major)) {
-                                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                                    let (current_version, _) = entry.get();
-                                    if version > *current_version {
-                                        entry.insert((version, usage));
-                                    }
-                                }
-                                std::collections::hash_map::Entry::Vacant(entry) => {
-                                    entry.insert((version, usage));
-                                }
-                            }
-                        } else {
-                            revision_selections
-                                .entry((url.clone(), *revision))
-                                .or_insert(usage);
-                        }
-                    }
-                    Selector::Commit(_) | Selector::Branch(_) => {
-                        revision_selections
-                            .entry((url.clone(), *revision))
-                            .or_insert(usage);
-                    }
-                },
+                    package.0,
+                    cache_path.display()
+                ));
             }
         }
 
-        local_selections
-            .into_iter()
-            .map(|(_, value)| value)
-            .chain(revision_selections.into_iter().map(|(_, value)| value))
-            .chain(tag_selections.into_iter().map(|(_, (_, value))| value))
-            .collect()
+        Ok(cache_path)
+    }
+
+    fn normalize_package_selections(&mut self) {
+        for selections in self.package_selections.values_mut() {
+            selections.sort_by(|a, b| {
+                a.package
+                    .0
+                    .cmp(&b.package.0)
+                    .then_with(|| format!("{:?}", a.source).cmp(&format!("{:?}", b.source)))
+            });
+            selections.dedup();
+        }
     }
 
     fn install_dependencies(&mut self) -> CompileResult<()> {
@@ -601,21 +648,12 @@ impl<'a> Actor<'a> {
                 continue;
             };
             let mut resolved = FxHashMap::default();
-            for (_, (name, dependency)) in unresolved {
+            for (name, dependency) in unresolved {
                 let Some(&dependency_resolution) = self.resolution_map.get(&dependency) else {
                     unreachable!("expected dependency resolution")
                 };
 
-                let Some(candidates) = self.package_selections.get(&dependency_resolution.package)
-                else {
-                    unreachable!("expected dependency candidates")
-                };
-
-                let Some(selection) = find_selection(dependency_resolution, candidates) else {
-                    unreachable!("expected dependency selection")
-                };
-
-                resolved.insert(name.clone(), selection);
+                resolved.insert(name.clone(), dependency_resolution);
             }
 
             self.resolved_package_dependencies.insert(package, resolved);
@@ -730,7 +768,7 @@ impl<'a> Actor<'a> {
                     source_type: LockSourceType::Path,
                     url: None,
                     path: Some(abs.display().to_string()),
-                    requested: "path".into(),
+                    requests: vec!["path".into()],
                     revision: None,
                     tree_hash: None,
                     deps,
@@ -738,7 +776,7 @@ impl<'a> Actor<'a> {
                 ResolvedSource::Git {
                     url,
                     revision,
-                    requested,
+                    requests,
                     ..
                 } => {
                     let tree_hash = self
@@ -760,7 +798,7 @@ impl<'a> Actor<'a> {
                         source_type: LockSourceType::Git,
                         url: Some(url.to_string()),
                         path: None,
-                        requested: requested.to_string(),
+                        requests: requests.iter().map(ToString::to_string).collect(),
                         revision: Some(revision.to_string()),
                         tree_hash: Some(tree_hash),
                         deps,
@@ -775,50 +813,78 @@ impl<'a> Actor<'a> {
     }
 }
 
-fn find_selection<'a>(dependency: RPkg<'a>, candidates: &[RPkg<'a>]) -> Option<RPkg<'a>> {
-    for &candidate in candidates {
-        if dependency == candidate {
-            return Some(candidate);
-        }
+fn normalized_request_strings(requests: &[GitRequest<'_>]) -> Vec<String> {
+    let mut out = requests
+        .iter()
+        .map(|request| request.requested.to_string())
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
 
-        let valid = match (&dependency.source, &candidate.source) {
-            (ResolvedSource::Path { abs: dep_path }, ResolvedSource::Path { abs: can_path }) => {
-                dep_path == can_path
-            }
-            (
-                ResolvedSource::Git {
-                    selector: dep_selector,
-                    url: dep_url,
-                    ..
-                },
-                ResolvedSource::Git {
-                    selector: can_selector,
-                    url: can_url,
-                    ..
-                },
-            ) => {
-                if dep_url != can_url {
-                    false
-                } else if let Selector::Tag(dep) = dep_selector
-                    && let Selector::Tag(can) = can_selector
-                {
-                    match (parse_tag_version(dep), parse_tag_version(can)) {
-                        (Some(dep), Some(can)) => dep.major == can.major,
-                        _ => dep == can,
-                    }
-                } else {
-                    dep_selector == can_selector
-                }
-            }
-            _ => false,
-        };
+fn checkout_group_requests(
+    repo: &git2::Repository,
+    key: &GitGroupKey,
+    requests: &[GitRequest<'_>],
+) -> Result<(git2::Oid, Selector), String> {
+    let mut version_reqs = Vec::new();
+    let mut fixed_refspecs = Vec::new();
+    let request_strings = normalized_request_strings(requests);
 
-        if valid {
-            return Some(candidate);
+    for request in requests {
+        match &request.refspec {
+            RefSpec::Version(req) => version_reqs.push(req.clone()),
+            _ => fixed_refspecs.push(request.refspec.clone()),
         }
     }
 
-    None
+    let mut selected = if version_reqs.is_empty() {
+        None
+    } else {
+        let (revision, tag) = git::checkout_version_reqs(repo, &version_reqs).map_err(|err| {
+            format!(
+                "no tag for '{}' from '{}' satisfies all requests [{}]: {}",
+                key.package.0,
+                key.canonical_url,
+                request_strings.join(", "),
+                err
+            )
+        })?;
+        Some((revision, Selector::Tag(tag)))
+    };
+
+    for refspec in fixed_refspecs {
+        let (revision, selector) = checkout_refspec(repo, &refspec).map_err(|err| {
+            format!(
+                "failed to resolve selector '{}' for '{}' from '{}': {}",
+                refspec.request_string(),
+                key.package.0,
+                key.canonical_url,
+                err
+            )
+        })?;
+
+        if let Some((selected_revision, _)) = selected {
+            if selected_revision != revision {
+                return Err(format!(
+                    "conflicting selectors for '{}' from '{}' [{}] resolve to different revisions",
+                    key.package.0,
+                    key.canonical_url,
+                    request_strings.join(", ")
+                ));
+            }
+        } else {
+            selected = Some((revision, selector));
+        }
+    }
+
+    selected.ok_or_else(|| {
+        format!(
+            "no requests collected for '{}' from '{}'",
+            key.package.0, key.canonical_url
+        )
+    })
 }
 
 use petgraph::algo::tarjan_scc;
@@ -833,44 +899,321 @@ fn cycle_members(g: &DependencyGraph, start: petgraph::prelude::NodeIndex) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use super::{SyncOptions, find_selection};
-    use crate::package::manifest::{PackageIdentifier, ResolvedPackage, ResolvedSource, Selector};
+    use super::{GitGroupKey, GitRequest, SyncOptions, checkout_group_requests};
+    use crate::package::manifest::{PackageIdentifier, RefSpec, SourceSpec, UnresolvedDependency};
+    use crate::package::{integrity, lockfile};
     use compiler::compile::config::PackageKind;
+    use compiler::constants::PACKAGE_STORE;
     use ecow::EcoString;
+    use git2::{Oid, Repository, Signature};
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+    use std::sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    fn temp_dir(name: &str) -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "taro-sync-test-{}-{}-{}-{}",
+            name,
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).expect("temp dir");
+        path
+    }
+
+    fn commit_file(repo: &Repository, root: &Path, contents: &str) -> Oid {
+        std::fs::write(root.join("package.toml"), contents).expect("write package");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new("package.toml"))
+            .expect("add package");
+        index.write().expect("write index");
+        let tree_oid = index.write_tree().expect("tree");
+        let tree = repo.find_tree(tree_oid).expect("find tree");
+        let sig = Signature::now("Taro Test", "taro@example.com").expect("signature");
+        let parents = if let Ok(head) = repo.head() {
+            vec![head.peel_to_commit().expect("parent")]
+        } else {
+            vec![]
+        };
+        let parent_refs = parents.iter().collect::<Vec<_>>();
+        repo.commit(Some("HEAD"), &sig, &sig, "test commit", &tree, &parent_refs)
+            .expect("commit")
+    }
+
+    fn tag(repo: &Repository, name: &str, oid: Oid) {
+        let sig = Signature::now("Taro Test", "taro@example.com").expect("signature");
+        let object = repo.find_object(oid, None).expect("object");
+        repo.tag(name, &object, &sig, name, false).expect("tag");
+    }
+
+    fn write_manifest(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path).expect("manifest dir");
+        std::fs::write(path.join("package.toml"), contents).expect("manifest");
+    }
+
+    fn tagged_repo(tags: &[&str]) -> (PathBuf, Repository, Vec<Oid>) {
+        let root = temp_dir("git");
+        let repo = Repository::init(&root).expect("repo");
+        let mut revisions = Vec::new();
+        for tag_name in tags {
+            let revision = commit_file(
+                &repo,
+                &root,
+                &format!(
+                    "[package]\nname = \"github.com/example/dep\"\nkind = \"library\"\n# {tag_name}\n"
+                ),
+            );
+            tag(&repo, tag_name, revision);
+            revisions.push(revision);
+        }
+        (root, repo, revisions)
+    }
+
+    fn key() -> GitGroupKey {
+        GitGroupKey {
+            package: PackageIdentifier("github.com/example/dep".into()),
+            canonical_url: EcoString::from("https://github.com/example/dep.git"),
+        }
+    }
+
+    fn request<'a>(
+        arena: &'a internment::Arena<UnresolvedDependency>,
+        refspec: RefSpec,
+    ) -> GitRequest<'a> {
+        let key = key();
+        let udep = arena.intern(UnresolvedDependency {
+            package: key.package,
+            source: SourceSpec::Git {
+                url: key.canonical_url,
+                refspec: refspec.clone(),
+            },
+        });
+        GitRequest {
+            udep,
+            requested: refspec.request_string(),
+            refspec,
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct TaroHomeGuard {
+        previous: Option<OsString>,
+    }
+
+    impl TaroHomeGuard {
+        fn set(path: &Path) -> Self {
+            let previous = std::env::var_os("TARO_HOME");
+            unsafe { std::env::set_var("TARO_HOME", path) };
+            Self { previous }
+        }
+    }
+
+    impl Drop for TaroHomeGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                unsafe { std::env::set_var("TARO_HOME", previous) };
+            } else {
+                unsafe { std::env::remove_var("TARO_HOME") };
+            }
+        }
+    }
 
     #[test]
-    fn find_selection_does_not_cross_git_urls() {
-        let dep = ResolvedPackage {
-            package: PackageIdentifier("github.com/example/lib".into()),
-            source: ResolvedSource::Git {
-                url: "https://github.com/example/lib.git".into(),
-                revision: git2::Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                    .expect("oid"),
-                selector: Selector::Tag("v1.2.0".into()),
-                requested: EcoString::from("version:^1.2"),
-            },
-            kind: PackageKind::Library,
-            no_std_prelude: false,
+    fn group_versions_select_highest_tag_satisfying_all_ranges() {
+        let (_root, repo, revisions) = tagged_repo(&["v1.0.0", "v1.1.0", "v1.2.0"]);
+        let arena = internment::Arena::new();
+        let requests = vec![
+            request(&arena, RefSpec::Version("^1.0".parse().expect("req"))),
+            request(
+                &arena,
+                RefSpec::Version(">=1.0.0, <1.2.0".parse().expect("req")),
+            ),
+        ];
+
+        let (revision, selector) =
+            checkout_group_requests(&repo, &key(), &requests).expect("compatible selection");
+
+        assert_eq!(revision, revisions[1]);
+        assert_eq!(
+            selector,
+            crate::package::manifest::Selector::Tag("v1.1.0".into())
+        );
+    }
+
+    #[test]
+    fn group_versions_respect_zero_major_compatibility() {
+        let (_root, repo, revisions) = tagged_repo(&["v0.1.0", "v0.1.5", "v0.2.0"]);
+        let arena = internment::Arena::new();
+        let requests = vec![request(
+            &arena,
+            RefSpec::Version("^0.1.0".parse().expect("req")),
+        )];
+
+        let (revision, selector) =
+            checkout_group_requests(&repo, &key(), &requests).expect("zero-major selection");
+
+        assert_eq!(revision, revisions[1]);
+        assert_eq!(
+            selector,
+            crate::package::manifest::Selector::Tag("v0.1.5".into())
+        );
+    }
+
+    #[test]
+    fn group_versions_reject_incompatible_ranges() {
+        let (_root, repo, _revisions) = tagged_repo(&["v1.0.0", "v2.0.0"]);
+        let arena = internment::Arena::new();
+        let requests = vec![
+            request(&arena, RefSpec::Version("^1.0".parse().expect("req"))),
+            request(&arena, RefSpec::Version("=2.0.0".parse().expect("req"))),
+        ];
+
+        let err = checkout_group_requests(&repo, &key(), &requests)
+            .expect_err("incompatible ranges should fail");
+
+        assert!(err.contains("satisfies all requests"));
+    }
+
+    #[test]
+    fn fixed_selectors_must_resolve_to_same_revision() {
+        let (_root, repo, _revisions) = tagged_repo(&["v1.0.0", "v1.1.0"]);
+        let arena = internment::Arena::new();
+        let requests = vec![
+            request(&arena, RefSpec::Tag("v1.0.0".into())),
+            request(&arena, RefSpec::Tag("v1.1.0".into())),
+        ];
+
+        let err = checkout_group_requests(&repo, &key(), &requests)
+            .expect_err("different fixed revisions should fail");
+
+        assert!(err.contains("resolve to different revisions"));
+    }
+
+    #[test]
+    fn fixed_and_version_selectors_can_coalesce_on_same_revision() {
+        let (_root, repo, revisions) = tagged_repo(&["v1.0.0", "v1.1.0"]);
+        let arena = internment::Arena::new();
+        let requests = vec![
+            request(&arena, RefSpec::Version("=1.0.0".parse().expect("req"))),
+            request(&arena, RefSpec::Tag("v1.0.0".into())),
+        ];
+
+        let (revision, selector) = checkout_group_requests(&repo, &key(), &requests)
+            .expect("same revision should coalesce");
+
+        assert_eq!(revision, revisions[0]);
+        assert_eq!(
+            selector,
+            crate::package::manifest::Selector::Tag("v1.0.0".into())
+        );
+    }
+
+    #[test]
+    fn sync_accepts_both_packages_as_path_dependencies() {
+        let workspace = temp_dir("both-path");
+        let dep = workspace.join("dep");
+        let root = workspace.join("root");
+
+        write_manifest(
+            &dep,
+            "[package]\nname = \"github.com/example/dep\"\nkind = \"both\"\n",
+        );
+        write_manifest(
+            &root,
+            "[package]\nname = \"github.com/example/root\"\nkind = \"executable\"\n\n[require]\n\"github.com/example/dep\" = { path = \"../dep\" }\n",
+        );
+
+        let graph = match super::sync_dependencies(root, SyncOptions::default()) {
+            Ok(graph) => graph,
+            Err(_) => panic!("sync should succeed"),
         };
 
-        let candidate = ResolvedPackage {
-            package: PackageIdentifier("github.com/example/lib".into()),
-            source: ResolvedSource::Git {
-                url: "https://github.com/another/lib.git".into(),
-                revision: git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-                    .expect("oid"),
-                selector: Selector::Tag("v1.9.0".into()),
-                requested: EcoString::from("version:^1.2"),
-            },
+        assert!(
+            graph
+                .ordered
+                .iter()
+                .any(
+                    |package| package.package.0.as_ref() == "github.com/example/dep"
+                        && package.kind == PackageKind::Both
+                )
+        );
+    }
+
+    #[test]
+    fn locked_sync_uses_cached_revision_without_fetching() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let workspace = temp_dir("locked-cache");
+        let home = workspace.join("home");
+        let root = workspace.join("root");
+        let package_name = "github.com/example/dep";
+        let canonical_url = "https://github.com/example/dep.git";
+        let cache_path = home
+            .join(PACKAGE_STORE)
+            .join(lockfile::canonical_git_cache_key(
+                package_name,
+                canonical_url,
+            ));
+        std::fs::create_dir_all(&cache_path).expect("cache path");
+        let repo = Repository::init(&cache_path).expect("cache repo");
+        repo.remote("origin", canonical_url).expect("origin");
+        let revision = commit_file(
+            &repo,
+            &cache_path,
+            "[package]\nname = \"github.com/example/dep\"\nkind = \"library\"\n",
+        );
+        tag(&repo, "v1.2.0", revision);
+        let tree_hash = integrity::hash_directory(&cache_path).expect("tree hash");
+
+        write_manifest(
+            &root,
+            "[package]\nname = \"github.com/example/root\"\nkind = \"executable\"\n\n[require]\n\"github.com/example/dep\" = \"^1.2\"\n",
+        );
+
+        let mut lock = lockfile::LockFile::new();
+        lock.package.push(lockfile::LockPackage {
+            node: lockfile::node_from_git(package_name, canonical_url, &revision.to_string()),
+            name: package_name.into(),
             kind: PackageKind::Library,
             no_std_prelude: false,
+            source_type: lockfile::LockSourceType::Git,
+            url: Some(canonical_url.into()),
+            path: None,
+            requests: vec!["version:^1.2".into()],
+            revision: Some(revision.to_string()),
+            tree_hash: Some(tree_hash),
+            deps: Default::default(),
+        });
+        lockfile::write(&root.join("package.lock"), &lock).expect("lockfile");
+
+        let _home = TaroHomeGuard::set(&home);
+        let graph = match super::sync_dependencies(
+            root,
+            SyncOptions {
+                locked: true,
+                update_lock: false,
+                strict_env: false,
+            },
+        ) {
+            Ok(graph) => graph,
+            Err(_) => panic!("locked sync should succeed"),
         };
 
-        let arena: internment::Arena<ResolvedPackage> = internment::Arena::new();
-        let dep_i = arena.intern(dep);
-        let candidate_i = arena.intern(candidate);
-
-        assert!(find_selection(dep_i, &[candidate_i]).is_none());
+        assert_eq!(graph.ordered.len(), 2);
     }
 
     #[test]
