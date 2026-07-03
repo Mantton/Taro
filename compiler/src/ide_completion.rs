@@ -32,8 +32,8 @@ pub fn completion_context_at(source_text: &str, position: Position) -> Completio
     let before_prefix = &line_prefix[..prefix_start];
 
     if let Some(before_dot) = before_prefix.strip_suffix('.') {
-        if let Some(receiver) = dotted_receiver_before_dot(before_dot) {
-            if is_static_receiver(&receiver) {
+        if let Some(receiver) = receiver_expression_before_dot(before_dot) {
+            if is_dotted_identifier_receiver(&receiver) && is_static_receiver(&receiver) {
                 return CompletionContext::StaticMember {
                     base: receiver,
                     prefix,
@@ -174,31 +174,52 @@ fn identifier_prefix_start(line_prefix: &str) -> usize {
     start
 }
 
-fn dotted_receiver_before_dot(before_dot: &str) -> Option<String> {
+fn receiver_expression_before_dot(before_dot: &str) -> Option<String> {
     let trimmed_end = before_dot.trim_end();
     if trimmed_end.len() != before_dot.len() {
         return None;
     }
 
     let mut start = trimmed_end.len();
+    let mut depth = 0usize;
     for (index, ch) in trimmed_end.char_indices().rev() {
-        if is_identifier_continue(ch) || ch == '.' {
-            start = index;
-        } else {
-            break;
+        match ch {
+            ')' | ']' | '}' => {
+                depth += 1;
+                start = index;
+            }
+            '(' | '[' | '{' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+                start = index;
+            }
+            _ if depth == 0 && is_receiver_boundary(ch) => {
+                break;
+            }
+            _ => start = index,
         }
     }
 
     let receiver = &trimmed_end[start..];
-    if receiver.is_empty()
-        || receiver.starts_with('.')
-        || receiver.ends_with('.')
-        || receiver.split('.').any(|segment| !is_identifier(segment))
-    {
+    if receiver.is_empty() || receiver.starts_with('.') || receiver.ends_with('.') {
         None
     } else {
         Some(receiver.to_string())
     }
+}
+
+fn is_receiver_boundary(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(
+            ch,
+            ',' | ';' | '=' | ':' | '+' | '-' | '*' | '/' | '%' | '!' | '&' | '|' | '^' | '<' | '>'
+        )
+}
+
+fn is_dotted_identifier_receiver(receiver: &str) -> bool {
+    receiver.split('.').all(is_identifier)
 }
 
 fn is_static_receiver(receiver: &str) -> bool {
@@ -251,6 +272,54 @@ mod tests {
             CompletionContext::Member {
                 receiver: "foo".into(),
                 prefix: "b".into()
+            }
+        );
+    }
+
+    #[test]
+    fn context_detects_call_expression_receiver() {
+        let source = "func main() {\n    makePoint().m\n}\n";
+        assert_eq!(
+            completion_context_at(source, position_after(source, "makePoint().m")),
+            CompletionContext::Member {
+                receiver: "makePoint()".into(),
+                prefix: "m".into()
+            }
+        );
+    }
+
+    #[test]
+    fn context_detects_parenthesized_expression_receiver() {
+        let source = "func main() {\n    (left ?? right).\n}\n";
+        assert_eq!(
+            completion_context_at(source, position_after(source, "(left ?? right).")),
+            CompletionContext::Member {
+                receiver: "(left ?? right)".into(),
+                prefix: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn context_detects_index_expression_receiver() {
+        let source = "func main() {\n    points[0].x\n}\n";
+        assert_eq!(
+            completion_context_at(source, position_after(source, "points[0].x")),
+            CompletionContext::Member {
+                receiver: "points[0]".into(),
+                prefix: "x".into()
+            }
+        );
+    }
+
+    #[test]
+    fn context_detects_optional_chain_receiver() {
+        let source = "func main() {\n    user?.profile?.n\n}\n";
+        assert_eq!(
+            completion_context_at(source, position_after(source, "user?.profile?.n")),
+            CompletionContext::Member {
+                receiver: "user?.profile?".into(),
+                prefix: "n".into()
             }
         );
     }

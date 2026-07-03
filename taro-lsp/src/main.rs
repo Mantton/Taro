@@ -3,7 +3,7 @@ use compiler::{
     ide::{
         AnalysisMode, AnalysisOwner, AnalysisRequest, AnalysisSnapshot, CompletionInfo,
         CompletionKind as TaroCompletionKind, SourceOverlay, analyze_owner_for_ide, completion_at,
-        resolve_analysis_owner, signature_help_at,
+        reference_span_at, references_at, resolve_analysis_owner, signature_help_at,
     },
     ide_completion::{
         CompletionContext, build_completion_probe_overlay, completion_context_at,
@@ -392,6 +392,29 @@ impl Backend {
             }
         })
     }
+
+    async fn text_for_snapshot_path(&self, path: &Path) -> String {
+        if let Some(text) = self.text_for_path(path).await {
+            return text;
+        }
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    async fn location_for_span(&self, snapshot: &AnalysisSnapshot, span: Span) -> Option<Location> {
+        let path = path_for_file_id(snapshot, span.file)?;
+        let uri = Url::from_file_path(path).ok()?;
+        let text = self.text_for_snapshot_path(path).await;
+        Some(Location {
+            uri,
+            range: range_from_span(span, &text),
+        })
+    }
+
+    async fn text_for_span(&self, snapshot: &AnalysisSnapshot, span: Span) -> Option<String> {
+        let path = path_for_file_id(snapshot, span.file)?;
+        let text = self.text_for_snapshot_path(path).await;
+        extract_span_text(&text, span).map(ToOwned::to_owned)
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -573,6 +596,39 @@ impl LanguageServer for Backend {
         Ok(Some(GotoDefinitionResponse::Scalar(location)))
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let Some((text, _version, snapshot)) = self.snapshot_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(line_text) = line_at(&text, position.line as usize) else {
+            return Ok(None);
+        };
+        let Some(file_id) = file_id_for_uri(&snapshot, &uri) else {
+            return Ok(None);
+        };
+
+        let span_position = SpanPosition {
+            line: position.line as usize,
+            offset: utf16_to_char_offset(line_text, position.character),
+        };
+        let mut locations = Vec::new();
+        for reference in references_at(
+            &snapshot,
+            file_id,
+            span_position,
+            params.context.include_declaration,
+        ) {
+            if let Some(location) = self.location_for_span(&snapshot, reference.span).await {
+                locations.push(location);
+            }
+        }
+
+        Ok(Some(locations))
+    }
+
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
@@ -638,6 +694,98 @@ impl LanguageServer for Backend {
             .collect::<Vec<_>>();
 
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+
+        let Some((text, _version, snapshot)) = self.snapshot_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(line_text) = line_at(&text, position.line as usize) else {
+            return Ok(None);
+        };
+        let Some(file_id) = file_id_for_uri(&snapshot, &uri) else {
+            return Ok(None);
+        };
+        let span_position = SpanPosition {
+            line: position.line as usize,
+            offset: utf16_to_char_offset(line_text, position.character),
+        };
+        let Some(span) = reference_span_at(&snapshot, file_id, span_position) else {
+            return Ok(None);
+        };
+
+        Ok(Some(PrepareRenameResponse::Range(range_from_span(
+            span, &text,
+        ))))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        if !is_valid_rename_identifier(&params.new_name) {
+            return Ok(None);
+        }
+
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some((text, _version, owner, snapshot)) = self.snapshot_context_for_uri(&uri).await
+        else {
+            return Ok(None);
+        };
+        let Some(line_text) = line_at(&text, position.line as usize) else {
+            return Ok(None);
+        };
+        let Some(file_id) = file_id_for_uri(&snapshot, &uri) else {
+            return Ok(None);
+        };
+        let span_position = SpanPosition {
+            line: position.line as usize,
+            offset: utf16_to_char_offset(line_text, position.character),
+        };
+        let Some(active_span) = reference_span_at(&snapshot, file_id, span_position) else {
+            return Ok(None);
+        };
+        let Some(original_text) = self.text_for_span(&snapshot, active_span).await else {
+            return Ok(None);
+        };
+
+        let references = references_at(&snapshot, file_id, span_position, true);
+        if references.is_empty() {
+            return Ok(None);
+        }
+
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for reference in references {
+            let Some(path) = path_for_file_id(&snapshot, reference.span.file) else {
+                return Ok(None);
+            };
+            if !owner_contains_path(&owner, path) {
+                return Ok(None);
+            }
+            let Some(existing_text) = self.text_for_span(&snapshot, reference.span).await else {
+                return Ok(None);
+            };
+            if existing_text != original_text {
+                return Ok(None);
+            }
+            let Some(uri) = Url::from_file_path(path).ok() else {
+                return Ok(None);
+            };
+            let source_text = self.text_for_snapshot_path(path).await;
+            changes.entry(uri).or_default().push(TextEdit {
+                range: range_from_span(reference.span, &source_text),
+                new_text: params.new_name.clone(),
+            });
+        }
+
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..WorkspaceEdit::default()
+        }))
     }
 }
 
@@ -750,6 +898,11 @@ fn server_capabilities() -> ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
         signature_help_provider: Some(SignatureHelpOptions {
             trigger_characters: Some(signature_help_trigger_characters()),
             retrigger_characters: Some(signature_help_trigger_characters()),
@@ -934,6 +1087,14 @@ fn file_id_for_uri(snapshot: &AnalysisSnapshot, uri: &Url) -> Option<FileID> {
     })
 }
 
+fn path_for_file_id(snapshot: &AnalysisSnapshot, file_id: FileID) -> Option<&Path> {
+    snapshot
+        .file_mappings
+        .iter()
+        .find(|mapping| mapping.file == file_id)
+        .map(|mapping| mapping.path.as_path())
+}
+
 fn find_navigation_index<T>(
     items: &[T],
     parents: &[Option<usize>],
@@ -992,6 +1153,26 @@ fn range_from_span(span: Span, source_text: &str) -> Range {
     Range { start, end }
 }
 
+fn extract_span_text(source_text: &str, span: Span) -> Option<&str> {
+    if span.start.line != span.end.line {
+        return None;
+    }
+    let line = line_at(source_text, span.start.line)?;
+    let start = byte_index_for_char_offset(line, span.start.offset)?;
+    let end = byte_index_for_char_offset(line, span.end.offset)?;
+    line.get(start..end)
+}
+
+fn byte_index_for_char_offset(line_text: &str, char_offset: usize) -> Option<usize> {
+    if char_offset == line_text.chars().count() {
+        return Some(line_text.len());
+    }
+    line_text
+        .char_indices()
+        .nth(char_offset)
+        .map(|(index, _)| index)
+}
+
 fn position_from_span_location(source_text: &str, line: usize, char_offset: usize) -> Position {
     let utf16_col = line_at(source_text, line)
         .map(|line_text| {
@@ -1043,13 +1224,91 @@ fn paths_match(lhs: &Path, rhs: &Path) -> bool {
     }
 }
 
+fn owner_contains_path(owner: &AnalysisOwner, path: &Path) -> bool {
+    match owner {
+        AnalysisOwner::Package(root) => path.starts_with(root),
+        AnalysisOwner::Script(script) => paths_match(script, path),
+    }
+}
+
+fn is_valid_rename_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_alphabetic()) {
+        return false;
+    }
+    if !chars.all(|ch| ch == '_' || ch.is_alphanumeric()) {
+        return false;
+    }
+    !is_taro_keyword(value)
+}
+
+fn is_taro_keyword(value: &str) -> bool {
+    matches!(
+        value,
+        "any"
+            | "as"
+            | "is"
+            | "break"
+            | "case"
+            | "const"
+            | "continue"
+            | "defer"
+            | "else"
+            | "enum"
+            | "export"
+            | "extern"
+            | "false"
+            | "for"
+            | "func"
+            | "guard"
+            | "if"
+            | "impl"
+            | "import"
+            | "in"
+            | "interface"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "mut"
+            | "namespace"
+            | "nil"
+            | "operator"
+            | "private"
+            | "public"
+            | "return"
+            | "readonly"
+            | "static"
+            | "struct"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "var"
+            | "where"
+            | "while"
+            | "class"
+            | "final"
+            | "override"
+            | "fileprivate"
+            | "protected"
+            | "async"
+            | "await"
+            | "ref"
+            | "init"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AnalysisOwner, CompletionInfo, DocumentData, OwnerDocument, TaroCompletionKind,
+        AnalysisOwner, CompletionInfo, DocumentData, OneOf, OwnerDocument, TaroCompletionKind,
         completion_prefix, completion_trigger_characters, find_navigation_index,
-        general_diagnostic, lsp_completion_item, owner_documents, owner_documents_changed,
-        server_capabilities, signature_help_trigger_characters, utf16_to_char_offset,
+        general_diagnostic, is_valid_rename_identifier, lsp_completion_item, owner_documents,
+        owner_documents_changed, server_capabilities, signature_help_trigger_characters,
+        utf16_to_char_offset,
     };
     use compiler::ide_completion::CompletionContext;
     use compiler::span::{FileID, Position, Span};
@@ -1170,6 +1429,28 @@ mod tests {
             completion.trigger_characters,
             Some(completion_trigger_characters())
         );
+    }
+
+    #[test]
+    fn server_capabilities_advertise_references_and_rename_prepare() {
+        let capabilities = server_capabilities();
+        assert!(matches!(
+            capabilities.references_provider,
+            Some(OneOf::Left(true))
+        ));
+        let Some(OneOf::Right(rename)) = capabilities.rename_provider else {
+            panic!("expected rename options");
+        };
+        assert_eq!(rename.prepare_provider, Some(true));
+    }
+
+    #[test]
+    fn rename_identifier_validation_rejects_keywords_and_invalid_names() {
+        assert!(is_valid_rename_identifier("renamedValue"));
+        assert!(is_valid_rename_identifier("_value2"));
+        for invalid in ["", "2value", "with-dash", "struct", "async"] {
+            assert!(!is_valid_rename_identifier(invalid), "{invalid}");
+        }
     }
 
     #[test]

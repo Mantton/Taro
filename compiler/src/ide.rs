@@ -9,10 +9,11 @@ use crate::{
     diagnostics::{DiagCtx, DiagnosticRecord},
     hir::{
         self, AssociatedDeclaration, AssociatedDeclarationKind, Declaration, DeclarationKind,
-        DefinitionID, Expression, ExpressionField, ExpressionKind, HirVisitor, Module, PathSegment,
-        Pattern, PatternKind, PatternPath, Resolution, ResolvedPath, StructLiteral, Type, UseTree,
-        UseTreeAlias, UseTreeKind, walk_assoc_declaration, walk_declaration, walk_expression,
-        walk_path_segment, walk_pattern, walk_resolved_path, walk_type, walk_use_tree,
+        DefinitionID, Expression, ExpressionField, ExpressionKind, FieldDefinition, HirVisitor,
+        Module, PathSegment, Pattern, PatternKind, PatternPath, Resolution, ResolvedPath,
+        StructLiteral, Type, UseTree, UseTreeAlias, UseTreeKind, Variant, walk_assoc_declaration,
+        walk_declaration, walk_expression, walk_path_segment, walk_pattern, walk_resolved_path,
+        walk_type, walk_use_tree,
     },
     interner,
     metadata::{self, MetadataLoadStatus, ReuseMode},
@@ -92,6 +93,37 @@ pub struct NavigationData {
     pub hover_parents: Vec<Option<usize>>,
     pub definitions: Vec<DefinitionInfo>,
     pub definition_parents: Vec<Option<usize>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ReferenceKey {
+    Definition(DefinitionID),
+    Local(hir::NodeID),
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceInfo {
+    pub span: Span,
+    pub is_declaration: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ReferenceMention {
+    key: ReferenceKey,
+    span: Span,
+}
+
+#[derive(Debug, Clone)]
+struct ReferenceGroup {
+    key: ReferenceKey,
+    items: Vec<ReferenceInfo>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReferenceData {
+    groups: Vec<ReferenceGroup>,
+    mentions: Vec<ReferenceMention>,
+    parents: Vec<Option<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -177,6 +209,7 @@ struct MemberCompletionSite {
 pub struct AnalysisSnapshot {
     pub diagnostics: Vec<DiagnosticRecord>,
     pub navigation: NavigationData,
+    pub references: ReferenceData,
     pub signatures: SignatureHelpData,
     pub completions: CompletionData,
     pub status: AnalysisStatus,
@@ -187,6 +220,7 @@ pub struct AnalysisSnapshot {
 #[derive(Debug, Clone, Default)]
 struct IdeArtifacts {
     navigation: NavigationData,
+    references: ReferenceData,
     signatures: SignatureHelpData,
     completions: CompletionData,
     status: AnalysisStatus,
@@ -264,6 +298,7 @@ pub fn analyze_owner_for_ide(
         Ok(artifacts) => Ok(AnalysisSnapshot {
             diagnostics,
             navigation: artifacts.navigation,
+            references: artifacts.references,
             signatures: artifacts.signatures,
             completions: artifacts.completions,
             status: artifacts.status,
@@ -287,6 +322,7 @@ pub fn analyze_owner_for_ide(
             Ok(AnalysisSnapshot {
                 diagnostics: snapshot_diagnostics,
                 navigation: NavigationData::default(),
+                references: ReferenceData::default(),
                 signatures: SignatureHelpData::default(),
                 completions: CompletionData::default(),
                 status: AnalysisStatus::default(),
@@ -996,6 +1032,11 @@ impl<'ctx, 'results> HirVisitor for NavigationVisitor<'ctx, 'results> {
         walk_pattern(self, node)
     }
 
+    fn visit_function_parameter(&mut self, node: &hir::FunctionParameter) {
+        self.local_binding_spans.insert(node.id, node.name.span);
+        hir::walk_function_parameter(self, node)
+    }
+
     fn visit_type(&mut self, node: &Type) {
         self.push_type_hover(node);
         walk_type(self, node)
@@ -1051,6 +1092,352 @@ fn collect_navigation_data<'ctx>(
     module_targets: &FxHashMap<DefinitionID, Span>,
 ) -> NavigationData {
     let mut visitor = NavigationVisitor::new(gcx, results, module_targets);
+    visitor.visit_package(package);
+    visitor.finish()
+}
+
+struct ReferenceVisitor<'ctx, 'results> {
+    gcx: Gcx<'ctx>,
+    results: Option<&'results TypeCheckResults<'ctx>>,
+    groups: FxHashMap<ReferenceKey, Vec<ReferenceInfo>>,
+    mentions: Vec<ReferenceMention>,
+}
+
+impl<'ctx, 'results> ReferenceVisitor<'ctx, 'results> {
+    fn new(gcx: Gcx<'ctx>, results: Option<&'results TypeCheckResults<'ctx>>) -> Self {
+        Self {
+            gcx,
+            results,
+            groups: FxHashMap::default(),
+            mentions: Vec::new(),
+        }
+    }
+
+    fn finish(mut self) -> ReferenceData {
+        let mut groups: Vec<_> = self
+            .groups
+            .drain()
+            .map(|(key, mut items)| {
+                items.sort_by(|lhs, rhs| {
+                    compare_navigation_spans(lhs.span, rhs.span)
+                        .then_with(|| rhs.is_declaration.cmp(&lhs.is_declaration))
+                });
+                items.dedup_by(|lhs, rhs| {
+                    lhs.span == rhs.span && lhs.is_declaration == rhs.is_declaration
+                });
+                ReferenceGroup { key, items }
+            })
+            .collect();
+        groups.sort_by(|lhs, rhs| compare_reference_keys(lhs.key, rhs.key));
+
+        self.mentions.sort_by(|lhs, rhs| {
+            compare_navigation_spans(lhs.span, rhs.span)
+                .then_with(|| compare_reference_keys(lhs.key, rhs.key))
+        });
+        self.mentions
+            .dedup_by(|lhs, rhs| lhs.key == rhs.key && lhs.span == rhs.span);
+        let parents = build_parent_links(self.mentions.iter().map(|mention| mention.span));
+
+        ReferenceData {
+            groups,
+            mentions: self.mentions,
+            parents,
+        }
+    }
+
+    fn push_reference(&mut self, key: ReferenceKey, span: Span, is_declaration: bool) {
+        if span.start == span.end {
+            return;
+        }
+
+        self.groups.entry(key).or_default().push(ReferenceInfo {
+            span,
+            is_declaration,
+        });
+        self.mentions.push(ReferenceMention { key, span });
+    }
+
+    fn push_definition_reference(
+        &mut self,
+        def_id: DefinitionID,
+        span: Span,
+        is_declaration: bool,
+    ) {
+        let key = self.reference_key_for_definition(def_id);
+        self.push_reference(key, span, is_declaration);
+    }
+
+    fn push_resolution_reference(
+        &mut self,
+        resolution: &Resolution,
+        span: Span,
+        is_declaration: bool,
+    ) {
+        let Some(key) = self.reference_key_for_resolution(resolution) else {
+            return;
+        };
+        self.push_reference(key, span, is_declaration);
+    }
+
+    fn reference_key_for_definition(&self, def_id: DefinitionID) -> ReferenceKey {
+        if matches!(
+            self.gcx.definition_kind(def_id),
+            DefinitionKind::VariantConstructor(..)
+        ) && let Some(enum_id) = self.gcx.definition_parent(def_id)
+            && let Some(enum_def) = self.gcx.try_get_enum_definition(enum_id)
+            && let Some(variant) = enum_def
+                .variants
+                .iter()
+                .find(|variant| variant.ctor_def_id == def_id)
+        {
+            return ReferenceKey::Definition(variant.def_id);
+        }
+
+        ReferenceKey::Definition(def_id)
+    }
+
+    fn reference_key_for_resolution(&self, resolution: &Resolution) -> Option<ReferenceKey> {
+        match resolution {
+            Resolution::LocalVariable(id) => Some(ReferenceKey::Local(*id)),
+            Resolution::FunctionSet(ids) if ids.len() == 1 => {
+                Some(self.reference_key_for_definition(ids[0]))
+            }
+            _ => resolution
+                .definition_id()
+                .map(|def_id| self.reference_key_for_definition(def_id)),
+        }
+    }
+
+    fn expression_resolution(&self, node: &Expression) -> Option<Resolution> {
+        expression_resolution_for_ide(self.gcx, self.results, node)
+    }
+
+    fn pattern_resolution(&self, node: &Pattern) -> Option<Resolution> {
+        self.results
+            .and_then(|results| results.overload_source(node.id))
+            .map(|def_id| Resolution::Definition(def_id, self.gcx.definition_kind(def_id)))
+            .or_else(|| {
+                self.results
+                    .and_then(|results| results.value_resolution(node.id))
+            })
+            .or_else(|| pattern_fallback_resolution(node))
+    }
+
+    fn push_expression_references(&mut self, node: &Expression) {
+        match &node.kind {
+            ExpressionKind::Path(ResolvedPath::Resolved(path)) => {
+                if let Some(segment) = path.segments.last() {
+                    self.push_resolution_reference(&path.resolution, segment.span, false);
+                }
+            }
+            ExpressionKind::Path(ResolvedPath::Relative(_, segment)) => {
+                if let Some(resolution) = self.expression_resolution(node) {
+                    self.push_resolution_reference(&resolution, segment.span, false);
+                }
+            }
+            ExpressionKind::Member { target, name } => {
+                if let Some(property) = self
+                    .results
+                    .and_then(|results| results.property_read(node.id))
+                {
+                    self.push_definition_reference(property.property_id, name.span, false);
+                    return;
+                }
+
+                if let Some((field, _)) = self.member_definition(node, target) {
+                    self.push_definition_reference(field.def_id, name.span, false);
+                } else if let Some(resolution) = self.expression_resolution(node) {
+                    self.push_resolution_reference(&resolution, name.span, false);
+                }
+            }
+            ExpressionKind::MethodCall { name, .. } => {
+                if let Some(def_id) = self
+                    .results
+                    .and_then(|results| results.overload_source(node.id))
+                {
+                    self.push_definition_reference(def_id, name.span, false);
+                }
+            }
+            ExpressionKind::InferredMember { name } => {
+                if let Some(resolution) = self.expression_resolution(node) {
+                    self.push_resolution_reference(&resolution, name.span, false);
+                }
+            }
+            ExpressionKind::StructLiteral(literal) => {
+                self.push_struct_literal_field_references(node, literal);
+            }
+            _ => {}
+        }
+    }
+
+    fn push_pattern_references(&mut self, node: &Pattern) {
+        match &node.kind {
+            PatternKind::Binding { name, .. } => {
+                self.push_reference(ReferenceKey::Local(node.id), name.span, true);
+            }
+            PatternKind::Member(PatternPath::Inferred { name, .. })
+            | PatternKind::PathTuple {
+                path: PatternPath::Inferred { name, .. },
+                ..
+            } => {
+                if let Some(resolution) = self.pattern_resolution(node) {
+                    self.push_resolution_reference(&resolution, name.span, false);
+                }
+            }
+            _ => {
+                if let Some(resolution) = self.pattern_resolution(node) {
+                    self.push_resolution_reference(
+                        &resolution,
+                        pattern_navigation_span(node),
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    fn push_struct_literal_field_references(&mut self, node: &Expression, literal: &StructLiteral) {
+        let Some(results) = self.results else {
+            return;
+        };
+        let Some(struct_ty) = results.try_node_type(node.id) else {
+            return;
+        };
+
+        for field in &literal.fields {
+            let Some(name) = struct_literal_field_name(field) else {
+                continue;
+            };
+            let Some(field_def) = self.struct_field_by_name(struct_ty, name) else {
+                continue;
+            };
+            self.push_definition_reference(
+                field_def.def_id,
+                struct_literal_field_navigation_span(field),
+                false,
+            );
+        }
+    }
+
+    fn member_definition(
+        &self,
+        node: &Expression,
+        target: &Expression,
+    ) -> Option<(StructField<'ctx>, usize)> {
+        let results = self.results?;
+        let index = results.field_index(node.id)?;
+        let target_ty = results.try_node_type(target.id)?;
+        self.struct_field_for_ty(target_ty, index)
+            .map(|field| (field, index))
+    }
+
+    fn struct_field_by_name(
+        &self,
+        ty: Ty<'ctx>,
+        name: crate::span::Symbol,
+    ) -> Option<StructField<'ctx>> {
+        match ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                self.struct_field_by_name(inner, name)
+            }
+            TyKind::Alias { def_id, .. } => self
+                .gcx
+                .try_get_alias_type(def_id)
+                .and_then(|alias_ty| self.struct_field_by_name(alias_ty, name)),
+            TyKind::Adt(def, _) if def.kind == AdtKind::Struct => self
+                .gcx
+                .try_get_struct_definition(def.id)
+                .and_then(|struct_def| {
+                    struct_def
+                        .fields
+                        .iter()
+                        .find(|field| field.name == name)
+                        .copied()
+                }),
+            _ => None,
+        }
+    }
+
+    fn struct_field_for_ty(&self, ty: Ty<'ctx>, index: usize) -> Option<StructField<'ctx>> {
+        match ty.kind() {
+            TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                self.struct_field_for_ty(inner, index)
+            }
+            TyKind::Alias { def_id, .. } => self
+                .gcx
+                .try_get_alias_type(def_id)
+                .and_then(|alias_ty| self.struct_field_for_ty(alias_ty, index)),
+            TyKind::Adt(def, _) if def.kind == AdtKind::Struct => self
+                .gcx
+                .try_get_struct_definition(def.id)
+                .and_then(|struct_def| struct_def.fields.get(index).copied()),
+            _ => None,
+        }
+    }
+}
+
+impl<'ctx, 'results> HirVisitor for ReferenceVisitor<'ctx, 'results> {
+    fn visit_declaration(&mut self, node: &Declaration) {
+        if !matches!(
+            self.gcx.definition_kind(node.id),
+            DefinitionKind::Import | DefinitionKind::Export | DefinitionKind::Impl
+        ) {
+            self.push_definition_reference(node.id, node.identifier.span, true);
+        }
+        walk_declaration(self, node)
+    }
+
+    fn visit_assoc_declaration(
+        &mut self,
+        node: &AssociatedDeclaration,
+        context: hir::AssocContext,
+    ) {
+        self.push_definition_reference(node.id, node.identifier.span, true);
+        walk_assoc_declaration(self, node, context)
+    }
+
+    fn visit_variant(&mut self, node: &Variant) {
+        self.push_definition_reference(node.def_id, node.identifier.span, true);
+        hir::walk_variant(self, node)
+    }
+
+    fn visit_field_definition(&mut self, node: &FieldDefinition) {
+        self.push_definition_reference(node.def_id, node.identifier.span, true);
+        hir::walk_field_definition(self, node)
+    }
+
+    fn visit_type_parameter(&mut self, node: &hir::TypeParameter) {
+        self.push_definition_reference(node.id, node.identifier.span, true);
+        hir::walk_type_parameter(self, node)
+    }
+
+    fn visit_function_parameter(&mut self, node: &hir::FunctionParameter) {
+        self.push_reference(ReferenceKey::Local(node.id), node.name.span, true);
+        hir::walk_function_parameter(self, node)
+    }
+
+    fn visit_expression(&mut self, node: &Expression) {
+        self.push_expression_references(node);
+        walk_expression(self, node)
+    }
+
+    fn visit_pattern(&mut self, node: &Pattern) {
+        self.push_pattern_references(node);
+        walk_pattern(self, node)
+    }
+
+    fn visit_path_segment(&mut self, node: &PathSegment) {
+        self.push_resolution_reference(&node.resolution, node.span, false);
+        walk_path_segment(self, node)
+    }
+}
+
+fn collect_reference_data<'ctx>(
+    gcx: Gcx<'ctx>,
+    package: &hir::Package,
+    results: Option<&TypeCheckResults<'ctx>>,
+) -> ReferenceData {
+    let mut visitor = ReferenceVisitor::new(gcx, results);
     visitor.visit_package(package);
     visitor.finish()
 }
@@ -2018,6 +2405,7 @@ fn collect_ide_artifacts<'ctx>(
 ) -> IdeArtifacts {
     IdeArtifacts {
         navigation: collect_navigation_data(gcx, package, results, module_targets),
+        references: collect_reference_data(gcx, package, results),
         signatures: collect_signature_help_data(gcx, package, results),
         completions: collect_completion_data(gcx, package, results),
         status,
@@ -2070,6 +2458,59 @@ pub fn completion_at(
         return Vec::new();
     };
     sorted_completion_items(snapshot.completions.scopes[scope_index].items.clone())
+}
+
+pub fn references_at(
+    snapshot: &AnalysisSnapshot,
+    file_id: FileID,
+    position: Position,
+    include_declaration: bool,
+) -> Vec<ReferenceInfo> {
+    let Some(key) = reference_key_at(&snapshot.references, file_id, position) else {
+        return Vec::new();
+    };
+    let Some(group) = snapshot
+        .references
+        .groups
+        .iter()
+        .find(|group| group.key == key)
+    else {
+        return Vec::new();
+    };
+
+    group
+        .items
+        .iter()
+        .filter(|item| include_declaration || !item.is_declaration)
+        .cloned()
+        .collect()
+}
+
+pub fn reference_span_at(
+    snapshot: &AnalysisSnapshot,
+    file_id: FileID,
+    position: Position,
+) -> Option<Span> {
+    let index = reference_mention_index_at(&snapshot.references, file_id, position)?;
+    Some(snapshot.references.mentions[index].span)
+}
+
+fn reference_key_at(
+    data: &ReferenceData,
+    file_id: FileID,
+    position: Position,
+) -> Option<ReferenceKey> {
+    let index = reference_mention_index_at(data, file_id, position)?;
+    Some(data.mentions[index].key)
+}
+
+fn reference_mention_index_at(
+    data: &ReferenceData,
+    file_id: FileID,
+    position: Position,
+) -> Option<usize> {
+    let spans: Vec<_> = data.mentions.iter().map(|mention| mention.span).collect();
+    find_innermost_span_index(&spans, &data.parents, file_id, position)
 }
 
 fn find_completion_scope_index(
@@ -2258,6 +2699,15 @@ fn compare_positions(lhs: crate::span::Position, rhs: crate::span::Position) -> 
     lhs.line
         .cmp(&rhs.line)
         .then_with(|| lhs.offset.cmp(&rhs.offset))
+}
+
+fn compare_reference_keys(lhs: ReferenceKey, rhs: ReferenceKey) -> Ordering {
+    match (lhs, rhs) {
+        (ReferenceKey::Definition(lhs), ReferenceKey::Definition(rhs)) => lhs.cmp(&rhs),
+        (ReferenceKey::Local(lhs), ReferenceKey::Local(rhs)) => lhs.cmp(&rhs),
+        (ReferenceKey::Definition(_), ReferenceKey::Local(_)) => Ordering::Less,
+        (ReferenceKey::Local(_), ReferenceKey::Definition(_)) => Ordering::Greater,
+    }
 }
 
 fn build_parent_links(spans: impl Iterator<Item = Span>) -> Vec<Option<usize>> {
@@ -2664,6 +3114,7 @@ mod tests {
             AnalysisSnapshot {
                 diagnostics: Vec::new(),
                 navigation: artifacts.navigation,
+                references: artifacts.references,
                 signatures: artifacts.signatures,
                 completions: artifacts.completions,
                 status: artifacts.status,
@@ -2762,6 +3213,7 @@ mod tests {
         let snapshot = AnalysisSnapshot {
             diagnostics: Vec::new(),
             navigation: artifacts.navigation,
+            references: artifacts.references,
             signatures: artifacts.signatures,
             completions: artifacts.completions,
             status: artifacts.status,
@@ -2919,6 +3371,18 @@ mod tests {
             .collect()
     }
 
+    fn reference_spans_at_position(
+        snapshot: &AnalysisSnapshot,
+        file_id: crate::span::FileID,
+        position: Position,
+        include_declaration: bool,
+    ) -> Vec<crate::span::Span> {
+        super::references_at(snapshot, file_id, position, include_declaration)
+            .into_iter()
+            .map(|reference| reference.span)
+            .collect()
+    }
+
     fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
         lhs == rhs
             || lhs.canonicalize().ok() == rhs.canonicalize().ok()
@@ -3012,6 +3476,120 @@ mod tests {
 
         assert_eq!(definition.target.start.line, field_definition.line);
         assert_eq!(definition.target.start.offset, field_definition.offset);
+    }
+
+    #[test]
+    fn references_include_local_declaration_and_uses_without_shadow_leaks() {
+        let source = "func main() {\n    let value = 1\n    let first = value\n    if true {\n        let value = 2\n        let second = value\n    }\n    let third = value\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+
+        let outer_definition = start_position(&source_text, "value", 1);
+        let outer_first_use = start_position(&source_text, "value", 2);
+        let inner_definition = start_position(&source_text, "value", 3);
+        let inner_use = start_position(&source_text, "value", 4);
+        let outer_second_use = start_position(&source_text, "value", 5);
+        let references = reference_spans_at_position(&snapshot, file_id, outer_definition, true);
+
+        assert_eq!(references.len(), 3, "{references:?}");
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, outer_definition))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, outer_first_use))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, outer_second_use))
+        );
+        assert!(
+            !references
+                .iter()
+                .any(|span| span_contains(*span, inner_definition))
+        );
+        assert!(
+            !references
+                .iter()
+                .any(|span| span_contains(*span, inner_use))
+        );
+    }
+
+    #[test]
+    fn references_include_fields_and_struct_literal_labels() {
+        let source = "struct Foo { bar: uint32 }\n\nfunc main() {\n    let foo = Foo { bar: 1 }\n    let value = foo.bar\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+
+        let field_definition = start_position(&source_text, "bar", 1);
+        let literal_label = start_position(&source_text, "bar", 2);
+        let member_use = start_position(&source_text, "bar", 3);
+        let references = reference_spans_at_position(&snapshot, file_id, field_definition, true);
+
+        assert_eq!(references.len(), 3, "{references:?}");
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, field_definition))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, literal_label))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, member_use))
+        );
+    }
+
+    #[test]
+    fn references_include_enum_variant_declaration_and_uses() {
+        let source =
+            "enum Heading { case north, south }\n\nfunc main() {\n    let dir = Heading.north\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+
+        let variant_definition = start_position(&source_text, "north", 1);
+        let variant_use = start_position(&source_text, "north", 2);
+        let references = reference_spans_at_position(&snapshot, file_id, variant_definition, true);
+
+        assert_eq!(references.len(), 2, "{references:?}");
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, variant_definition))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, variant_use))
+        );
+    }
+
+    #[test]
+    fn references_include_function_parameter_declaration_and_uses() {
+        let source = "func identity(value: uint32) -> uint32 {\n    return value\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+
+        let parameter_definition = start_position(&source_text, "value", 1);
+        let parameter_use = start_position(&source_text, "value", 2);
+        let references =
+            reference_spans_at_position(&snapshot, file_id, parameter_definition, true);
+
+        assert_eq!(references.len(), 2, "{references:?}");
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, parameter_definition))
+        );
+        assert!(
+            references
+                .iter()
+                .any(|span| span_contains(*span, parameter_use))
+        );
     }
 
     #[test]
@@ -3114,6 +3692,22 @@ mod tests {
     #[test]
     fn probe_member_completion_includes_struct_fields() {
         let source = "struct Foo { bar: uint32 }\n\nfunc main() {\n    let foo = Foo { bar: 1 }\n    let value = foo.__taro_completion_probe\n}\n";
+        let (snapshot, source_text, file_id) = analyze_signature_source(source);
+        assert!(snapshot.status.typed_available, "{:?}", snapshot.status);
+
+        let labels = completion_labels_at_position(
+            &snapshot,
+            &source_text,
+            file_id,
+            end_position(source, COMPLETION_PROBE_IDENTIFIER, 1),
+        );
+
+        assert!(labels.contains(&"bar".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn probe_member_completion_includes_fields_after_call_receiver() {
+        let source = "struct Foo { bar: uint32 }\n\nfunc makeFoo() -> Foo {\n    return Foo { bar: 1 }\n}\n\nfunc main() {\n    let value = makeFoo().__taro_completion_probe\n}\n";
         let (snapshot, source_text, file_id) = analyze_signature_source(source);
         assert!(snapshot.status.typed_available, "{:?}", snapshot.status);
 
