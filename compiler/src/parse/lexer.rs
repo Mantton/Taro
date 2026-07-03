@@ -122,15 +122,6 @@ pub fn tokenize_module(
         }
     };
 
-    if name == ROOT_MODULE_NAME {
-        let message = format!(
-            "module cannot be named '{}' (reserved for root module)",
-            ROOT_MODULE_NAME
-        );
-        dcx.emit_error(message, None);
-        return Err(ReportedError);
-    }
-
     let entries = match read_dir(&directory) {
         Ok(entries) => entries,
         Err(e) => {

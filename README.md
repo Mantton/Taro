@@ -120,6 +120,7 @@ Use `taro new` to scaffold a package from a full package identifier:
 ```bash
 taro new github.com/acme/app
 taro new github.com/acme/lib --kind library
+taro new github.com/acme/tool --kind both
 ```
 
 This creates `./app` or `./lib` based on the repo segment of the package identifier.
@@ -128,8 +129,7 @@ Generated templates currently support:
 
 - `--kind executable` (default): writes `src/main.tr`
 - `--kind library`: writes `src/lib.tr`
-
-Manifests still recognize `kind = "both"` as a library plus executable package, but `taro new` does not scaffold that layout yet.
+- `--kind both`: writes `src/lib.tr` and `src/main/main.tr`
 
 ### VS Code Extension
 

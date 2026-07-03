@@ -70,7 +70,7 @@ fn create_project(package_name: &str, kind: NewProjectKind) -> CompileResult<Pat
     })?;
 
     write_manifest(&project_path.join("package.toml"), package_name, kind)?;
-    write_source_template(&src_path, kind)?;
+    write_source_templates(&src_path, kind)?;
 
     Ok(project_path)
 }
@@ -97,8 +97,36 @@ kind = "{}"
     })
 }
 
-fn write_source_template(src_path: &Path, kind: NewProjectKind) -> CompileResult<()> {
-    let source_path = src_path.join(kind.source_file_name());
+fn write_source_templates(src_path: &Path, kind: NewProjectKind) -> CompileResult<()> {
+    match kind {
+        NewProjectKind::Executable => {
+            write_source_template(src_path, "main.tr", executable_source_template())
+        }
+        NewProjectKind::Library => {
+            write_source_template(src_path, "lib.tr", library_source_template())
+        }
+        NewProjectKind::Both => {
+            write_source_template(
+                &src_path.join("main"),
+                "main.tr",
+                executable_source_template(),
+            )?;
+            write_source_template(src_path, "lib.tr", library_source_template())
+        }
+    }
+}
+
+fn write_source_template(src_path: &Path, file_name: &str, template: &str) -> CompileResult<()> {
+    fs::create_dir_all(src_path).map_err(|e| {
+        eprintln!(
+            "error: failed to create directory '{}': {}",
+            src_path.display(),
+            e
+        );
+        ReportedError
+    })?;
+
+    let source_path = src_path.join(file_name);
     let mut source_file = File::create(&source_path).map_err(|e| {
         eprintln!(
             "error: failed to create file '{}': {}",
@@ -108,7 +136,7 @@ fn write_source_template(src_path: &Path, kind: NewProjectKind) -> CompileResult
         ReportedError
     })?;
 
-    writeln!(source_file, "{}", kind.source_template()).map_err(|e| {
+    writeln!(source_file, "{}", template).map_err(|e| {
         eprintln!(
             "error: failed to write to '{}': {}",
             source_path.display(),
@@ -123,22 +151,17 @@ impl NewProjectKind {
         match self {
             NewProjectKind::Executable => "executable",
             NewProjectKind::Library => "library",
+            NewProjectKind::Both => "both",
         }
     }
+}
 
-    fn source_file_name(self) -> &'static str {
-        match self {
-            NewProjectKind::Executable => "main.tr",
-            NewProjectKind::Library => "lib.tr",
-        }
-    }
+fn executable_source_template() -> &'static str {
+    "func main() {\n    print(\"Hello, World!\\n\")\n}"
+}
 
-    fn source_template(self) -> &'static str {
-        match self {
-            NewProjectKind::Executable => "func main() {\n    print(\"Hello, World!\\n\")\n}",
-            NewProjectKind::Library => "public func hello() {\n    print(\"Hello, World!\\n\")\n}",
-        }
-    }
+fn library_source_template() -> &'static str {
+    "public func hello() {\n    print(\"Hello, World!\\n\")\n}"
 }
 
 #[cfg(test)]
@@ -185,6 +208,30 @@ mod tests {
             assert_eq!(
                 read_to_string(root.join(&project_path).join("package.toml")).expect("manifest"),
                 "[package]\nname = \"github.com/acme/lib\"\nversion = \"0.1.0\"\nkind = \"library\"\n\n"
+            );
+            assert_eq!(
+                read_to_string(root.join(&project_path).join("src/lib.tr")).expect("lib"),
+                "public func hello() {\n    print(\"Hello, World!\\n\")\n}\n"
+            );
+        });
+    }
+
+    #[test]
+    fn both_scaffold_writes_manifest_main_and_lib() {
+        with_test_cwd("new-both", |root| {
+            let project_path = match create_project("github.com/acme/app", NewProjectKind::Both) {
+                Ok(path) => path,
+                Err(_) => panic!("expected both scaffold to succeed"),
+            };
+
+            assert_eq!(project_path, PathBuf::from("app"));
+            assert_eq!(
+                read_to_string(root.join(&project_path).join("package.toml")).expect("manifest"),
+                "[package]\nname = \"github.com/acme/app\"\nversion = \"0.1.0\"\nkind = \"both\"\n\n"
+            );
+            assert_eq!(
+                read_to_string(root.join(&project_path).join("src/main/main.tr")).expect("main"),
+                "func main() {\n    print(\"Hello, World!\\n\")\n}\n"
             );
             assert_eq!(
                 read_to_string(root.join(&project_path).join("src/lib.tr")).expect("lib"),

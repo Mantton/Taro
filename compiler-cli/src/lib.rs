@@ -117,6 +117,7 @@ pub enum NewProjectKind {
     #[default]
     Executable,
     Library,
+    Both,
 }
 
 impl CommonCompileArgs {
@@ -231,9 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_new_command_with_unsupported_kind() {
-        let args = Cli::try_parse_from(["taro", "new", "github.com/acme/app", "--kind", "both"]);
-        assert!(args.is_err());
+    fn parses_new_command_with_both_kind() {
+        let args = Cli::parse_from(["taro", "new", "github.com/acme/app", "--kind", "both"]);
+
+        match args.command {
+            CliCommand::New(new) => assert_eq!(new.kind, NewProjectKind::Both),
+            other => panic!("expected new command, got {other:?}"),
+        }
     }
 
     #[test]
