@@ -2958,7 +2958,9 @@ mod tests {
         );
 
         scheduler.force_shutdown();
-        worker.join().expect("cancellation cleanup worker join failed");
+        worker
+            .join()
+            .expect("cancellation cleanup worker join failed");
         scheduler.join_background_threads();
     }
 

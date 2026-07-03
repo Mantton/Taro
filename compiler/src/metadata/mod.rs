@@ -1,11 +1,11 @@
 use crate::{
+    PackageIndex,
     compile::{
         config::{BuildProfile, Config},
         context::GlobalContext,
     },
     hir::{Abi, DefinitionID, DefinitionKind, KnownAttribute},
     mir::Body,
-    PackageIndex,
 };
 use rustc_hash::FxHashSet;
 use std::{

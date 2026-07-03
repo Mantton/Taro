@@ -3735,11 +3735,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     /// (shift modulo width) instead of producing LLVM poison. Checked shifts
     /// are lowered through `__intrinsic_checked_shl`/`shr` and panic before
     /// an out-of-range amount reaches the shift instruction.
-    fn mask_shift_amount(
-        &mut self,
-        lhs: IntValue<'llvm>,
-        rhs: IntValue<'llvm>,
-    ) -> IntValue<'llvm> {
+    fn mask_shift_amount(&mut self, lhs: IntValue<'llvm>, rhs: IntValue<'llvm>) -> IntValue<'llvm> {
         let bits = lhs.get_type().get_bit_width() as u64;
         let mask = rhs.get_type().const_int(bits - 1, false);
         self.builder.build_and(rhs, mask, "shift_mask").unwrap()
@@ -4059,7 +4055,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // signed sources sign-extend, unsigned sources (incl. bool/rune) zero-extend.
             return Some(
                 self.builder
-                    .build_int_cast_sign_flag(value.into_int_value(), to_int, from_signed, "int_cast")
+                    .build_int_cast_sign_flag(
+                        value.into_int_value(),
+                        to_int,
+                        from_signed,
+                        "int_cast",
+                    )
                     .unwrap()
                     .as_basic_value_enum(),
             );

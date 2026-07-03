@@ -19,14 +19,14 @@ use crate::{
             utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
         },
     },
-    specialize::{resolve_instance, Instance, InstanceKind},
+    specialize::{Instance, InstanceKind, resolve_instance},
 };
 use inkwell::{
+    AddressSpace,
     basic_block::BasicBlock,
     module::Linkage,
     types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, StructType},
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, PointerValue},
-    AddressSpace,
 };
 use rustc_hash::FxHashSet;
 

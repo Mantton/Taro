@@ -1810,8 +1810,7 @@ mod tests {
         let last_ptr = segment
             .base()
             .checked_add(segment.len - 1)
-            .expect("test segment address range")
-            as *const u8;
+            .expect("test segment address range") as *const u8;
 
         assert_eq!(gc.segment_index_for_ptr(first_ptr), Some(0));
         assert_eq!(gc.segment_index_for_ptr(last_ptr), Some(0));
