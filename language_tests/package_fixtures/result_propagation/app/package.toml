@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/result-propagation-app"
+kind = "executable"
+
+[require]
+"github.com/example/result-propagation-dep" = { path = "../dep", alias = "dep" }

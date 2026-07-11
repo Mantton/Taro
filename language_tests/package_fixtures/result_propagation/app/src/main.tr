@@ -1,0 +1,27 @@
+import dep.{DependencyError, dependencyResult}
+
+enum AppError {
+    case dependency(DependencyError)
+}
+
+impl From[DependencyError] for AppError {
+    func from(_ value: DependencyError) -> AppError {
+        .dependency(value)
+    }
+}
+
+func convertedDependencyResult(_ succeeds: bool) -> Result[int32, AppError] {
+    return .ok(dependencyResult(succeeds)!)
+}
+
+func main() {
+    match convertedDependencyResult(true) {
+        case .ok(value) => assert(value == 91, "cross-package converted success")
+        case .err(_) => assert(false, "cross-package success should not fail")
+    }
+    match convertedDependencyResult(false) {
+        case .err(.dependency(.failed)) => {}
+        case _ => assert(false, "cross-package conversion should preserve the error")
+    }
+    std.print("PASS: cross-package Result error conversion\n")
+}

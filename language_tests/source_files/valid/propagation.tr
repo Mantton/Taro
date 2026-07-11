@@ -49,6 +49,43 @@ func checkedAdd(_ value: int32) -> Result[int32, Error] {
     return .ok(value + 1)
 }
 
+enum SourceFailure {
+    case rejected
+}
+
+enum AppFailure {
+    case source(SourceFailure)
+}
+
+impl From[SourceFailure] for AppFailure {
+    func from(_ value: SourceFailure) -> AppFailure {
+        .source(value)
+    }
+}
+
+func sourceResult(_ succeeds: bool) -> Result[int32, SourceFailure] {
+    if succeeds {
+        return .ok(31)
+    }
+    return .err(.rejected)
+}
+
+func convertedResult(_ succeeds: bool) -> Result[int32, AppFailure] {
+    let value = sourceResult(succeeds)!
+    return .ok(value + 1)
+}
+
+func genericConvertedResult[T, Source, Target: From[Source]](
+    _ value: Result[T, Source],
+) -> Result[T, Target] {
+    return .ok(value!)
+}
+
+func asyncConvertedResult(_ succeeds: bool) async -> Result[int32, AppFailure] {
+    await std.testing.yieldNow()
+    return .ok(sourceResult(succeeds)!)
+}
+
 func nestedResult(_ value: int32) -> Result[int32, Error] {
     return .ok(checkedAdd(checkedAdd(value)!)! + 20)
 }
@@ -165,6 +202,25 @@ func main() async {
     )
 
     expectOk(await awaitTaskResult(), 12, "awaited task result should propagate with postfix !")
+
+    expectOk(convertedResult(true), 32, "Result propagation should convert error types")
+    match convertedResult(false) {
+        case .err(.source(.rejected)) => {}
+        case _ => assert(false, "converted Result should preserve the source error")
+    }
+
+    let genericConverted: Result[int32, AppFailure] = genericConvertedResult(sourceResult(true))
+    expectOk(genericConverted, 31, "generic Result propagation should use From")
+
+    expectOk(
+        await asyncConvertedResult(true),
+        31,
+        "async Result propagation should convert error types",
+    )
+    match await asyncConvertedResult(false) {
+        case .err(.source(.rejected)) => {}
+        case _ => assert(false, "async converted Result should preserve the source error")
+    }
 
     std.print("PASS: propagation\n")
 }

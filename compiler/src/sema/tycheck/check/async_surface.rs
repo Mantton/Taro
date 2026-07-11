@@ -128,23 +128,64 @@ impl<'ctx> Checker<'ctx> {
 
             let resolved_return_err = cs.infer_cx.resolve_vars_if_possible(return_err_ty);
             let resolved_operand_err = cs.infer_cx.resolve_vars_if_possible(err_ty);
-            if !resolved_return_err.is_infer()
-                && !resolved_operand_err.is_infer()
-                && resolved_return_err != resolved_operand_err
-            {
+            if resolved_return_err.is_infer() || resolved_operand_err.is_infer() {
+                cs.equal(return_err_ty, err_ty, expression.span);
+                return ok_ty;
+            }
+
+            if resolved_return_err == resolved_operand_err {
+                return ok_ty;
+            }
+
+            let Some(from_id) = gcx.std_item_def(hir::StdItem::From) else {
                 gcx.dcx().emit_error(
-                    format!(
-                        "Result propagation requires matching error types, found '{}' and '{}'",
-                        resolved_operand_err.format(gcx),
-                        resolved_return_err.format(gcx)
-                    )
-                    .into(),
+                    "Result error conversion requires the standard library From interface".into(),
                     Some(expression.span),
                 );
                 return Ty::error(gcx);
-            }
+            };
+            let Some(from_method_id) =
+                gcx.get_interface_requirements(from_id)
+                    .and_then(|requirements| {
+                        requirements.methods.iter().find_map(|method| {
+                            (gcx.symbol_text(method.name) == "from" && !method.has_self)
+                                .then_some(method.id)
+                        })
+                    })
+            else {
+                gcx.dcx().emit_error(
+                    "standard library From interface is missing its static from method".into(),
+                    Some(expression.span),
+                );
+                return Ty::error(gcx);
+            };
 
-            cs.equal(return_err_ty, err_ty, expression.span);
+            let generic_args = gcx.store.interners.intern_generic_args(vec![
+                GenericArgument::Type(resolved_return_err),
+                GenericArgument::Type(resolved_operand_err),
+            ]);
+            let interface = InterfaceReference {
+                id: from_id,
+                arguments: generic_args,
+                bindings: &[],
+            };
+            cs.add_goal(
+                Goal::Conforms {
+                    ty: resolved_return_err,
+                    interface,
+                },
+                expression.span,
+            );
+            self.results
+                .borrow_mut()
+                .record_result_propagation_conversion(
+                    expression.id,
+                    crate::sema::tycheck::results::ResultPropagationConversion {
+                        method_id: from_method_id,
+                        generic_args,
+                        target_ty: resolved_return_err,
+                    },
+                );
             return ok_ty;
         }
 

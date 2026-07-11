@@ -1,0 +1,10 @@
+public enum DependencyError {
+    case failed
+}
+
+public func dependencyResult(_ succeeds: bool) -> Result[int32, DependencyError] {
+    if succeeds {
+        return .ok(91)
+    }
+    return .err(.failed)
+}

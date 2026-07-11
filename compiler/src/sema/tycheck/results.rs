@@ -21,6 +21,7 @@ pub struct TypeCheckResults<'ctx> {
     value_resolutions: FxHashMap<hir::NodeID, Resolution>,
     instantiations: FxHashMap<hir::NodeID, GenericArguments<'ctx>>,
     async_calls: FxHashSet<hir::NodeID>,
+    result_propagation_conversions: FxHashMap<hir::NodeID, ResultPropagationConversion<'ctx>>,
     /// Maps pattern NodeIDs to their inferred binding modes (for Binding patterns)
     binding_modes: FxHashMap<hir::NodeID, hir::BindingMode>,
 }
@@ -38,6 +39,8 @@ impl<'ctx> TypeCheckResults<'ctx> {
             .extend(other.value_resolutions.drain());
         self.instantiations.extend(other.instantiations.drain());
         self.async_calls.extend(other.async_calls.drain());
+        self.result_propagation_conversions
+            .extend(other.result_propagation_conversions.drain());
         self.binding_modes.extend(other.binding_modes.drain());
     }
 
@@ -82,6 +85,14 @@ impl<'ctx> TypeCheckResults<'ctx> {
 
     pub fn record_async_call(&mut self, id: hir::NodeID) {
         self.async_calls.insert(id);
+    }
+
+    pub fn record_result_propagation_conversion(
+        &mut self,
+        id: hir::NodeID,
+        conversion: ResultPropagationConversion<'ctx>,
+    ) {
+        self.result_propagation_conversions.insert(id, conversion);
     }
 
     #[track_caller]
@@ -129,6 +140,13 @@ impl<'ctx> TypeCheckResults<'ctx> {
         self.async_calls.contains(&id)
     }
 
+    pub fn result_propagation_conversion(
+        &self,
+        id: hir::NodeID,
+    ) -> Option<ResultPropagationConversion<'ctx>> {
+        self.result_propagation_conversions.get(&id).copied()
+    }
+
     pub fn record_binding_mode(&mut self, id: hir::NodeID, mode: hir::BindingMode) {
         self.binding_modes.insert(id, mode);
     }
@@ -136,4 +154,11 @@ impl<'ctx> TypeCheckResults<'ctx> {
     pub fn binding_mode(&self, id: hir::NodeID) -> Option<hir::BindingMode> {
         self.binding_modes.get(&id).cloned()
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResultPropagationConversion<'ctx> {
+    pub method_id: DefinitionID,
+    pub generic_args: GenericArguments<'ctx>,
+    pub target_ty: Ty<'ctx>,
 }

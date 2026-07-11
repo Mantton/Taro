@@ -950,6 +950,7 @@ pub enum StdItem {
     Sendable,
     Hashable,
     Equatable,
+    From,
     Iterator,
     Iterable,
     AsyncIterator,
@@ -1022,6 +1023,7 @@ impl StdItem {
             StdItem::Sendable => Some("Sendable"),
             StdItem::Hashable => Some("Hashable"),
             StdItem::Equatable => Some("Equatable"),
+            StdItem::From => Some("From"),
             StdItem::Iterator => Some("Iterator"),
             StdItem::Iterable => Some("Iterable"),
             StdItem::AsyncIterator => Some("AsyncIterator"),
@@ -1088,6 +1090,7 @@ impl StdItem {
             "Sendable" => Some(Self::Sendable),
             "Hashable" => Some(Self::Hashable),
             "Equatable" => Some(Self::Equatable),
+            "From" => Some(Self::From),
             "Iterator" => Some(Self::Iterator),
             "Iterable" => Some(Self::Iterable),
             "AsyncIterator" => Some(Self::AsyncIterator),
@@ -1147,6 +1150,7 @@ impl StdItem {
             | StdItem::Sendable
             | StdItem::Hashable
             | StdItem::Equatable
+            | StdItem::From
             | StdItem::Iterator
             | StdItem::Iterable
             | StdItem::AsyncIterator
@@ -1219,6 +1223,7 @@ impl StdItem {
                 | StdItem::Sendable
                 | StdItem::Hashable
                 | StdItem::Equatable
+                | StdItem::From
                 | StdItem::Iterator
                 | StdItem::Iterable
                 | StdItem::AsyncIterator
@@ -1268,7 +1273,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 60] = [
+    pub const ALL_REQUIRED: [StdItem; 61] = [
         StdItem::Optional,
         StdItem::Result,
         StdItem::List,
@@ -1283,6 +1288,7 @@ impl StdItem {
         StdItem::Sendable,
         StdItem::Hashable,
         StdItem::Equatable,
+        StdItem::From,
         StdItem::Iterator,
         StdItem::Iterable,
         StdItem::AsyncIterator,
@@ -1331,12 +1337,13 @@ impl StdItem {
         StdItem::ResultErrCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 41] = [
+    pub const ALL_INTERFACES: [StdItem; 42] = [
         StdItem::Copy,
         StdItem::Clone,
         StdItem::Sendable,
         StdItem::Hashable,
         StdItem::Equatable,
+        StdItem::From,
         StdItem::Iterator,
         StdItem::Iterable,
         StdItem::AsyncIterator,

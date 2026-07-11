@@ -915,6 +915,7 @@ pub enum StdItemWire {
     Sendable,
     Hashable,
     Equatable,
+    From,
     Iterator,
     Iterable,
     AsyncIterator,
@@ -1536,6 +1537,7 @@ pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
         hir::StdItem::Sendable => StdItemWire::Sendable,
         hir::StdItem::Hashable => StdItemWire::Hashable,
         hir::StdItem::Equatable => StdItemWire::Equatable,
+        hir::StdItem::From => StdItemWire::From,
         hir::StdItem::Iterator => StdItemWire::Iterator,
         hir::StdItem::Iterable => StdItemWire::Iterable,
         hir::StdItem::AsyncIterator => StdItemWire::AsyncIterator,
@@ -1603,6 +1605,7 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
         StdItemWire::Sendable => hir::StdItem::Sendable,
         StdItemWire::Hashable => hir::StdItem::Hashable,
         StdItemWire::Equatable => hir::StdItem::Equatable,
+        StdItemWire::From => hir::StdItem::From,
         StdItemWire::Iterator => hir::StdItem::Iterator,
         StdItemWire::Iterable => hir::StdItem::Iterable,
         StdItemWire::AsyncIterator => hir::StdItem::AsyncIterator,
@@ -5479,6 +5482,12 @@ mod tests {
 
         assert_eq!(symbols.resolve_str(SymbolIdWire(7)), "<invalid-symbol-id>");
         assert_eq!(invalid.get(), Some(7));
+    }
+
+    #[test]
+    fn from_std_item_roundtrips_through_wire() {
+        let wire = std_item_to_wire(hir::StdItem::From);
+        assert_eq!(std_item_from_wire(&wire), hir::StdItem::From);
     }
 
     #[test]

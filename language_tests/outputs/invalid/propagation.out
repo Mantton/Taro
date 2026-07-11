@@ -10,7 +10,7 @@ error: Result propagation requires an enclosing Result return type, found 'Optio
  -> language_tests/source_files/invalid/propagation.tr:30:17
 	    return .some(resultValue(1)!)
 	                 ^^^^^^^^^^^^^^^
-error: Result propagation requires matching error types, found 'Error' and 'string'
+error: type 'string' does not conform to interface 'From[Error]'
  -> language_tests/source_files/invalid/propagation.tr:34:15
 	    return .ok(resultValue(1)!)
 	               ^^^^^^^^^^^^^^^

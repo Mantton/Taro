@@ -12,6 +12,7 @@ use crate::{
             solve::Adjustment,
             utils::instantiate::{
                 instantiate_signature_with_args, instantiate_struct_definition_with_args,
+                instantiate_ty_with_args,
             },
         },
     },
@@ -2265,6 +2266,33 @@ impl<'ctx> FunctionLower<'ctx> {
             _ => unreachable!("Result propagation return type must be Result"),
         };
         let err_value = self.push_expr(ExprKind::Local(err_local), err_ty, span);
+        let err_value =
+            if let Some(conversion) = self.results.result_propagation_conversion(expr.id) {
+                let callee_ty = instantiate_ty_with_args(
+                    self.gcx,
+                    self.gcx.get_type(conversion.method_id),
+                    conversion.generic_args,
+                );
+                let callee = self.push_expr(
+                    ExprKind::Zst {
+                        id: conversion.method_id,
+                        generic_args: Some(conversion.generic_args),
+                    },
+                    callee_ty,
+                    span,
+                );
+                self.push_expr(
+                    ExprKind::Call {
+                        callee,
+                        args: vec![err_value],
+                        is_async: false,
+                    },
+                    conversion.target_ty,
+                    span,
+                )
+            } else {
+                err_value
+            };
         let err_variant_index = enum_def
             .variants
             .iter()
