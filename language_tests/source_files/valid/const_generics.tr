@@ -1,5 +1,7 @@
 const N: usize = 2 + 2
 const FILL: uint8 = 7
+const CAST_SIZE: usize = 4_u16 as usize
+const CONDITIONAL_SIZE: usize = if true { CAST_SIZE } else { 1 / 0 }
 
 struct Buf[const Size: usize = 8] {
     data: [uint8; Size]
@@ -36,6 +38,9 @@ func checkNamedArrayLenConsts() {
     let x: [uint8; N + 1] = [1; N + 1]
     assert(x.len() == 5, "binary const expressions should be accepted")
     assert(*x.at(4) == 1, "binary const expressions should evaluate")
+
+    let selected: [uint8; CONDITIONAL_SIZE] = [2; CONDITIONAL_SIZE]
+    assert(selected.len() == 4, "cast and conditional const expressions should evaluate")
 }
 
 func main() {

@@ -2,7 +2,7 @@ use crate::{
     compile::context::{ConstEvaluationState, GlobalContext},
     hir,
     sema::{
-        models::{ConstKind, ConstValue, IntTy, Ty, TyKind, UIntTy},
+        models::{ConstKind, ConstValue, FloatTy, IntTy, Ty, TyKind, UIntTy},
         resolve::models::{DefinitionKind, VariantCtorKind},
         tycheck::results::TypeCheckResults,
     },
@@ -81,7 +81,8 @@ pub fn eval_const_definition<'ctx>(
 
     gcx.set_const_evaluation_state(id, ConstEvaluationState::Evaluating);
     gcx.push_const_evaluation(id);
-    let evaluated = eval_const_expression(gcx, expression);
+    let expected = gcx.try_get_type(id);
+    let evaluated = eval_const_expression_inner(gcx, expression, expected, None);
     gcx.pop_const_evaluation(id);
 
     if matches!(
@@ -101,13 +102,6 @@ pub fn eval_const_definition<'ctx>(
             None
         }
     }
-}
-
-pub fn eval_const_expression<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    expression: &hir::Expression,
-) -> Option<ConstValue> {
-    eval_const_expression_inner(gcx, expression, None, None)
 }
 
 /// Evaluate a constant expression using `expected` as the type of arithmetic
@@ -188,6 +182,39 @@ fn eval_const_expression_inner<'ctx>(
         hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
             eval_const_path(gcx, path, expression.span)
         }
+        hir::ExpressionKind::CastAs(value, target) => {
+            let source_ty = results
+                .and_then(|results| results.try_node_type(value.id))
+                .or_else(|| const_expression_type_hint(gcx, value));
+            let target_ty = results
+                .and_then(|results| results.try_node_type(expression.id))
+                .or_else(|| const_cast_target_type(gcx, target))
+                .or(expression_ty);
+            let value = eval_const_expression_inner(gcx, value, source_ty, results)?;
+            eval_const_cast(gcx, value, source_ty, target_ty, expression.span)
+        }
+        hir::ExpressionKind::If(node) => {
+            let condition =
+                eval_const_expression_inner(gcx, &node.condition, Some(gcx.types.bool), results)?;
+            let ConstValue::Bool(condition) = condition else {
+                return emit_const_type_error(gcx, node.condition.span);
+            };
+
+            if condition {
+                eval_const_expression_inner(gcx, &node.then_block, expression_ty, results)
+            } else if let Some(else_block) = &node.else_block {
+                eval_const_expression_inner(gcx, else_block, expression_ty, results)
+            } else {
+                Some(ConstValue::Unit)
+            }
+        }
+        hir::ExpressionKind::Block(block) if block.statements.is_empty() => {
+            if let Some(tail) = &block.tail {
+                eval_const_expression_inner(gcx, tail, expression_ty, results)
+            } else {
+                Some(ConstValue::Unit)
+            }
+        }
         _ => {
             gcx.dcx().emit_error(
                 "initializer must be a constant expression".into(),
@@ -198,6 +225,138 @@ fn eval_const_expression_inner<'ctx>(
     }?;
 
     validate_value_for_type(gcx, value, expression_ty, expression.span)
+}
+
+fn const_expression_type_hint<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    expression: &hir::Expression,
+) -> Option<Ty<'ctx>> {
+    let hir::ExpressionKind::Literal(literal) = &expression.kind else {
+        return None;
+    };
+
+    Some(match literal {
+        hir::Literal::Bool(_) => gcx.types.bool,
+        hir::Literal::Rune(_) => gcx.types.rune,
+        hir::Literal::String(_) => gcx.types.string,
+        hir::Literal::Float(_) => gcx.types.float64,
+        hir::Literal::Integer {
+            suffix: Some(suffix),
+            ..
+        } => match suffix {
+            crate::parse::IntegerTypeSuffix::I8 => gcx.types.int8,
+            crate::parse::IntegerTypeSuffix::I16 => gcx.types.int16,
+            crate::parse::IntegerTypeSuffix::I32 => gcx.types.int32,
+            crate::parse::IntegerTypeSuffix::I64 => gcx.types.int64,
+            crate::parse::IntegerTypeSuffix::U8 => gcx.types.uint8,
+            crate::parse::IntegerTypeSuffix::U16 => gcx.types.uint16,
+            crate::parse::IntegerTypeSuffix::U32 => gcx.types.uint32,
+            crate::parse::IntegerTypeSuffix::U64 => gcx.types.uint64,
+        },
+        hir::Literal::Integer { suffix: None, .. } | hir::Literal::Nil => return None,
+    })
+}
+
+fn const_cast_target_type<'ctx>(gcx: GlobalContext<'ctx>, target: &hir::Type) -> Option<Ty<'ctx>> {
+    let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) = &target.kind else {
+        return None;
+    };
+    let hir::Resolution::PrimaryType(primary) = path.resolution else {
+        return None;
+    };
+
+    Some(match primary {
+        crate::sema::resolve::models::PrimaryType::Int(kind) => Ty::new_int(gcx, kind),
+        crate::sema::resolve::models::PrimaryType::UInt(kind) => Ty::new_uint(gcx, kind),
+        crate::sema::resolve::models::PrimaryType::Float(kind) => Ty::new_float(gcx, kind),
+        crate::sema::resolve::models::PrimaryType::String => gcx.types.string,
+        crate::sema::resolve::models::PrimaryType::Bool => gcx.types.bool,
+        crate::sema::resolve::models::PrimaryType::Rune => gcx.types.rune,
+    })
+}
+
+fn eval_const_cast<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    value: ConstValue,
+    source_ty: Option<Ty<'ctx>>,
+    target_ty: Option<Ty<'ctx>>,
+    span: Span,
+) -> Option<ConstValue> {
+    let Some(target_ty) = target_ty else {
+        gcx.dcx().emit_error(
+            "cannot determine constant cast target type".into(),
+            Some(span),
+        );
+        return None;
+    };
+
+    let converted = match (value, target_ty.kind()) {
+        (ConstValue::Integer(value), TyKind::Int(_) | TyKind::UInt(_)) => {
+            ConstValue::Integer(value)
+        }
+        (ConstValue::Rune(value), TyKind::Int(_) | TyKind::UInt(_)) => {
+            ConstValue::Integer(value as u32 as i128)
+        }
+        (ConstValue::Integer(value), TyKind::Rune)
+            if source_ty.is_some_and(|ty| matches!(ty.kind(), TyKind::UInt(UIntTy::U8))) =>
+        {
+            let Ok(value) = u32::try_from(value) else {
+                return emit_const_cast_range_error(gcx, value, target_ty, span);
+            };
+            let Some(value) = char::from_u32(value) else {
+                return emit_const_cast_range_error(gcx, value, target_ty, span);
+            };
+            ConstValue::Rune(value)
+        }
+        (ConstValue::Integer(_), TyKind::Rune) => {
+            if let Some(source_ty) = source_ty {
+                gcx.dcx().emit_error(
+                    format!(
+                        "cannot cast '{}' to rune; use checked conversion functions",
+                        source_ty.format(gcx)
+                    ),
+                    Some(span),
+                );
+                return None;
+            }
+            return emit_const_type_error(gcx, span);
+        }
+        (ConstValue::Rune(value), TyKind::Rune) => ConstValue::Rune(value),
+        (ConstValue::Float(value), TyKind::Float(FloatTy::F32)) => {
+            if value.is_finite() && value.abs() > f32::MAX as f64 {
+                gcx.dcx().emit_error(
+                    format!(
+                        "constant value `{value}` is out of range for type `{}`",
+                        target_ty.format(gcx)
+                    ),
+                    Some(span),
+                );
+                return None;
+            }
+            ConstValue::Float((value as f32) as f64)
+        }
+        (ConstValue::Float(value), TyKind::Float(FloatTy::F64)) => ConstValue::Float(value),
+        (value, _) if source_ty == Some(target_ty) => value,
+        _ => return emit_const_type_error(gcx, span),
+    };
+
+    validate_value_for_type(gcx, converted, Some(target_ty), span)
+}
+
+fn emit_const_cast_range_error<'ctx, T: std::fmt::Display>(
+    gcx: GlobalContext<'ctx>,
+    value: T,
+    target_ty: Ty<'ctx>,
+    span: Span,
+) -> Option<ConstValue> {
+    gcx.dcx().emit_error(
+        format!(
+            "constant value `{value}` is out of range for type `{}`",
+            target_ty.format(gcx)
+        ),
+        Some(span),
+    );
+    None
 }
 
 fn eval_const_literal<'ctx>(
@@ -594,8 +753,13 @@ struct Header {
     bytes: [uint8; HEADER_SIZE]
 }
 
+struct CastBuffer {
+    bytes: [uint8; FORWARD_CAST_SIZE]
+}
+
 const DEFAULT_SIZE: usize = 4
 const HEADER_SIZE: usize = 2
+const FORWARD_CAST_SIZE: usize = 4_u16 as usize
 
 func main() {}
 "#,
@@ -655,6 +819,61 @@ func main() {
         );
 
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn constant_conditionals_only_evaluate_the_selected_branch() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const SELECTED_TRUE: int32 = if true { 42 } else { 1 / 0 }
+const SELECTED_FALSE: int32 = if false { 1 / 0 } else { 24 }
+
+func main() {
+    let _: int32 = SELECTED_TRUE
+    let _: int32 = SELECTED_FALSE
+}
+"#,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn primitive_constant_casts_are_evaluated_at_the_target_type() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const BYTE: uint8 = 255_u16 as uint8
+const LETTER: rune = 65_u8 as rune
+const LETTER_CODE: uint32 = LETTER as uint32
+const RATIO: float = 1.5 as float
+
+func main() {
+    let _: uint8 = BYTE
+    let _: rune = LETTER
+    let _: uint32 = LETTER_CODE
+    let _: float = RATIO
+}
+"#,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn narrowing_constant_casts_reject_out_of_range_values() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const TOO_LARGE: uint8 = 256_u16 as uint8
+
+func main() {}
+"#,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(
+            diagnostics[0].message,
+            "constant value `256` is out of range for type `uint8`"
+        );
     }
 
     #[test]

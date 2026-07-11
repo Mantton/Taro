@@ -676,6 +676,10 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
+    pub fn try_get_type(self, id: DefinitionID) -> Option<Ty<'arena>> {
+        self.with_type_database(id.package(), |db| db.def_to_ty.get(&id).copied())
+    }
+
     pub fn try_get_const(self, id: DefinitionID) -> Option<Const<'arena>> {
         self.with_type_database(id.package(), |db| db.def_to_const.get(&id).cloned())
     }

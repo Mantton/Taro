@@ -1,0 +1,12 @@
+error: constant value `256` is out of range for type `uint8`
+ -> language_tests/source_files/invalid/constant_casts.tr:1:25
+	const TOO_LARGE: uint8 = 256_u16 as uint8
+	                         ^^^^^^^^^^^^^^^^
+error: cannot cast 'uint32' to rune; use checked conversion functions
+ -> language_tests/source_files/invalid/constant_casts.tr:2:27
+	const INVALID_RUNE: rune = 65_u32 as rune
+	                           ^^^^^^^^^^^^^^
+error: constant value `10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000` is out of range for type `float`
+ -> language_tests/source_files/invalid/constant_casts.tr:3:31
+	const TOO_LARGE_FLOAT: float = 1e100 as float
+	                               ^^^^^^^^^^^^^^

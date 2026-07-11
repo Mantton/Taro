@@ -4,9 +4,19 @@
 func main() {
     assert(EXIT == 10, "Int constant fail")
     assert(STR == "hello, world\n", "String constant fail")
+    assert(BYTE == 255, "cast constant fail")
+    assert(LETTER == 'A', "rune cast constant fail")
+    assert(LETTER_CODE == 65, "rune-to-int constant fail")
+    assert(SELECTED == 42, "conditional constant fail")
+    assert(RATIO == 1.5, "float cast constant fail")
     
     std.print("PASS: Constants working\n")
 }
 
 const EXIT: int32 = 10
 const STR: string = "hello, world\n"
+const BYTE: uint8 = 255_u16 as uint8
+const LETTER: rune = 65_u8 as rune
+const LETTER_CODE: uint32 = LETTER as uint32
+const SELECTED: int32 = if false { 1 / 0 } else { 42 }
+const RATIO: float = 1.5 as float

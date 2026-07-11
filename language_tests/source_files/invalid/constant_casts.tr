@@ -1,0 +1,5 @@
+const TOO_LARGE: uint8 = 256_u16 as uint8
+const INVALID_RUNE: rune = 65_u32 as rune
+const TOO_LARGE_FLOAT: float = 1e100 as float
+
+func main() {}
