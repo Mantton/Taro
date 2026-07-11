@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/default-parameter-app"
+kind = "executable"
+
+[require]
+"github.com/example/default-parameter-dep" = { path = "../dep", alias = "dep" }

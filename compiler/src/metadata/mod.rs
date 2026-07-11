@@ -719,6 +719,12 @@ fn should_retain_mir_root_for_metadata<'ctx>(
     def_id: DefinitionID,
     body: &Body<'_>,
 ) -> bool {
+    // Closure bodies are nested definitions rather than resolver definitions.
+    // Retain them through closure aggregates reachable from retained roots.
+    if gcx.get_closure_captures(def_id).is_some() {
+        return false;
+    }
+
     // Method calls can resolve late during codegen (interface/default/witness paths).
     // Keep associated-function MIR available so those concrete targets can be lowered.
     if matches!(

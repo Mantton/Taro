@@ -347,7 +347,14 @@ fn for_each_function_constant_in_rvalue<'ctx>(
             for_each_function_constant_in_operand(rhs, visit);
         }
         Rvalue::Cast { operand, .. } => for_each_function_constant_in_operand(operand, visit),
-        Rvalue::Aggregate { fields, .. } => {
+        Rvalue::Aggregate { kind, fields } => {
+            if let AggregateKind::Closure {
+                def_id,
+                captured_generics,
+            } = kind
+            {
+                visit(*def_id, *captured_generics);
+            }
             for field in fields.iter() {
                 for_each_function_constant_in_operand(field, visit);
             }

@@ -1,0 +1,6 @@
+import dep.invokeDefault
+
+func main() {
+    assert(invokeDefault() == 77, "dependency closure default")
+    std.print("PASS: cross-package closure default\n")
+}

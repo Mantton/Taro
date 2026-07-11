@@ -84,8 +84,12 @@ impl<'ctx> Actor<'ctx> {
             if id.package() != gcx.package_index() {
                 continue;
             }
-            let func = FunctionLower::lower_default_provider(gcx, actor.results.clone(), *id, expr);
+            let (func, nested_closures) =
+                FunctionLower::lower_default_provider(gcx, actor.results.clone(), *id, expr);
             actor.functions.insert(*id, func);
+            for closure_func in nested_closures {
+                actor.functions.insert(closure_func.id, closure_func);
+            }
         }
 
         let pkg = ThirPackage {
@@ -167,7 +171,7 @@ impl<'ctx> FunctionLower<'ctx> {
         results: std::rc::Rc<TypeCheckResults<'ctx>>,
         id: DefinitionID,
         expr: &hir::Expression,
-    ) -> ThirFunction<'ctx> {
+    ) -> (ThirFunction<'ctx>, Vec<ThirFunction<'ctx>>) {
         let mut lower = FunctionLower {
             gcx,
             results,
@@ -199,8 +203,7 @@ impl<'ctx> FunctionLower<'ctx> {
         });
 
         lower.func.body = Some(block_id);
-        // Note: nested_closures from default providers are ignored for now
-        lower.func
+        (lower.func, lower.nested_closures)
     }
 
     fn lower_call_args(
