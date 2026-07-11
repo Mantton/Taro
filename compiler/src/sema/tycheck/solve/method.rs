@@ -552,7 +552,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         return Some(matching);
     }
 
-    fn concrete_interface_roots(
+    pub(super) fn concrete_interface_roots(
         &self,
         self_ty: Ty<'ctx>,
         span: Span,
@@ -802,7 +802,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
     }
 
-    fn interface_args_with_self(
+    pub(super) fn interface_args_with_self(
         &self,
         iface: InterfaceReference<'ctx>,
         self_ty: Ty<'ctx>,
@@ -818,7 +818,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.gcx().store.interners.intern_generic_args(args)
     }
 
-    fn labeled_signature_to_ty(&self, sig: &LabeledFunctionSignature<'ctx>) -> Ty<'ctx> {
+    pub(super) fn labeled_signature_to_ty(&self, sig: &LabeledFunctionSignature<'ctx>) -> Ty<'ctx> {
         let inputs: Vec<_> = sig.inputs.iter().map(|p| p.ty).collect();
         let inputs = self.gcx().store.interners.intern_ty_list(inputs);
         Ty::new(

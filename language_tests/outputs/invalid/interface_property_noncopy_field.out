@@ -1,0 +1,8 @@
+error: type 'ItemBag' does not satisfy requirements for interface 'BorrowedItems'
+ -> language_tests/source_files/invalid/interface_property_noncopy_field.tr:11:5
+	impl BorrowedItems for ItemBag {}
+	     ^^^^^^^^^^^^^
+info: missing readable property 'items' of type 'List[int32]'
+ -> language_tests/source_files/invalid/interface_property_noncopy_field.tr:11:5
+	impl BorrowedItems for ItemBag {}
+	     ^^^^^^^^^^^^^

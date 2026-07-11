@@ -417,13 +417,6 @@ impl<'ctx> Checker<'ctx> {
 
 type Cs<'c> = ConstraintSystem<'c>;
 
-#[derive(Debug, Clone, Copy)]
-enum Needs {
-    #[allow(unused)]
-    None,
-    MutPlace,
-}
-
 fn integer_literal_fits<'ctx>(value: u64, ty: Ty<'ctx>) -> bool {
     let value = value as u128;
     match ty.kind() {

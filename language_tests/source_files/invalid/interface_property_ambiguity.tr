@@ -1,0 +1,21 @@
+interface FirstValue {
+    var value: int32 {
+        get(&self)
+    };
+}
+
+interface SecondValue {
+    var value: int32 {
+        get(&self)
+    };
+}
+
+func ambiguousValue[T: FirstValue & SecondValue](_ value: &T) -> int32 {
+    value.value
+}
+
+func disambiguatedValue[T: FirstValue & SecondValue](_ value: &T) -> int32 {
+    FirstValue.value(value) + SecondValue.value(value)
+}
+
+func main() {}

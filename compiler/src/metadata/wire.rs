@@ -312,6 +312,11 @@ pub struct TypeDatabaseWire {
     #[serde(default)]
     pub type_head_to_properties:
         Vec<(TypeHeadWire, Vec<(SymbolIdWire, ComputedPropertyEntryWire)>)>,
+    #[serde(default)]
+    pub type_head_to_interface_properties: Vec<(
+        TypeHeadWire,
+        Vec<((DefIdWire, SymbolIdWire), Vec<ComputedPropertyEntryWire>)>,
+    )>,
     pub def_to_generics: Vec<(DefIdWire, GenericsWire)>,
     pub generic_type_defaults: Vec<(DefIdWire, TyWire)>,
     pub generic_const_param_tys: Vec<(DefIdWire, TyWire)>,
@@ -602,6 +607,8 @@ pub struct InterfaceReferenceSpannedWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterfaceRequirementsWire {
     pub methods: Vec<InterfaceMethodRequirementWire>,
+    #[serde(default)]
+    pub properties: Vec<InterfacePropertyRequirementWire>,
     pub types: Vec<AssociatedTypeDefinitionWire>,
     pub constants: Vec<InterfaceConstantRequirementWire>,
 }
@@ -613,6 +620,15 @@ pub struct InterfaceMethodRequirementWire {
     pub signature: LabeledFunctionSignatureWire,
     pub has_self: bool,
     pub is_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfacePropertyRequirementWire {
+    pub id: DefIdWire,
+    pub name: SymbolIdWire,
+    pub ty: TyWire,
+    pub getter_id: DefIdWire,
+    pub setter_id: Option<DefIdWire>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -809,6 +825,8 @@ pub enum SyntheticMethodKindWire {
     ClosureCall,
     ClosureCallMut,
     ClosureCallOnce,
+    PropertyFieldGetter { field_index: u32 },
+    PropertyFieldSetter { field_index: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2784,6 +2802,17 @@ pub fn interface_requirements_to_wire(
                 is_required: method.is_required,
             })
             .collect(),
+        properties: v
+            .properties
+            .iter()
+            .map(|property| InterfacePropertyRequirementWire {
+                id: def_to_wire(property.id),
+                name: symbols.intern_symbol(property.name),
+                ty: ty_to_wire(property.ty),
+                getter_id: def_to_wire(property.getter_id),
+                setter_id: property.setter_id.map(def_to_wire),
+            })
+            .collect(),
         types: v
             .types
             .iter()
@@ -2829,6 +2858,19 @@ pub fn interface_requirements_from_wire<'a>(
                     is_required: method.is_required,
                 }
             })
+            .collect(),
+        properties: v
+            .properties
+            .iter()
+            .map(
+                |property| crate::sema::models::InterfacePropertyRequirement {
+                    id: def_from_wire(&property.id),
+                    name: Symbol::new(symbols.resolve_str(property.name)),
+                    ty: ty_from_wire(gcx, &property.ty),
+                    getter_id: def_from_wire(&property.getter_id),
+                    setter_id: property.setter_id.as_ref().map(def_from_wire),
+                },
+            )
             .collect(),
         types: v
             .types
@@ -3219,6 +3261,16 @@ pub fn synthetic_method_info_to_wire(
             SyntheticMethodKind::ClosureCall => SyntheticMethodKindWire::ClosureCall,
             SyntheticMethodKind::ClosureCallMut => SyntheticMethodKindWire::ClosureCallMut,
             SyntheticMethodKind::ClosureCallOnce => SyntheticMethodKindWire::ClosureCallOnce,
+            SyntheticMethodKind::PropertyFieldGetter(field_index) => {
+                SyntheticMethodKindWire::PropertyFieldGetter {
+                    field_index: field_index as u32,
+                }
+            }
+            SyntheticMethodKind::PropertyFieldSetter(field_index) => {
+                SyntheticMethodKindWire::PropertyFieldSetter {
+                    field_index: field_index as u32,
+                }
+            }
         },
         self_ty: ty_to_wire(v.self_ty),
         interface_id: def_to_wire(v.interface_id),
@@ -3270,6 +3322,12 @@ pub fn synthetic_method_info_from_wire<'a>(
             SyntheticMethodKindWire::ClosureCall => SyntheticMethodKind::ClosureCall,
             SyntheticMethodKindWire::ClosureCallMut => SyntheticMethodKind::ClosureCallMut,
             SyntheticMethodKindWire::ClosureCallOnce => SyntheticMethodKind::ClosureCallOnce,
+            SyntheticMethodKindWire::PropertyFieldGetter { field_index } => {
+                SyntheticMethodKind::PropertyFieldGetter(field_index as usize)
+            }
+            SyntheticMethodKindWire::PropertyFieldSetter { field_index } => {
+                SyntheticMethodKind::PropertyFieldSetter(field_index as usize)
+            }
         },
         self_ty: ty_from_wire(gcx, &v.self_ty),
         interface_id: def_from_wire(&v.interface_id),
@@ -4861,6 +4919,28 @@ pub fn type_database_to_wire(
                 )
             })
             .collect(),
+        type_head_to_interface_properties: db
+            .type_head_to_interface_properties
+            .iter()
+            .map(|(head, properties)| {
+                (
+                    type_head_to_wire(*head),
+                    properties
+                        .iter()
+                        .map(|((interface_id, name), entries)| {
+                            (
+                                (def_to_wire(*interface_id), symbols.intern_symbol(*name)),
+                                entries
+                                    .iter()
+                                    .copied()
+                                    .map(computed_property_entry_to_wire)
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
         def_to_generics: db
             .def_to_generics
             .iter()
@@ -5155,6 +5235,32 @@ pub fn type_database_from_wire<'a>(
                             (
                                 Symbol::new(symbols.resolve_str(*name)),
                                 computed_property_entry_from_wire(gcx, property, remap),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+        type_head_to_interface_properties: wire
+            .type_head_to_interface_properties
+            .iter()
+            .map(|(head, properties)| {
+                (
+                    type_head_from_wire(head),
+                    properties
+                        .iter()
+                        .map(|((interface_id, name), entries)| {
+                            (
+                                (
+                                    def_from_wire(interface_id),
+                                    Symbol::new(symbols.resolve_str(*name)),
+                                ),
+                                entries
+                                    .iter()
+                                    .map(|entry| {
+                                        computed_property_entry_from_wire(gcx, entry, remap)
+                                    })
+                                    .collect(),
                             )
                         })
                         .collect(),

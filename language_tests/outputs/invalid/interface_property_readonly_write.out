@@ -1,0 +1,4 @@
+error: cannot assign to a read-only property
+ -> language_tests/source_files/invalid/interface_property_readonly_write.tr:8:4
+	    value.value = 1
+	    ^^^^^^^^^^^

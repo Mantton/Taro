@@ -1,0 +1,24 @@
+interface WritableValue {
+    var value: int32 {
+        get(&self)
+        set(&mut self, value: int32)
+    };
+}
+
+struct ReadonlyValue {
+    readonly value: int32
+}
+
+impl WritableValue for ReadonlyValue {}
+
+struct WrongValue {
+    value: string
+}
+
+impl WritableValue for WrongValue {}
+
+struct MissingValue {}
+
+impl WritableValue for MissingValue {}
+
+func main() {}

@@ -1,0 +1,210 @@
+interface NamedProperty {
+    var name: string {
+        get(&self)
+    };
+}
+
+interface CountedProperty {
+    var count: int32 {
+        get(&self)
+        set(&mut self, value: int32)
+    };
+}
+
+interface ValuedProperty {
+    var value: int32 {
+        get(&self)
+    };
+}
+
+interface AsyncValuedProperty {
+    var value: int32 {
+        get(&self) async
+    };
+}
+
+interface FirstScopedValue {
+    var scoped: int32 {
+        get(&self)
+    };
+}
+
+interface SecondScopedValue {
+    var scoped: int32 {
+        get(&self)
+    };
+}
+
+interface OwnedItemsProperty {
+    var items: std.collections.List[int32] {
+        get(self)
+    };
+}
+
+struct PropertyUser {
+    name: string
+}
+
+impl NamedProperty for PropertyUser {}
+
+struct PropertyCounter {
+    count: int32
+}
+
+impl CountedProperty for PropertyCounter {}
+
+struct ComputedPropertyValue {
+    storage: int32
+}
+
+impl ComputedPropertyValue {
+    var value: int32 {
+        get(&self) {
+            self.storage * 2
+        }
+
+        set(&mut self, value: int32) {
+            self.storage = value / 2
+        }
+    };
+}
+
+impl ValuedProperty for ComputedPropertyValue {}
+
+struct AsyncPropertyValue {
+    storage: int32
+}
+
+impl AsyncPropertyValue {
+    var value: int32 {
+        get(&self) async {
+            self.storage
+        }
+    };
+}
+
+impl AsyncValuedProperty for AsyncPropertyValue {}
+
+struct ScopedPropertyValue {
+    first: int32
+    second: int32
+}
+
+impl FirstScopedValue for ScopedPropertyValue {
+    var scoped: int32 {
+        get(&self) {
+            self.first
+        }
+    };
+}
+
+impl SecondScopedValue for ScopedPropertyValue {
+    var scoped: int32 {
+        get(&self) {
+            self.second
+        }
+    };
+}
+
+struct PropertyItemBag {
+    items: std.collections.List[int32]
+}
+
+impl OwnedItemsProperty for PropertyItemBag {}
+
+struct ExplicitPropertyValue {
+    storage: int32
+}
+
+struct ForwardedFieldValue {
+    value: int32
+}
+
+impl ValuedProperty for ForwardedFieldValue {
+    var value: int32 {
+        get(&self) {
+            self.value
+        }
+    };
+}
+
+impl ValuedProperty for ExplicitPropertyValue {
+    var value: int32 {
+        get(&self) {
+            self.storage + 1
+        }
+    };
+}
+
+func genericName[T: NamedProperty](_ value: &T) -> string {
+    value.name
+}
+
+func genericIncrement[T: CountedProperty](_ value: &mut T) {
+    value.count += 1
+}
+
+func genericSet[T: CountedProperty](_ value: &mut T, _ count: int32) {
+    value.count = count
+}
+
+func genericAsyncValue[T: AsyncValuedProperty](_ value: &T) async -> int32 {
+    await value.value
+}
+
+func takeItems[T: OwnedItemsProperty](_ value: T) -> std.collections.List[int32] {
+    value.items
+}
+
+func main() async {
+    let user = PropertyUser { name: "Taro" }
+    assert(genericName(&user) == "Taro", "generic field-backed getter")
+    assert(NamedProperty.name(&user) == "Taro", "UFCS property getter")
+
+    let erasedUser: any NamedProperty = user
+    assert(erasedUser.name == "Taro", "existential field-backed getter")
+
+    var counter = PropertyCounter { count: 4 }
+    CountedProperty.count(&mut counter, value: 7)
+    assert(counter.count == 7, "UFCS property setter")
+    genericSet(&mut counter, 8)
+    assert(counter.count == 8, "generic field-backed assignment")
+    genericIncrement(&mut counter)
+    assert(counter.count == 9, "generic field-backed setter")
+
+    var erasedCounter: any CountedProperty = counter
+    erasedCounter.count = 9
+    assert(erasedCounter.count == 9, "existential field-backed setter")
+
+    let computed = ComputedPropertyValue { storage: 6 }
+    let erasedComputed: any ValuedProperty = computed
+    assert(erasedComputed.value == 12, "inherent computed-property witness")
+
+    let asyncValue = AsyncPropertyValue { storage: 13 }
+    let directAsyncValue = await asyncValue.value
+    assert(directAsyncValue == 13, "inherent async property")
+    let genericAsyncResult = await genericAsyncValue(&asyncValue)
+    assert(genericAsyncResult == 13, "generic async property witness")
+    let erasedAsync: any AsyncValuedProperty = asyncValue
+    let erasedAsyncValue = await erasedAsync.value
+    assert(erasedAsyncValue == 13, "existential async property witness")
+
+    let explicit = ExplicitPropertyValue { storage: 10 }
+    let erasedExplicit: any ValuedProperty = explicit
+    assert(erasedExplicit.value == 11, "explicit property witness")
+
+    let forwarded = ForwardedFieldValue { value: 17 }
+    let erasedForwarded: any ValuedProperty = forwarded
+    assert(erasedForwarded.value == 17, "explicit field-forwarding property witness")
+
+    let scoped = ScopedPropertyValue { first: 21, second: 34 }
+    assert(FirstScopedValue.scoped(&scoped) == 21, "first scoped property")
+    assert(SecondScopedValue.scoped(&scoped) == 34, "second scoped property")
+
+    var items: std.collections.List[int32] = std.collections.List()
+    items.append(55)
+    let takenItems = takeItems(PropertyItemBag { items })
+    assert(takenItems.len() == 1, "consuming stored-field property witness")
+
+    std.print("PASS: interface properties\n")
+}

@@ -16,7 +16,6 @@ use crate::{
         UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
         Visibility, VisibilityLevel,
     },
-    constants::INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC,
     diagnostics::DiagCtx,
     error::ReportedError,
     parse::{Base, lexer, token::Token},
@@ -646,15 +645,12 @@ impl Parser {
         let attributes = self.parse_attributes()?;
         let visibility = self.parse_visibility()?;
         if self.matches(Token::Var) {
-            if !fn_mode.req_body {
-                return Err(Spanned::new(
-                    ParserError::ComputedPropertyOnlyAllowedInImpl,
-                    start_span.to(self.hi_span()),
-                ));
-            }
-
-            let declaration =
-                self.parse_computed_property_associated(start_span, attributes, visibility)?;
+            let declaration = self.parse_computed_property_associated(
+                start_span,
+                attributes,
+                visibility,
+                fn_mode.req_body,
+            )?;
             self.expect_semi()?;
             return Ok(Some(declaration));
         }
@@ -690,14 +686,19 @@ impl Parser {
         start_span: Span,
         attributes: AttributeList,
         visibility: Visibility,
+        accessor_bodies_required: bool,
     ) -> R<AssociatedDeclaration> {
         self.expect(Token::Var)?;
         let identifier = self.parse_identifier()?;
         self.expect(Token::Colon)?;
         let ty = self.parse_type()?;
 
-        let (getter_decl, setter_decl) =
-            self.parse_computed_property_accessors(identifier, &ty, visibility)?;
+        let (getter_decl, setter_decl) = self.parse_computed_property_accessors(
+            identifier,
+            &ty,
+            visibility,
+            accessor_bodies_required,
+        )?;
 
         let property = ComputedProperty {
             ty,
@@ -727,6 +728,7 @@ impl Parser {
         property_identifier: Identifier,
         property_ty: &Box<Type>,
         visibility: Visibility,
+        accessor_bodies_required: bool,
     ) -> R<(AssociatedDeclaration, Option<AssociatedDeclaration>)> {
         self.expect(Token::LBrace)?;
 
@@ -752,6 +754,7 @@ impl Parser {
                     property_ty,
                     getter_ident,
                     visibility,
+                    accessor_bodies_required,
                 )?);
             } else if self.matches_contextual_identifier("set") {
                 if setter.is_some() {
@@ -761,6 +764,7 @@ impl Parser {
                     property_ty,
                     setter_ident,
                     visibility,
+                    accessor_bodies_required,
                 )?);
             } else {
                 return Err(self.err_at_current(ParserError::ExpectedComputedPropertyAccessor));
@@ -784,6 +788,7 @@ impl Parser {
         _property_ty: &Type,
         hidden_name: Identifier,
         visibility: Visibility,
+        body_required: bool,
     ) -> R<AssociatedDeclaration> {
         let lo = self.lo_span();
         let get_ident = self.parse_identifier()?;
@@ -804,9 +809,16 @@ impl Parser {
         }
 
         let block = if self.matches(Token::LBrace) {
+            if !body_required {
+                return Err(
+                    self.err_at_current(ParserError::ComputedPropertyAccessorBodyNotAllowed)
+                );
+            }
             Some(self.parse_block()?)
-        } else {
+        } else if body_required {
             return Err(self.err_at_current(ParserError::FunctionBodyRequired));
+        } else {
+            None
         };
 
         let signature = FunctionSignature {
@@ -844,6 +856,7 @@ impl Parser {
         _property_ty: &Type,
         hidden_name: Identifier,
         visibility: Visibility,
+        body_required: bool,
     ) -> R<AssociatedDeclaration> {
         let lo = self.lo_span();
         let set_ident = self.parse_identifier()?;
@@ -873,9 +886,16 @@ impl Parser {
         }
 
         let block = if self.matches(Token::LBrace) {
+            if !body_required {
+                return Err(
+                    self.err_at_current(ParserError::ComputedPropertyAccessorBodyNotAllowed)
+                );
+            }
             Some(self.parse_block()?)
-        } else {
+        } else if body_required {
             return Err(self.err_at_current(ParserError::FunctionBodyRequired));
+        } else {
+            None
         };
 
         let signature = FunctionSignature {
@@ -4730,7 +4750,7 @@ enum ParserError {
     InvalidComputedPropertyGetterSignature,
     InvalidComputedPropertySetterSignature,
     AsyncComputedPropertySetterNotAllowed,
-    ComputedPropertyOnlyAllowedInImpl,
+    ComputedPropertyAccessorBodyNotAllowed,
     ExtraTypeArguments,
     UnsafeModifierRequiresFunction,
     UnsafeAttributeRemoved,
@@ -4814,9 +4834,9 @@ impl Display for ParserError {
             AsyncComputedPropertySetterNotAllowed => {
                 f.write_str("computed property setter cannot be async")
             }
-            ComputedPropertyOnlyAllowedInImpl => {
-                f.write_str(INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC)
-            }
+            ComputedPropertyAccessorBodyNotAllowed => f.write_str(
+                "default computed-property accessor bodies are not supported in interfaces",
+            ),
             ExtraTypeArguments => f.write_str("extra type arguments provided"),
             UnsafeModifierRequiresFunction => {
                 f.write_str("`unsafe` can only be applied to function declarations")
@@ -7270,12 +7290,35 @@ mod tests {
     }
 
     #[test]
-    fn test_interface_computed_property_rejected() {
+    fn test_interface_computed_property_signatures() {
+        let declarations = parse_decls(
+            "interface Foo { var x: int32 { get(&self) set(&mut self, value: int32) }; }",
+        )
+        .expect("interface property signatures should parse");
+        let DeclarationKind::Interface(node) = &declarations[0].kind else {
+            panic!("expected interface declaration");
+        };
+        assert_eq!(node.declarations.len(), 3);
+        let AssociatedDeclarationKind::Property(property) = &node.declarations[0].kind else {
+            panic!("expected property requirement");
+        };
+        assert!(property.setter_id.is_some());
+        for accessor in &node.declarations[1..] {
+            let AssociatedDeclarationKind::Function(function) = &accessor.kind else {
+                panic!("expected hidden accessor requirement");
+            };
+            assert!(function.block.is_none());
+        }
+    }
+
+    #[test]
+    fn test_interface_computed_property_body_rejected() {
         let errors = parse_decls("interface Foo { var x: int32 { get(self) { 1 } } }")
-            .expect_err("parse should fail");
-        assert!(errors.iter().any(|error| {
-            matches!(error.value, ParserError::ComputedPropertyOnlyAllowedInImpl)
-        }));
+            .expect_err("default accessor body should fail");
+        assert!(errors.iter().any(|error| matches!(
+            error.value,
+            ParserError::ComputedPropertyAccessorBodyNotAllowed
+        )));
     }
 
     #[test]

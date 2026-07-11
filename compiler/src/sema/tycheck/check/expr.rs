@@ -43,21 +43,6 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
-    pub(super) fn synth_with_needs(
-        &self,
-        node: &hir::Expression,
-        expectation: Option<Ty<'ctx>>,
-        needs: Needs,
-        cs: &mut Cs<'ctx>,
-    ) -> (Ty<'ctx>, bool) {
-        let ty = self.synth_with_expectation(node, expectation, cs);
-        let ok = match needs {
-            Needs::None => true,
-            Needs::MutPlace => self.require_mut_place(node, cs),
-        };
-        (ty, ok)
-    }
-
     pub(super) fn synth_with_expectation(
         &self,
         node: &hir::Expression,
@@ -508,8 +493,7 @@ impl<'ctx> Checker<'ctx> {
                     }
                 }
 
-                if let Some(property) = self.lookup_member_property_on_base_ty(base_ty, name.symbol)
-                {
+                if let Some(property) = cs.resolved_property_reads().get(&expr.id).copied() {
                     if property.setter_id.is_none() {
                         self.gcx().dcx().emit_error(
                             "cannot assign to a read-only property".into(),
@@ -695,6 +679,21 @@ impl<'ctx> Checker<'ctx> {
     pub(super) fn require_mut_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
+                if let Some(ty) = cs.expr_ty(expr.id) {
+                    let ty = cs.infer_cx.resolve_vars_if_possible(ty);
+                    if let TyKind::Reference(_, mutability) | TyKind::Pointer(_, mutability) =
+                        ty.kind()
+                    {
+                        if mutability == hir::Mutability::Mutable {
+                            return true;
+                        }
+                        self.gcx().dcx().emit_error(
+                            "cannot borrow through an immutable pointer/reference".into(),
+                            Some(expr.span),
+                        );
+                        return false;
+                    }
+                }
                 if let hir::Resolution::LocalVariable(_)
                 | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) =
                     &path.resolution
@@ -955,9 +954,17 @@ impl<'ctx> Checker<'ctx> {
         rhs: &hir::Expression,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // Type-check the LHS as an expression, then require it be a mutable place.
-        let (lhs_ty, ok) = self.synth_with_needs(lhs, None, Needs::MutPlace, cs);
-        if !ok {
+        // Resolve a computed property before checking place requirements: an
+        // interface property is discovered by the solver and is writable via
+        // its setter even though it is not itself an addressable place.
+        let lhs_ty = self.synth(lhs, cs);
+        if lhs_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
+        if matches!(lhs.kind, hir::ExpressionKind::Member { .. }) {
+            cs.solve_intermediate();
+        }
+        if !self.require_mut_place(lhs, cs) {
             return Ty::error(self.gcx());
         }
 
@@ -967,27 +974,17 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
 
-        if let hir::ExpressionKind::Member { target, name } = &lhs.kind
-            && let Some(receiver_ty) = cs.expr_ty(target.id)
+        if let Some(property) = cs.resolved_property_reads().get(&lhs.id).copied()
+            && let Some(setter_id) = property.setter_id
         {
-            let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
-            let base_ty = match receiver_ty.kind() {
-                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => inner,
-                _ => receiver_ty,
-            };
-
-            if let Some(property) = self.lookup_member_property_on_base_ty(base_ty, name.symbol)
-                && let Some(setter_id) = property.setter_id
-            {
-                cs.record_property_write(
-                    expr.id,
-                    crate::sema::tycheck::solve::ResolvedPropertyWrite {
-                        property_id: property.property_id,
-                        setter_id,
-                        ty: property.ty,
-                    },
-                );
-            }
+            cs.record_property_write(
+                expr.id,
+                crate::sema::tycheck::solve::ResolvedPropertyWrite {
+                    property_id: property.property_id,
+                    setter_id,
+                    ty: property.ty,
+                },
+            );
         }
 
         cs.add_goal(
@@ -3133,6 +3130,7 @@ impl<'ctx> Checker<'ctx> {
         // Assign ops return void/unit
         self.gcx().types.void
     }
+
     pub(super) fn synth_path_expression_with_policy(
         &self,
         expression: &hir::Expression,

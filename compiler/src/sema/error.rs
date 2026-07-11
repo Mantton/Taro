@@ -26,6 +26,11 @@ pub enum TypeError<'ctx> {
     Apply(ApplyValidationError),
     NoOverloadMatches,
     AmbiguousOverload,
+    AmbiguousProperty {
+        name: Symbol,
+        on: Ty<'ctx>,
+        interfaces: Vec<crate::hir::DefinitionID>,
+    },
     NoSuchMember {
         name: Symbol,
         on: Ty<'ctx>,
@@ -125,6 +130,26 @@ impl<'ctx> TypeError<'ctx> {
             TypeError::NoOverloadMatches => "no overload matches this call".into(),
             TypeError::AmbiguousOverload => {
                 "ambiguous overload; unable to pick a best candidate".into()
+            }
+            TypeError::AmbiguousProperty {
+                name,
+                on,
+                interfaces,
+            } => {
+                let candidates = interfaces
+                    .iter()
+                    .map(|id| {
+                        gcx.symbol_text(gcx.definition_ident(*id).symbol)
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "ambiguous property '{}' on type {}; candidates are declared by {}",
+                    gcx.symbol_text(name),
+                    on.format(gcx),
+                    candidates
+                )
             }
             TypeError::NoSuchMember { name, on } => {
                 format!(

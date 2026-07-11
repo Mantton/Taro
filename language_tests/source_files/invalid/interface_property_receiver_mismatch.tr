@@ -1,0 +1,21 @@
+interface BorrowedValue {
+    var value: int32 {
+        get(&self)
+    };
+}
+
+struct ConsumingValue {
+    storage: int32
+}
+
+impl ConsumingValue {
+    var value: int32 {
+        get(self) {
+            self.storage
+        }
+    };
+}
+
+impl BorrowedValue for ConsumingValue {}
+
+func main() {}

@@ -1,0 +1,22 @@
+import dep.{Named, makeRemote}
+
+struct Local {
+    name: string
+}
+
+impl Named for Local {}
+
+func readName[T: Named](_ value: &T) -> string {
+    value.name
+}
+
+func main() {
+    let remote = makeRemote()
+    assert(readName(&remote) == "remote", "dependency field witness")
+    let erasedRemote: any Named = remote
+    assert(erasedRemote.name == "remote", "dependency existential witness")
+
+    let local = Local { name: "local" }
+    assert(readName(&local) == "local", "foreign interface local type witness")
+    std.print("PASS: cross-package interface properties\n")
+}

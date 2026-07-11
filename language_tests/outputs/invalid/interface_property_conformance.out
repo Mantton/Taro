@@ -1,0 +1,24 @@
+error: type 'MissingValue' does not satisfy requirements for interface 'WritableValue'
+ -> language_tests/source_files/invalid/interface_property_conformance.tr:22:5
+	impl WritableValue for MissingValue {}
+	     ^^^^^^^^^^^^^
+info: missing readable and writable property 'value' of type 'int32'
+ -> language_tests/source_files/invalid/interface_property_conformance.tr:22:5
+	impl WritableValue for MissingValue {}
+	     ^^^^^^^^^^^^^
+error: type 'WrongValue' does not satisfy requirements for interface 'WritableValue'
+ -> language_tests/source_files/invalid/interface_property_conformance.tr:18:5
+	impl WritableValue for WrongValue {}
+	     ^^^^^^^^^^^^^
+info: missing readable and writable property 'value' of type 'int32'
+ -> language_tests/source_files/invalid/interface_property_conformance.tr:18:5
+	impl WritableValue for WrongValue {}
+	     ^^^^^^^^^^^^^
+error: type 'ReadonlyValue' does not satisfy requirements for interface 'WritableValue'
+ -> language_tests/source_files/invalid/interface_property_conformance.tr:12:5
+	impl WritableValue for ReadonlyValue {}
+	     ^^^^^^^^^^^^^
+info: missing readable and writable property 'value' of type 'int32'
+ -> language_tests/source_files/invalid/interface_property_conformance.tr:12:5
+	impl WritableValue for ReadonlyValue {}
+	     ^^^^^^^^^^^^^

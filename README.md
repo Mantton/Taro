@@ -521,6 +521,7 @@ Test files in `language_tests/source_files/` can contain directive comments that
 | `// EXPECT_EXIT: <code>` | Expect the given exit code instead of 0. |
 | `// EXPECT_STDOUT_CONTAINS: <text>` | Assert that `<text>` appears in stdout. |
 | `// EXPECT_STDERR_CONTAINS: <text>` | Assert that `<text>` appears in stderr output. |
+| `// PACKAGE: <fixture>` | Copy and run `language_tests/package_fixtures/<fixture>/app`, including local dependency packages. |
 
 Use `// TEST` to write language tests that exercise the test harness itself:
 

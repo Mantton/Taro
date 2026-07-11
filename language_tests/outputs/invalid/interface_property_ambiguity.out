@@ -1,0 +1,4 @@
+error: ambiguous property 'value' on type T; candidates are declared by FirstValue, SecondValue
+ -> language_tests/source_files/invalid/interface_property_ambiguity.tr:14:4
+	    value.value
+	    ^^^^^^^^^^^

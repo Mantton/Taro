@@ -1,0 +1,8 @@
+error: type 'ConsumingValue' does not satisfy requirements for interface 'BorrowedValue'
+ -> language_tests/source_files/invalid/interface_property_receiver_mismatch.tr:19:5
+	impl BorrowedValue for ConsumingValue {}
+	     ^^^^^^^^^^^^^
+info: missing readable property 'value' of type 'int32'
+ -> language_tests/source_files/invalid/interface_property_receiver_mismatch.tr:19:5
+	impl BorrowedValue for ConsumingValue {}
+	     ^^^^^^^^^^^^^

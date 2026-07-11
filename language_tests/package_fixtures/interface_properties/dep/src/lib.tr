@@ -1,0 +1,15 @@
+public interface Named {
+    var name: string {
+        get(&self)
+    };
+}
+
+public struct Remote {
+    public name: string
+}
+
+impl Named for Remote {}
+
+public func makeRemote() -> Remote {
+    Remote { name: "remote" }
+}

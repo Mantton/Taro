@@ -219,6 +219,36 @@ fn register_definition<'ctx>(
             };
             (generics, signature, None)
         }
+        SyntheticMethodKind::PropertyFieldGetter(_)
+        | SyntheticMethodKind::PropertyFieldSetter(_) => {
+            let generics = self_type_generics(gcx, info.self_ty);
+            let requirement = gcx.get_signature(info.method_id);
+            let inputs = requirement
+                .inputs
+                .iter()
+                .map(|input| crate::sema::models::LabeledFunctionParameter {
+                    name: input.name,
+                    ty: crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                        gcx,
+                        input.ty,
+                        info.interface_args,
+                    ),
+                    label: input.label,
+                    default_provider: None,
+                })
+                .collect();
+            let signature = crate::sema::models::LabeledFunctionSignature {
+                inputs,
+                output: crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
+                    gcx,
+                    requirement.output,
+                    info.interface_args,
+                ),
+                is_variadic: false,
+                abi: None,
+            };
+            (generics, signature, None)
+        }
     };
     let labeled_sig = gcx.store.arenas.function_signatures.alloc(signature);
 
@@ -262,7 +292,111 @@ fn synthesize_method<'ctx>(
         SyntheticMethodKind::ClosureCall
         | SyntheticMethodKind::ClosureCallMut
         | SyntheticMethodKind::ClosureCallOnce => synthesize_closure_call(gcx, info, syn_id),
+        SyntheticMethodKind::PropertyFieldGetter(field_index) => {
+            synthesize_property_field_getter(gcx, info, syn_id, field_index)
+        }
+        SyntheticMethodKind::PropertyFieldSetter(field_index) => {
+            synthesize_property_field_setter(gcx, info, syn_id, field_index)
+        }
     }
+}
+
+fn synthesize_property_field_getter<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    info: SyntheticMethodInfo<'ctx>,
+    syn_id: DefinitionID,
+    field_index: usize,
+) -> Option<ThirFunction<'ctx>> {
+    let span = synthetic_span();
+    let signature = gcx.get_signature(syn_id);
+    let receiver_ty = signature.inputs.first()?.ty;
+    let self_node_id = synthetic_node_id(syn_id, 0);
+    let self_param = Param {
+        id: self_node_id,
+        name: gcx.intern_symbol("self"),
+        ty: receiver_ty,
+        span,
+    };
+    let mut builder = ThirBuilder::new(gcx, span);
+    let receiver = builder.push_expr(ExprKind::Local(self_node_id), receiver_ty);
+    let receiver = if matches!(receiver_ty.kind(), TyKind::Reference(..)) {
+        builder.push_expr(ExprKind::Deref(receiver), info.self_ty)
+    } else {
+        receiver
+    };
+    let field = builder.push_expr(
+        ExprKind::Field {
+            lhs: receiver,
+            index: FieldIndex::from_usize(field_index),
+        },
+        signature.output,
+    );
+    let body = builder.push_block(vec![], Some(field));
+    Some(ThirFunction {
+        id: syn_id,
+        body: Some(body),
+        span,
+        params: vec![self_param],
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: IndexVec::new(),
+        match_trees: FxHashMap::default(),
+        is_async: false,
+    })
+}
+
+fn synthesize_property_field_setter<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    info: SyntheticMethodInfo<'ctx>,
+    syn_id: DefinitionID,
+    field_index: usize,
+) -> Option<ThirFunction<'ctx>> {
+    let span = synthetic_span();
+    let signature = gcx.get_signature(syn_id);
+    let receiver_ty = signature.inputs.first()?.ty;
+    let value_ty = signature.inputs.get(1)?.ty;
+    let self_node_id = synthetic_node_id(syn_id, 0);
+    let value_node_id = synthetic_node_id(syn_id, 1);
+    let params = vec![
+        Param {
+            id: self_node_id,
+            name: gcx.intern_symbol("self"),
+            ty: receiver_ty,
+            span,
+        },
+        Param {
+            id: value_node_id,
+            name: gcx.intern_symbol("value"),
+            ty: value_ty,
+            span,
+        },
+    ];
+    let mut builder = ThirBuilder::new(gcx, span);
+    let receiver = builder.push_expr(ExprKind::Local(self_node_id), receiver_ty);
+    let receiver = builder.push_expr(ExprKind::Deref(receiver), info.self_ty);
+    let target = builder.push_expr(
+        ExprKind::Field {
+            lhs: receiver,
+            index: FieldIndex::from_usize(field_index),
+        },
+        value_ty,
+    );
+    let value = builder.push_expr(ExprKind::Local(value_node_id), value_ty);
+    let assign = builder.push_expr(ExprKind::Assign { target, value }, gcx.types.void);
+    let body = builder.push_block(vec![], Some(assign));
+    Some(ThirFunction {
+        id: syn_id,
+        body: Some(body),
+        span,
+        params,
+        stmts: builder.stmts,
+        blocks: builder.blocks,
+        exprs: builder.exprs,
+        arms: IndexVec::new(),
+        match_trees: FxHashMap::default(),
+        is_async: false,
+    })
 }
 
 /// Create a synthetic span for generated code.

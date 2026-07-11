@@ -1,13 +1,16 @@
 use super::{
-    Adjustment, ApplyArgument, ApplyGoalData, BindOverloadGoalData, ConstraintSolver,
-    DisjunctionBranch, Goal, InferredStaticMemberGoalData, MemberGoalData, Obligation,
-    ResolvedPropertyRead, SolverResult,
+    Adjustment, ApplyArgument, ApplyGoalData, BindInterfaceMethodGoalData, BindOverloadGoalData,
+    ConstraintSolver, DisjunctionBranch, Goal, InferredStaticMemberGoalData, InterfaceCallInfo,
+    MemberGoalData, Obligation, ResolvedPropertyRead, SolverResult,
 };
 use crate::{
     hir::{NodeID, OperatorKind, Resolution, StdItem},
     sema::{
         error::TypeError,
-        models::{InterfaceReference, StructField, Ty, TyKind},
+        models::{
+            GenericArguments, InterfacePropertyRequirement, InterfaceReference, StructField, Ty,
+            TyKind,
+        },
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead, VariantCtorKind},
         tycheck::{
             resolve_conformance_witness,
@@ -22,6 +25,17 @@ use crate::{
 use rustc_hash::FxHashSet;
 
 const IDE_COMPLETION_PROBE_IDENTIFIER: &str = "__taro_completion_probe";
+
+#[derive(Clone)]
+struct InterfacePropertyCandidate<'ctx> {
+    property: InterfacePropertyRequirement<'ctx>,
+    property_ty: Ty<'ctx>,
+    getter_ty: Ty<'ctx>,
+    receiver_arg_ty: Ty<'ctx>,
+    adjustments: Vec<Adjustment<'ctx>>,
+    call_info: InterfaceCallInfo,
+    interface_args: GenericArguments<'ctx>,
+}
 
 impl<'ctx> ConstraintSolver<'ctx> {
     fn operator_method_name_for_kind(kind: OperatorKind) -> Option<&'static str> {
@@ -194,6 +208,36 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 return SolverResult::Solved(vec![bind, apply, contract]);
             }
 
+            let interfaces = match ty.kind() {
+                TyKind::Parameter(_)
+                | TyKind::Alias {
+                    kind: crate::sema::models::AliasKind::Projection,
+                    ..
+                } => {
+                    let bounds = self.bounds_for_type_in_scope(ty);
+                    (!bounds.is_empty()).then(|| {
+                        self.gcx().store.arenas.global.alloc_slice_clone(&bounds) as &'ctx [_]
+                    })
+                }
+                TyKind::BoxedExistential { interfaces } => Some(interfaces),
+                _ => self.concrete_interface_roots(ty, span),
+            };
+            if let Some(interfaces) = interfaces
+                && let Some(result) = self.solve_interface_property_member(
+                    node_id,
+                    receiver_node,
+                    ty,
+                    receiver_can_mut_borrow,
+                    name,
+                    result,
+                    span,
+                    &adjustments,
+                    interfaces,
+                )
+            {
+                return result;
+            }
+
             // Instance methods.
             let mut candidates = self.lookup_instance_candidates(ty, name.symbol);
             self.filter_extension_candidates_in_place(&mut candidates, ty, span);
@@ -264,6 +308,157 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         let error = Spanned::new(error_kind, span);
         SolverResult::Error(vec![error])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn solve_interface_property_member(
+        &mut self,
+        node_id: NodeID,
+        receiver_node: NodeID,
+        receiver_ty: Ty<'ctx>,
+        receiver_can_mut_borrow: bool,
+        name: crate::span::Identifier,
+        result: Ty<'ctx>,
+        span: crate::span::Span,
+        base_adjustments: &[Adjustment<'ctx>],
+        interfaces: &'ctx [InterfaceReference<'ctx>],
+    ) -> Option<SolverResult<'ctx>> {
+        let mut candidates = Vec::new();
+        let mut seen = FxHashSet::default();
+        for (table_index, interface) in interfaces.iter().enumerate() {
+            let root_args = self.interface_args_with_self(*interface, receiver_ty);
+            let root = InterfaceReference {
+                id: interface.id,
+                arguments: root_args,
+                bindings: interface.bindings,
+            };
+            for interface_ref in self.collect_interface_with_supers(root) {
+                let Some(requirements) = self.interface_requirements(interface_ref.id) else {
+                    continue;
+                };
+                for property in &requirements.properties {
+                    if property.name != name.symbol || !seen.insert((property.id, interface_ref)) {
+                        continue;
+                    }
+                    let getter_ty =
+                        self.labeled_signature_to_ty(self.gcx().get_signature(property.getter_id));
+                    let instantiated_getter =
+                        instantiate_ty_with_args(self.gcx(), getter_ty, interface_ref.arguments);
+                    let TyKind::FnPointer { inputs, .. } = instantiated_getter.kind() else {
+                        continue;
+                    };
+                    let Some(expected_receiver) = inputs.first().copied() else {
+                        continue;
+                    };
+                    let mut receiver_arg_ty = receiver_ty;
+                    let mut property_adjustments = base_adjustments.to_vec();
+                    match expected_receiver.kind() {
+                        TyKind::Reference(inner, mutability) if inner == receiver_ty => {
+                            if mutability == crate::hir::Mutability::Mutable
+                                && !receiver_can_mut_borrow
+                            {
+                                continue;
+                            }
+                            receiver_arg_ty = expected_receiver;
+                            property_adjustments.push(match mutability {
+                                crate::hir::Mutability::Mutable => Adjustment::BorrowMutable,
+                                crate::hir::Mutability::Immutable => Adjustment::BorrowImmutable,
+                            });
+                        }
+                        _ if expected_receiver == receiver_ty => {}
+                        _ => continue,
+                    }
+                    candidates.push(InterfacePropertyCandidate {
+                        property: *property,
+                        property_ty: instantiate_ty_with_args(
+                            self.gcx(),
+                            property.ty,
+                            interface_ref.arguments,
+                        ),
+                        getter_ty,
+                        receiver_arg_ty,
+                        adjustments: property_adjustments,
+                        call_info: InterfaceCallInfo {
+                            root_interface: root.id,
+                            method_interface: interface_ref.id,
+                            method_id: property.getter_id,
+                            table_index,
+                        },
+                        interface_args: interface_ref.arguments,
+                    });
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return None;
+        }
+        if candidates.len() > 1 {
+            let mut declaring = Vec::new();
+            for candidate in &candidates {
+                if !declaring.contains(&candidate.call_info.method_interface) {
+                    declaring.push(candidate.call_info.method_interface);
+                }
+            }
+            return Some(SolverResult::Error(vec![Spanned::new(
+                TypeError::AmbiguousProperty {
+                    name: name.symbol,
+                    on: receiver_ty,
+                    interfaces: declaring,
+                },
+                span,
+            )]));
+        }
+
+        let candidate = candidates.pop().unwrap();
+        self.record_adjustments(receiver_node, candidate.adjustments);
+        self.record_property_read(
+            node_id,
+            ResolvedPropertyRead {
+                property_id: candidate.property.id,
+                getter_id: candidate.property.getter_id,
+                setter_id: candidate.property.setter_id,
+                ty: candidate.property_ty,
+                receiver_ty,
+                autoderef_count: base_adjustments.len(),
+                getter_is_async: self.gcx().definition_is_async(candidate.property.getter_id),
+            },
+        );
+        let getter_var = self.icx.next_ty_var(span);
+        let bind = Obligation {
+            location: span,
+            goal: Goal::BindInterfaceMethod(BindInterfaceMethodGoalData {
+                node_id,
+                var_ty: getter_var,
+                candidate_ty: candidate.getter_ty,
+                call_info: candidate.call_info,
+                instantiation_args: Some(candidate.interface_args),
+            }),
+        };
+        let apply = Obligation {
+            location: span,
+            goal: Goal::Apply(ApplyGoalData {
+                call_node_id: node_id,
+                call_span: span,
+                callee_ty: getter_var,
+                callee_source: None,
+                is_unsafe_context: false,
+                result_ty: result,
+                _expect_ty: Some(candidate.property_ty),
+                arguments: vec![ApplyArgument {
+                    id: receiver_node,
+                    label: None,
+                    ty: candidate.receiver_arg_ty,
+                    span,
+                }],
+                skip_labels: false,
+            }),
+        };
+        let contract = Obligation {
+            location: span,
+            goal: Goal::Equal(result, candidate.property_ty),
+        };
+        Some(SolverResult::Solved(vec![bind, apply, contract]))
     }
 
     pub fn solve_inferred_static_member(
@@ -801,6 +996,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // This allows calling `Interface.method(value)` where `method` is an instance method.
         if candidates.is_empty() {
             candidates = self.collect_instance_member_candidates(head, name.symbol);
+        }
+
+        if candidates.is_empty()
+            && let TypeHead::Nominal(interface_id) = head
+            && gcx.definition_kind(interface_id) == DefinitionKind::Interface
+            && let Some(requirements) = gcx.get_interface_requirements(interface_id)
+            && let Some(property) = requirements
+                .properties
+                .iter()
+                .find(|property| property.name == name.symbol)
+        {
+            candidates.push(property.getter_id);
+            if let Some(setter_id) = property.setter_id {
+                candidates.push(setter_id);
+            }
         }
 
         if candidates.is_empty() {

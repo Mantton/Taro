@@ -58,7 +58,14 @@ impl<'ctx> Actor<'ctx> {
                 );
             }
             hir::AssociatedDeclarationKind::Property(property) => {
-                self.collect_property(head, impl_id, decl.id, decl.identifier, property);
+                self.collect_property(
+                    head,
+                    impl_id,
+                    decl.id,
+                    decl.identifier,
+                    property,
+                    interface_id,
+                );
             }
             _ => {}
         }
@@ -67,20 +74,30 @@ impl<'ctx> Actor<'ctx> {
     fn collect_function(
         &mut self,
         head: crate::sema::resolve::models::TypeHead,
-        _: DefinitionID,
+        impl_id: DefinitionID,
         def_id: DefinitionID,
         ident: crate::span::Identifier,
         has_self: bool,
         interface_id: Option<DefinitionID>,
     ) {
-        if has_self
-            && let Some(previous) = self.context.with_session_type_database(|db| {
+        let colliding_property = self.context.with_session_type_database(|db| {
+            if let Some(interface_id) = interface_id {
+                db.type_head_to_interface_properties
+                    .get(&head)
+                    .and_then(|properties| properties.get(&(interface_id, ident.symbol)))
+                    .and_then(|entries| {
+                        entries.iter().copied().find(|entry| {
+                            self.context.definition_parent(entry.property_id) == Some(impl_id)
+                        })
+                    })
+            } else {
                 db.type_head_to_properties
                     .get(&head)
                     .and_then(|properties| properties.get(&ident.symbol))
                     .copied()
-            })
-        {
+            }
+        });
+        if has_self && let Some(previous) = colliding_property {
             let msg = format!(
                 "invalid redeclaration of '{}' as both property and method",
                 self.context.symbol_text(ident.symbol)
@@ -147,15 +164,17 @@ impl<'ctx> Actor<'ctx> {
     fn collect_property(
         &mut self,
         head: crate::sema::resolve::models::TypeHead,
-        _impl_id: DefinitionID,
+        impl_id: DefinitionID,
         property_id: DefinitionID,
         ident: crate::span::Identifier,
         property: &hir::ComputedProperty,
+        interface_id: Option<DefinitionID>,
     ) {
-        if self
-            .context
-            .lookup_field_in_type_head(head, ident.symbol)
-            .is_some()
+        if interface_id.is_none()
+            && self
+                .context
+                .lookup_field_in_type_head(head, ident.symbol)
+                .is_some()
         {
             let msg = format!(
                 "invalid redeclaration of '{}' as both field and property",
@@ -170,26 +189,38 @@ impl<'ctx> Actor<'ctx> {
 
         self.context.with_session_type_database(|db| {
             if let Some(index) = db.type_head_to_members.get(&head) {
-                method_collision = index
-                    .inherent_instance
-                    .get(&ident.symbol)
-                    .and_then(|set| set.members.first().copied())
-                    .or_else(|| {
-                        index
-                            .trait_methods_by_name
-                            .get(&ident.symbol)
-                            .and_then(|ids| ids.first().copied())
-                    });
+                method_collision = if let Some(interface_id) = interface_id {
+                    index
+                        .trait_methods
+                        .get(&(interface_id, ident.symbol))
+                        .and_then(|set| {
+                            set.members.iter().copied().find(|candidate| {
+                                self.context.definition_parent(*candidate) == Some(impl_id)
+                            })
+                        })
+                } else {
+                    index
+                        .inherent_instance
+                        .get(&ident.symbol)
+                        .and_then(|set| set.members.first().copied())
+                };
             }
 
-            if let Some(existing) = db
-                .type_head_to_properties
-                .get(&head)
-                .and_then(|properties| properties.get(&ident.symbol))
-                .copied()
-            {
-                property_collision = Some(existing);
-            }
+            property_collision = if let Some(interface_id) = interface_id {
+                db.type_head_to_interface_properties
+                    .get(&head)
+                    .and_then(|properties| properties.get(&(interface_id, ident.symbol)))
+                    .and_then(|entries| {
+                        entries.iter().copied().find(|entry| {
+                            self.context.definition_parent(entry.property_id) == Some(impl_id)
+                        })
+                    })
+            } else {
+                db.type_head_to_properties
+                    .get(&head)
+                    .and_then(|properties| properties.get(&ident.symbol))
+                    .copied()
+            };
         });
 
         if let Some(previous) = method_collision {
@@ -270,10 +301,19 @@ impl<'ctx> Actor<'ctx> {
         };
 
         self.context.with_session_type_database(|db| {
-            db.type_head_to_properties
-                .entry(head)
-                .or_default()
-                .insert(ident.symbol, entry);
+            if let Some(interface_id) = interface_id {
+                db.type_head_to_interface_properties
+                    .entry(head)
+                    .or_default()
+                    .entry((interface_id, ident.symbol))
+                    .or_default()
+                    .push(entry);
+            } else {
+                db.type_head_to_properties
+                    .entry(head)
+                    .or_default()
+                    .insert(ident.symbol, entry);
+            }
         });
     }
 

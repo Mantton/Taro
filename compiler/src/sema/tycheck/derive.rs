@@ -36,6 +36,37 @@ pub struct SyntheticMethodInfo<'ctx> {
     pub syn_id: Option<DefinitionID>,
 }
 
+pub fn synthesize_property_field_accessor<'ctx>(
+    gcx: Gcx<'ctx>,
+    type_head: TypeHead,
+    self_ty: Ty<'ctx>,
+    interface: InterfaceReference<'ctx>,
+    method_id: DefinitionID,
+    kind: SyntheticMethodKind,
+) -> MethodWitness<'ctx> {
+    let args_template =
+        crate::sema::tycheck::utils::generics::GenericsBuilder::identity_for_item(gcx, method_id);
+    let existing = gcx.find_synthetic_method(type_head, method_id);
+    let syn_id = existing.and_then(|info| info.syn_id);
+    let info = SyntheticMethodInfo {
+        kind,
+        self_ty,
+        interface_id: interface.id,
+        interface_args: interface.arguments,
+        interface_bindings: interface.bindings,
+        method_id,
+        method_name: gcx.definition_ident(method_id).symbol,
+        syn_id,
+    };
+    if syn_id.is_none() {
+        gcx.register_synthetic_method(type_head, method_id, info.method_name, info);
+    }
+    MethodWitness {
+        implementation: MethodImplementation::Synthetic(kind, syn_id),
+        args_template,
+    }
+}
+
 /// Attempt to synthesize an interface method for a given type.
 ///
 /// This is called during conformance checking when no explicit implementation

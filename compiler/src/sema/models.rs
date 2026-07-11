@@ -935,6 +935,7 @@ pub struct InterfaceDefinition<'ctx> {
 #[derive(Debug, Clone, Default)]
 pub struct InterfaceRequirements<'ctx> {
     pub methods: Vec<InterfaceMethodRequirement<'ctx>>,
+    pub properties: Vec<InterfacePropertyRequirement<'ctx>>,
     pub types: Vec<AssociatedTypeDefinition<'ctx>>,
     pub constants: Vec<InterfaceConstantRequirement<'ctx>>,
 }
@@ -946,6 +947,15 @@ pub struct InterfaceMethodRequirement<'ctx> {
     pub signature: &'ctx LabeledFunctionSignature<'ctx>,
     pub has_self: bool,
     pub is_required: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InterfacePropertyRequirement<'ctx> {
+    pub id: DefinitionID,
+    pub name: Symbol,
+    pub ty: Ty<'ctx>,
+    pub getter_id: DefinitionID,
+    pub setter_id: Option<DefinitionID>,
 }
 
 #[derive(Debug, Clone)]
@@ -1309,6 +1319,10 @@ pub enum SyntheticMethodKind {
     ClosureCallMut,
     /// FnOnce/AsyncFnOnce.callOnce: invoke closure consuming self.
     ClosureCallOnce,
+    /// Getter synthesized from a stored field.
+    PropertyFieldGetter(usize),
+    /// Setter synthesized from a mutable stored field.
+    PropertyFieldSetter(usize),
 }
 
 /// Mapping from an interface method to its implementation and instantiation template.

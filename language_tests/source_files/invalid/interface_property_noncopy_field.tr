@@ -1,0 +1,13 @@
+interface BorrowedItems {
+    var items: std.collections.List[int32] {
+        get(&self)
+    };
+}
+
+struct ItemBag {
+    items: std.collections.List[int32]
+}
+
+impl BorrowedItems for ItemBag {}
+
+func main() {}

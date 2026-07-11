@@ -69,7 +69,26 @@ impl<'ctx> Checker<'ctx> {
         Option<crate::sema::models::GenericArguments<'ctx>>,
     ) {
         match path {
-            hir::ResolvedPath::Resolved(path) => (path.resolution.clone(), None),
+            hir::ResolvedPath::Resolved(path) => {
+                if let hir::Resolution::Definition(property_id, DefinitionKind::AssociatedProperty) =
+                    path.resolution
+                    && let Some(interface_id) = self.gcx().definition_parent(property_id)
+                    && self.gcx().definition_kind(interface_id) == DefinitionKind::Interface
+                    && let Some(requirements) = self.gcx().get_interface_requirements(interface_id)
+                    && let Some(property) = requirements
+                        .properties
+                        .iter()
+                        .find(|property| property.id == property_id)
+                {
+                    let mut accessors = vec![property.getter_id];
+                    if let Some(setter_id) = property.setter_id {
+                        accessors.push(setter_id);
+                    }
+                    (hir::Resolution::FunctionSet(accessors), None)
+                } else {
+                    (path.resolution.clone(), None)
+                }
+            }
             hir::ResolvedPath::Relative(base_ty, segment) => {
                 // Attempt to reuse generic arguments from the base type for inherent
                 // static members (e.g., `List[Int].new`). Avoid lowering interface
@@ -97,6 +116,25 @@ impl<'ctx> Checker<'ctx> {
                 }
 
                 if !matches!(segment.resolution, hir::Resolution::Error) {
+                    if let hir::Resolution::Definition(
+                        property_id,
+                        DefinitionKind::AssociatedProperty,
+                    ) = segment.resolution
+                        && let Some(interface_id) = self.gcx().definition_parent(property_id)
+                        && self.gcx().definition_kind(interface_id) == DefinitionKind::Interface
+                        && let Some(requirements) =
+                            self.gcx().get_interface_requirements(interface_id)
+                        && let Some(property) = requirements
+                            .properties
+                            .iter()
+                            .find(|property| property.id == property_id)
+                    {
+                        let mut accessors = vec![property.getter_id];
+                        if let Some(setter_id) = property.setter_id {
+                            accessors.push(setter_id);
+                        }
+                        return (hir::Resolution::FunctionSet(accessors), base_args);
+                    }
                     return (segment.resolution.clone(), base_args);
                 }
 
@@ -241,6 +279,20 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(set) = index.inherent_static.get(&name) {
                     members.extend(set.members.iter().cloned());
                 }
+            }
+        }
+
+        if let TypeHead::Nominal(interface_id) = head
+            && gcx.definition_kind(interface_id) == DefinitionKind::Interface
+            && let Some(requirements) = gcx.get_interface_requirements(interface_id)
+            && let Some(property) = requirements
+                .properties
+                .iter()
+                .find(|property| property.name == name)
+        {
+            members.push(property.getter_id);
+            if let Some(setter_id) = property.setter_id {
+                members.push(setter_id);
             }
         }
 

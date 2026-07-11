@@ -862,18 +862,6 @@ impl<'arena> GlobalContext<'arena> {
         self.with_type_database(id.package(), |db| db.def_to_iface_def.get(&id).cloned())
     }
 
-    pub fn interface_has_associated_property(self, interface_id: DefinitionID) -> bool {
-        let output = self.resolution_output(interface_id.package());
-        output.definition_to_kind.iter().any(|(candidate, kind)| {
-            *kind == DefinitionKind::AssociatedProperty
-                && output
-                    .definition_to_parent
-                    .get(candidate)
-                    .copied()
-                    .is_some_and(|parent| parent == interface_id)
-        })
-    }
-
     pub fn get_impl_type_head(self, impl_id: DefinitionID) -> Option<TypeHead> {
         self.with_type_database(impl_id.package(), |db| {
             db.impl_to_type_head.get(&impl_id).cloned()
@@ -1952,6 +1940,8 @@ pub struct TypeDatabase<'arena> {
     pub type_head_to_members: FxHashMap<TypeHead, TypeMemberIndex>,
     pub type_head_to_properties:
         FxHashMap<TypeHead, FxHashMap<Symbol, ComputedPropertyEntry<'arena>>>,
+    pub type_head_to_interface_properties:
+        FxHashMap<TypeHead, FxHashMap<(DefinitionID, Symbol), Vec<ComputedPropertyEntry<'arena>>>>,
     pub def_to_generics: FxHashMap<DefinitionID, &'arena Generics>,
     /// Lowered default type for a generic type parameter (keyed by parameter DefinitionID).
     pub generic_type_defaults: FxHashMap<DefinitionID, Ty<'arena>>,
@@ -2033,6 +2023,39 @@ impl<'arena> GlobalContext<'arena> {
                 .and_then(|properties| properties.get(&name).copied())
         })
     }
+
+    pub fn lookup_interface_computed_properties(
+        self,
+        head: TypeHead,
+        interface_id: DefinitionID,
+        name: Symbol,
+    ) -> Vec<ComputedPropertyEntry<'arena>> {
+        self.collect_from_databases(|db| {
+            db.type_head_to_interface_properties
+                .get(&head)
+                .and_then(|properties| properties.get(&(interface_id, name)))
+                .cloned()
+                .unwrap_or_default()
+        })
+    }
+
+    pub fn lookup_interface_computed_properties_by_name(
+        self,
+        head: TypeHead,
+        name: Symbol,
+    ) -> Vec<(DefinitionID, ComputedPropertyEntry<'arena>)> {
+        self.collect_from_databases(|db| {
+            db.type_head_to_interface_properties
+                .get(&head)
+                .into_iter()
+                .flat_map(|properties| properties.iter())
+                .filter(|((_, candidate_name), _)| *candidate_name == name)
+                .flat_map(|((interface_id, _), entries)| {
+                    entries.iter().copied().map(|entry| (*interface_id, entry))
+                })
+                .collect::<Vec<_>>()
+        })
+    }
 }
 
 impl<'arena> GlobalContext<'arena> {
@@ -2077,5 +2100,13 @@ impl<'arena> GlobalContext<'arena> {
         self.with_session_type_database(|db| {
             db.synthetic_methods.get(&(type_head, method_id)).cloned()
         })
+    }
+
+    pub fn find_synthetic_method(
+        self,
+        type_head: TypeHead,
+        method_id: DefinitionID,
+    ) -> Option<crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>> {
+        self.find_in_databases(|db| db.synthetic_methods.get(&(type_head, method_id)).cloned())
     }
 }

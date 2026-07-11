@@ -1,6 +1,5 @@
 use crate::{
     compile::context::Gcx,
-    constants::INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC,
     error::CompileResult,
     hir::{self, DefinitionID},
     sema::{
@@ -121,16 +120,6 @@ impl<'ctx> Actor<'ctx> {
         let Some(goal) = self.goal_from_interface(interface) else {
             return;
         };
-        if self
-            .context
-            .interface_has_associated_property(goal.interface_id)
-        {
-            self.context.dcx().emit_error(
-                INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC.into(),
-                Some(span),
-            );
-            return;
-        }
         if is_conditional || goal_has_unresolved_types(goal) {
             return;
         }
@@ -205,8 +194,38 @@ impl<'ctx> Actor<'ctx> {
             return;
         };
 
+        let Some(type_head) = type_head_from_value_ty(goal.self_ty) else {
+            return;
+        };
+        let mut property_accessors = FxHashSet::default();
+        for property in &requirements.properties {
+            property_accessors.insert(property.getter_id);
+            property_accessors.extend(property.setter_id);
+            if crate::sema::impl_engine::property_requirement_satisfied(
+                self.context,
+                type_head,
+                property,
+                &record,
+            ) {
+                continue;
+            }
+            let capability = if property.setter_id.is_some() {
+                "readable and writable"
+            } else {
+                "readable"
+            };
+            self.context.dcx().emit_info(
+                format!(
+                    "missing {capability} property '{}' of type '{}'",
+                    self.context.symbol_text(property.name),
+                    property.ty.format(self.context)
+                ),
+                Some(span),
+            );
+        }
+
         for requirement in &requirements.methods {
-            if !requirement.is_required {
+            if !requirement.is_required || property_accessors.contains(&requirement.id) {
                 continue;
             }
 

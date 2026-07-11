@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 LANGUAGE_TESTS_DIR = PROJECT_ROOT / "language_tests"
 SOURCE_FILES_DIR = LANGUAGE_TESTS_DIR / "source_files"
 OUTPUTS_DIR = LANGUAGE_TESTS_DIR / "outputs"
+PACKAGE_FIXTURES_DIR = LANGUAGE_TESTS_DIR / "package_fixtures"
 BUILD_DIST_SCRIPT = PROJECT_ROOT / "development" / "scripts" / "build_dist.py"
 
 
@@ -100,6 +101,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
       // EXPECT_STDOUT_CONTAINS: … — assert this substring appears in stdout
       // EXPECT_STDERR_CONTAINS: … — assert this substring appears in stderr
+      // PACKAGE: <fixture>        — run package_fixtures/<fixture>/app
     """
     result = {
         "target": None,
@@ -109,6 +111,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "expect_exit": None,
         "expect_stdout_contains": [],
         "expect_stderr_contains": [],
+        "package_fixture": None,
     }
     try:
         with open(file_path, "r") as f:
@@ -140,6 +143,10 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     needle = line[len("// EXPECT_STDERR_CONTAINS:") :].strip()
                     if needle:
                         result["expect_stderr_contains"].append(needle)
+                elif line.startswith("// PACKAGE:"):
+                    fixture = line[len("// PACKAGE:") :].strip()
+                    if fixture:
+                        result["package_fixture"] = fixture
     except Exception:
         pass
     return result
@@ -171,6 +178,16 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         expected_exit = directives["expect_exit"]
         expected_stdout_contains = directives["expect_stdout_contains"]
         expected_stderr_contains = directives["expect_stderr_contains"]
+        package_fixture = directives["package_fixture"]
+
+        compile_input = file_path
+        if package_fixture:
+            fixture_source = PACKAGE_FIXTURES_DIR / package_fixture
+            fixture_copy = env.temp_dir / "package_fixtures" / relative_path.stem
+            if not fixture_source.is_dir():
+                return False, "Unknown package fixture", {"fixture": str(fixture_source)}
+            shutil.copytree(fixture_source, fixture_copy)
+            compile_input = fixture_copy / "app"
 
         # Choose sub-command:
         #   "check"  — CHECK_ONLY: type-check only, no binary produced
@@ -186,7 +203,7 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         cmd = [
             str(env.compiler_path),
             command,
-            str(file_path),
+            str(compile_input),
             "--std-path",
             str(env.std_path),
         ]

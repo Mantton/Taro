@@ -1,12 +1,11 @@
 use crate::{
     compile::context::Gcx,
-    constants::INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC,
     error::CompileResult,
     hir::{self, DefinitionID, DefinitionKind, HirVisitor},
     sema::{
         models::{
             AssociatedTypeDefinition, InterfaceConstantRequirement, InterfaceMethodRequirement,
-            InterfaceRequirements,
+            InterfacePropertyRequirement, InterfaceRequirements,
         },
         tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
     },
@@ -52,15 +51,24 @@ impl<'ctx> Actor<'ctx> {
         let gcx = self.context;
 
         let mut methods = Vec::new();
+        let mut properties = Vec::new();
         let mut types = Vec::new();
         let mut constants = Vec::new();
 
         for decl in &node.declarations {
-            self.collect_requirement(id, decl, &mut methods, &mut types, &mut constants);
+            self.collect_requirement(
+                id,
+                decl,
+                &mut methods,
+                &mut properties,
+                &mut types,
+                &mut constants,
+            );
         }
 
         let requirements = InterfaceRequirements {
             methods,
+            properties,
             types,
             constants,
         };
@@ -77,6 +85,7 @@ impl<'ctx> Actor<'ctx> {
         interface_id: DefinitionID,
         node: &hir::AssociatedDeclaration,
         methods: &mut Vec<InterfaceMethodRequirement<'ctx>>,
+        properties: &mut Vec<InterfacePropertyRequirement<'ctx>>,
         types: &mut Vec<AssociatedTypeDefinition<'ctx>>,
         constants: &mut Vec<InterfaceConstantRequirement<'ctx>>,
     ) {
@@ -135,11 +144,30 @@ impl<'ctx> Actor<'ctx> {
                 };
                 constants.push(req);
             }
-            hir::AssociatedDeclarationKind::Property(_) => {
-                gcx.dcx().emit_error(
-                    INTERFACE_COMPUTED_PROPERTIES_DEFERRED_DIAGNOSTIC.into(),
-                    Some(node.span),
-                );
+            hir::AssociatedDeclarationKind::Property(property) => {
+                let lowerer = DefTyLoweringCtx::new(def_id, gcx);
+                let ty = lowerer.lowerer().lower_type(&property.ty);
+                gcx.cache_type(def_id, ty);
+                if let Some(setter_id) = property.setter_id {
+                    let setter = gcx.get_signature(setter_id);
+                    if setter.inputs.len() != 2 || setter.inputs[1].ty != ty {
+                        gcx.dcx().emit_error(
+                            format!(
+                                "setter requirement for property '{}' must accept a value of type {}",
+                                gcx.symbol_text(node.identifier.symbol),
+                                ty.format(gcx)
+                            ),
+                            Some(node.span),
+                        );
+                    }
+                }
+                properties.push(InterfacePropertyRequirement {
+                    id: def_id,
+                    name: node.identifier.symbol,
+                    ty,
+                    getter_id: property.getter_id,
+                    setter_id: property.setter_id,
+                });
             }
         }
     }

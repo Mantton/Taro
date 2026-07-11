@@ -223,11 +223,15 @@ It does not introduce a module. The following constraints apply:
                          | <constant_declaration>
                          | <type_alias_declaration>
                          | <operator_declaration>
+                         | <interface_property_declaration>
 
-> Note: computed properties in `interface` declarations are intentionally
-> deferred for safety. Current concerns include receiver-effect semantics
-> (`self` vs `&self` vs `&mut self`) and duplicate-name ambiguity when
-> multiple interfaces define the same property name.
+<interface_property_declaration>
+                       ::= 'var' <identifier> ':' <type>
+                           '{' <getter_requirement> [ <setter_requirement> ] '}'
+
+<getter_requirement>   ::= 'get' '(' <self_parameter> ')' [ 'async' ]
+
+<setter_requirement>   ::= 'set' '(' '&' 'mut' 'self' ',' <identifier> ':' <type> ')'
 
 <conformances>         ::= ':' <path_node> { ',' <path_node> }
 ```
