@@ -11,6 +11,17 @@ func callMutable[F: AsyncFnMut() -> int32](_ f: F) async -> int32 {
     return first + second
 }
 
+struct CopyProbe: Copy {
+    value: int32
+}
+
+impl CopyProbe {
+    func read(&self) async -> int32 {
+        await std.testing.yieldNow()
+        self.value
+    }
+}
+
 func main() async {
     var values: std.collections.List[int32] = std.collections.List()
     values.append(9)
@@ -40,6 +51,14 @@ func main() async {
     assert(directFirst == 1, "first direct AsyncFnMut call")
     assert(directSecond == 2, "second direct AsyncFnMut call")
     assert(directCount == 2, "direct AsyncFnMut should update its capture")
+
+    let probe = CopyProbe { value: 17 }
+    let spawned = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return await probe.read()
+    })
+    let spawnedValue = (await spawned.result()).unwrap()
+    assert(spawnedValue == 17, "spawned async closure should own implicit Copy borrow")
 
     std.print("PASS: borrowed async closure reuse\n")
 }

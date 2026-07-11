@@ -189,8 +189,14 @@ impl<'ctx> Checker<'ctx> {
             // Get the type of the captured variable from local bindings
             let binding = self.get_local(*node_id);
             let ty = cs.infer_cx.resolve_vars_if_possible(binding.ty);
-            let capture_kind =
-                classify_capture_kind(gcx, self.current_def, ty, info.usage, closure.is_move);
+            let capture_kind = classify_capture_kind(
+                gcx,
+                self.current_def,
+                ty,
+                info.usage,
+                closure.is_move,
+                effective_async,
+            );
 
             captures.push(crate::sema::models::CapturedVar {
                 source_id: *node_id,
@@ -800,6 +806,7 @@ fn classify_capture_kind<'ctx>(
     ty: Ty<'ctx>,
     usage: CaptureUsage,
     is_move_closure: bool,
+    is_async: bool,
 ) -> crate::sema::models::CaptureKind {
     if is_move_closure {
         if gcx.is_type_copyable_in_def(ty, owner) {
@@ -814,6 +821,16 @@ fn classify_capture_kind<'ctx>(
         return crate::sema::models::CaptureKind::ByMove;
     }
     if let Some(mutability) = usage.by_ref {
+        // An implicit immutable borrow (for example, an `&self` method call)
+        // does not require an async closure to borrow a Copy local. Store the
+        // value instead so an owned/escaping future cannot retain a pointer to
+        // the caller's short-lived closure argument.
+        if is_async
+            && matches!(mutability, hir::Mutability::Immutable)
+            && gcx.is_type_copyable_in_def(ty, owner)
+        {
+            return crate::sema::models::CaptureKind::ByCopy;
+        }
         return crate::sema::models::CaptureKind::ByRef {
             mutable: matches!(mutability, hir::Mutability::Mutable),
         };

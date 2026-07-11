@@ -43,6 +43,7 @@ struct AsyncFrameLayout<'ctx> {
     ty: Ty<'ctx>,
     state_ty: Ty<'ctx>,
     stored_locals: Vec<LocalId>,
+    resident_locals: Vec<LocalId>,
     start_locals: Vec<LocalId>,
     yield_locals: Vec<Vec<LocalId>>,
     mobility: AsyncTaskMobility,
@@ -62,8 +63,6 @@ struct PollThunkLocals<'ctx> {
     out_ptr: LocalId,
     state: LocalId,
     tag_return: LocalId,
-    frame_size: LocalId,
-    memset_void: LocalId,
     output_ty: Ty<'ctx>,
 }
 
@@ -163,11 +162,12 @@ fn lower_async_poll_body<'ctx>(
         body.locals[*local].mutable = true;
     }
 
-    let yields = materialize_await_futures(gcx, body);
+    let mut yields = materialize_await_futures(gcx, body);
     let frame = build_frame_layout(gcx, body, &yields);
     let locals = add_poll_thunk_locals(gcx, body, frame.ty, output_ty);
+    rewrite_resident_local_places(body, &frame, locals.frame_ptr, &mut yields);
 
-    rewrite_returns(gcx, body, original_return_local, &locals);
+    rewrite_returns(gcx, body, original_return_local, &frame, &locals);
     rewrite_yields(gcx, body, &yields, &frame, &locals)?;
     install_dispatch(gcx, body, &yields, &frame, &locals)?;
 
@@ -258,6 +258,11 @@ fn build_frame_layout<'ctx>(
                 || yield_locals.iter().any(|locals| locals.contains(&local))
         })
         .collect();
+    let resident_locals = stored_locals
+        .iter()
+        .copied()
+        .filter(|local| async_local_can_reside_in_frame(gcx, body.locals[*local].ty))
+        .collect();
     let mut fields = Vec::with_capacity(stored_locals.len() + 1);
     fields.push(state_ty);
     fields.extend(stored_locals.iter().map(|local| body.locals[*local].ty));
@@ -270,6 +275,7 @@ fn build_frame_layout<'ctx>(
         ty: frame_ty,
         state_ty,
         stored_locals,
+        resident_locals,
         start_locals,
         yield_locals,
         mobility,
@@ -285,6 +291,141 @@ fn collect_async_state_locals(
         .indices()
         .filter(|&local| live_locals.contains(&local) || extra_local == Some(local))
         .collect()
+}
+
+fn async_local_can_reside_in_frame<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
+    if gcx.is_type_copyable(ty) {
+        return true;
+    }
+    let TyKind::Closure { closure_def_id, .. } = ty.kind() else {
+        return false;
+    };
+    gcx.get_closure_captures(closure_def_id)
+        .is_some_and(|captures| {
+            captures.captures.iter().all(|capture| {
+                matches!(
+                    capture.capture_kind,
+                    crate::sema::models::CaptureKind::ByCopy
+                )
+            })
+        })
+}
+
+/// Keep addressable Copy state in the heap frame for the entire lifetime of
+/// the future. A child future may retain an immutable reference to one of these
+/// values while it is pending, so moving it through a poll-stack local would
+/// invalidate that reference.
+fn rewrite_resident_local_places<'ctx>(
+    body: &mut Body<'ctx>,
+    frame: &AsyncFrameLayout<'ctx>,
+    frame_ptr_local: LocalId,
+    yields: &mut [YieldSite<'ctx>],
+) {
+    let remaps: Vec<Option<Place<'ctx>>> = body
+        .locals
+        .indices()
+        .map(|local| {
+            frame
+                .resident_locals
+                .contains(&local)
+                .then(|| frame_local_place(body, frame, frame_ptr_local, local))
+        })
+        .collect();
+
+    for block in body.basic_blocks.iter_mut() {
+        for statement in &mut block.statements {
+            match &mut statement.kind {
+                StatementKind::Assign(destination, rvalue) => {
+                    remap_resident_place(destination, &remaps);
+                    remap_resident_rvalue(rvalue, &remaps);
+                }
+                StatementKind::SetDiscriminant { place, .. } => {
+                    remap_resident_place(place, &remaps);
+                }
+                StatementKind::ShadowResync(locals) => {
+                    locals.retain(|local| remaps[local.index()].is_none());
+                }
+                StatementKind::GcSafepoint | StatementKind::Nop => {}
+            }
+        }
+        let Some(terminator) = &mut block.terminator else {
+            continue;
+        };
+        match &mut terminator.kind {
+            TerminatorKind::SwitchInt { discr, .. } => {
+                remap_resident_operand(discr, &remaps);
+            }
+            TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                ..
+            } => {
+                remap_resident_operand(func, &remaps);
+                for argument in args {
+                    remap_resident_operand(argument, &remaps);
+                }
+                remap_resident_place(destination, &remaps);
+            }
+            TerminatorKind::Yield {
+                value, resume_arg, ..
+            } => {
+                remap_resident_operand(value, &remaps);
+                remap_resident_place(resume_arg, &remaps);
+            }
+            TerminatorKind::Goto { .. }
+            | TerminatorKind::UnresolvedGoto
+            | TerminatorKind::Return
+            | TerminatorKind::ResumeUnwind
+            | TerminatorKind::Unreachable => {}
+        }
+    }
+
+    for site in yields {
+        remap_resident_place(&mut site.future_place, &remaps);
+        remap_resident_place(&mut site.resume_arg, &remaps);
+    }
+}
+
+fn remap_resident_place<'ctx>(place: &mut Place<'ctx>, remaps: &[Option<Place<'ctx>>]) {
+    let Some(base) = remaps[place.local.index()].as_ref() else {
+        return;
+    };
+    let mut projection = base.projection.clone();
+    projection.extend(place.projection.iter().copied());
+    place.local = base.local;
+    place.projection = projection;
+}
+
+fn remap_resident_operand<'ctx>(operand: &mut Operand<'ctx>, remaps: &[Option<Place<'ctx>>]) {
+    match operand {
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+            remap_resident_place(place, remaps);
+        }
+        Operand::Constant(_) => {}
+    }
+}
+
+fn remap_resident_rvalue<'ctx>(rvalue: &mut Rvalue<'ctx>, remaps: &[Option<Place<'ctx>>]) {
+    match rvalue {
+        Rvalue::Use(operand) | Rvalue::UnaryOp { operand, .. } | Rvalue::Cast { operand, .. } => {
+            remap_resident_operand(operand, remaps)
+        }
+        Rvalue::BinaryOp { lhs, rhs, .. } => {
+            remap_resident_operand(lhs, remaps);
+            remap_resident_operand(rhs, remaps);
+        }
+        Rvalue::Aggregate { fields, .. } => {
+            for field in fields {
+                remap_resident_operand(field, remaps);
+            }
+        }
+        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
+            remap_resident_place(place, remaps);
+        }
+        Rvalue::Repeat { operand, .. } => remap_resident_operand(operand, remaps),
+        Rvalue::Alloc { .. } => {}
+    }
 }
 
 fn infer_async_task_mobility<'ctx>(
@@ -382,22 +523,6 @@ fn add_poll_thunk_locals<'ctx>(
         Some(gcx.intern_symbol("$state")),
         span,
     );
-    let frame_size = push_local(
-        body,
-        gcx.types.uint,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$frame_size")),
-        span,
-    );
-    let memset_void = push_local(
-        body,
-        gcx.types.void,
-        LocalKind::Temp,
-        true,
-        Some(gcx.intern_symbol("$memset_void")),
-        span,
-    );
     body.return_local = tag_return;
 
     PollThunkLocals {
@@ -408,8 +533,6 @@ fn add_poll_thunk_locals<'ctx>(
         out_ptr,
         state,
         tag_return,
-        frame_size,
-        memset_void,
         output_ty,
     }
 }
@@ -418,6 +541,7 @@ fn rewrite_returns<'ctx>(
     gcx: Gcx<'ctx>,
     body: &mut Body<'ctx>,
     original_return_local: LocalId,
+    frame: &AsyncFrameLayout<'ctx>,
     locals: &PollThunkLocals<'ctx>,
 ) {
     let return_blocks: Vec<_> = body
@@ -437,6 +561,7 @@ fn rewrite_returns<'ctx>(
             .as_ref()
             .expect("ICE: block in return set has no terminator")
             .span;
+        let return_place = poll_local_place(body, frame, locals.frame_ptr, original_return_local);
         body.basic_blocks[bb_id].statements.push(Statement {
             kind: StatementKind::Assign(
                 Place {
@@ -444,7 +569,7 @@ fn rewrite_returns<'ctx>(
                     projection: vec![PlaceElem::Deref],
                 },
                 Rvalue::Use(Operand::CopyWith(
-                    Place::from_local(original_return_local),
+                    return_place,
                     CopyModifiers {
                         init: true,
                         take: false,
@@ -478,9 +603,6 @@ fn rewrite_yields<'ctx>(
     let async_destroy_id =
         find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Destroy, span);
     let async_destroy_ty = gcx.get_type(async_destroy_id);
-    let memset_id = find_std_function(gcx, "intrinsic", "__intrinsic_memset", span)?;
-    let memset_ty = gcx.get_type(memset_id);
-
     for (index, site) in yields.iter().enumerate() {
         let ready_ty = place_ty(body, gcx, &site.resume_arg);
         let ready_is_never = matches!(ready_ty.kind(), TyKind::Never);
@@ -612,32 +734,6 @@ fn rewrite_yields<'ctx>(
                 span: site.span,
             }),
         });
-        let pending_block = body.basic_blocks.push(BasicBlockData {
-            note: Some(format!("await-pending-{}", index)),
-            statements: vec![],
-            terminator: Some(Terminator {
-                kind: TerminatorKind::Call {
-                    func: fn_operand(
-                        memset_id,
-                        gcx.store
-                            .interners
-                            .intern_generic_args(vec![GenericArgument::Type(gcx.types.uint8)]),
-                        memset_ty,
-                    ),
-                    args: vec![
-                        Operand::Copy(Place::from_local(locals.frame_raw)),
-                        const_uint8_operand(gcx, 0),
-                        Operand::Copy(Place::from_local(locals.frame_size)),
-                    ],
-                    devirt_hint: None,
-                    destination: Place::from_local(locals.memset_void),
-                    target: pending_store_block,
-                    unwind: CallUnwindAction::Terminate,
-                },
-                span: site.span,
-            }),
-        });
-
         let destroy_void_local = push_local(
             body,
             gcx.types.void,
@@ -708,7 +804,7 @@ fn rewrite_yields<'ctx>(
         body.basic_blocks[check_block].terminator = Some(Terminator {
             kind: TerminatorKind::SwitchInt {
                 discr: Operand::Copy(Place::from_local(tag_local)),
-                targets: vec![(0u128, pending_block)],
+                targets: vec![(0u128, pending_store_block)],
                 otherwise: ready_block,
             },
             span: site.span,
@@ -813,64 +909,22 @@ fn install_dispatch<'ctx>(
         terminator: None,
     });
 
-    // Compute sizeOf[FrameTy] before dispatch so restore blocks can memset the frame.
-    let size_of_entry = body.basic_blocks.push(BasicBlockData {
-        note: Some("async-sizeof".into()),
-        statements: vec![],
-        terminator: None,
-    });
-    let size_of_id = find_std_function(gcx, "mem", "sizeOf", span)?;
-    let size_of_ty = gcx.get_type(size_of_id);
-    body.basic_blocks[size_of_entry].terminator = Some(Terminator {
-        kind: TerminatorKind::Call {
-            func: fn_operand(
-                size_of_id,
-                gcx.store
-                    .interners
-                    .intern_generic_args(vec![GenericArgument::Type(frame.ty)]),
-                size_of_ty,
-            ),
-            args: vec![],
-            devirt_hint: None,
-            destination: Place::from_local(locals.frame_size),
-            target: dispatch,
-            unwind: CallUnwindAction::Terminate,
-        },
-        span,
-    });
-
-    // Resolve memset for use in restore blocks.
-    let memset_id = find_std_function(gcx, "intrinsic", "__intrinsic_memset", span)?;
-    let memset_ty = gcx.get_type(memset_id);
-
     let start_restore = restore_block(
-        gcx,
         body,
         frame,
         &frame.start_locals,
-        locals.frame_raw,
         locals.frame_ptr,
         original_start,
-        locals.frame_size,
-        locals.memset_void,
-        memset_id,
-        memset_ty,
         span,
     );
     let mut targets = vec![(0u128, start_restore)];
     for (index, site) in yields.iter().enumerate() {
         let restore = restore_block(
-            gcx,
             body,
             frame,
             &frame.yield_locals[index],
-            locals.frame_raw,
             locals.frame_ptr,
             site.block,
-            locals.frame_size,
-            locals.memset_void,
-            memset_id,
-            memset_ty,
             site.span,
         );
         targets.push(((index + 1) as u128, restore));
@@ -891,32 +945,26 @@ fn install_dispatch<'ctx>(
         },
         span,
     });
-    body.start_block = size_of_entry;
+    body.start_block = dispatch;
     Ok(())
 }
 
-/// Build a restore block that loads all stored locals from the frame, then
-/// memsets the frame to zero (transferring Rc ownership to locals).
+/// Restore non-resident locals from the frame. Resident locals continue to be
+/// addressed through their stable frame fields.
 fn restore_block<'ctx>(
-    gcx: Gcx<'ctx>,
     body: &mut Body<'ctx>,
     frame: &AsyncFrameLayout<'ctx>,
     locals_to_restore: &[LocalId],
-    frame_raw_local: LocalId,
     frame_ptr_local: LocalId,
     target: BasicBlockId,
-    frame_size_local: LocalId,
-    memset_void_local: LocalId,
-    memset_id: DefinitionID,
-    memset_ty: Ty<'ctx>,
     span: Span,
 ) -> BasicBlockId {
     let statements: Vec<_> = locals_to_restore
         .iter()
+        .filter(|local| !frame.resident_locals.contains(local))
         .map(|local| Statement {
-            // Use init+take modifiers: skip pre-save of old local (may be
-            // uninit or zeroed) and skip retain (the memset below will clear
-            // the frame's copy, leaving the local as sole owner).
+            // Take ownership out of the field and clear that field. Resident
+            // fields are never transferred to poll-stack locals.
             kind: StatementKind::Assign(
                 Place::from_local(*local),
                 Rvalue::Use(Operand::CopyWith(
@@ -931,30 +979,11 @@ fn restore_block<'ctx>(
         })
         .collect();
 
-    // After loading locals, memset the frame to zero. This transfers ownership
-    // back to the locals and leaves the frame cleared before returning.
     let restore = body.basic_blocks.push(BasicBlockData {
         note: Some("async-restore".into()),
         statements,
         terminator: Some(Terminator {
-            kind: TerminatorKind::Call {
-                func: fn_operand(
-                    memset_id,
-                    gcx.store
-                        .interners
-                        .intern_generic_args(vec![GenericArgument::Type(gcx.types.uint8)]),
-                    memset_ty,
-                ),
-                args: vec![
-                    Operand::Copy(Place::from_local(frame_raw_local)),
-                    const_uint8_operand(gcx, 0),
-                    Operand::Copy(Place::from_local(frame_size_local)),
-                ],
-                devirt_hint: None,
-                destination: Place::from_local(memset_void_local),
-                target,
-                unwind: CallUnwindAction::Terminate,
-            },
+            kind: TerminatorKind::Goto { target },
             span,
         }),
     });
@@ -971,7 +1000,10 @@ fn pending_save_statements<'ctx>(
     span: Span,
 ) -> Vec<Statement<'ctx>> {
     let mut statements = Vec::with_capacity(locals_to_save.len() + 2);
-    for local in locals_to_save {
+    for local in locals_to_save
+        .iter()
+        .filter(|local| !frame.resident_locals.contains(local))
+    {
         // Use take semantics: the codegen will zero the source local after copying
         // so the moved value only remains in the frame.
         statements.push(Statement {
@@ -1550,6 +1582,19 @@ fn frame_local_place<'ctx>(
     local: LocalId,
 ) -> Place<'ctx> {
     frame_local_place_impl(frame, frame_ptr_local, local, body.locals[local].ty)
+}
+
+fn poll_local_place<'ctx>(
+    body: &Body<'ctx>,
+    frame: &AsyncFrameLayout<'ctx>,
+    frame_ptr_local: LocalId,
+    local: LocalId,
+) -> Place<'ctx> {
+    if frame.resident_locals.contains(&local) {
+        frame_local_place(body, frame, frame_ptr_local, local)
+    } else {
+        Place::from_local(local)
+    }
 }
 
 fn frame_local_place_stub<'ctx>(
