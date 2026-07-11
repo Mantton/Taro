@@ -1,0 +1,5 @@
+error: circular constant dependency
+	cycle: A -> B -> C -> A
+ -> language_tests/source_files/invalid/constant_dependency_cycle.tr:3:17
+	const C: int32 = A + 1
+	                 ^

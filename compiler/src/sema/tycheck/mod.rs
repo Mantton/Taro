@@ -27,7 +27,7 @@ pub struct TypecheckPhaseTiming {
     pub duration: Duration,
 }
 
-const TYPECHECK_PHASE_COUNT: usize = 19;
+const TYPECHECK_PHASE_COUNT: usize = 20;
 
 pub fn resolve_conformance_witness<'ctx>(
     context: GlobalContext<'ctx>,
@@ -72,6 +72,11 @@ fn run_typecheck_pipeline<'ctx>(
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.attributes", || {
         collect::attributes::run(package, context)
     })?; // Collect Attributes
+    run_typecheck_phase(
+        phase_timings,
+        "sema.typecheck.collect.constant_definitions",
+        || collect::constant::register(package, context),
+    )?; // Register constant definitions before compile-time values are consumed
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.generics", || {
         collect::generics::run(package, context)
     })?; // Collect Generics Headers

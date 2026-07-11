@@ -63,6 +63,34 @@ pub(crate) fn make_script_config<'a>(
     })
 }
 
+pub(crate) fn make_package_config<'a>(
+    icx: &'a CompilerContext<'a>,
+    src: PathBuf,
+    identifier: &str,
+) -> &'a Config {
+    icx.store.arenas.configs.alloc(Config {
+        name: "package".into(),
+        identifier: identifier.into(),
+        src,
+        dependencies: FxHashMap::default(),
+        index: PackageIndex::new(1),
+        kind: PackageKind::Library,
+        executable_out: None,
+        no_std_prelude: true,
+        is_script: false,
+        profile: BuildProfile::Debug,
+        overflow_checks: false,
+        debug: DebugOptions {
+            dump_mir: false,
+            dump_llvm: false,
+            timings: false,
+        },
+        test_mode: true,
+        std_mode: StdMode::BootstrapStd,
+        is_std_provider: false,
+    })
+}
+
 pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
     interner::reset_session();
 
@@ -79,6 +107,29 @@ pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> 
         .unwrap_or_else(|_| panic!("store"));
     let icx = CompilerContext::new(dcx.clone(), store);
     let config = make_script_config(&icx, file, "script-diagnostics");
+
+    let mut compiler = Compiler::new(&icx, config);
+    let _ = compiler.analyze_for_ide(IdeAnalysisMode::OnType);
+    dcx.take_recorded_diagnostics()
+}
+
+pub(crate) fn analyze_package_diagnostics(files: &[(&str, &str)]) -> Vec<DiagnosticRecord> {
+    interner::reset_session();
+
+    let root = temp_dir("package-diagnostics");
+    let output_root = root.join("target");
+    create_dir_all(&output_root).expect("output root");
+    for (relative_path, contents) in files {
+        write_file(&root.join("src").join(relative_path), contents);
+    }
+
+    let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
+    dcx.enable_recording();
+    let arenas = CompilerArenas::new();
+    let store = CompilerStore::new(&arenas, output_root, &dcx, None, BuildProfile::Debug)
+        .unwrap_or_else(|_| panic!("store"));
+    let icx = CompilerContext::new(dcx.clone(), store);
+    let config = make_package_config(&icx, root, "package-diagnostics");
 
     let mut compiler = Compiler::new(&icx, config);
     let _ = compiler.analyze_for_ide(IdeAnalysisMode::OnType);

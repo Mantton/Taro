@@ -34,6 +34,13 @@ use std::{cell::RefCell, ops::Deref, path::PathBuf};
 
 pub type Gcx<'gcx> = GlobalContext<'gcx>;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ConstEvaluationState {
+    Evaluating,
+    Evaluated(crate::sema::models::ConstValue),
+    Failed,
+}
+
 #[derive(Clone, Copy)]
 pub struct GlobalContext<'arena> {
     context: &'arena CompilerContext<'arena>,
@@ -103,6 +110,72 @@ impl<'arena> GlobalContext<'arena> {
         let package_index = id.package();
         let database = cache.entry(package_index).or_insert_with(Default::default);
         database.def_to_const.insert(id, value);
+    }
+
+    pub(crate) fn register_const_value_expression(
+        self,
+        id: DefinitionID,
+        expression: &hir::Expression,
+    ) {
+        let expression: &'arena hir::Expression =
+            self.store.arenas.global.alloc(expression.clone());
+        self.store
+            .const_value_exprs
+            .borrow_mut()
+            .insert(id, expression);
+        self.store.const_eval_states.borrow_mut().remove(&id);
+    }
+
+    pub(crate) fn clear_const_evaluation_cache(self) {
+        let package = self.package_index();
+        self.store
+            .const_value_exprs
+            .borrow_mut()
+            .retain(|id, _| id.package() != package);
+        self.store
+            .const_eval_states
+            .borrow_mut()
+            .retain(|id, _| id.package() != package);
+        self.store
+            .const_eval_stack
+            .borrow_mut()
+            .retain(|id| id.package() != package);
+        self.with_type_database(package, |database| {
+            database.def_to_const.clear();
+        });
+    }
+
+    pub(crate) fn const_value_expression(
+        self,
+        id: DefinitionID,
+    ) -> Option<&'arena hir::Expression> {
+        self.store.const_value_exprs.borrow().get(&id).copied()
+    }
+
+    pub(crate) fn const_evaluation_state(self, id: DefinitionID) -> Option<ConstEvaluationState> {
+        self.store.const_eval_states.borrow().get(&id).copied()
+    }
+
+    pub(crate) fn set_const_evaluation_state(self, id: DefinitionID, state: ConstEvaluationState) {
+        self.store.const_eval_states.borrow_mut().insert(id, state);
+    }
+
+    pub(crate) fn push_const_evaluation(self, id: DefinitionID) {
+        self.store.const_eval_stack.borrow_mut().push(id);
+    }
+
+    pub(crate) fn pop_const_evaluation(self, id: DefinitionID) {
+        let popped = self.store.const_eval_stack.borrow_mut().pop();
+        debug_assert_eq!(popped, Some(id));
+    }
+
+    pub(crate) fn constant_evaluation_cycle(self, id: DefinitionID) -> Vec<DefinitionID> {
+        let stack = self.store.const_eval_stack.borrow();
+        let start = stack
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap_or(0);
+        stack[start..].to_vec()
     }
 
     pub fn cache_static_mutability(self, id: DefinitionID, mutability: hir::Mutability) {
@@ -1601,6 +1674,11 @@ pub struct CompilerStore<'arena> {
 
     // Default value expressions (mapped by provider ID)
     pub default_value_exprs: RefCell<FxHashMap<DefinitionID, &'arena hir::Expression>>,
+
+    // Source constant expressions and their session-local lazy evaluation state.
+    const_value_exprs: RefCell<FxHashMap<DefinitionID, &'arena hir::Expression>>,
+    const_eval_states: RefCell<FxHashMap<DefinitionID, ConstEvaluationState>>,
+    const_eval_stack: RefCell<Vec<DefinitionID>>,
 }
 
 impl<'arena> CompilerStore<'arena> {
@@ -1634,6 +1712,9 @@ impl<'arena> CompilerStore<'arena> {
             synthetic_definitions: Default::default(),
             next_synthetic_id: std::cell::Cell::new(0),
             default_value_exprs: Default::default(),
+            const_value_exprs: Default::default(),
+            const_eval_states: Default::default(),
+            const_eval_stack: Default::default(),
         })
     }
 

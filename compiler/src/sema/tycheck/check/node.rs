@@ -20,7 +20,7 @@ use crate::{
                 match_arguments_to_parameters, validate_arity,
             },
             utils::{
-                const_eval::eval_const_expression,
+                const_eval::{eval_const_definition, eval_const_expression},
                 generics::{
                     GenericsBuilder, const_arg_ty_mismatches,
                     const_param_from_type_arg as generic_const_param_from_type_arg,
@@ -87,7 +87,7 @@ impl<'ctx> Checker<'ctx> {
             return;
         }
 
-        let Some(value) = eval_const_expression(gcx, expr) else {
+        let Some(value) = eval_const_definition(gcx, id, expr.span) else {
             return;
         };
 

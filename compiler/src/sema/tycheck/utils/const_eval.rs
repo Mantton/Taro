@@ -1,5 +1,5 @@
 use crate::{
-    compile::context::GlobalContext,
+    compile::context::{ConstEvaluationState, GlobalContext},
     hir,
     sema::{
         models::{ConstKind, ConstValue},
@@ -7,6 +7,100 @@ use crate::{
     },
     span::Span,
 };
+
+pub fn register_const_definition<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    id: hir::DefinitionID,
+    expression: &hir::Expression,
+) {
+    gcx.register_const_value_expression(id, expression);
+}
+
+pub fn eval_const_definition<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    id: hir::DefinitionID,
+    span: Span,
+) -> Option<ConstValue> {
+    if let Some(value) = gcx.try_get_const(id) {
+        return match value.kind {
+            ConstKind::Value(value) => Some(value),
+            _ => {
+                gcx.dcx().emit_error(
+                    "constant initializer must resolve to a concrete constant value".into(),
+                    Some(span),
+                );
+                None
+            }
+        };
+    }
+
+    match gcx.const_evaluation_state(id) {
+        Some(ConstEvaluationState::Evaluated(value)) => return Some(value),
+        Some(ConstEvaluationState::Failed) => return None,
+        Some(ConstEvaluationState::Evaluating) => {
+            let mut cycle = gcx.constant_evaluation_cycle(id);
+            cycle.push(id);
+
+            let cycle_names = cycle
+                .iter()
+                .map(|definition| {
+                    gcx.symbol_text(gcx.definition_ident(*definition).symbol)
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            gcx.dcx().emit_error(
+                format!(
+                    "circular constant dependency\n\tcycle: {}",
+                    cycle_names.join(" -> ")
+                ),
+                Some(span),
+            );
+
+            for definition in cycle.into_iter().take(cycle_names.len().saturating_sub(1)) {
+                gcx.set_const_evaluation_state(definition, ConstEvaluationState::Failed);
+            }
+            return None;
+        }
+        None => {}
+    }
+
+    let Some(expression) = gcx.const_value_expression(id) else {
+        let ident = gcx.definition_ident(id);
+        let name = gcx.symbol_text(ident.symbol);
+        gcx.dcx().emit_error(
+            format!(
+                "constant '{}' does not have a value available for constant evaluation",
+                name
+            ),
+            Some(span),
+        );
+        gcx.set_const_evaluation_state(id, ConstEvaluationState::Failed);
+        return None;
+    };
+
+    gcx.set_const_evaluation_state(id, ConstEvaluationState::Evaluating);
+    gcx.push_const_evaluation(id);
+    let evaluated = eval_const_expression(gcx, expression);
+    gcx.pop_const_evaluation(id);
+
+    if matches!(
+        gcx.const_evaluation_state(id),
+        Some(ConstEvaluationState::Failed)
+    ) {
+        return None;
+    }
+
+    match evaluated {
+        Some(value) => {
+            gcx.set_const_evaluation_state(id, ConstEvaluationState::Evaluated(value));
+            Some(value)
+        }
+        None => {
+            gcx.set_const_evaluation_state(id, ConstEvaluationState::Failed);
+            None
+        }
+    }
+}
 
 pub fn eval_const_expression<'ctx>(
     gcx: GlobalContext<'ctx>,
@@ -111,29 +205,7 @@ fn eval_const_path<'ctx>(
                 DefinitionKind::Constant | DefinitionKind::AssociatedConstant
             ) =>
         {
-            let Some(value) = gcx.try_get_const(def_id) else {
-                let ident = gcx.definition_ident(def_id);
-                let name = gcx.symbol_text(ident.symbol);
-                gcx.dcx().emit_error(
-                    format!(
-                        "constant '{}' is not yet available for const evaluation",
-                        name
-                    ),
-                    Some(span),
-                );
-                return None;
-            };
-
-            match value.kind {
-                ConstKind::Value(value) => Some(value),
-                _ => {
-                    gcx.dcx().emit_error(
-                        "constant initializer must resolve to a concrete constant value".into(),
-                        Some(span),
-                    );
-                    None
-                }
-            }
+            eval_const_definition(gcx, def_id, span)
         }
         hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) => {
             gcx.dcx().emit_error(
@@ -297,5 +369,99 @@ fn eval_const_binary<'ctx>(
             (ConstValue::Rune(a), ConstValue::Rune(b)) => Some(ConstValue::Bool(a >= b)),
             _ => type_error(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::sema::tycheck::test_support::{
+        analyze_package_diagnostics, analyze_script_diagnostics,
+    };
+
+    #[test]
+    fn forward_constant_dependencies_are_order_independent() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const RESULT: int32 = BASE + 2
+const BASE: int32 = 40
+
+func main() {
+    let _: int32 = RESULT
+}
+"#,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn forward_constant_dependencies_work_across_files() {
+        let diagnostics = analyze_package_diagnostics(&[
+            (
+                "consumer.tr",
+                "const RESULT: int32 = BASE + 2\nfunc useResult() -> int32 { RESULT }\n",
+            ),
+            ("provider.tr", "const BASE: int32 = 40\n"),
+        ]);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn forward_constants_work_in_early_compile_time_contexts() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+struct Buffer[const Size: usize = DEFAULT_SIZE] {
+    bytes: [uint8; Size]
+}
+
+struct Header {
+    bytes: [uint8; HEADER_SIZE]
+}
+
+const DEFAULT_SIZE: usize = 4
+const HEADER_SIZE: usize = 2
+
+func main() {}
+"#,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn constant_dependency_cycles_report_the_full_cycle_once() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const A: int32 = B + 1
+const B: int32 = C + 1
+const C: int32 = A + 1
+
+func main() {}
+"#,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(
+            diagnostics[0].message,
+            "circular constant dependency\n\tcycle: A -> B -> C -> A"
+        );
+    }
+
+    #[test]
+    fn direct_constant_dependency_cycles_are_reported_once() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const VALUE: int32 = VALUE + 1
+
+func main() {}
+"#,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(
+            diagnostics[0].message,
+            "circular constant dependency\n\tcycle: VALUE -> VALUE"
+        );
     }
 }

@@ -1,0 +1,5 @@
+const A: int32 = B + 1
+const B: int32 = C + 1
+const C: int32 = A + 1
+
+func main() {}
