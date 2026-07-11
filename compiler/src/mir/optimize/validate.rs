@@ -5,7 +5,7 @@
 
 use crate::{
     compile::context::Gcx,
-    error::CompileResult,
+    error::{CompileResult, ReportedError},
     hir::{DefinitionKind, Mutability},
     mir::{
         AggregateKind, BasicBlockId, Body, CallUnwindAction, ConstantKind, LocalId, Operand, Place,
@@ -72,6 +72,293 @@ impl<'ctx> MirPass<'ctx> for ValidateBorrows {
 
     fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
         validate_borrows(gcx, body)
+    }
+}
+
+// ============================================================================
+// Phase-independent structural validation
+// ============================================================================
+
+/// Validate graph and index invariants that every completed MIR pass must
+/// preserve. Unlike the semantic validators below, this is safe to run at any
+/// MIR phase.
+pub fn validate_body_structure<'ctx>(
+    gcx: Gcx<'ctx>,
+    body: &Body<'ctx>,
+    after_pass: &str,
+) -> CompileResult<()> {
+    let local_count = body.locals.len();
+    let block_count = body.basic_blocks.len();
+    let mut validator = StructureValidator {
+        gcx,
+        owner: body.owner,
+        after_pass,
+        local_count,
+        block_count,
+        valid: true,
+    };
+
+    if block_count == 0 {
+        validator.error("body has no basic blocks", None);
+    } else if body.start_block.index() >= block_count {
+        validator.error(
+            format!("start block {:?} is out of bounds", body.start_block),
+            None,
+        );
+    }
+
+    if local_count == 0 {
+        validator.error("body has no locals", None);
+    } else if body.return_local.index() >= local_count {
+        validator.error(
+            format!("return local {:?} is out of bounds", body.return_local),
+            None,
+        );
+    } else if !matches!(
+        body.locals[body.return_local].kind,
+        crate::mir::LocalKind::Return
+    ) {
+        validator.error(
+            format!(
+                "return local {:?} is not marked as a return local",
+                body.return_local
+            ),
+            Some(body.locals[body.return_local].span),
+        );
+    }
+
+    if body.escape_locals.len() != local_count {
+        validator.error(
+            format!(
+                "escape-local table has {} entries for {local_count} locals",
+                body.escape_locals.len()
+            ),
+            None,
+        );
+    }
+
+    for (local, declaration) in body.locals.iter_enumerated() {
+        if matches!(declaration.ty.kind(), TyKind::Error | TyKind::Infer(_)) {
+            validator.error(
+                format!(
+                    "local {local:?} has unresolved type {}",
+                    declaration.ty.format(gcx)
+                ),
+                Some(declaration.span),
+            );
+        }
+    }
+
+    for (block_id, block) in body.basic_blocks.iter_enumerated() {
+        for statement in &block.statements {
+            validator.check_statement(statement);
+        }
+
+        match &block.terminator {
+            Some(terminator) => validator.check_terminator(terminator),
+            None => validator.error(
+                format!("basic block {block_id:?} has no terminator"),
+                block.statements.last().map(|statement| statement.span),
+            ),
+        }
+    }
+
+    if validator.valid {
+        Ok(())
+    } else {
+        Err(ReportedError)
+    }
+}
+
+struct StructureValidator<'ctx, 'name> {
+    gcx: Gcx<'ctx>,
+    owner: crate::hir::DefinitionID,
+    after_pass: &'name str,
+    local_count: usize,
+    block_count: usize,
+    valid: bool,
+}
+
+impl<'ctx> StructureValidator<'ctx, '_> {
+    fn error(&mut self, detail: impl Into<String>, span: Option<crate::span::Span>) {
+        self.valid = false;
+        self.gcx.dcx().emit_error(
+            format!(
+                "internal error: MIR structure invalid after `{}` for {:?}: {}",
+                self.after_pass,
+                self.owner,
+                detail.into()
+            ),
+            span,
+        );
+    }
+
+    fn check_local(&mut self, local: LocalId, span: crate::span::Span) {
+        if local.index() >= self.local_count {
+            self.error(format!("local {local:?} is out of bounds"), Some(span));
+        }
+    }
+
+    fn check_edge(&mut self, block: BasicBlockId, span: crate::span::Span) {
+        if block.index() >= self.block_count {
+            self.error(
+                format!("edge targets out-of-bounds block {block:?}"),
+                Some(span),
+            );
+        }
+    }
+
+    fn check_place(&mut self, place: &Place<'ctx>, span: crate::span::Span) {
+        self.check_local(place.local, span);
+        for projection in &place.projection {
+            if let PlaceElem::Field(_, ty) = projection
+                && matches!(ty.kind(), TyKind::Error | TyKind::Infer(_))
+            {
+                self.error(
+                    format!(
+                        "place projection has unresolved type {}",
+                        ty.format(self.gcx)
+                    ),
+                    Some(span),
+                );
+            }
+        }
+    }
+
+    fn check_operand(&mut self, operand: &Operand<'ctx>, span: crate::span::Span) {
+        match operand {
+            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+                self.check_place(place, span)
+            }
+            Operand::Constant(constant) => {
+                if matches!(constant.ty.kind(), TyKind::Error | TyKind::Infer(_)) {
+                    self.error(
+                        format!(
+                            "constant operand has unresolved type {}",
+                            constant.ty.format(self.gcx)
+                        ),
+                        Some(span),
+                    );
+                }
+            }
+        }
+    }
+
+    fn check_rvalue(&mut self, rvalue: &Rvalue<'ctx>, span: crate::span::Span) {
+        match rvalue {
+            Rvalue::Use(operand) | Rvalue::UnaryOp { operand, .. } => {
+                self.check_operand(operand, span)
+            }
+            Rvalue::BinaryOp { lhs, rhs, .. } => {
+                self.check_operand(lhs, span);
+                self.check_operand(rhs, span);
+            }
+            Rvalue::Cast { operand, ty, .. } => {
+                self.check_operand(operand, span);
+                if matches!(ty.kind(), TyKind::Error | TyKind::Infer(_)) {
+                    self.error(
+                        format!("cast has unresolved target type {}", ty.format(self.gcx)),
+                        Some(span),
+                    );
+                }
+            }
+            Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
+                self.check_place(place, span)
+            }
+            Rvalue::Alloc { ty } => {
+                if matches!(ty.kind(), TyKind::Error | TyKind::Infer(_)) {
+                    self.error(
+                        format!("allocation has unresolved type {}", ty.format(self.gcx)),
+                        Some(span),
+                    );
+                }
+            }
+            Rvalue::Aggregate { fields, .. } => {
+                for operand in fields {
+                    self.check_operand(operand, span);
+                }
+            }
+            Rvalue::Repeat {
+                operand, element, ..
+            } => {
+                self.check_operand(operand, span);
+                if matches!(element.kind(), TyKind::Error | TyKind::Infer(_)) {
+                    self.error(
+                        format!(
+                            "array repeat has unresolved element type {}",
+                            element.format(self.gcx)
+                        ),
+                        Some(span),
+                    );
+                }
+            }
+        }
+    }
+
+    fn check_statement(&mut self, statement: &crate::mir::Statement<'ctx>) {
+        match &statement.kind {
+            StatementKind::Assign(place, rvalue) => {
+                self.check_place(place, statement.span);
+                self.check_rvalue(rvalue, statement.span);
+            }
+            StatementKind::ShadowResync(locals) => {
+                for local in locals {
+                    self.check_local(*local, statement.span);
+                }
+            }
+            StatementKind::SetDiscriminant { place, .. } => self.check_place(place, statement.span),
+            StatementKind::GcSafepoint | StatementKind::Nop => {}
+        }
+    }
+
+    fn check_terminator(&mut self, terminator: &crate::mir::Terminator<'ctx>) {
+        let span = terminator.span;
+        match &terminator.kind {
+            TerminatorKind::Goto { target } => self.check_edge(*target, span),
+            TerminatorKind::UnresolvedGoto => {
+                self.error("unresolved goto survived a completed pass", Some(span))
+            }
+            TerminatorKind::SwitchInt {
+                discr,
+                targets,
+                otherwise,
+            } => {
+                self.check_operand(discr, span);
+                for (_, target) in targets {
+                    self.check_edge(*target, span);
+                }
+                self.check_edge(*otherwise, span);
+            }
+            TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                target,
+                unwind,
+                ..
+            } => {
+                self.check_operand(func, span);
+                for argument in args {
+                    self.check_operand(argument, span);
+                }
+                self.check_place(destination, span);
+                self.check_edge(*target, span);
+                if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                    self.check_edge(*cleanup, span);
+                }
+            }
+            TerminatorKind::Yield {
+                value,
+                resume,
+                resume_arg,
+            } => {
+                self.check_operand(value, span);
+                self.check_place(resume_arg, span);
+                self.check_edge(*resume, span);
+            }
+            TerminatorKind::Return | TerminatorKind::ResumeUnwind | TerminatorKind::Unreachable => {
+            }
+        }
     }
 }
 

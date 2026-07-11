@@ -12,6 +12,8 @@ pub mod builder;
 pub mod optimize;
 pub mod package;
 pub mod pretty;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 index_vec::define_index_type! {
     pub struct LocalId = u32;
