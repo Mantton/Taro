@@ -166,10 +166,27 @@ interface Collection {
 }
 ```
 
-Computed properties in `interface` declarations are deferred for safety in the
-current release. The deferral is intentional while receiver-effect semantics
-(`self` vs `&self` vs `&mut self`) and duplicate-name ambiguity across
-interfaces are finalized.
+Interfaces may require computed properties and may provide default accessor
+bodies. A conforming type can satisfy an accessor with a stored field, an
+inherent computed property, or an accessor declared in the conformance:
+
+```taro
+interface Counted {
+    var count: int32 {
+        get(&self)
+        set(&mut self, value: int32)
+    };
+}
+
+interface DefaultCount {
+    var count: int32 {
+        get(&self) { 0 }
+    };
+}
+```
+
+If multiple interfaces expose the same property name, qualify the access with
+the interface when the receiver type does not identify a unique candidate.
 
 ---
 
@@ -215,6 +232,11 @@ func identity[T](value: T) -> T {
 // With where clause
 func compare[T](a: T, b: T) -> bool where T: Equatable {
     return a == b
+}
+
+// Async functions place `async` after the parameter list
+func fetchCount() async -> int32 {
+    return await loadCount()
 }
 
 // Self parameters (in interfaces/implementations)
@@ -313,8 +335,9 @@ Rules:
 - Compound assignment on a writable property evaluates the receiver once, reads
   through `get`, applies the assignment operator, and writes through `set`.
 - Async getters cannot be used in compound assignment.
-- Computed properties are supported in `impl` blocks only in v1.
-- Interface computed properties are deferred for safety in this cycle.
+- Interfaces can require accessors or provide default accessor bodies.
+- Stored fields and matching inherent properties can satisfy interface accessors;
+  conformances may also declare explicit property implementations.
 - `get` and `set` are contextual keywords only inside accessor blocks.
 
 ---
@@ -345,8 +368,8 @@ Namespaces group related declarations.
 
 ```taro
 namespace Math {
-    const PI: float64 = 3.14159;
-    const E: float64 = 2.71828;
+    const PI: double = 3.14159;
+    const E: double = 2.71828;
     
     func abs(x: int32) -> int32 {
         if x < 0 { return -x }
@@ -417,10 +440,15 @@ export internal.utils.*
 Constants define compile-time values.
 
 ```taro
-const PI: float64 = 3.14159
+const PI: double = 3.14159
 const MAX_SIZE: int32 = 1024
 const NAME: string = "Taro"
 ```
+
+Constant initializers support literals, references to other constants, unary
+and binary operators, primitive numeric and rune casts, and `if` expressions.
+Only the selected `if` branch is evaluated. Aggregate construction and general
+function calls are not constant expressions.
 
 ---
 

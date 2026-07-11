@@ -129,12 +129,12 @@ Runes represent single Unicode code points and are enclosed in single quotes.
 
 ```
 any         as          is          break       case        const       continue
-defer       else        enum        export      extern      false
+async       await       defer       else        enum        export      extern      false
 for         func        guard       if          impl        import
 in          init        interface   let         loop        match
-namespace   nil         operator    private     public      readonly
+mod         namespace   nil         operator    private     public      readonly
 return      static      struct      true        type        var
-where       while       mut
+where       while       mut         unsafe
 ```
 
 ### Future Reserved Keywords
@@ -142,13 +142,14 @@ where       while       mut
 These keywords are reserved for future use:
 
 ```
-class       final       override    fileprivate protected
-async       await       ref
+class       final       override    fileprivate protected ref
 ```
 
 ### Contextual Keywords
 
 `get` and `set` are contextual keywords for computed-property accessor blocks.
+`move` is contextual before a closure, and `some` is contextual in an opaque
+return type. They remain valid identifiers elsewhere.
 Outside those blocks, they are regular identifiers.
 
 ---

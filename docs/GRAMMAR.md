@@ -71,25 +71,25 @@ This document describes the formal grammar of the Taro programming language in E
 
 ```
 any         as          is          break       case        const       continue
-defer       else        enum        export      extern      false
+async       await       defer       else        enum        export      extern      false
 for         func        guard       if          impl        import
 in          init        interface   let         loop        match
 mod         mut         namespace   nil         operator    private
 public      readonly    return      static      struct      true
-type        var         where       while
+type        unsafe      var         where       while
 ```
 
 ### Reserved Keywords
 
 ```
-class       final       override    fileprivate protected
-async       await       ref
+class       final       override    fileprivate protected ref
 ```
 
 ### Contextual Keywords
 
-`get` and `set` are not reserved globally. They are interpreted as contextual
-keywords only inside computed-property accessor blocks.
+`get` and `set` are interpreted as contextual keywords inside computed-property
+accessor blocks. `move` introduces a move closure, and `some` introduces an
+opaque return type. These words remain valid identifiers in other contexts.
 
 ### Operators and Punctuation
 
@@ -229,9 +229,10 @@ It does not introduce a module. The following constraints apply:
                        ::= 'var' <identifier> ':' <type>
                            '{' <getter_requirement> [ <setter_requirement> ] '}'
 
-<getter_requirement>   ::= 'get' '(' <self_parameter> ')' [ 'async' ]
+<getter_requirement>   ::= 'get' '(' <self_parameter> ')' [ 'async' ] [ <block> ]
 
 <setter_requirement>   ::= 'set' '(' '&' 'mut' 'self' ',' <identifier> ':' <type> ')'
+                           [ <block> ]
 
 <conformances>         ::= ':' <path_node> { ',' <path_node> }
 ```
@@ -266,7 +267,7 @@ It does not introduce a module. The following constraints apply:
 
 <function_signature>   ::= <function_prototype>
 
-<function_prototype>   ::= '(' [ <function_parameters> ] ')' [ '->' <type> ]
+<function_prototype>   ::= '(' [ <function_parameters> ] ')' [ 'async' ] [ '->' <type> ]
 
 <function_parameters>  ::= <function_parameter> { ',' <function_parameter> } [ ',' ]
 
@@ -391,6 +392,7 @@ It does not introduce a module. The following constraints apply:
                          | <function_type>
                          | <collection_type>
                          | <existential_type>
+                         | <opaque_return_type>
                          | <infer_type>
                          | <paren_type>
                          | <never_type>
@@ -416,6 +418,8 @@ It does not introduce a module. The following constraints apply:
                          | <type> ';' <const_expression> /* array: [T;N] */
 
 <existential_type>     ::= 'any' <path_node> { '&' <path_node> }
+
+<opaque_return_type>   ::= 'some' <path_node> { '&' <path_node> }
 
 <infer_type>           ::= '_'
 
@@ -582,7 +586,7 @@ It does not introduce a module. The following constraints apply:
 <prefix_expression>    ::= <prefix_op> <prefix_expression>
                          | <postfix_expression>
 
-<prefix_op>            ::= '!' | '-' | '~' | '&' [ 'const' ] | '*'
+<prefix_op>            ::= '!' | '-' | '~' | '&' [ 'const' ] | '*' | 'await'
 
 <postfix_expression>   ::= <primary_expression> { <postfix_op> }
 
@@ -664,7 +668,9 @@ prefix operator, so propagation of an awaited value is written as `(await expr)!
 ### Closure Expression
 
 ```ebnf
-<closure_expression>   ::= <closure_params> [ '->' <type> ] <closure_body>
+<closure_expression>   ::= [ 'move' ] <closure_params>
+                           ( 'async' [ '->' <type> ] <block>
+                           | [ '->' <type> ] <closure_body> )
 
 <closure_params>       ::= '|' [ <closure_param_list> ] '|'
                          | '||'
@@ -738,7 +744,6 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 
 The following are reserved for future use:
 - `class`, `final`, `override`
-- `async`, `await`
 - `ref`
 - `fileprivate`, `protected`
 

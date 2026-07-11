@@ -7,11 +7,11 @@
 /// Example:
 /// ```
 /// struct Meters {
-///     value: float64
+///     value: double
 /// }
 ///
-/// impl From[float64] for Meters {
-///     public func from(_ value: float64) -> Meters {
+/// impl From[double] for Meters {
+///     public func from(_ value: double) -> Meters {
 ///         Meters { value: value }
 ///     }
 /// }

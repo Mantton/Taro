@@ -243,8 +243,10 @@ resultValue!        // Extract T from Result[T, E], or return .err(error)
 `expr!` is only valid for `Optional[T]` and `Result[T, E]`.
 
 - `Optional[T]!` requires the enclosing function, closure, or default-value provider to return `Optional[_]`.
-- `Result[T, E]!` requires the enclosing function, closure, or default-value provider to return `Result[_, E]`.
-- `Result` propagation requires an exact error-type match; it does not perform conversions.
+- `Result[T, E]!` requires the enclosing function, closure, or default-value provider to return `Result[_, TargetE]`.
+- When `E` and `TargetE` are identical, propagation forwards the error directly.
+  Otherwise, `TargetE` must implement `From[E]`; propagation calls that
+  conversion before returning `.err`.
 - `Optional` and `Result` do not mix. You cannot propagate an `Optional` from a `Result` context or vice versa.
 - To propagate an awaited value, write `(await expr)!`. `await expr!` is rejected on purpose because `await` keeps its existing precedence.
 
@@ -383,7 +385,7 @@ save(validate(transform(data)))
 
 ```taro
 value as int64
-number as float64
+number as double
 ptr as *void
 ```
 
@@ -484,11 +486,33 @@ std.task.spawn(|| {
 
 `move` affects how referenced outer variables enter the closure environment. It captures them by value, but it does not by itself make the closure one-shot: a `move` closure is `FnOnce` only when the body moves a captured value out of the closure.
 
-Async closures whose captures are all immutable `Copy` values are reusable and
-satisfy both `AsyncFn` and `AsyncFnMut`. Each call copies those captures into the
-new future. Async closures with borrowed, mutable, or moved non-`Copy` captures
-remain `AsyncFnOnce`; async calls must still be immediately awaited, preventing
-overlapping futures from sharing mutable state.
+Async closures with only immutable `Copy` or borrowed captures are reusable and
+satisfy `AsyncFn`. Mutable borrowed captures make a closure `AsyncFnMut`, so it
+can be called repeatedly in sequence through a mutable closure value. Moving a
+non-`Copy` capture makes the closure `AsyncFnOnce`. Async closure calls must be
+immediately awaited; overlapping futures are rejected so they cannot share a
+mutable capture.
+
+---
+
+## Opaque Return Types
+
+`some Interface` hides a function's concrete return type while preserving its
+interface conformances:
+
+```taro
+func makeNamed() -> some Named {
+    HiddenName { value: "Taro" }
+}
+
+func makeCopyNamed() -> some Named & Copy {
+    HiddenName { value: "Taro" }
+}
+```
+
+Every return path must resolve to the same hidden concrete type. Callers can use
+the declared interfaces, but cannot name or depend on that concrete type. Opaque
+return types also work across package boundaries and on async functions.
 
 ---
 

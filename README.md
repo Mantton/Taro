@@ -230,7 +230,9 @@ TARO_HOME=$(pwd)/dist dist/bin/taro check examples/hello.tr --std-path std --bui
 
 Metadata reuse is guarded by format/version/compiler stamp/target/options/fingerprint/checksum validation for normal dependency caches.
 
-The root package is still cold-compiled/rechecked in v0.
+Incremental compilation also reuses an unchanged root package's semantic and
+codegen artifacts. The current executable is still relinked so its output path
+and linker inputs are honored.
 
 Use `--no-incremental` to force a cold path:
 
@@ -333,9 +335,8 @@ func process(msg: Message) {
 Postfix `!` propagates `Optional[T]` and `Result[T, E]` values.
 
 - `Optional[T]!` extracts `T` or returns `.none` from the enclosing `Optional` context.
-- `Result[T, E]!` extracts `T` or returns `.err(error)` from the enclosing `Result` context.
+- `Result[T, E]!` extracts `T` or returns `.err(error)` from the enclosing `Result` context. If the enclosing error type differs, it must implement `From[E]`.
 - Propagation only works within the same container family.
-- `Result` propagation requires an exact error-type match.
 - For awaited values, write `(await expr)!`.
 
 ```rust
