@@ -593,7 +593,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub(crate) fn bounds_for_type_in_scope(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         let resolved = self.structurally_resolve(ty);
         let mut bounds = self.param_env.bounds_for(resolved);
-        bounds.extend(self.associated_bounds_for_projection(resolved));
+        bounds.extend(self.declared_bounds_for_alias(resolved));
 
         let mut seen = FxHashSet::default();
         bounds
@@ -602,9 +602,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .collect()
     }
 
-    fn associated_bounds_for_projection(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
+    fn declared_bounds_for_alias(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         let TyKind::Alias {
-            kind: AliasKind::Projection,
+            kind: AliasKind::Projection | AliasKind::Opaque,
             def_id,
             args,
         } = ty.kind()

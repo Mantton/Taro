@@ -1,0 +1,21 @@
+public interface Named {
+    public func name(&self) -> string
+}
+
+struct HiddenName {
+    value: string
+}
+
+impl Named for HiddenName {
+    public func name(&self) -> string {
+        self.value
+    }
+}
+
+public func makeNamed(_ value: string) -> some Named {
+    HiddenName { value }
+}
+
+public func preserveNamed[T: Named](_ value: T) -> some Named {
+    value
+}

@@ -14,6 +14,7 @@ pub(crate) mod fold;
 mod impls;
 pub mod infer;
 pub mod lower;
+pub(crate) mod opaque;
 pub mod results;
 pub mod solve;
 #[cfg(test)]

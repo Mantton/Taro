@@ -62,12 +62,52 @@ impl<'ctx> Checker<'ctx> {
             );
         }
 
-        let Some(expression) = expression else {
-            return;
-        };
-
         let Some(expectation) = self.return_ty.get() else {
             unreachable!("ICE: return check called outside function body")
+        };
+
+        if matches!(
+            expectation.kind(),
+            TyKind::Alias {
+                kind: crate::sema::models::AliasKind::Opaque,
+                def_id,
+                ..
+            } if def_id == self.current_def
+        ) {
+            let Some(expression) = expression else {
+                self.gcx().dcx().emit_error(
+                    "an opaque-returning function must return a value".into(),
+                    Some(span),
+                );
+                self.opaque_return_candidates.borrow_mut().push(
+                    crate::sema::tycheck::check::checker::OpaqueReturnCandidate {
+                        ty: self.gcx().types.error,
+                        infer_cx: None,
+                        span,
+                    },
+                );
+                return;
+            };
+            let (provided, infer_cx) = if let Some(cs) = cs.as_deref_mut() {
+                (
+                    self.synth_with_expectation(expression, None, cs),
+                    Some(cs.infer_cx.clone()),
+                )
+            } else {
+                (self.top_level_check(expression, None), None)
+            };
+            self.opaque_return_candidates.borrow_mut().push(
+                crate::sema::tycheck::check::checker::OpaqueReturnCandidate {
+                    ty: provided,
+                    infer_cx,
+                    span: expression.span,
+                },
+            );
+            return;
+        }
+
+        let Some(expression) = expression else {
+            return;
         };
         if let Some(cs) = cs.as_deref_mut() {
             let provided = self.synth_with_expectation(expression, Some(expectation), cs);

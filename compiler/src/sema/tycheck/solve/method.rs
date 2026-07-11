@@ -149,7 +149,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     candidate_ty.kind(),
                     TyKind::Parameter(_)
                         | TyKind::Alias {
-                            kind: AliasKind::Projection,
+                            kind: AliasKind::Projection | AliasKind::Opaque,
                             ..
                         }
                 ) {

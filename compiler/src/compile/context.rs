@@ -1196,7 +1196,7 @@ impl<'arena> GlobalContext<'arena> {
             TyKind::Adt(def, _) => self.std_item_def(StdItem::Span) == Some(def.id),
             TyKind::BoxedExistential { .. } => false,
             TyKind::Parameter(_) => false,
-            TyKind::Alias { kind, .. } if kind != AliasKind::Projection => {
+            TyKind::Alias { kind, .. } if matches!(kind, AliasKind::Weak | AliasKind::Inherent) => {
                 let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
                 if normalized == ty {
                     false
@@ -1240,7 +1240,7 @@ impl<'arena> GlobalContext<'arena> {
                     GoalResult::Proven
                 )
             }
-            TyKind::Alias { kind, .. } if kind != AliasKind::Projection => {
+            TyKind::Alias { kind, .. } if matches!(kind, AliasKind::Weak | AliasKind::Inherent) => {
                 let normalized = crate::sema::tycheck::utils::normalize_aliases(self, ty);
                 if normalized == ty {
                     false
@@ -1248,6 +1248,12 @@ impl<'arena> GlobalContext<'arena> {
                     self.is_type_copyable(normalized)
                 }
             }
+            TyKind::Alias {
+                kind: AliasKind::Opaque,
+                ..
+            } => self
+                .std_item_def(StdItem::Copy)
+                .is_some_and(|copy| self.opaque_alias_declares_interface(ty, copy)),
             TyKind::Tuple(elements) => elements.iter().all(|elem| self.is_type_copyable(*elem)),
             TyKind::Array { element, .. } => self.is_type_copyable(element),
             TyKind::Int(_)
@@ -1303,6 +1309,36 @@ impl<'arena> GlobalContext<'arena> {
         self.interface_transitively_requires_inner(interface_id, target_id, &mut visited)
     }
 
+    fn opaque_alias_declares_interface(self, ty: Ty<'arena>, target_id: hir::DefinitionID) -> bool {
+        let TyKind::Alias {
+            kind: AliasKind::Opaque,
+            def_id,
+            args,
+        } = ty.kind()
+        else {
+            return false;
+        };
+        self.canonical_constraints_of(def_id)
+            .into_iter()
+            .map(|constraint| {
+                crate::sema::tycheck::utils::instantiate::instantiate_constraint_with_args(
+                    self,
+                    constraint.value,
+                    args,
+                )
+            })
+            .any(|constraint| match constraint {
+                Constraint::Bound {
+                    ty: bounded_ty,
+                    interface,
+                } => {
+                    bounded_ty == ty
+                        && self.interface_transitively_requires(interface.id, target_id)
+                }
+                Constraint::TypeEquality(_, _) => false,
+            })
+    }
+
     fn interface_transitively_requires_inner(
         self,
         interface_id: hir::DefinitionID,
@@ -1355,6 +1391,12 @@ impl<'arena> GlobalContext<'arena> {
             | TyKind::Opaque(_)
             | TyKind::Infer(_)
             | TyKind::Error => false,
+            TyKind::Alias {
+                kind: AliasKind::Opaque,
+                ..
+            } => self
+                .std_item_def(StdItem::Sendable)
+                .is_some_and(|sendable| self.opaque_alias_declares_interface(ty, sendable)),
             TyKind::Alias { .. } => false,
             TyKind::Array { element, .. } => self.is_type_sendable_inner(element, visited),
             TyKind::Tuple(items) => items

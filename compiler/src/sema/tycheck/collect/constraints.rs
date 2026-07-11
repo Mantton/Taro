@@ -40,7 +40,9 @@ impl HirVisitor for Actor<'_> {
             DeclarationKind::Interface(node) => self.collect_definition(d.id, &node.generics, None),
             DeclarationKind::Struct(node) => self.collect_definition(d.id, &node.generics, None),
             DeclarationKind::Enum(node) => self.collect_definition(d.id, &node.generics, None),
-            DeclarationKind::Function(node) => self.collect_definition(d.id, &node.generics, None),
+            DeclarationKind::Function(node) => {
+                self.collect_function(d.id, node, hir::FunctionContext::Free)
+            }
             DeclarationKind::Impl(node) => self.collect_definition(d.id, &node.generics, None),
             DeclarationKind::TypeAlias(node) => {
                 self.collect_definition(d.id, &node.generics, node.bounds.as_ref())
@@ -58,7 +60,7 @@ impl HirVisitor for Actor<'_> {
     ) -> Self::Result {
         match &declaration.kind {
             AssociatedDeclarationKind::Function(node) => {
-                self.collect_definition(declaration.id, &node.generics, None)
+                self.collect_function(declaration.id, node, hir::FunctionContext::Assoc(context))
             }
             AssociatedDeclarationKind::Type(node) => {
                 self.collect_definition(declaration.id, &node.generics, node.bounds.as_ref())
@@ -71,6 +73,38 @@ impl HirVisitor for Actor<'_> {
 }
 
 impl<'ctx> Actor<'ctx> {
+    fn collect_function(
+        &mut self,
+        id: DefinitionID,
+        node: &hir::Function,
+        context: hir::FunctionContext,
+    ) {
+        let mut constraints = self.collect_internal(id, &node.generics, None);
+        if let Some(bounds) = crate::sema::tycheck::opaque::opaque_return_bounds(node)
+            && crate::sema::tycheck::opaque::opaque_return_is_supported(node, context)
+        {
+            let gcx = self.context;
+            let opaque_ty = crate::sema::tycheck::opaque::opaque_return_ty(gcx, id);
+            let lowering = DefTyLoweringCtx::new(id, gcx);
+            for bound in bounds {
+                let interface = lowering
+                    .lowerer()
+                    .lower_interface_reference(opaque_ty, bound);
+                let constraint = Constraint::Bound {
+                    ty: opaque_ty,
+                    interface,
+                };
+                if !constraints
+                    .iter()
+                    .any(|existing| existing.value == constraint)
+                {
+                    constraints.push(Spanned::new(constraint, bound.span));
+                }
+            }
+        }
+        self.context.update_constraints(id, constraints);
+    }
+
     fn collect_definition(
         &mut self,
         id: DefinitionID,

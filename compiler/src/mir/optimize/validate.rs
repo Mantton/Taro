@@ -751,6 +751,9 @@ fn types_compatible<'ctx>(
         return true;
     }
 
+    let gcx = normalize_icx.gcx;
+    let expected = crate::sema::tycheck::opaque::reveal_opaque_aliases(gcx, expected);
+    let actual = crate::sema::tycheck::opaque::reveal_opaque_aliases(gcx, actual);
     let expected = crate::sema::tycheck::utils::normalize::normalize_ty(
         normalize_icx.clone(),
         expected,

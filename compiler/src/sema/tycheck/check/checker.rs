@@ -32,6 +32,7 @@ pub struct Checker<'arena> {
     pub context: Gcx<'arena>,
     pub locals: RefCell<FxHashMap<NodeID, LocalBinding<'arena>>>,
     pub return_ty: Cell<Option<Ty<'arena>>>,
+    pub(super) opaque_return_candidates: RefCell<Vec<OpaqueReturnCandidate<'arena>>>,
     pub(super) loop_depth: Cell<usize>,
     pub(super) unsafe_depth: Cell<usize>,
     pub(super) defer_depth: Cell<usize>,
@@ -45,6 +46,12 @@ pub struct Checker<'arena> {
     pub results: Rc<RefCell<TypeCheckResults<'arena>>>,
     infer_cx: RefCell<Option<Rc<InferCtx<'arena>>>>,
     pub visible_traits: Rc<FxHashSet<DefinitionID>>,
+}
+
+pub(super) struct OpaqueReturnCandidate<'arena> {
+    pub ty: Ty<'arena>,
+    pub infer_cx: Option<Rc<InferCtx<'arena>>>,
+    pub span: Span,
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +70,7 @@ impl<'arena> Checker<'arena> {
         Checker {
             context,
             return_ty: Cell::new(None),
+            opaque_return_candidates: RefCell::new(Vec::new()),
             locals: Default::default(),
             loop_depth: Cell::new(0),
             unsafe_depth: Cell::new(0),

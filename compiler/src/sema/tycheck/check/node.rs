@@ -224,11 +224,139 @@ impl<'ctx> Checker<'ctx> {
         } else {
             // --- regular block body ---
             self.check_block(body, None);
+            if matches!(
+                body_return_ty.kind(),
+                TyKind::Alias {
+                    kind: crate::sema::models::AliasKind::Opaque,
+                    def_id,
+                    ..
+                } if def_id == id
+            ) && let Some(tail) = body.tail.as_deref()
+                && !matches!(tail.kind, hir::ExpressionKind::Return { .. })
+                && let Some(ty) = self.results.borrow().try_node_type(tail.id)
+            {
+                self.opaque_return_candidates.borrow_mut().push(
+                    crate::sema::tycheck::check::checker::OpaqueReturnCandidate {
+                        ty,
+                        infer_cx: None,
+                        span: tail.span,
+                    },
+                );
+            }
+        }
+
+        if matches!(
+            body_return_ty.kind(),
+            TyKind::Alias {
+                kind: crate::sema::models::AliasKind::Opaque,
+                def_id,
+                ..
+            } if def_id == id
+        ) {
+            self.finalize_opaque_return(id, node);
         }
 
         if node.is_async {
             self.async_depth.set(0);
         }
+    }
+
+    fn finalize_opaque_return(&self, id: DefinitionID, node: &hir::Function) {
+        let gcx = self.gcx();
+        let mut hidden_ty = None;
+        for candidate in self.opaque_return_candidates.borrow().iter() {
+            let candidate_ty = candidate
+                .infer_cx
+                .as_ref()
+                .map_or(candidate.ty, |icx| icx.resolve_vars_or_error(candidate.ty));
+            if candidate_ty.is_error() {
+                continue;
+            }
+            let candidate_ty = crate::sema::tycheck::utils::normalize_aliases(gcx, candidate_ty);
+            if crate::sema::tycheck::opaque::contains_opaque_owner_through_hidden(
+                gcx,
+                candidate_ty,
+                id,
+            ) {
+                gcx.dcx().emit_error(
+                    "opaque return type recursively refers to itself".into(),
+                    Some(candidate.span),
+                );
+                gcx.cache_alias_type(id, gcx.types.error);
+                return;
+            }
+            if let Some(expected) = hidden_ty {
+                if candidate_ty != expected {
+                    gcx.dcx().emit_error(
+                        format!(
+                            "opaque return type must resolve to one concrete type; expected '{}', found '{}'",
+                            expected.format(gcx),
+                            candidate_ty.format(gcx)
+                        ),
+                        Some(candidate.span),
+                    );
+                }
+            } else {
+                hidden_ty = Some(candidate_ty);
+            }
+        }
+
+        let Some(hidden_ty) = hidden_ty else {
+            if self.opaque_return_candidates.borrow().is_empty() {
+                gcx.dcx().emit_error(
+                    "opaque-returning function has no value-producing return path".into(),
+                    Some(node.signature.span),
+                );
+            }
+            gcx.cache_alias_type(id, gcx.types.error);
+            return;
+        };
+
+        let mut cs = self.new_cs();
+        self.add_type_constraints(hidden_ty, node.signature.span, &mut cs);
+        if let Some(bounds) = crate::sema::tycheck::opaque::opaque_return_bounds(node) {
+            let lowering = crate::sema::tycheck::lower::DefTyLoweringCtx::new(id, gcx);
+            for bound in bounds {
+                let interface = lowering
+                    .lowerer()
+                    .lower_interface_reference(hidden_ty, bound);
+                if matches!(hidden_ty.kind(), TyKind::Parameter(_)) {
+                    let param_env =
+                        crate::sema::tycheck::constraints::canonical_constraints_of(gcx, id)
+                            .into_iter()
+                            .map(|constraint| constraint.value)
+                            .collect::<Vec<_>>();
+                    let param_env = gcx.store.arenas.global.alloc_slice_clone(&param_env);
+                    let goal = interface.to_goal_with_self_ty(gcx, param_env, hidden_ty);
+                    if !matches!(
+                        gcx.prove_interface_goal(
+                            goal,
+                            crate::sema::models::SelectionMode::Typecheck,
+                        ),
+                        crate::sema::models::GoalResult::Proven
+                    ) {
+                        gcx.dcx().emit_error(
+                            format!(
+                                "type '{}' does not conform to interface '{}'",
+                                hidden_ty.format(gcx),
+                                interface.format(gcx)
+                            ),
+                            Some(bound.span),
+                        );
+                    }
+                    continue;
+                }
+                cs.add_goal(
+                    Goal::Conforms {
+                        ty: hidden_ty,
+                        interface,
+                    },
+                    bound.span,
+                );
+            }
+        }
+        cs.solve_all();
+        gcx.cache_alias_type(id, hidden_ty);
     }
 }
 

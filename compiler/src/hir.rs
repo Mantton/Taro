@@ -443,9 +443,9 @@ pub enum TypeKind {
     },
     /// any T
     BoxedExistential { interfaces: Vec<PathNode> },
-    /// some T — opaque return type that implements one or more interfaces (Swift-style).
-    /// Currently lowered as BoxedExistential; a future pass can optimize to
-    /// avoid boxing when the concrete type is statically known.
+    /// `some T` — a declaration-owned opaque return type implementing one or more interfaces.
+    /// Semantic lowering accepts this only as the complete return type of a concrete
+    /// function or method with a body.
     ImplTrait { interfaces: Vec<PathNode> },
     /// Qualified type access: `(T as I).Member`
     /// Used to disambiguate associated types when a type implements multiple interfaces

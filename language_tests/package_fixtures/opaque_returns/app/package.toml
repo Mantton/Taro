@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/opaque-return-app"
+kind = "executable"
+
+[require]
+"github.com/example/opaque-return-dep" = { path = "../dep", alias = "dep" }

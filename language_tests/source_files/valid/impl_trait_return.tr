@@ -8,7 +8,7 @@ interface Countable {
     func count(&self) -> int32
 }
 
-struct Dog {
+struct Dog: Copy {
     name: string
 }
 
@@ -64,6 +64,43 @@ func makeNamedDog(_ name: string) -> some Describable {
     Dog { name: name }
 }
 
+func makeCopyDog(_ name: string) -> some Describable & Copy {
+    Dog { name }
+}
+
+func consumeName[T: Describable](_ value: T) -> string {
+    value.describe()
+}
+
+func valueSize[T](_ value: &T) -> usize {
+    std.mem.sizeOf[T]()
+}
+
+func preserve[T: Describable](_ value: T) -> some Describable {
+    value
+}
+
+func chooseDog(_ first: bool) -> some Describable {
+    if first {
+        return makeDog()
+    }
+    makeDog()
+}
+
+func makeAsyncDog(_ name: string) async -> some Describable {
+    Dog { name: name }
+}
+
+struct Kennel {
+    residentName: string
+}
+
+impl Kennel {
+    func resident(&self) -> some Describable {
+        Dog { name: self.residentName }
+    }
+}
+
 // Wrapper struct to test some Interface in more complex contexts
 struct Pair {
     first: any Describable
@@ -77,9 +114,10 @@ func makePair() -> Pair {
     }
 }
 
-func main() {
+func main() async {
     // Basic some return
     let dog = makeDog()
+    assert(dog.describe() == "Rex", "direct opaque dispatch failed")
     assert(greet(dog) == "Rex", "some Describable return for Dog failed")
 
     let cat = makeCat()
@@ -87,6 +125,11 @@ func main() {
 
     // Multiple bounds
     let luna = makeCountableCat()
+    assert(
+        valueSize(&luna) == std.mem.sizeOf[Cat](),
+        "opaque return should retain its hidden concrete layout",
+    )
+    assert(luna.count() == 7, "second opaque bound direct dispatch failed")
     assert(greet(luna) == "Luna", "some Describable & Countable describe failed")
 
     // Pass to generic function
@@ -96,6 +139,22 @@ func main() {
     // Parameterized function with some return
     let named = makeNamedDog("Buddy")
     assert(greet(named) == "Buddy", "parameterized some return failed")
+
+    let preserved = preserve(Dog { name: "Generic" })
+    assert(preserved.describe() == "Generic", "generic opaque return failed")
+
+    let chosen = chooseDog(false)
+    assert(chosen.describe() == "Rex", "nested opaque return identity failed")
+
+    let kennel = Kennel { residentName: "Spot" }
+    assert(kennel.resident().describe() == "Spot", "opaque method return failed")
+
+    let asyncDog = await makeAsyncDog("Async")
+    assert(asyncDog.describe() == "Async", "async opaque return failed")
+
+    let copyDog = makeCopyDog("Copy")
+    assert(consumeName(copyDog) == "Copy", "copy opaque first use failed")
+    assert(consumeName(copyDog) == "Copy", "copy opaque reuse failed")
 
     // some return used in struct fields via any Interface
     let pair = makePair()

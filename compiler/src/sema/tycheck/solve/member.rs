@@ -211,7 +211,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let interfaces = match ty.kind() {
                 TyKind::Parameter(_)
                 | TyKind::Alias {
-                    kind: crate::sema::models::AliasKind::Projection,
+                    kind:
+                        crate::sema::models::AliasKind::Projection
+                        | crate::sema::models::AliasKind::Opaque,
                     ..
                 } => {
                     let bounds = self.bounds_for_type_in_scope(ty);

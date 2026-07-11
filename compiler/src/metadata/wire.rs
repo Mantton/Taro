@@ -450,6 +450,7 @@ pub enum AliasKindWire {
     Inherent,
     Weak,
     Projection,
+    Opaque,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1937,6 +1938,7 @@ pub fn alias_kind_to_wire(v: AliasKind) -> AliasKindWire {
         AliasKind::Inherent => AliasKindWire::Inherent,
         AliasKind::Weak => AliasKindWire::Weak,
         AliasKind::Projection => AliasKindWire::Projection,
+        AliasKind::Opaque => AliasKindWire::Opaque,
     }
 }
 
@@ -1946,6 +1948,7 @@ pub fn alias_kind_from_wire(v: &AliasKindWire) -> AliasKind {
         AliasKindWire::Inherent => AliasKind::Inherent,
         AliasKindWire::Weak => AliasKind::Weak,
         AliasKindWire::Projection => AliasKind::Projection,
+        AliasKindWire::Opaque => AliasKind::Opaque,
     }
 }
 

@@ -81,6 +81,11 @@ impl<'ctx> TypeFolder<'ctx> for PostMonoNormalizeFolder<'ctx> {
                             )
                         }
                     }
+                    AliasKind::Opaque => {
+                        let hidden = self.gcx.get_alias_type(def_id);
+                        let instantiated = instantiate_ty_with_args(self.gcx, hidden, args);
+                        instantiated.fold_with(self)
+                    }
                 }
             }
             // Panic on inference variables - these should be gone

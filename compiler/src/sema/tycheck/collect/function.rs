@@ -69,7 +69,7 @@ impl<'ctx> Actor<'ctx> {
         &self,
         id: DefinitionID,
         node: &hir::Function,
-        _: hir::FunctionContext,
+        fn_ctx: hir::FunctionContext,
     ) -> LabeledFunctionSignature<'ctx> {
         let ctx = DefTyLoweringCtx::new(id, self.context);
         let mut inputs: Vec<LabeledFunctionParameter> = Vec::new();
@@ -165,8 +165,21 @@ impl<'ctx> Actor<'ctx> {
 
         let declared_output = if let Some(property_output) = self.getter_output_tys.get(&id) {
             ctx.lowerer().lower_type(property_output)
-        } else if let Some(node) = &node.signature.prototype.output {
-            ctx.lowerer().lower_type(node)
+        } else if let Some(output) = &node.signature.prototype.output {
+            if matches!(output.kind, hir::TypeKind::ImplTrait { .. }) {
+                if crate::sema::tycheck::opaque::opaque_return_is_supported(node, fn_ctx) {
+                    crate::sema::tycheck::opaque::opaque_return_ty(self.context, id)
+                } else {
+                    self.context.dcx().emit_error(
+                        "'some Interface' requires a concrete function or method body and is not allowed in interface requirements or extern declarations"
+                            .into(),
+                        Some(output.span),
+                    );
+                    self.context.types.error
+                }
+            } else {
+                ctx.lowerer().lower_type(output)
+            }
         } else {
             self.context.types.void
         };

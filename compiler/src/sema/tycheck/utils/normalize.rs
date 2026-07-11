@@ -52,7 +52,9 @@ impl<'ctx> TypeFolder<'ctx> for ShallowNormalizeFolder<'ctx> {
 
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
         match ty.kind() {
-            TyKind::Alias { kind, def_id, args } if kind != AliasKind::Projection => {
+            TyKind::Alias { kind, def_id, args }
+                if matches!(kind, AliasKind::Weak | AliasKind::Inherent) =>
+            {
                 let base = self.gcx.get_alias_type(def_id);
                 let instantiated = instantiate_ty_with_args(self.gcx, base, args);
                 return instantiated.fold_with(self);
@@ -295,7 +297,11 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
                     ty.super_fold_with(self)
                 }
             }
-            TyKind::Alias { def_id, args, .. } => {
+            TyKind::Alias {
+                kind: AliasKind::Weak | AliasKind::Inherent,
+                def_id,
+                args,
+            } => {
                 let base = self.gcx().get_alias_type(def_id);
                 let instantiated = instantiate_ty_with_args(self.gcx(), base, args);
                 instantiated.fold_with(self)

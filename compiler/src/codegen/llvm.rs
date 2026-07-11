@@ -7168,6 +7168,7 @@ fn lower_type<'llvm, 'gcx>(
                 crate::sema::models::AliasKind::Weak => "weak alias",
                 crate::sema::models::AliasKind::Inherent => "inherent alias",
                 crate::sema::models::AliasKind::Projection => "projection",
+                crate::sema::models::AliasKind::Opaque => "opaque return",
             };
             unreachable!(
                 "ICE: unnormalized {} in codegen: {}\n\

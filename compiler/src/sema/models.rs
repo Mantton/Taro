@@ -226,6 +226,34 @@ impl<'arena> Ty<'arena> {
             },
             TyKind::Parameter(p) => gcx.symbol_text(p.name).to_string(),
             TyKind::Alias { kind, def_id, args } => {
+                if kind == AliasKind::Opaque {
+                    let mut bounds = gcx
+                        .constraints_of(def_id)
+                        .into_iter()
+                        .filter_map(|constraint| match constraint.value {
+                            Constraint::Bound { ty, interface }
+                                if matches!(
+                                    ty.kind(),
+                                    TyKind::Alias {
+                                        kind: AliasKind::Opaque,
+                                        def_id: bound_owner,
+                                        ..
+                                    } if bound_owner == def_id
+                                ) =>
+                            {
+                                Some(interface.format(gcx))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    bounds.sort();
+                    bounds.dedup();
+                    return if bounds.is_empty() {
+                        "some <opaque>".into()
+                    } else {
+                        format!("some {}", bounds.join(" & "))
+                    };
+                }
                 let ident = gcx.definition_ident(def_id);
                 if kind == AliasKind::Projection {
                     if let Some(GenericArgument::Type(self_ty)) = args.get(0) {
@@ -392,6 +420,8 @@ pub enum AliasKind {
     Weak,
     /// Interface associated type accessed on a type parameter: `T.Item`
     Projection,
+    /// Return-position opaque type owned by a concrete function or method.
+    Opaque,
 }
 
 /// Classification of a closure's callable behavior

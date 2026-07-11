@@ -1,0 +1,23 @@
+import dep.{Named, makeNamed, preserveNamed}
+
+func readName[T: Named](_ value: T) -> string {
+    value.name()
+}
+
+func readErased(_ value: any Named) -> string {
+    value.name()
+}
+
+func main() {
+    let hidden = makeNamed("remote")
+    assert(hidden.name() == "remote", "direct cross-package opaque dispatch")
+    assert(readName(hidden) == "remote", "generic cross-package opaque dispatch")
+
+    let erased = makeNamed("erased")
+    assert(readErased(erased) == "erased", "cross-package opaque existential coercion")
+
+    let preserved = preserveNamed(makeNamed("nested"))
+    assert(preserved.name() == "nested", "generic dependency opaque return")
+
+    std.print("PASS: cross-package opaque returns\n")
+}

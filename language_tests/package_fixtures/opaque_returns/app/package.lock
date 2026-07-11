@@ -1,0 +1,13 @@
+version = 2
+generated_by = "taro 0.1.0"
+
+[[package]]
+node = "72836362fd80e8db"
+name = "github.com/example/opaque-return-dep"
+kind = "library"
+no_std_prelude = false
+source_type = "path"
+path = "/Users/mantton/Desktop/Mantton/Taro/language_tests/package_fixtures/opaque_returns/dep"
+requests = ["path"]
+
+[package.deps]

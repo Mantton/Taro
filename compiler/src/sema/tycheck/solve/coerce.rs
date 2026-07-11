@@ -99,6 +99,43 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return Some(self.solve_equality(location, to, from));
         }
 
+        if matches!(
+            from.kind(),
+            TyKind::Alias {
+                kind: AliasKind::Opaque,
+                ..
+            }
+        ) {
+            let obligations = interfaces
+                .iter()
+                .map(|interface| {
+                    let mut arguments = interface.arguments.to_vec();
+                    if let Some(first) = arguments.first_mut() {
+                        *first = GenericArgument::Type(from);
+                    } else {
+                        arguments.push(GenericArgument::Type(from));
+                    }
+                    let interface = InterfaceReference {
+                        id: interface.id,
+                        arguments: self.gcx().store.interners.intern_generic_args(arguments),
+                        bindings: interface.bindings,
+                    };
+                    Obligation {
+                        location,
+                        goal: Goal::Conforms {
+                            ty: from,
+                            interface,
+                        },
+                    }
+                })
+                .collect();
+            self.record_adjustments(
+                node_id,
+                vec![Adjustment::BoxExistential { from, interfaces }],
+            );
+            return Some(SolverResult::Solved(obligations));
+        }
+
         let Some(head) = type_head_from_value_ty(from) else {
             let error = Spanned::new(
                 TypeError::TyMismatch(ExpectedFound::new(to, from)),
@@ -669,7 +706,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 return SolverResult::Deferred;
             }
             TyKind::Alias {
-                kind: AliasKind::Projection,
+                kind: AliasKind::Projection | AliasKind::Opaque,
                 ..
             } => {
                 if ty.contains_inference() {

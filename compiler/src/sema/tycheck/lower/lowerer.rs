@@ -113,11 +113,7 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                     gcx,
                 )
             }
-            hir::TypeKind::BoxedExistential { interfaces }
-            | hir::TypeKind::ImplTrait { interfaces } => {
-                // Both `any Interface` and `impl Interface` currently lower to
-                // BoxedExistential. A future optimisation pass can avoid boxing
-                // for `impl Interface` when the concrete type is statically known.
+            hir::TypeKind::BoxedExistential { interfaces } => {
                 let self_ty = gcx.types.self_type_parameter;
                 let mut lowered = Vec::with_capacity(interfaces.len());
                 for interface in interfaces {
@@ -125,6 +121,14 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 }
                 let list = gcx.store.arenas.global.alloc_slice_clone(&lowered);
                 Ty::new(TyKind::BoxedExistential { interfaces: list }, gcx)
+            }
+            hir::TypeKind::ImplTrait { .. } => {
+                gcx.dcx().emit_error(
+                    "'some Interface' is only allowed as the complete return type of a concrete function or method with a body"
+                        .into(),
+                    Some(node.span),
+                );
+                gcx.types.error
             }
             hir::TypeKind::QualifiedAccess {
                 target,
