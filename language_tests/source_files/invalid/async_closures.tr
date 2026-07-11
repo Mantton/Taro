@@ -29,11 +29,27 @@ func applyReusableAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async ->
     return await f(x)
 }
 
-func badCapturingAsyncFnBound() async {
-    let captured = 7 as int32
-    let closure = |x: int32| async {
-        return x + captured
+func badMovedNonCopyAsyncFnBound() async {
+    var values: std.collections.List[int32] = std.collections.List()
+    values.append(7)
+    let closure = move |x: int32| async {
+        return x + (values.len() as int32)
     }
 
     let _ = await applyReusableAsync(closure, 1)
+}
+
+func applyMutableAsync[F: AsyncFnMut() -> int32](_ f: F) async -> int32 {
+    var f = f
+    return await f()
+}
+
+func badMutableCaptureAsyncFnMutBound() async {
+    var count = 0 as int32
+    let closure = || async {
+        count += 1
+        return count
+    }
+
+    let _ = await applyMutableAsync(closure)
 }

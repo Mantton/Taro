@@ -343,6 +343,51 @@ func noncapturingAsyncClosuresSatisfyAsyncFnBounds() async {
 }
 
 @test
+func copyCapturingAsyncClosuresAreReusable() async {
+    let captured = 9 as int32
+    let closure = |x: int32| async {
+        await std.testing.yieldNow()
+        return x + captured
+    }
+
+    let first = await closure(1)
+    let second = await closure(2)
+    let throughFn = await applyReusableAsyncClosure(closure, 3)
+
+    std.testing.assertEqual(first, 10, "first call should receive a copied environment")
+    std.testing.assertEqual(second, 11, "second call should receive a copied environment")
+    std.testing.assertEqual(throughFn, 12, "copy-capturing closure should satisfy AsyncFn")
+}
+
+@test
+func movedCopyAsyncClosuresAreReusable() async {
+    let captured = 7 as int32
+    let closure = move || async {
+        await std.testing.yieldNow()
+        return captured
+    }
+
+    let first = await closure()
+    let second = await closure()
+    std.testing.assertEqual(first + second, 14, "move over Copy data should remain reusable")
+}
+
+@test
+func reusableAsyncClosureCaptureIsGcSafe() async {
+    let captured = "reusable-async-closure"
+    let closure = || async {
+        await std.testing.yieldNow()
+        std.runtime.collect()
+        return captured
+    }
+
+    let first = await closure()
+    let second = await closure()
+    std.testing.assertEqual(first, captured, "first future should retain its copied capture")
+    std.testing.assertEqual(second, captured, "second future should retain its copied capture")
+}
+
+@test
 func spawnedTasksComplete() async {
     let captured = 5 as int32
     let task = std.task.spawn(|| async {
@@ -847,13 +892,14 @@ func applyZeroAsyncMut[F: std.ops.AsyncFnMut() -> int32](_ f: F) async -> int32 
 
 @test
 func asyncClosuresSatisfyAsyncFnMutBounds() async {
+    let captured = 2 as int32
     let closure = |x: int32| async {
         await std.testing.yieldNow()
-        return x * 3
+        return (x * 3) + captured
     }
     let value = await applyAsyncMut(closure, 5)
-    // 5*3 + 5*3 = 30
-    std.testing.assertEqual(value, 30, "non-capturing async closure should satisfy AsyncFnMut and be reusable")
+    // (5*3+2) + (5*3+2) = 34
+    std.testing.assertEqual(value, 34, "copy-capturing async closure should satisfy AsyncFnMut and be reusable")
 }
 
 @test

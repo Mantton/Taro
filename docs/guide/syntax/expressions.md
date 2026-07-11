@@ -484,6 +484,12 @@ std.task.spawn(|| {
 
 `move` affects how referenced outer variables enter the closure environment. It captures them by value, but it does not by itself make the closure one-shot: a `move` closure is `FnOnce` only when the body moves a captured value out of the closure.
 
+Async closures whose captures are all immutable `Copy` values are reusable and
+satisfy both `AsyncFn` and `AsyncFnMut`. Each call copies those captures into the
+new future. Async closures with borrowed, mutable, or moved non-`Copy` captures
+remain `AsyncFnOnce`; async calls must still be immediately awaited, preventing
+overlapping futures from sharing mutable state.
+
 ---
 
 ## Binding Conditions

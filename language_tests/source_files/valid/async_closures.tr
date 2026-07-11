@@ -12,6 +12,15 @@ func applyReusableAsync[F: AsyncFn(int32) -> int32](_ f: F, _ x: int32) async ->
     return await f(x)
 }
 
+func reuseGenericCopy[T: Copy](_ value: T) async -> T {
+    let closure = || async {
+        await std.testing.yieldNow()
+        return value
+    }
+    let _ = await closure()
+    return await closure()
+}
+
 func main() async {
     let captured = 7 as int32
 
@@ -34,9 +43,25 @@ func main() async {
         return x + 1
     }
 
+    let reusableCaptured = |x: int32| async {
+        await std.testing.yieldNow()
+        return x + captured
+    }
+
+    let movedCopy = move || async {
+        await std.testing.yieldNow()
+        return captured
+    }
+
     let _ = await applyZeroAsync(zero)
     let _ = await applyAsync(unary, 5)
     let _ = await applyReusableAsync(reusable, 5)
+    let _ = await reusableCaptured(1)
+    let _ = await reusableCaptured(2)
+    let _ = await applyReusableAsync(reusableCaptured, 3)
+    let _ = await movedCopy()
+    let _ = await movedCopy()
+    let _ = await reuseGenericCopy(11 as int32)
     let _ = sync()
 
     let spawned = std.task.spawn(|| async {

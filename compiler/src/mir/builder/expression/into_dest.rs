@@ -604,7 +604,33 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
                         Some(Operand::Copy(Place::from_local(ptr_local)))
                     }
-                    _ => Some(Operand::Move(closure_place)),
+                    _ => {
+                        let reusable_async_environment = match callee_ty.kind() {
+                            crate::sema::models::TyKind::Closure {
+                                closure_def_id,
+                                kind: crate::sema::models::ClosureKind::AsyncFn,
+                                ..
+                            } => self.gcx.get_closure_captures(closure_def_id).is_some_and(
+                                |captures| {
+                                    captures.captures.iter().all(|capture| {
+                                        matches!(
+                                            capture.capture_kind,
+                                            crate::sema::models::CaptureKind::ByCopy
+                                        )
+                                    })
+                                },
+                            ),
+                            _ => false,
+                        };
+
+                        if reusable_async_environment {
+                            // This is an internal, field-proven copy. Closure
+                            // types do not generally implement Copy.
+                            Some(Operand::Copy(closure_place))
+                        } else {
+                            Some(Operand::Move(closure_place))
+                        }
+                    }
                 }
             });
         if let crate::sema::models::TyKind::FnPointer { inputs, .. } = callee_ty.kind() {
