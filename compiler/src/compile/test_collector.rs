@@ -61,6 +61,14 @@ impl TestSelection {
     pub fn is_empty(&self) -> bool {
         self.name_filter.is_none() && self.tags.is_empty()
     }
+
+    pub fn normalized_name_filter(&self) -> Option<&str> {
+        self.name_filter.as_deref()
+    }
+
+    pub fn normalized_tags(&self) -> &[String] {
+        &self.tags
+    }
 }
 
 /// Metadata for a single discovered test function.

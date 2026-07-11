@@ -84,6 +84,7 @@ fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
     )?;
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
     // Compile std (index 0)
     compile_std(
@@ -121,9 +122,67 @@ fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
         is_std_provider: false,
     });
 
-    eprintln!("Checking – {}", file_stem);
     let mut compiler = Compiler::new(&icx, config);
-    let _ = compiler.check()?;
+    let fingerprint_input =
+        incremental::compute_package_fingerprint_input(&icx, config, &package_fingerprints)
+            .map_err(|e| {
+                icx.dcx.emit_error(
+                    format!(
+                        "failed to compute fingerprint for script '{}': {}",
+                        file_stem, e
+                    ),
+                    None,
+                );
+                ReportedError
+            })?;
+
+    let reused = if incremental_enabled {
+        match metadata::try_load_package_metadata(
+            compiler.context,
+            &fingerprint_input,
+            ReuseMode::SemanticDependency,
+        ) {
+            MetadataLoadStatus::Hit(hit) => match metadata::hydrate_loaded_metadata(
+                compiler.context,
+                &hit,
+                ReuseMode::SemanticDependency,
+            ) {
+                Ok(()) => {
+                    eprintln!("Reusing (metadata) – {}", file_stem);
+                    true
+                }
+                Err(e) => {
+                    eprintln!("Checking – {} (metadata hydrate miss: {})", file_stem, e);
+                    false
+                }
+            },
+            MetadataLoadStatus::Miss(reason) => {
+                if compiler.context.config.debug.timings {
+                    eprintln!("Checking – {} (metadata miss: {})", file_stem, reason);
+                } else {
+                    eprintln!("Checking – {}", file_stem);
+                }
+                false
+            }
+        }
+    } else {
+        eprintln!("Checking – {}", file_stem);
+        false
+    };
+
+    if !reused {
+        let _ = compiler.check()?;
+        if let Err(e) = metadata::write_package_metadata(
+            compiler.context,
+            &fingerprint_input,
+            ReuseMode::SemanticDependency,
+        ) {
+            eprintln!(
+                "warning: failed to write metadata for '{}': {}",
+                file_stem, e
+            );
+        }
+    }
     Ok(())
 }
 
@@ -288,7 +347,7 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
                 })?;
 
         let mut compiler = Compiler::new(&icx, config);
-        let reused = if incremental_enabled && !is_root {
+        let reused = if incremental_enabled {
             match metadata::try_load_package_metadata(
                 compiler.context,
                 &fingerprint_input,
@@ -301,7 +360,7 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
                         ReuseMode::SemanticDependency,
                     ) {
                         Ok(()) => {
-                            if compiler.context.config.debug.timings {
+                            if is_root || compiler.context.config.debug.timings {
                                 eprintln!("Reusing (metadata) – {}", package.package.0);
                             }
                             true
@@ -334,17 +393,15 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
 
         if !reused {
             let _ = compiler.check()?;
-            if !is_root {
-                if let Err(e) = metadata::write_package_metadata(
-                    compiler.context,
-                    &fingerprint_input,
-                    ReuseMode::SemanticDependency,
-                ) {
-                    eprintln!(
-                        "warning: failed to write metadata for '{}': {}",
-                        package.package.0, e
-                    );
-                }
+            if let Err(e) = metadata::write_package_metadata(
+                compiler.context,
+                &fingerprint_input,
+                ReuseMode::SemanticDependency,
+            ) {
+                eprintln!(
+                    "warning: failed to write metadata for '{}': {}",
+                    package.package.0, e
+                );
             }
         }
 

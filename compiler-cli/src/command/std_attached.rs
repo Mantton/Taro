@@ -111,13 +111,18 @@ pub fn compile_std<'a>(
             ReportedError
         })?;
 
-        if matches!(reuse_mode, ReuseMode::CodegenDependency) {
+        if matches!(
+            reuse_mode,
+            ReuseMode::CodegenDependency | ReuseMode::CodegenRoot
+        ) {
             // Ensure downstream codegen links against the attached std object path.
             compiler.context.cache_object_file(attached.object.clone());
         }
     } else {
         let attached_object_for_load = match reuse_mode {
-            ReuseMode::CodegenDependency => Some(attached.object.as_path()),
+            ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
+                Some(attached.object.as_path())
+            }
             ReuseMode::SemanticDependency => attached
                 .object
                 .exists()
@@ -148,7 +153,7 @@ pub fn compile_std<'a>(
             }
             MetadataLoadStatus::Miss(reason) => {
                 let expected_files = match reuse_mode {
-                    ReuseMode::CodegenDependency => {
+                    ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
                         format!(
                             "  {}\n  {}",
                             attached.metadata.display(),
@@ -321,7 +326,11 @@ fn fingerprint_attached_std_artifacts(
             attached.metadata.display()
         ));
     }
-    if matches!(reuse_mode, ReuseMode::CodegenDependency) && !attached.object.exists() {
+    if matches!(
+        reuse_mode,
+        ReuseMode::CodegenDependency | ReuseMode::CodegenRoot
+    ) && !attached.object.exists()
+    {
         return Err(format!(
             "object file missing at '{}'",
             attached.object.display()
@@ -331,7 +340,7 @@ fn fingerprint_attached_std_artifacts(
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"taro.attached.std.v2");
     match reuse_mode {
-        ReuseMode::CodegenDependency => {
+        ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
             hasher.update(b"mode:codegen");
         }
         ReuseMode::SemanticDependency => {

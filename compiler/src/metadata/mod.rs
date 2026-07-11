@@ -35,6 +35,7 @@ pub struct PackageFingerprintInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReuseMode {
     CodegenDependency,
+    CodegenRoot,
     SemanticDependency,
 }
 
@@ -100,6 +101,11 @@ fn validate_mode_capabilities(header: &MetadataHeader, mode: ReuseMode) -> Resul
                 return Err("metadata missing required codegen capabilities".into());
             }
         }
+        ReuseMode::CodegenRoot => {
+            if !(header.has_semantic_payload && header.has_object_ref) {
+                return Err("metadata missing required root codegen capabilities".into());
+            }
+        }
         ReuseMode::SemanticDependency => {
             if !header.has_semantic_payload {
                 return Err("metadata missing required semantic capabilities".into());
@@ -155,7 +161,7 @@ pub fn write_package_metadata<'ctx>(
     let config = gcx.config;
 
     let object_relpath = match mode {
-        ReuseMode::CodegenDependency => {
+        ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
             let object_relpath = format!("{}.o", config.identifier);
             let object_path = gcx.output_root().join(&object_relpath);
             if !object_path.exists() {
@@ -179,6 +185,7 @@ pub fn write_package_metadata<'ctx>(
     let has_object_ref = object_relpath.is_some();
     let frontend_reusable = match mode {
         ReuseMode::CodegenDependency => has_semantic_payload && has_mir_payload && has_object_ref,
+        ReuseMode::CodegenRoot => has_semantic_payload && has_object_ref,
         ReuseMode::SemanticDependency => has_semantic_payload,
     };
 
@@ -318,7 +325,9 @@ pub fn try_load_package_metadata<'ctx>(
             return MetadataLoadStatus::Miss("metadata object reference missing".into());
         };
         let object_path = gcx.output_root().join(object_relpath);
-        if matches!(mode, ReuseMode::CodegenDependency) && !object_path.exists() {
+        if matches!(mode, ReuseMode::CodegenDependency | ReuseMode::CodegenRoot)
+            && !object_path.exists()
+        {
             return MetadataLoadStatus::Miss("cached object file missing".into());
         }
         if object_path.exists() {
@@ -420,7 +429,7 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
     }
 
     let object_path = match mode {
-        ReuseMode::CodegenDependency => {
+        ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
             let Some(path) = object_path else {
                 return MetadataLoadStatus::Miss("object file path not provided".into());
             };
@@ -510,7 +519,7 @@ pub fn hydrate_loaded_metadata<'ctx>(
 
     let cached_object_path = if let Some(object_path) = loaded.object_path.as_ref() {
         Some(object_path.clone())
-    } else if matches!(mode, ReuseMode::CodegenDependency) {
+    } else if matches!(mode, ReuseMode::CodegenDependency | ReuseMode::CodegenRoot) {
         return Err(HydrationError::new("metadata missing object reference"));
     } else {
         None
@@ -618,6 +627,7 @@ fn build_payload_wire<'ctx>(
                 })
             })
         }
+        ReuseMode::CodegenRoot => None,
         ReuseMode::SemanticDependency => None,
     };
     let mir_payload = match mir {
@@ -972,6 +982,13 @@ mod tests {
         header.has_mir_payload = false;
         header.has_object_ref = false;
         assert!(validate_mode_capabilities(&header, ReuseMode::SemanticDependency).is_ok());
+    }
+
+    #[test]
+    fn mode_capabilities_allow_root_object_without_mir() {
+        let mut header = sample_header();
+        header.has_mir_payload = false;
+        assert!(validate_mode_capabilities(&header, ReuseMode::CodegenRoot).is_ok());
     }
 
     #[test]

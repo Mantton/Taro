@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use compiler::{
-    PackageIndex,
+    PackageIndex, codegen,
     compile::{
         Compiler,
         config::{Config, DebugOptions, PackageKind, StdMode},
@@ -90,6 +90,7 @@ fn run_single_file(
     )?;
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
     // Compile std (index 0)
     compile_std(
@@ -128,9 +129,70 @@ fn run_single_file(
         is_std_provider: false,
     });
 
-    eprintln!("Compiling – {}", file_stem);
     let mut compiler = Compiler::new(&icx, config);
-    compiler.build()
+    let fingerprint_input =
+        incremental::compute_package_fingerprint_input(&icx, config, &package_fingerprints)
+            .map_err(|e| {
+                icx.dcx.emit_error(
+                    format!(
+                        "failed to compute fingerprint for script '{}': {}",
+                        file_stem, e
+                    ),
+                    None,
+                );
+                ReportedError
+            })?;
+
+    let reused = if incremental_enabled {
+        match metadata::try_load_package_metadata(
+            compiler.context,
+            &fingerprint_input,
+            ReuseMode::CodegenRoot,
+        ) {
+            MetadataLoadStatus::Hit(hit) => match metadata::hydrate_loaded_metadata(
+                compiler.context,
+                &hit,
+                ReuseMode::CodegenRoot,
+            ) {
+                Ok(()) => {
+                    eprintln!("Reusing (metadata+object) – {}", file_stem);
+                    true
+                }
+                Err(e) => {
+                    eprintln!("Compiling – {} (metadata hydrate miss: {})", file_stem, e);
+                    false
+                }
+            },
+            MetadataLoadStatus::Miss(reason) => {
+                if compiler.context.config.debug.timings {
+                    eprintln!("Compiling – {} (metadata miss: {})", file_stem, reason);
+                } else {
+                    eprintln!("Compiling – {}", file_stem);
+                }
+                false
+            }
+        }
+    } else {
+        eprintln!("Compiling – {}", file_stem);
+        false
+    };
+
+    if reused {
+        codegen::link::link_executable(compiler.context)
+    } else {
+        let exe = compiler.build()?;
+        if let Err(e) = metadata::write_package_metadata(
+            compiler.context,
+            &fingerprint_input,
+            ReuseMode::CodegenRoot,
+        ) {
+            eprintln!(
+                "warning: failed to write metadata for '{}': {}",
+                file_stem, e
+            );
+        }
+        Ok(exe)
+    }
 }
 
 fn run_package(
@@ -308,21 +370,22 @@ fn run_package(
                 })?;
 
         let mut compiler = Compiler::new(&icx, config);
-        let can_attempt_reuse = incremental_enabled && !is_root;
+        let reuse_mode = if is_root {
+            ReuseMode::CodegenRoot
+        } else {
+            ReuseMode::CodegenDependency
+        };
+        let can_attempt_reuse = incremental_enabled;
         let reused = if can_attempt_reuse {
             match metadata::try_load_package_metadata(
                 compiler.context,
                 &fingerprint_input,
-                ReuseMode::CodegenDependency,
+                reuse_mode,
             ) {
                 MetadataLoadStatus::Hit(hit) => {
-                    match metadata::hydrate_loaded_metadata(
-                        compiler.context,
-                        &hit,
-                        ReuseMode::CodegenDependency,
-                    ) {
+                    match metadata::hydrate_loaded_metadata(compiler.context, &hit, reuse_mode) {
                         Ok(()) => {
-                            if compiler.context.config.debug.timings {
+                            if is_root || compiler.context.config.debug.timings {
                                 eprintln!("Reusing (metadata+object) – {}", package.package.0);
                             }
                             true
@@ -354,20 +417,20 @@ fn run_package(
         };
 
         let exe_path = if reused {
-            None
+            if is_root {
+                codegen::link::link_executable(compiler.context)?
+            } else {
+                None
+            }
         } else {
             let exe_path = compiler.build()?;
-            if !is_root {
-                if let Err(e) = metadata::write_package_metadata(
-                    compiler.context,
-                    &fingerprint_input,
-                    ReuseMode::CodegenDependency,
-                ) {
-                    eprintln!(
-                        "warning: failed to write metadata for '{}': {}",
-                        package.package.0, e
-                    );
-                }
+            if let Err(e) =
+                metadata::write_package_metadata(compiler.context, &fingerprint_input, reuse_mode)
+            {
+                eprintln!(
+                    "warning: failed to write metadata for '{}': {}",
+                    package.package.0, e
+                );
             }
             exe_path
         };
@@ -602,6 +665,7 @@ fn run_single_file_test(
     )?;
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
+    let incremental_enabled = !arguments.no_incremental;
 
     compile_std(
         &icx,
@@ -638,9 +702,80 @@ fn run_single_file_test(
         is_std_provider: false,
     });
 
-    eprintln!("Compiling tests – {}", file_stem);
     let mut compiler = Compiler::new(&icx, config);
-    compiler.test(selection)
+    let fingerprint_input = incremental::compute_package_fingerprint_input_with_test_selection(
+        &icx,
+        config,
+        &package_fingerprints,
+        Some(selection),
+    )
+    .map_err(|e| {
+        icx.dcx.emit_error(
+            format!(
+                "failed to compute test fingerprint for script '{}': {}",
+                file_stem, e
+            ),
+            None,
+        );
+        ReportedError
+    })?;
+
+    let reused = if incremental_enabled {
+        match metadata::try_load_package_metadata(
+            compiler.context,
+            &fingerprint_input,
+            ReuseMode::CodegenRoot,
+        ) {
+            MetadataLoadStatus::Hit(hit) => match metadata::hydrate_loaded_metadata(
+                compiler.context,
+                &hit,
+                ReuseMode::CodegenRoot,
+            ) {
+                Ok(()) => {
+                    eprintln!("Reusing tests (metadata+object) – {}", file_stem);
+                    true
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Compiling tests – {} (metadata hydrate miss: {})",
+                        file_stem, e
+                    );
+                    false
+                }
+            },
+            MetadataLoadStatus::Miss(reason) => {
+                if compiler.context.config.debug.timings {
+                    eprintln!(
+                        "Compiling tests – {} (metadata miss: {})",
+                        file_stem, reason
+                    );
+                } else {
+                    eprintln!("Compiling tests – {}", file_stem);
+                }
+                false
+            }
+        }
+    } else {
+        eprintln!("Compiling tests – {}", file_stem);
+        false
+    };
+
+    if reused {
+        codegen::link::link_executable(compiler.context)
+    } else {
+        let exe = compiler.test(selection)?;
+        if let Err(e) = metadata::write_package_metadata(
+            compiler.context,
+            &fingerprint_input,
+            ReuseMode::CodegenRoot,
+        ) {
+            eprintln!(
+                "warning: failed to write test metadata for '{}': {}",
+                file_stem, e
+            );
+        }
+        Ok(exe)
+    }
 }
 
 fn run_package_test(
@@ -807,100 +942,128 @@ fn run_package_test(
             is_std_provider: is_std_package,
         });
 
-        let fingerprint_input =
+        let fingerprint_input = if is_root {
+            incremental::compute_package_fingerprint_input_with_test_selection(
+                &icx,
+                config,
+                &package_fingerprints,
+                Some(selection),
+            )
+        } else {
             incremental::compute_package_fingerprint_input(&icx, config, &package_fingerprints)
-                .map_err(|e| {
-                    icx.dcx.emit_error(
-                        format!(
-                            "failed to compute fingerprint for package '{}': {}",
-                            package.package.0, e
-                        ),
-                        None,
-                    );
-                    ReportedError
-                })?;
+        }
+        .map_err(|e| {
+            icx.dcx.emit_error(
+                format!(
+                    "failed to compute fingerprint for package '{}': {}",
+                    package.package.0, e
+                ),
+                None,
+            );
+            ReportedError
+        })?;
 
         let mut compiler = Compiler::new(&icx, config);
-        if is_root {
-            eprintln!("Compiling tests – {}", package.package.0);
-            let exe_path = compiler.test(selection)?;
-            package_fingerprints.insert(
-                config.identifier.to_string(),
-                fingerprint_input.package_fingerprint,
-            );
-            if exe_path.is_some() {
-                return Ok(exe_path);
-            }
+        let reuse_mode = if is_root {
+            ReuseMode::CodegenRoot
         } else {
-            let reused = if incremental_enabled {
-                match metadata::try_load_package_metadata(
-                    compiler.context,
-                    &fingerprint_input,
-                    ReuseMode::CodegenDependency,
-                ) {
-                    MetadataLoadStatus::Hit(hit) => {
-                        match metadata::hydrate_loaded_metadata(
-                            compiler.context,
-                            &hit,
-                            ReuseMode::CodegenDependency,
-                        ) {
-                            Ok(()) => {
-                                if compiler.context.config.debug.timings {
-                                    eprintln!("Reusing (metadata+object) – {}", package.package.0);
-                                }
-                                true
+            ReuseMode::CodegenDependency
+        };
+        let reused = if incremental_enabled {
+            match metadata::try_load_package_metadata(
+                compiler.context,
+                &fingerprint_input,
+                reuse_mode,
+            ) {
+                MetadataLoadStatus::Hit(hit) => {
+                    match metadata::hydrate_loaded_metadata(compiler.context, &hit, reuse_mode) {
+                        Ok(()) => {
+                            if is_root {
+                                eprintln!(
+                                    "Reusing tests (metadata+object) – {}",
+                                    package.package.0
+                                );
+                            } else if compiler.context.config.debug.timings {
+                                eprintln!("Reusing (metadata+object) – {}", package.package.0);
                             }
-                            Err(e) => {
+                            true
+                        }
+                        Err(e) => {
+                            if is_root {
+                                eprintln!(
+                                    "Compiling tests – {} (metadata hydrate miss: {})",
+                                    package.package.0, e
+                                );
+                            } else {
                                 eprintln!(
                                     "Compiling – {} (metadata hydrate miss: {})",
                                     package.package.0, e
                                 );
-                                false
                             }
+                            false
                         }
                     }
-                    MetadataLoadStatus::Miss(reason) => {
+                }
+                MetadataLoadStatus::Miss(reason) => {
+                    if is_root {
                         if compiler.context.config.debug.timings {
                             eprintln!(
-                                "Compiling – {} (metadata miss: {})",
+                                "Compiling tests – {} (metadata miss: {})",
                                 package.package.0, reason
                             );
                         } else {
-                            eprintln!("Compiling – {}", package.package.0);
+                            eprintln!("Compiling tests – {}", package.package.0);
                         }
-                        false
+                    } else if compiler.context.config.debug.timings {
+                        eprintln!(
+                            "Compiling – {} (metadata miss: {})",
+                            package.package.0, reason
+                        );
+                    } else {
+                        eprintln!("Compiling – {}", package.package.0);
                     }
+                    false
                 }
+            }
+        } else {
+            if is_root {
+                eprintln!("Compiling tests – {}", package.package.0);
             } else {
                 eprintln!("Compiling – {}", package.package.0);
-                false
-            };
-
-            let exe_path = if reused {
-                None
-            } else {
-                let exe_path = compiler.build()?;
-                if let Err(e) = metadata::write_package_metadata(
-                    compiler.context,
-                    &fingerprint_input,
-                    ReuseMode::CodegenDependency,
-                ) {
-                    eprintln!(
-                        "warning: failed to write metadata for '{}': {}",
-                        package.package.0, e
-                    );
-                }
-                exe_path
-            };
-
-            package_fingerprints.insert(
-                config.identifier.to_string(),
-                fingerprint_input.package_fingerprint,
-            );
-
-            if exe_path.is_some() {
-                return Ok(exe_path);
             }
+            false
+        };
+
+        let exe_path = if reused {
+            if is_root {
+                codegen::link::link_executable(compiler.context)?
+            } else {
+                None
+            }
+        } else {
+            let exe_path = if is_root {
+                compiler.test(selection)?
+            } else {
+                compiler.build()?
+            };
+            if let Err(e) =
+                metadata::write_package_metadata(compiler.context, &fingerprint_input, reuse_mode)
+            {
+                eprintln!(
+                    "warning: failed to write metadata for '{}': {}",
+                    package.package.0, e
+                );
+            }
+            exe_path
+        };
+
+        package_fingerprints.insert(
+            config.identifier.to_string(),
+            fingerprint_input.package_fingerprint,
+        );
+
+        if exe_path.is_some() {
+            return Ok(exe_path);
         }
     }
     Ok(None)

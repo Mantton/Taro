@@ -42,7 +42,7 @@ Taro is experimental. Syntax, compiler metadata, standard library APIs, and pack
 - Most repository workflows assume a Unix-like shell with LLVM 16 available.
 - The standard library is an attached toolchain artifact. Rebuild `dist/` after compiler metadata changes or when attached std artifacts are missing.
 - Package management supports manifests, lockfiles, Git dependencies, and root-local path dependencies, but there is no public registry yet.
-- Incremental compilation reuses dependency artifacts; the root package is still cold-compiled/rechecked in v0.
+- Incremental compilation reuses unchanged semantic and codegen artifacts for dependencies, root packages, and single-file commands. Executables are relinked for the current output path and linker inputs.
 - Operator overloading is expressed through standard library interfaces such as `std.ops.Add`, not `operator` declarations.
 - The language server is an MVP surface: diagnostics, hover, go-to-definition, signature help, and lexical/member completions are supported; rename, formatting, references, semantic tokens, and code actions are not yet implemented.
 - `.taro_meta` files are binary internal compiler artifacts, not a stable interchange format.

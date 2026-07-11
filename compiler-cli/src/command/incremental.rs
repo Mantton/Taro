@@ -1,7 +1,8 @@
 use compiler::{
     compile::{
-        config::{BuildProfile, Config},
+        config::{BuildProfile, Config, PackageKind, StdMode},
         context::CompilerContext,
+        test_collector::TestSelection,
     },
     constants::SOURCE_DIRECTORY,
     metadata::{DependencyFingerprint, PackageFingerprintInput},
@@ -13,6 +14,15 @@ pub fn compute_package_fingerprint_input(
     ctx: &CompilerContext<'_>,
     config: &Config,
     known_fingerprints: &FxHashMap<String, String>,
+) -> Result<PackageFingerprintInput, String> {
+    compute_package_fingerprint_input_with_test_selection(ctx, config, known_fingerprints, None)
+}
+
+pub fn compute_package_fingerprint_input_with_test_selection(
+    ctx: &CompilerContext<'_>,
+    config: &Config,
+    known_fingerprints: &FxHashMap<String, String>,
+    test_selection: Option<&TestSelection>,
 ) -> Result<PackageFingerprintInput, String> {
     let mut dependency_ids: Vec<String> = config
         .dependencies
@@ -38,7 +48,7 @@ pub fn compute_package_fingerprint_input(
     }
 
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"taro.incremental.v0.package");
+    hasher.update(b"taro.incremental.v1.package");
 
     hasher.update(config.identifier.as_bytes());
     hasher.update(&[0]);
@@ -61,7 +71,17 @@ pub fn compute_package_fingerprint_input(
         config.overflow_checks as u8,
         config.no_std_prelude as u8,
         config.test_mode as u8,
+        config.is_script as u8,
+        config.is_std_provider as u8,
+        config.debug.dump_mir as u8,
+        config.debug.dump_llvm as u8,
     ]);
+    hasher.update(&[package_kind_tag(config.kind), std_mode_tag(config.std_mode)]);
+
+    hash_test_selection(config, test_selection, &mut hasher)?;
+
+    // `executable_out` and linker/runtime inputs are intentionally absent: they do not change
+    // the compiled object, and root cache hits always relink using the current invocation.
 
     let mut dependency_mapping: Vec<_> = config
         .dependencies
@@ -92,6 +112,55 @@ pub fn compute_package_fingerprint_input(
         package_fingerprint: hasher.finalize().to_hex().to_string(),
         dependencies: dependency_fingerprints,
     })
+}
+
+fn package_kind_tag(kind: PackageKind) -> u8 {
+    match kind {
+        PackageKind::Library => 0,
+        PackageKind::Executable => 1,
+        PackageKind::Both => 2,
+    }
+}
+
+fn std_mode_tag(mode: StdMode) -> u8 {
+    match mode {
+        StdMode::BootstrapStd => 0,
+        StdMode::FullStd => 1,
+    }
+}
+
+fn hash_test_selection(
+    config: &Config,
+    selection: Option<&TestSelection>,
+    hasher: &mut blake3::Hasher,
+) -> Result<(), String> {
+    if !config.test_mode {
+        if selection.is_some() {
+            return Err("test selection supplied for a non-test compilation".into());
+        }
+        hasher.update(&[0]);
+        return Ok(());
+    }
+
+    let selection =
+        selection.ok_or_else(|| "test compilation is missing test selection".to_string())?;
+    hasher.update(&[1]);
+    if let Some(filter) = selection.normalized_name_filter() {
+        hasher.update(&[1]);
+        hasher.update(filter.as_bytes());
+        hasher.update(&[0]);
+    } else {
+        hasher.update(&[0]);
+    }
+
+    let mut tags = selection.normalized_tags().to_vec();
+    tags.sort();
+    hasher.update(&(tags.len() as u32).to_le_bytes());
+    for tag in tags {
+        hasher.update(tag.as_bytes());
+        hasher.update(&[0]);
+    }
+    Ok(())
 }
 
 fn profile_name(profile: BuildProfile) -> &'static str {
@@ -205,4 +274,177 @@ fn collect_source_files(directory: &Path, out: &mut Vec<PathBuf>) -> Result<(), 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compute_package_fingerprint_input, compute_package_fingerprint_input_with_test_selection,
+    };
+    use compiler::{
+        PackageIndex,
+        compile::{
+            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+            context::{CompilerArenas, CompilerContext, CompilerStore},
+            test_collector::TestSelection,
+        },
+        diagnostics::DiagCtx,
+    };
+    use rustc_hash::FxHashMap;
+    use std::{
+        fs,
+        path::PathBuf,
+        rc::Rc,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    fn test_root() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "taro-fingerprint-test-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos(),
+            NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).expect("temp root");
+        root
+    }
+
+    fn base_config(source: PathBuf) -> Config {
+        Config {
+            name: "fingerprint-test".into(),
+            identifier: "fingerprint-test".into(),
+            src: source,
+            dependencies: FxHashMap::default(),
+            index: PackageIndex::new(1),
+            kind: PackageKind::Executable,
+            executable_out: None,
+            no_std_prelude: true,
+            is_script: true,
+            profile: BuildProfile::Debug,
+            overflow_checks: true,
+            debug: DebugOptions::default(),
+            test_mode: false,
+            std_mode: StdMode::BootstrapStd,
+            is_std_provider: true,
+        }
+    }
+
+    fn with_context<R>(f: impl for<'ctx> FnOnce(&CompilerContext<'ctx>, PathBuf) -> R) -> R {
+        let root = test_root();
+        let source = root.join("main.tr");
+        fs::write(&source, "func main() {}\n").expect("source");
+        let dcx = Rc::new(DiagCtx::new(root.clone()));
+        let arenas = CompilerArenas::new();
+        let store = CompilerStore::new(
+            &arenas,
+            root.join("objects"),
+            &dcx,
+            None,
+            BuildProfile::Debug,
+        )
+        .unwrap_or_else(|_| panic!("store"));
+        let context = CompilerContext::new(dcx, store);
+        let result = f(&context, source);
+        let _ = fs::remove_dir_all(root);
+        result
+    }
+
+    #[test]
+    fn output_path_does_not_change_compilation_fingerprint() {
+        with_context(|context, source| {
+            let first = base_config(source.clone());
+            let mut second = base_config(source);
+            second.executable_out = Some(PathBuf::from("elsewhere/program"));
+            let known = FxHashMap::default();
+
+            let first = compute_package_fingerprint_input(context, &first, &known).unwrap();
+            let second = compute_package_fingerprint_input(context, &second, &known).unwrap();
+            assert_eq!(first.package_fingerprint, second.package_fingerprint);
+        });
+    }
+
+    #[test]
+    fn output_kind_and_overflow_mode_change_compilation_fingerprint() {
+        with_context(|context, source| {
+            let base = base_config(source.clone());
+            let mut library = base_config(source.clone());
+            library.kind = PackageKind::Library;
+            let mut wrapping = base_config(source);
+            wrapping.overflow_checks = false;
+            let known = FxHashMap::default();
+
+            let base = compute_package_fingerprint_input(context, &base, &known)
+                .unwrap()
+                .package_fingerprint;
+            let library = compute_package_fingerprint_input(context, &library, &known)
+                .unwrap()
+                .package_fingerprint;
+            let wrapping = compute_package_fingerprint_input(context, &wrapping, &known)
+                .unwrap()
+                .package_fingerprint;
+            assert_ne!(base, library);
+            assert_ne!(base, wrapping);
+        });
+    }
+
+    #[test]
+    fn normalized_test_selection_changes_test_fingerprint() {
+        with_context(|context, source| {
+            let mut config = base_config(source);
+            config.test_mode = true;
+            let known = FxHashMap::default();
+            let alpha = TestSelection::new(Some(" Alpha ".into()), vec!["SMOKE".into()]);
+            let alpha_equivalent = TestSelection::new(Some("alpha".into()), vec!["smoke".into()]);
+            let beta = TestSelection::new(Some("beta".into()), vec!["smoke".into()]);
+
+            let alpha = compute_package_fingerprint_input_with_test_selection(
+                context,
+                &config,
+                &known,
+                Some(&alpha),
+            )
+            .unwrap()
+            .package_fingerprint;
+            let alpha_equivalent = compute_package_fingerprint_input_with_test_selection(
+                context,
+                &config,
+                &known,
+                Some(&alpha_equivalent),
+            )
+            .unwrap()
+            .package_fingerprint;
+            let beta = compute_package_fingerprint_input_with_test_selection(
+                context,
+                &config,
+                &known,
+                Some(&beta),
+            )
+            .unwrap()
+            .package_fingerprint;
+
+            assert_eq!(alpha, alpha_equivalent);
+            assert_ne!(alpha, beta);
+        });
+    }
+
+    #[test]
+    fn source_contents_change_compilation_fingerprint() {
+        with_context(|context, source| {
+            let config = base_config(source.clone());
+            let known = FxHashMap::default();
+            let before = compute_package_fingerprint_input(context, &config, &known)
+                .unwrap()
+                .package_fingerprint;
+            fs::write(source, "func main() { print(\"changed\") }\n").expect("source update");
+            let after = compute_package_fingerprint_input(context, &config, &known)
+                .unwrap()
+                .package_fingerprint;
+            assert_ne!(before, after);
+        });
+    }
 }
