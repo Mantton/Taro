@@ -2,8 +2,9 @@ use crate::{
     compile::context::{ConstEvaluationState, GlobalContext},
     hir,
     sema::{
-        models::{ConstKind, ConstValue},
+        models::{ConstKind, ConstValue, IntTy, Ty, TyKind, UIntTy},
         resolve::models::{DefinitionKind, VariantCtorKind},
+        tycheck::results::TypeCheckResults,
     },
     span::Span,
 };
@@ -106,7 +107,40 @@ pub fn eval_const_expression<'ctx>(
     gcx: GlobalContext<'ctx>,
     expression: &hir::Expression,
 ) -> Option<ConstValue> {
-    match &expression.kind {
+    eval_const_expression_inner(gcx, expression, None, None)
+}
+
+/// Evaluate a constant expression using `expected` as the type of arithmetic
+/// subexpressions when type-check results are not available yet.
+pub fn eval_const_expression_with_expected_type<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    expression: &hir::Expression,
+    expected: Ty<'ctx>,
+) -> Option<ConstValue> {
+    eval_const_expression_inner(gcx, expression, Some(expected), None)
+}
+
+/// Evaluate a fully type-checked constant expression. Integer operations are
+/// checked at their inferred width regardless of the runtime overflow mode.
+pub fn eval_const_expression_with_type_results<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    expression: &hir::Expression,
+    results: &TypeCheckResults<'ctx>,
+) -> Option<ConstValue> {
+    eval_const_expression_inner(gcx, expression, None, Some(results))
+}
+
+fn eval_const_expression_inner<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    expression: &hir::Expression,
+    expected: Option<Ty<'ctx>>,
+    results: Option<&TypeCheckResults<'ctx>>,
+) -> Option<ConstValue> {
+    let expression_ty = results
+        .and_then(|results| results.try_node_type(expression.id))
+        .or(expected);
+
+    let value = match &expression.kind {
         hir::ExpressionKind::Literal(lit) => eval_const_literal(gcx, lit, expression.span),
         hir::ExpressionKind::Unary(op, expr)
             if matches!(
@@ -116,13 +150,40 @@ pub fn eval_const_expression<'ctx>(
                     | hir::UnaryOperator::BitwiseNot
             ) =>
         {
-            let value = eval_const_expression(gcx, expr)?;
-            eval_const_unary(gcx, *op, value, expression.span)
+            let value = eval_const_expression_inner(gcx, expr, expression_ty, results)?;
+            eval_const_unary(gcx, *op, value, expression_ty, expression.span)
         }
         hir::ExpressionKind::Binary(op, lhs, rhs) => {
-            let lhs = eval_const_expression(gcx, lhs)?;
-            let rhs = eval_const_expression(gcx, rhs)?;
-            eval_const_binary(gcx, *op, lhs, rhs, expression.span)
+            if matches!(
+                op,
+                hir::BinaryOperator::BoolAnd | hir::BinaryOperator::BoolOr
+            ) {
+                let lhs = eval_const_expression_inner(gcx, lhs, Some(gcx.types.bool), results)?;
+                let ConstValue::Bool(lhs) = lhs else {
+                    return emit_const_type_error(gcx, expression.span);
+                };
+
+                if matches!((op, lhs), (hir::BinaryOperator::BoolAnd, false)) {
+                    Some(ConstValue::Bool(false))
+                } else if matches!((op, lhs), (hir::BinaryOperator::BoolOr, true)) {
+                    Some(ConstValue::Bool(true))
+                } else {
+                    let rhs = eval_const_expression_inner(gcx, rhs, Some(gcx.types.bool), results)?;
+                    match rhs {
+                        ConstValue::Bool(rhs) => Some(ConstValue::Bool(rhs)),
+                        _ => return emit_const_type_error(gcx, expression.span),
+                    }
+                }
+            } else {
+                let operand_expected = if binary_result_matches_operands(*op) {
+                    expression_ty
+                } else {
+                    None
+                };
+                let lhs = eval_const_expression_inner(gcx, lhs, operand_expected, results)?;
+                let rhs = eval_const_expression_inner(gcx, rhs, operand_expected, results)?;
+                eval_const_binary(gcx, *op, lhs, rhs, expression_ty, expression.span)
+            }
         }
         hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
             eval_const_path(gcx, path, expression.span)
@@ -134,7 +195,9 @@ pub fn eval_const_expression<'ctx>(
             );
             None
         }
-    }
+    }?;
+
+    validate_value_for_type(gcx, value, expression_ty, expression.span)
 }
 
 fn eval_const_literal<'ctx>(
@@ -160,6 +223,7 @@ fn eval_const_unary<'ctx>(
     gcx: GlobalContext<'ctx>,
     op: hir::UnaryOperator,
     value: ConstValue,
+    ty: Option<Ty<'ctx>>,
     span: Span,
 ) -> Option<ConstValue> {
     match (op, value) {
@@ -171,7 +235,19 @@ fn eval_const_unary<'ctx>(
             })
         }
         (hir::UnaryOperator::Negate, ConstValue::Float(f)) => Some(ConstValue::Float(-f)),
-        (hir::UnaryOperator::BitwiseNot, ConstValue::Integer(i)) => Some(ConstValue::Integer(!i)),
+        (hir::UnaryOperator::BitwiseNot, ConstValue::Integer(i)) => {
+            let value = match ty.and_then(|ty| integer_layout(gcx, ty)) {
+                Some(IntegerLayout {
+                    signed: false,
+                    bits,
+                }) => {
+                    let mask = (1u128 << bits) - 1;
+                    ((!i as u128) & mask) as i128
+                }
+                _ => !i,
+            };
+            Some(ConstValue::Integer(value))
+        }
         _ => {
             gcx.dcx().emit_error(
                 "initializer must be a constant expression".into(),
@@ -233,6 +309,7 @@ fn eval_const_binary<'ctx>(
     op: hir::BinaryOperator,
     lhs: ConstValue,
     rhs: ConstValue,
+    ty: Option<Ty<'ctx>>,
     span: Span,
 ) -> Option<ConstValue> {
     use crate::hir::BinaryOperator as BinOp;
@@ -299,14 +376,7 @@ fn eval_const_binary<'ctx>(
                 .or_else(overflow_error),
             _ => type_error(),
         },
-        BinOp::BoolAnd => match (lhs, rhs) {
-            (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a && b)),
-            _ => type_error(),
-        },
-        BinOp::BoolOr => match (lhs, rhs) {
-            (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a || b)),
-            _ => type_error(),
-        },
+        BinOp::BoolAnd | BinOp::BoolOr => unreachable!("logical operators are evaluated lazily"),
         BinOp::BitAnd => match (lhs, rhs) {
             (ConstValue::Integer(a), ConstValue::Integer(b)) => Some(ConstValue::Integer(a & b)),
             _ => type_error(),
@@ -321,11 +391,17 @@ fn eval_const_binary<'ctx>(
         },
         BinOp::BitShl => match (lhs, rhs) {
             (ConstValue::Integer(a), ConstValue::Integer(b)) if b >= 0 => {
-                let shift = b as u128;
-                if shift > u32::MAX as u128 {
+                let Ok(shift) = u32::try_from(b) else {
+                    return overflow_error();
+                };
+                let max_shift = ty
+                    .and_then(|ty| integer_layout(gcx, ty))
+                    .map(|layout| layout.bits)
+                    .unwrap_or(i128::BITS);
+                if shift >= max_shift {
                     return overflow_error();
                 }
-                a.checked_shl(shift as u32)
+                a.checked_shl(shift)
                     .map(ConstValue::Integer)
                     .or_else(overflow_error)
             }
@@ -333,11 +409,17 @@ fn eval_const_binary<'ctx>(
         },
         BinOp::BitShr => match (lhs, rhs) {
             (ConstValue::Integer(a), ConstValue::Integer(b)) if b >= 0 => {
-                let shift = b as u128;
-                if shift > u32::MAX as u128 {
+                let Ok(shift) = u32::try_from(b) else {
+                    return overflow_error();
+                };
+                let max_shift = ty
+                    .and_then(|ty| integer_layout(gcx, ty))
+                    .map(|layout| layout.bits)
+                    .unwrap_or(i128::BITS);
+                if shift >= max_shift {
                     return overflow_error();
                 }
-                a.checked_shr(shift as u32)
+                a.checked_shr(shift)
                     .map(ConstValue::Integer)
                     .or_else(overflow_error)
             }
@@ -370,6 +452,99 @@ fn eval_const_binary<'ctx>(
             _ => type_error(),
         },
     }
+}
+
+fn binary_result_matches_operands(op: hir::BinaryOperator) -> bool {
+    !matches!(
+        op,
+        hir::BinaryOperator::Eql
+            | hir::BinaryOperator::Neq
+            | hir::BinaryOperator::Lt
+            | hir::BinaryOperator::Gt
+            | hir::BinaryOperator::Leq
+            | hir::BinaryOperator::Geq
+            | hir::BinaryOperator::BoolAnd
+            | hir::BinaryOperator::BoolOr
+    )
+}
+
+fn emit_const_type_error<T>(gcx: GlobalContext<'_>, span: Span) -> Option<T> {
+    gcx.dcx().emit_error(
+        "initializer must be a constant expression".into(),
+        Some(span),
+    );
+    None
+}
+
+#[derive(Clone, Copy)]
+struct IntegerLayout {
+    signed: bool,
+    bits: u32,
+}
+
+fn integer_layout(gcx: GlobalContext<'_>, ty: Ty<'_>) -> Option<IntegerLayout> {
+    match ty.kind() {
+        TyKind::Int(kind) => Some(IntegerLayout {
+            signed: true,
+            bits: match kind {
+                IntTy::ISize => (gcx.store.target_layout.pointer_size * 8) as u32,
+                IntTy::I8 => 8,
+                IntTy::I16 => 16,
+                IntTy::I32 => 32,
+                IntTy::I64 => 64,
+            },
+        }),
+        TyKind::UInt(kind) => Some(IntegerLayout {
+            signed: false,
+            bits: match kind {
+                UIntTy::USize => (gcx.store.target_layout.pointer_size * 8) as u32,
+                UIntTy::U8 => 8,
+                UIntTy::U16 => 16,
+                UIntTy::U32 => 32,
+                UIntTy::U64 => 64,
+            },
+        }),
+        _ => None,
+    }
+}
+
+fn validate_value_for_type<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    value: ConstValue,
+    ty: Option<Ty<'ctx>>,
+    span: Span,
+) -> Option<ConstValue> {
+    let Some(ty) = ty else {
+        return Some(value);
+    };
+    let ConstValue::Integer(value) = value else {
+        return Some(value);
+    };
+    let Some(layout) = integer_layout(gcx, ty) else {
+        return Some(ConstValue::Integer(value));
+    };
+
+    let fits = if layout.signed {
+        let min = -(1i128 << (layout.bits - 1));
+        let max = (1i128 << (layout.bits - 1)) - 1;
+        (min..=max).contains(&value)
+    } else {
+        let max = (1u128 << layout.bits) - 1;
+        value >= 0 && (value as u128) <= max
+    };
+
+    if !fits {
+        gcx.dcx().emit_error(
+            format!(
+                "constant value `{value}` is out of range for type `{}`",
+                ty.format(gcx)
+            ),
+            Some(span),
+        );
+        return None;
+    }
+
+    Some(ConstValue::Integer(value))
 }
 
 #[cfg(test)]
@@ -463,5 +638,85 @@ func main() {}
             diagnostics[0].message,
             "circular constant dependency\n\tcycle: VALUE -> VALUE"
         );
+    }
+
+    #[test]
+    fn logical_constants_short_circuit_the_rhs() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const SAFE_AND: bool = false && (1 / 0 == 0)
+const SAFE_OR: bool = true || (1 / 0 == 0)
+
+func main() {
+    let _: bool = SAFE_AND
+    let _: bool = SAFE_OR
+}
+"#,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn integer_constant_arithmetic_checks_the_declared_width() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const TOO_LARGE: uint8 = 200 + 100
+
+func main() {}
+"#,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(
+            diagnostics[0].message,
+            "constant value `300` is out of range for type `uint8`"
+        );
+    }
+
+    #[test]
+    fn integer_constant_intermediates_cannot_overflow_and_return_to_range() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const TOO_LARGE: uint8 = 200 + 100 - 100
+
+func main() {}
+"#,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(
+            diagnostics[0].message,
+            "constant value `300` is out of range for type `uint8`"
+        );
+    }
+
+    #[test]
+    fn integer_constant_shifts_check_the_declared_width() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const TOO_FAR: uint8 = 1 << 8
+
+func main() {}
+"#,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].message, "constant overflow");
+    }
+
+    #[test]
+    fn unsigned_constant_bitwise_not_is_truncated_to_the_declared_width() {
+        let diagnostics = analyze_script_diagnostics(
+            r#"
+const MASK: uint8 = ~0
+
+func main() {
+    let _: uint8 = MASK
+}
+"#,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }

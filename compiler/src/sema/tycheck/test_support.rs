@@ -13,7 +13,10 @@ use std::{
     fs::{create_dir_all, write},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Mutex,
 };
+
+static ANALYSIS_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) fn temp_dir(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -92,6 +95,9 @@ pub(crate) fn make_package_config<'a>(
 }
 
 pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
+    let _guard = ANALYSIS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     interner::reset_session();
 
     let root = temp_dir("diagnostics");
@@ -114,6 +120,9 @@ pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> 
 }
 
 pub(crate) fn analyze_package_diagnostics(files: &[(&str, &str)]) -> Vec<DiagnosticRecord> {
+    let _guard = ANALYSIS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     interner::reset_session();
 
     let root = temp_dir("package-diagnostics");

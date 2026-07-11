@@ -20,7 +20,7 @@ use crate::{
                 match_arguments_to_parameters, validate_arity,
             },
             utils::{
-                const_eval::{eval_const_definition, eval_const_expression},
+                const_eval::eval_const_expression_with_type_results,
                 generics::{
                     GenericsBuilder, const_arg_ty_mismatches,
                     const_param_from_type_arg as generic_const_param_from_type_arg,
@@ -87,9 +87,11 @@ impl<'ctx> Checker<'ctx> {
             return;
         }
 
-        let Some(value) = eval_const_definition(gcx, id, expr.span) else {
+        let results = self.results.borrow();
+        let Some(value) = eval_const_expression_with_type_results(gcx, expr, &results) else {
             return;
         };
+        drop(results);
 
         gcx.cache_const(
             id,
@@ -114,7 +116,10 @@ impl<'ctx> Checker<'ctx> {
                 ctor_id,
                 DefinitionKind::VariantConstructor(VariantCtorKind::Constant),
             )) => Some(ConstValue::EnumUnitVariant(ctor_id)),
-            _ => eval_const_expression(gcx, &node.initializer),
+            _ => {
+                let results = self.results.borrow();
+                eval_const_expression_with_type_results(gcx, &node.initializer, &results)
+            }
         };
         let Some(value) = value else {
             return;

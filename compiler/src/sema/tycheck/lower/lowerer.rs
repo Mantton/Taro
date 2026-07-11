@@ -14,7 +14,7 @@ use crate::{
             lower::LoweringRequest,
             solve::DefaultFallbackGoalData,
             utils::{
-                const_eval::eval_const_expression,
+                const_eval::eval_const_expression_with_expected_type,
                 generics::{
                     const_arg_ty_mismatches,
                     const_param_from_type_arg as generic_const_param_from_type_arg,
@@ -543,7 +543,8 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 kind: param.kind,
             };
         }
-        let Some(value) = eval_const_expression(gcx, &anon.value) else {
+        let Some(value) = eval_const_expression_with_expected_type(gcx, &anon.value, expected_ty)
+        else {
             return self.error_const();
         };
 
@@ -1157,7 +1158,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         }
 
         let gcx = self.gcx();
-        let Some(value) = eval_const_expression(gcx, &anon.value) else {
+        let Some(value) =
+            eval_const_expression_with_expected_type(gcx, &anon.value, gcx.types.uint)
+        else {
             return self.error_const();
         };
 
