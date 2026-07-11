@@ -18,13 +18,14 @@ struct Actor<'r, 'a> {
 
 impl<'r, 'a> Actor<'r, 'a> {
     fn run(mut self) {
-        let mut changed = false;
-
-        while changed {
+        loop {
             let start = self.unresolved_count();
             self.resolve(false);
             let end = self.unresolved_count();
-            changed |= start != end;
+
+            if end == 0 || end == start {
+                break;
+            }
         }
 
         if self.unresolved_count() != 0 {
@@ -154,5 +155,52 @@ impl<'r, 'a> Actor<'r, 'a> {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::sema::tycheck::test_support::analyze_package_diagnostics;
+
+    #[test]
+    fn chained_reexports_resolve_to_a_fixed_point() {
+        let diagnostics = analyze_package_diagnostics(&[
+            ("a/reexport.tr", "export package.b.Value\n"),
+            ("b/reexport.tr", "export package.c.Value\n"),
+            ("c/value.tr", "public struct Value {}\n"),
+            (
+                "main.tr",
+                "import package.a.Value\nfunc consume(_ value: Value) {}\n",
+            ),
+        ]);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn unresolved_reexport_cycle_terminates_and_reports_each_usage_once() {
+        let diagnostics = analyze_package_diagnostics(&[
+            ("a/reexport.tr", "export package.b.MissingFromB\n"),
+            ("b/reexport.tr", "export package.a.MissingFromA\n"),
+            ("main.tr", "func main() {}\n"),
+        ]);
+
+        let messages: Vec<_> = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "{diagnostics:#?}");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("unknown symbol 'MissingFromB'")),
+            "{diagnostics:#?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("unknown symbol 'MissingFromA'")),
+            "{diagnostics:#?}"
+        );
     }
 }
