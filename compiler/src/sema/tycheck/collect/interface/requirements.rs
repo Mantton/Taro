@@ -58,6 +58,7 @@ impl<'ctx> Actor<'ctx> {
         for decl in &node.declarations {
             self.collect_requirement(
                 id,
+                node,
                 decl,
                 &mut methods,
                 &mut properties,
@@ -83,6 +84,7 @@ impl<'ctx> Actor<'ctx> {
     fn collect_requirement(
         &mut self,
         interface_id: DefinitionID,
+        interface: &hir::Interface,
         node: &hir::AssociatedDeclaration,
         methods: &mut Vec<InterfaceMethodRequirement<'ctx>>,
         properties: &mut Vec<InterfacePropertyRequirement<'ctx>>,
@@ -166,9 +168,29 @@ impl<'ctx> Actor<'ctx> {
                     name: node.identifier.symbol,
                     ty,
                     getter_id: property.getter_id,
+                    getter_is_required: accessor_is_required(interface, property.getter_id),
                     setter_id: property.setter_id,
+                    setter_is_required: property
+                        .setter_id
+                        .map(|id| accessor_is_required(interface, id)),
                 });
             }
         }
     }
+}
+
+fn accessor_is_required(interface: &hir::Interface, accessor_id: DefinitionID) -> bool {
+    interface
+        .declarations
+        .iter()
+        .find_map(|declaration| {
+            if declaration.id != accessor_id {
+                return None;
+            }
+            let hir::AssociatedDeclarationKind::Function(function) = &declaration.kind else {
+                return None;
+            };
+            Some(function.block.is_none())
+        })
+        .expect("computed-property accessor must be an interface function")
 }

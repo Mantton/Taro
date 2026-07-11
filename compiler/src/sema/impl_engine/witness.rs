@@ -182,31 +182,42 @@ fn find_property_witnesses<'ctx>(
         .into_iter()
         .find(|entry| gcx.definition_parent(entry.property_id) == Some(record.extension));
 
-    if let Some(source) = explicit {
-        return computed_property_witnesses(
+    let inherent = gcx
+        .lookup_computed_property(type_head, requirement.name)
+        .filter(|source| gcx.is_visibility_allowed(source.visibility, record.extension));
+
+    let mut out = Vec::with_capacity(2);
+    out.push((
+        requirement.getter_id,
+        find_property_accessor_witness(
             gcx,
+            type_head,
             requirement,
-            source,
+            PropertyAccessorKind::Getter,
+            explicit,
+            inherent,
             record,
             subst,
             type_witnesses,
-        );
+        )?,
+    ));
+    if let Some(setter_id) = requirement.setter_id {
+        out.push((
+            setter_id,
+            find_property_accessor_witness(
+                gcx,
+                type_head,
+                requirement,
+                PropertyAccessorKind::Setter,
+                explicit,
+                inherent,
+                record,
+                subst,
+                type_witnesses,
+            )?,
+        ));
     }
-
-    if let Some(source) = gcx.lookup_computed_property(type_head, requirement.name)
-        && gcx.is_visibility_allowed(source.visibility, record.extension)
-    {
-        return computed_property_witnesses(
-            gcx,
-            requirement,
-            source,
-            record,
-            subst,
-            type_witnesses,
-        );
-    }
-
-    stored_field_property_witnesses(gcx, type_head, requirement, record, subst, type_witnesses)
+    Some(out)
 }
 
 pub(crate) fn property_requirement_satisfied<'ctx>(
@@ -226,41 +237,75 @@ pub(crate) fn property_requirement_satisfied<'ctx>(
     .is_some()
 }
 
-fn computed_property_witnesses<'ctx>(
+#[derive(Clone, Copy)]
+enum PropertyAccessorKind {
+    Getter,
+    Setter,
+}
+
+fn find_property_accessor_witness<'ctx>(
     gcx: Gcx<'ctx>,
+    type_head: TypeHead,
     requirement: &InterfacePropertyRequirement<'ctx>,
-    source: crate::compile::context::ComputedPropertyEntry<'ctx>,
+    kind: PropertyAccessorKind,
+    explicit: Option<crate::compile::context::ComputedPropertyEntry<'ctx>>,
+    inherent: Option<crate::compile::context::ComputedPropertyEntry<'ctx>>,
     record: &ConformanceRecord<'ctx>,
     subst: GenericArguments<'ctx>,
     type_witnesses: &FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>,
-) -> Option<Vec<(crate::hir::DefinitionID, MethodWitness<'ctx>)>> {
-    let mut out = Vec::with_capacity(2);
-    out.push((
-        requirement.getter_id,
-        direct_accessor_witness(
+) -> Option<MethodWitness<'ctx>> {
+    let requirement_id = match kind {
+        PropertyAccessorKind::Getter => requirement.getter_id,
+        PropertyAccessorKind::Setter => requirement.setter_id?,
+    };
+
+    for source in [explicit, inherent].into_iter().flatten() {
+        let implementation_id = match kind {
+            PropertyAccessorKind::Getter => Some(source.getter_id),
+            PropertyAccessorKind::Setter => source.setter_id,
+        };
+        let Some(implementation_id) = implementation_id else {
+            continue;
+        };
+        if let Some(witness) = direct_accessor_witness(
             gcx,
-            requirement.getter_id,
-            source.getter_id,
+            requirement_id,
+            implementation_id,
             record,
             subst,
             type_witnesses,
-        )?,
-    ));
-    if let Some(required_setter) = requirement.setter_id {
-        let source_setter = source.setter_id?;
-        out.push((
-            required_setter,
-            direct_accessor_witness(
-                gcx,
-                required_setter,
-                source_setter,
-                record,
-                subst,
-                type_witnesses,
-            )?,
-        ));
+        ) {
+            return Some(witness);
+        }
     }
-    Some(out)
+
+    stored_field_property_accessor_witness(
+        gcx,
+        type_head,
+        requirement,
+        kind,
+        record,
+        subst,
+        type_witnesses,
+    )
+    .or_else(|| {
+        let is_required = match kind {
+            PropertyAccessorKind::Getter => requirement.getter_is_required,
+            PropertyAccessorKind::Setter => requirement.setter_is_required?,
+        };
+        default_accessor_witness(gcx, requirement_id, is_required)
+    })
+}
+
+fn default_accessor_witness<'ctx>(
+    gcx: Gcx<'ctx>,
+    requirement_id: crate::hir::DefinitionID,
+    is_required: bool,
+) -> Option<MethodWitness<'ctx>> {
+    (!is_required).then(|| MethodWitness {
+        implementation: MethodImplementation::Default(requirement_id),
+        args_template: GenericsBuilder::identity_for_item(gcx, requirement_id),
+    })
 }
 
 fn direct_accessor_witness<'ctx>(
@@ -292,14 +337,15 @@ fn direct_accessor_witness<'ctx>(
     })
 }
 
-fn stored_field_property_witnesses<'ctx>(
+fn stored_field_property_accessor_witness<'ctx>(
     gcx: Gcx<'ctx>,
     type_head: TypeHead,
     requirement: &InterfacePropertyRequirement<'ctx>,
+    kind: PropertyAccessorKind,
     record: &ConformanceRecord<'ctx>,
     subst: GenericArguments<'ctx>,
     type_witnesses: &FxHashMap<crate::hir::DefinitionID, Ty<'ctx>>,
-) -> Option<Vec<(crate::hir::DefinitionID, MethodWitness<'ctx>)>> {
+) -> Option<MethodWitness<'ctx>> {
     let TypeHead::Nominal(type_id) = type_head else {
         return None;
     };
@@ -328,55 +374,56 @@ fn stored_field_property_witnesses<'ctx>(
         expected_ty = instantiate_ty_with_args(gcx, expected_ty, subst);
     }
     expected_ty = substitute_projection_witnesses(gcx, expected_ty, type_witnesses);
-    if field_ty != expected_ty || gcx.definition_is_async(requirement.getter_id) {
+    if field_ty != expected_ty {
         return None;
     }
 
-    let mut getter_receiver = gcx.get_signature(requirement.getter_id).inputs.first()?.ty;
-    getter_receiver = substitute_with_args(gcx, getter_receiver, record.interface.arguments);
-    if !subst.is_empty() {
-        getter_receiver = instantiate_ty_with_args(gcx, getter_receiver, subst);
-    }
-    getter_receiver = substitute_projection_witnesses(gcx, getter_receiver, type_witnesses);
-    match getter_receiver.kind() {
-        TyKind::Reference(inner, _) if inner == self_ty => {
-            if !gcx.is_type_copyable(field_ty) {
+    let (accessor_id, synthetic_kind) = match kind {
+        PropertyAccessorKind::Getter => {
+            if gcx.definition_is_async(requirement.getter_id) {
                 return None;
             }
+            let mut receiver = gcx.get_signature(requirement.getter_id).inputs.first()?.ty;
+            receiver = substitute_with_args(gcx, receiver, record.interface.arguments);
+            if !subst.is_empty() {
+                receiver = instantiate_ty_with_args(gcx, receiver, subst);
+            }
+            receiver = substitute_projection_witnesses(gcx, receiver, type_witnesses);
+            match receiver.kind() {
+                TyKind::Reference(inner, _) if inner == self_ty => {
+                    if !gcx.is_type_copyable(field_ty) {
+                        return None;
+                    }
+                }
+                _ if receiver == self_ty => {}
+                _ => return None,
+            }
+            (
+                requirement.getter_id,
+                SyntheticMethodKind::PropertyFieldGetter(field_index),
+            )
         }
-        _ if getter_receiver == self_ty => {}
-        _ => return None,
-    }
+        PropertyAccessorKind::Setter => {
+            if field.mutability != crate::hir::Mutability::Mutable {
+                return None;
+            }
+            (
+                requirement.setter_id?,
+                SyntheticMethodKind::PropertyFieldSetter(field_index),
+            )
+        }
+    };
 
-    let mut out = Vec::with_capacity(2);
-    out.push((
-        requirement.getter_id,
+    Some(
         crate::sema::tycheck::derive::synthesize_property_field_accessor(
             gcx,
             type_head,
             original_self_ty,
             record.interface,
-            requirement.getter_id,
-            SyntheticMethodKind::PropertyFieldGetter(field_index),
+            accessor_id,
+            synthetic_kind,
         ),
-    ));
-    if let Some(setter_id) = requirement.setter_id {
-        if field.mutability != crate::hir::Mutability::Mutable {
-            return None;
-        }
-        out.push((
-            setter_id,
-            crate::sema::tycheck::derive::synthesize_property_field_accessor(
-                gcx,
-                type_head,
-                original_self_ty,
-                record.interface,
-                setter_id,
-                SyntheticMethodKind::PropertyFieldSetter(field_index),
-            ),
-        ));
-    }
-    Some(out)
+    )
 }
 
 fn interface_goal_from_record<'ctx>(

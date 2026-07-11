@@ -809,11 +809,6 @@ impl Parser {
         }
 
         let block = if self.matches(Token::LBrace) {
-            if !body_required {
-                return Err(
-                    self.err_at_current(ParserError::ComputedPropertyAccessorBodyNotAllowed)
-                );
-            }
             Some(self.parse_block()?)
         } else if body_required {
             return Err(self.err_at_current(ParserError::FunctionBodyRequired));
@@ -886,11 +881,6 @@ impl Parser {
         }
 
         let block = if self.matches(Token::LBrace) {
-            if !body_required {
-                return Err(
-                    self.err_at_current(ParserError::ComputedPropertyAccessorBodyNotAllowed)
-                );
-            }
             Some(self.parse_block()?)
         } else if body_required {
             return Err(self.err_at_current(ParserError::FunctionBodyRequired));
@@ -4750,7 +4740,6 @@ enum ParserError {
     InvalidComputedPropertyGetterSignature,
     InvalidComputedPropertySetterSignature,
     AsyncComputedPropertySetterNotAllowed,
-    ComputedPropertyAccessorBodyNotAllowed,
     ExtraTypeArguments,
     UnsafeModifierRequiresFunction,
     UnsafeAttributeRemoved,
@@ -4834,9 +4823,6 @@ impl Display for ParserError {
             AsyncComputedPropertySetterNotAllowed => {
                 f.write_str("computed property setter cannot be async")
             }
-            ComputedPropertyAccessorBodyNotAllowed => f.write_str(
-                "default computed-property accessor bodies are not supported in interfaces",
-            ),
             ExtraTypeArguments => f.write_str("extra type arguments provided"),
             UnsafeModifierRequiresFunction => {
                 f.write_str("`unsafe` can only be applied to function declarations")
@@ -7312,13 +7298,39 @@ mod tests {
     }
 
     #[test]
-    fn test_interface_computed_property_body_rejected() {
-        let errors = parse_decls("interface Foo { var x: int32 { get(self) { 1 } } }")
-            .expect_err("default accessor body should fail");
-        assert!(errors.iter().any(|error| matches!(
-            error.value,
-            ParserError::ComputedPropertyAccessorBodyNotAllowed
-        )));
+    fn test_interface_computed_property_default_accessor_bodies() {
+        let declarations = parse_decls(
+            "interface Foo { var x: int32 { get(self) { 1 } set(&mut self, value: int32) { } }; }",
+        )
+        .expect("default accessor bodies should parse");
+        let DeclarationKind::Interface(node) = &declarations[0].kind else {
+            panic!("expected interface declaration");
+        };
+        for accessor in &node.declarations[1..] {
+            let AssociatedDeclarationKind::Function(function) = &accessor.kind else {
+                panic!("expected hidden accessor requirement");
+            };
+            assert!(function.block.is_some());
+        }
+    }
+
+    #[test]
+    fn test_interface_computed_property_mixed_default_and_required_accessors() {
+        let declarations = parse_decls(
+            "interface Foo { var x: int32 { get(&self) { 1 } set(&mut self, value: int32) }; }",
+        )
+        .expect("default and required accessors should parse together");
+        let DeclarationKind::Interface(node) = &declarations[0].kind else {
+            panic!("expected interface declaration");
+        };
+        let AssociatedDeclarationKind::Function(getter) = &node.declarations[1].kind else {
+            panic!("expected hidden getter requirement");
+        };
+        let AssociatedDeclarationKind::Function(setter) = &node.declarations[2].kind else {
+            panic!("expected hidden setter requirement");
+        };
+        assert!(getter.block.is_some());
+        assert!(setter.block.is_none());
     }
 
     #[test]

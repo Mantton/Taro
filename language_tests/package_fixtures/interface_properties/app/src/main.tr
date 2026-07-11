@@ -1,4 +1,4 @@
-import dep.{Named, makeRemote}
+import dep.{DefaultNamed, Named, makeDefaultRemote, makeRemote}
 
 struct Local {
     name: string
@@ -6,7 +6,15 @@ struct Local {
 
 impl Named for Local {}
 
+struct LocalDefault {}
+
+impl DefaultNamed for LocalDefault {}
+
 func readName[T: Named](_ value: &T) -> string {
+    value.name
+}
+
+func readDefaultName[T: DefaultNamed](_ value: &T) -> string {
     value.name
 }
 
@@ -18,5 +26,22 @@ func main() {
 
     let local = Local { name: "local" }
     assert(readName(&local) == "local", "foreign interface local type witness")
+
+    let defaultRemote = makeDefaultRemote()
+    assert(
+        readDefaultName(&defaultRemote) == "default",
+        "dependency default property witness",
+    )
+    let erasedDefaultRemote: any DefaultNamed = defaultRemote
+    assert(
+        erasedDefaultRemote.name == "default",
+        "dependency existential default property witness",
+    )
+
+    let localDefault = LocalDefault {}
+    assert(
+        readDefaultName(&localDefault) == "default",
+        "foreign interface default for local type",
+    )
     std.print("PASS: cross-package interface properties\n")
 }

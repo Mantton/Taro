@@ -1,0 +1,4 @@
+error: type 'User' does not conform to interface 'Named'
+ -> language_tests/source_files/invalid/interface_property_default_no_implicit_conformance.tr:17:4
+	    readName(&user)
+	    ^^^^^^^^

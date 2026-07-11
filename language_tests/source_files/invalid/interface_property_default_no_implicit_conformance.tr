@@ -1,0 +1,18 @@
+interface Named {
+    var name: string {
+        get(&self) {
+            "taro"
+        }
+    };
+}
+
+struct User {}
+
+func readName[T: Named](_ value: &T) -> string {
+    value.name
+}
+
+func main() {
+    let user = User {}
+    readName(&user)
+}

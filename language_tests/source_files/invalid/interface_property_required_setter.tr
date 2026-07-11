@@ -1,0 +1,15 @@
+interface Value {
+    var value: int32 {
+        get(&self) {
+            1
+        }
+
+        set(&mut self, value: int32)
+    };
+}
+
+struct Incomplete {}
+
+impl Value for Incomplete {}
+
+func main() {}

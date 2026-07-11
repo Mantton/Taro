@@ -628,7 +628,9 @@ pub struct InterfacePropertyRequirementWire {
     pub name: SymbolIdWire,
     pub ty: TyWire,
     pub getter_id: DefIdWire,
+    pub getter_is_required: bool,
     pub setter_id: Option<DefIdWire>,
+    pub setter_is_required: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2810,7 +2812,9 @@ pub fn interface_requirements_to_wire(
                 name: symbols.intern_symbol(property.name),
                 ty: ty_to_wire(property.ty),
                 getter_id: def_to_wire(property.getter_id),
+                getter_is_required: property.getter_is_required,
                 setter_id: property.setter_id.map(def_to_wire),
+                setter_is_required: property.setter_is_required,
             })
             .collect(),
         types: v
@@ -2868,7 +2872,9 @@ pub fn interface_requirements_from_wire<'a>(
                     name: Symbol::new(symbols.resolve_str(property.name)),
                     ty: ty_from_wire(gcx, &property.ty),
                     getter_id: def_from_wire(&property.getter_id),
+                    getter_is_required: property.getter_is_required,
                     setter_id: property.setter_id.as_ref().map(def_from_wire),
+                    setter_is_required: property.setter_is_required,
                 },
             )
             .collect(),

@@ -1,8 +1,0 @@
-error: default computed-property accessor bodies are not supported in interfaces
- -> language_tests/source_files/invalid/interface_properties_deferred.tr:2:34
-	    var name: string { get(&self) { "taro" } };
-	                                  ^
-error: expected top-level declaration
- -> language_tests/source_files/invalid/interface_properties_deferred.tr:3:0
-	}
-	^

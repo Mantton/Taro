@@ -41,6 +41,17 @@ interface OwnedItemsProperty {
     };
 }
 
+interface DefaultValueProperty {
+    var value: int32 {
+        get(&self) {
+            41
+        }
+
+        set(&mut self, value: int32) {
+        }
+    };
+}
+
 struct PropertyUser {
     name: string
 }
@@ -112,6 +123,38 @@ struct PropertyItemBag {
 
 impl OwnedItemsProperty for PropertyItemBag {}
 
+struct DefaultPropertyValue {}
+
+impl DefaultValueProperty for DefaultPropertyValue {}
+
+struct ExplicitDefaultPropertyOverride {}
+
+impl DefaultValueProperty for ExplicitDefaultPropertyOverride {
+    var value: int32 {
+        get(&self) {
+            73
+        }
+    };
+}
+
+struct InherentDefaultPropertyOverride {}
+
+impl InherentDefaultPropertyOverride {
+    var value: int32 {
+        get(&self) {
+            89
+        }
+    };
+}
+
+impl DefaultValueProperty for InherentDefaultPropertyOverride {}
+
+struct FieldDefaultPropertyOverride {
+    value: int32
+}
+
+impl DefaultValueProperty for FieldDefaultPropertyOverride {}
+
 struct ExplicitPropertyValue {
     storage: int32
 }
@@ -154,6 +197,14 @@ func genericAsyncValue[T: AsyncValuedProperty](_ value: &T) async -> int32 {
 
 func takeItems[T: OwnedItemsProperty](_ value: T) -> std.collections.List[int32] {
     value.items
+}
+
+func genericDefaultValue[T: DefaultValueProperty](_ value: &T) -> int32 {
+    value.value
+}
+
+func setDefaultValue[T: DefaultValueProperty](_ value: &mut T, _ newValue: int32) {
+    value.value = newValue
 }
 
 func main() async {
@@ -205,6 +256,32 @@ func main() async {
     items.append(55)
     let takenItems = takeItems(PropertyItemBag { items })
     assert(takenItems.len() == 1, "consuming stored-field property witness")
+
+    let defaultValue = DefaultPropertyValue {}
+    assert(genericDefaultValue(&defaultValue) == 41, "default property getter")
+    let erasedDefaultValue: any DefaultValueProperty = defaultValue
+    assert(erasedDefaultValue.value == 41, "existential default property getter")
+
+    var explicitDefaultOverride = ExplicitDefaultPropertyOverride {}
+    setDefaultValue(&mut explicitDefaultOverride, 100)
+    assert(
+        genericDefaultValue(&explicitDefaultOverride) == 73,
+        "explicit getter with default setter",
+    )
+
+    var inherentDefaultOverride = InherentDefaultPropertyOverride {}
+    setDefaultValue(&mut inherentDefaultOverride, 100)
+    assert(
+        genericDefaultValue(&inherentDefaultOverride) == 89,
+        "inherent getter with default setter",
+    )
+
+    var fieldDefaultOverride = FieldDefaultPropertyOverride { value: 5 }
+    setDefaultValue(&mut fieldDefaultOverride, 8)
+    assert(
+        genericDefaultValue(&fieldDefaultOverride) == 8,
+        "stored field overrides default accessors",
+    )
 
     std.print("PASS: interface properties\n")
 }

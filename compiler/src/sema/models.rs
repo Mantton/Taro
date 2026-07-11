@@ -955,7 +955,9 @@ pub struct InterfacePropertyRequirement<'ctx> {
     pub name: Symbol,
     pub ty: Ty<'ctx>,
     pub getter_id: DefinitionID,
+    pub getter_is_required: bool,
     pub setter_id: Option<DefinitionID>,
+    pub setter_is_required: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

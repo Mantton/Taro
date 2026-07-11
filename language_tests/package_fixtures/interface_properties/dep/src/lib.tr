@@ -4,12 +4,28 @@ public interface Named {
     };
 }
 
+public interface DefaultNamed {
+    var name: string {
+        get(&self) {
+            "default"
+        }
+    };
+}
+
 public struct Remote {
     public name: string
 }
 
 impl Named for Remote {}
 
+public struct DefaultRemote {}
+
+impl DefaultNamed for DefaultRemote {}
+
 public func makeRemote() -> Remote {
     Remote { name: "remote" }
+}
+
+public func makeDefaultRemote() -> DefaultRemote {
+    DefaultRemote {}
 }

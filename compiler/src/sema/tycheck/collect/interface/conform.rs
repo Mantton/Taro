@@ -209,10 +209,13 @@ impl<'ctx> Actor<'ctx> {
             ) {
                 continue;
             }
-            let capability = if property.setter_id.is_some() {
-                "readable and writable"
-            } else {
-                "readable"
+            let capability = match (
+                property.getter_is_required,
+                property.setter_is_required.unwrap_or(false),
+            ) {
+                (true, true) => "readable and writable",
+                (false, true) => "writable",
+                _ => "readable",
             };
             self.context.dcx().emit_info(
                 format!(
