@@ -292,6 +292,23 @@ fn infer_async_task_mobility<'ctx>(
     body: &Body<'ctx>,
     stored_locals: &[LocalId],
 ) -> AsyncTaskMobility {
+    // Borrowed async closure environments are tied to the immediate caller.
+    // Keep their frames pinned even if later Sendable rules learn how to
+    // classify raw environment pointers more permissively.
+    if gcx
+        .get_closure_captures(body.owner)
+        .is_some_and(|captures| {
+            captures.captures.iter().any(|capture| {
+                matches!(
+                    capture.capture_kind,
+                    crate::sema::models::CaptureKind::ByRef { .. }
+                )
+            })
+        })
+    {
+        return AsyncTaskMobility::Pinned;
+    }
+
     if stored_locals
         .iter()
         .all(|local| gcx.is_type_sendable(body.locals[*local].ty))

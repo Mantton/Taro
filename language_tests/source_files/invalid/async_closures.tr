@@ -38,18 +38,3 @@ func badMovedNonCopyAsyncFnBound() async {
 
     let _ = await applyReusableAsync(closure, 1)
 }
-
-func applyMutableAsync[F: AsyncFnMut() -> int32](_ f: F) async -> int32 {
-    var f = f
-    return await f()
-}
-
-func badMutableCaptureAsyncFnMutBound() async {
-    var count = 0 as int32
-    let closure = || async {
-        count += 1
-        return count
-    }
-
-    let _ = await applyMutableAsync(closure)
-}

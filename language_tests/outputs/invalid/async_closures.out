@@ -22,7 +22,3 @@ error: type 'closure<AsyncFnOnce>((int32) -> int32)' does not conform to interfa
  -> language_tests/source_files/invalid/async_closures.tr:39:18
 	    let _ = await applyReusableAsync(closure, 1)
 	                  ^^^^^^^^^^^^^^^^^^
-error: type 'closure<AsyncFnOnce>(() -> int32)' does not conform to interface 'AsyncFnMut() -> int32'
- -> language_tests/source_files/invalid/async_closures.tr:54:18
-	    let _ = await applyMutableAsync(closure)
-	                  ^^^^^^^^^^^^^^^^^

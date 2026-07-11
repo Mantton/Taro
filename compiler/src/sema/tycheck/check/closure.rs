@@ -829,21 +829,29 @@ fn infer_closure_kind(
     is_async: bool,
     captures: &[crate::sema::models::CapturedVar<'_>],
 ) -> crate::sema::models::ClosureKind {
-    // A reusable async closure must be able to give every produced future its
-    // own environment. ByCopy captures can be duplicated into each future;
-    // borrowed or moved captures remain one-shot until borrowed-future
-    // lifetimes and overlapping mutable calls are modeled explicitly.
     if is_async {
-        return if captures.iter().all(|capture| {
-            matches!(
+        let mut kind = crate::sema::models::ClosureKind::AsyncFn;
+        for capture in captures {
+            if matches!(
                 capture.capture_kind,
-                crate::sema::models::CaptureKind::ByCopy
-            )
-        }) {
-            crate::sema::models::ClosureKind::AsyncFn
-        } else {
-            crate::sema::models::ClosureKind::AsyncFnOnce
-        };
+                crate::sema::models::CaptureKind::ByMove
+            ) || matches!(
+                capture.access_kind,
+                crate::sema::models::CaptureAccessKind::Move
+            ) {
+                return crate::sema::models::ClosureKind::AsyncFnOnce;
+            }
+            if matches!(
+                capture.access_kind,
+                crate::sema::models::CaptureAccessKind::Mutate
+            ) || matches!(
+                capture.capture_kind,
+                crate::sema::models::CaptureKind::ByRef { mutable: true }
+            ) {
+                kind = crate::sema::models::ClosureKind::AsyncFnMut;
+            }
+        }
+        return kind;
     }
 
     let mut kind = crate::sema::models::ClosureKind::Fn;
@@ -891,10 +899,26 @@ fn closure_self_ty<'ctx>(
         crate::sema::models::ClosureKind::Fn => {
             Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
         }
-        // The callable interface still receives `&self`, but the concrete async
-        // body receives an owned copy so its returned future never borrows the
-        // closure environment.
-        crate::sema::models::ClosureKind::AsyncFn => closure_ty,
+        crate::sema::models::ClosureKind::AsyncFn => {
+            let owns_copyable_environment = match closure_ty.kind() {
+                TyKind::Closure { closure_def_id, .. } => gcx
+                    .get_closure_captures(closure_def_id)
+                    .is_some_and(|captures| {
+                        captures.captures.iter().all(|capture| {
+                            matches!(
+                                capture.capture_kind,
+                                crate::sema::models::CaptureKind::ByCopy
+                            )
+                        })
+                    }),
+                _ => false,
+            };
+            if owns_copyable_environment {
+                closure_ty
+            } else {
+                Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Immutable), gcx)
+            }
+        }
         crate::sema::models::ClosureKind::FnMut | crate::sema::models::ClosureKind::AsyncFnMut => {
             Ty::new(TyKind::Pointer(closure_ty, hir::Mutability::Mutable), gcx)
         }

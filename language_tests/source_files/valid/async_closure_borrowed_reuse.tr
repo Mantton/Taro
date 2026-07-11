@@ -1,0 +1,45 @@
+func callReusable[F: AsyncFn() -> int32](_ f: F) async -> int32 {
+    let first = await f()
+    let second = await f()
+    return first + second
+}
+
+func callMutable[F: AsyncFnMut() -> int32](_ f: F) async -> int32 {
+    var f = f
+    let first = await f()
+    let second = await f()
+    return first + second
+}
+
+func main() async {
+    var values: std.collections.List[int32] = std.collections.List()
+    values.append(9)
+    let borrowed = || async {
+        await std.testing.yieldNow()
+        return values.len() as int32
+    }
+    let borrowedResult = await callReusable(borrowed)
+    assert(borrowedResult == 2, "borrowed AsyncFn should be reusable")
+
+    var count = 0 as int32
+    let mutable = || async {
+        count += 1
+        await std.testing.yieldNow()
+        return count
+    }
+    let mutableResult = await callMutable(mutable)
+    assert(mutableResult == 3, "borrowed AsyncFnMut should be sequentially reusable")
+
+    var directCount = 0 as int32
+    var direct = || async {
+        directCount += 1
+        return directCount
+    }
+    let directFirst = await direct()
+    let directSecond = await direct()
+    assert(directFirst == 1, "first direct AsyncFnMut call")
+    assert(directSecond == 2, "second direct AsyncFnMut call")
+    assert(directCount == 2, "direct AsyncFnMut should update its capture")
+
+    std.print("PASS: borrowed async closure reuse\n")
+}
