@@ -1,0 +1,81 @@
+struct ReadOnlyCounter {
+    value: int32
+}
+
+impl ReadOnlyCounter {
+    var current: int32 {
+        get(&self) {
+            self.value
+        }
+    };
+}
+
+func readOnlyProperty() {
+    var counter = ReadOnlyCounter { value: 1 }
+    counter.current += 1
+}
+
+struct AsyncCounter {
+    value: int32
+}
+
+impl AsyncCounter {
+    var current: int32 {
+        get(&self) async {
+            self.value
+        }
+
+        set(&mut self, value: int32) {
+            self.value = value
+        }
+    };
+}
+
+func asyncGetter() {
+    var counter = AsyncCounter { value: 1 }
+    counter.current += 1
+}
+
+struct ImmutableCounter {
+    value: int32
+}
+
+impl ImmutableCounter {
+    var current: int32 {
+        get(&self) {
+            self.value
+        }
+
+        set(&mut self, value: int32) {
+            self.value = value
+        }
+    };
+}
+
+func immutableReceiver() {
+    let counter = ImmutableCounter { value: 1 }
+    counter.current += 1
+}
+
+struct ConsumedCounter {
+    values: std.collections.List[int32]
+}
+
+impl ConsumedCounter {
+    var current: int32 {
+        get(self) {
+            self.values.len() as int32
+        }
+
+        set(&mut self, _ value: int32) {}
+    };
+}
+
+func consumingGetter() {
+    var values: std.collections.List[int32] = std.collections.List()
+    values.append(1)
+    var counter = ConsumedCounter { values }
+    counter.current += 1
+}
+
+func main() {}

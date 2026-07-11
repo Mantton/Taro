@@ -26,16 +26,26 @@ const IDE_COMPLETION_PROBE_IDENTIFIER: &str = "__taro_completion_probe";
 impl<'ctx> ConstraintSolver<'ctx> {
     fn operator_method_name_for_kind(kind: OperatorKind) -> Option<&'static str> {
         match kind {
-            OperatorKind::Add | OperatorKind::AddAssign => Some("add"),
-            OperatorKind::Sub | OperatorKind::SubAssign => Some("sub"),
-            OperatorKind::Mul | OperatorKind::MulAssign => Some("mul"),
-            OperatorKind::Div | OperatorKind::DivAssign => Some("div"),
-            OperatorKind::Rem | OperatorKind::RemAssign => Some("rem"),
-            OperatorKind::BitAnd | OperatorKind::BitAndAssign => Some("bitand"),
-            OperatorKind::BitOr | OperatorKind::BitOrAssign => Some("bitor"),
-            OperatorKind::BitXor | OperatorKind::BitXorAssign => Some("bitxor"),
-            OperatorKind::BitShl | OperatorKind::BitShlAssign => Some("shl"),
-            OperatorKind::BitShr | OperatorKind::BitShrAssign => Some("shr"),
+            OperatorKind::Add => Some("add"),
+            OperatorKind::AddAssign => Some("addAssign"),
+            OperatorKind::Sub => Some("sub"),
+            OperatorKind::SubAssign => Some("subAssign"),
+            OperatorKind::Mul => Some("mul"),
+            OperatorKind::MulAssign => Some("mulAssign"),
+            OperatorKind::Div => Some("div"),
+            OperatorKind::DivAssign => Some("divAssign"),
+            OperatorKind::Rem => Some("rem"),
+            OperatorKind::RemAssign => Some("remAssign"),
+            OperatorKind::BitAnd => Some("bitand"),
+            OperatorKind::BitAndAssign => Some("bitandAssign"),
+            OperatorKind::BitOr => Some("bitor"),
+            OperatorKind::BitOrAssign => Some("bitorAssign"),
+            OperatorKind::BitXor => Some("bitxor"),
+            OperatorKind::BitXorAssign => Some("bitxorAssign"),
+            OperatorKind::BitShl => Some("shl"),
+            OperatorKind::BitShlAssign => Some("shlAssign"),
+            OperatorKind::BitShr => Some("shr"),
+            OperatorKind::BitShrAssign => Some("shrAssign"),
             OperatorKind::Neg => Some("neg"),
             OperatorKind::Not => Some("not"),
             OperatorKind::BitwiseNot => Some("bitnot"),
@@ -110,6 +120,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             }
 
             if let Some(property) = self.lookup_computed_property(ty, name.symbol) {
+                let autoderef_count = adjustments.len();
                 let mut receiver_arg_ty = ty;
                 let mut property_adjustments = adjustments.clone();
                 let getter_sig = self.gcx().get_signature(property.getter_id);
@@ -135,6 +146,8 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         getter_id: property.getter_id,
                         setter_id: property.setter_id,
                         ty: property.ty,
+                        receiver_ty: ty,
+                        autoderef_count,
                         getter_is_async: self.gcx().definition_is_async(property.getter_id),
                     },
                 );

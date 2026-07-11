@@ -4,9 +4,19 @@ public interface Add[Rhs=Self, Output=Self] {
     func add(self, rhs: Rhs) -> Output
 }
 
+@lang("AddAssign")
+public interface AddAssign[Rhs=Self] {
+    func addAssign(&mut self, rhs: Rhs)
+}
+
 @lang("Sub")
 public interface Sub[Rhs=Self, Output=Self] {
     func sub(self, rhs: Rhs) -> Output
+}
+
+@lang("SubAssign")
+public interface SubAssign[Rhs=Self] {
+    func subAssign(&mut self, rhs: Rhs)
 }
 
 @lang("Mul")
@@ -14,12 +24,27 @@ public interface Mul[Rhs=Self, Output=Self] {
     func mul(self, rhs: Rhs) -> Output
 }
 
+@lang("MulAssign")
+public interface MulAssign[Rhs=Self] {
+    func mulAssign(&mut self, rhs: Rhs)
+}
+
 @lang("Div")
 public interface Div[Rhs=Self, Output=Self] {
     func div(self, rhs: Rhs) -> Output
 }
 
+@lang("DivAssign")
+public interface DivAssign[Rhs=Self] {
+    func divAssign(&mut self, rhs: Rhs)
+}
+
 @lang("Rem")
 public interface Rem[Rhs=Self, Output=Self] {
     func rem(self, rhs: Rhs) -> Output
+}
+
+@lang("RemAssign")
+public interface RemAssign[Rhs=Self] {
+    func remAssign(&mut self, rhs: Rhs)
 }

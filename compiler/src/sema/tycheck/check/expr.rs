@@ -3042,36 +3042,80 @@ impl<'ctx> Checker<'ctx> {
         rhs: &hir::Expression,
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
-        // Type-check the LHS and require it be a mutable place
-        let (lhs_ty, ok) = self.synth_with_needs(lhs, None, Needs::MutPlace, cs);
-        if !ok {
+        // Resolve the member before asking whether the LHS is a mutable place. A
+        // computed property is a value, not a place, but compound assignment can
+        // still update it by reading into a temporary and writing through its setter.
+        let lhs_ty = self.synth(lhs, cs);
+        if lhs_ty.is_error() {
+            return Ty::error(self.gcx());
+        }
+        cs.solve_intermediate();
+
+        let property_read = cs.resolved_property_reads().get(&lhs.id).copied();
+        if let Some(property) = property_read {
+            let hir::ExpressionKind::Member { target, name } = &lhs.kind else {
+                unreachable!("resolved property read must originate from a member expression");
+            };
+
+            let Some(setter_id) = property.setter_id else {
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "cannot apply compound assignment to read-only property '{}'; property has no setter",
+                        self.gcx().symbol_text(name.symbol)
+                    ),
+                    Some(lhs.span),
+                );
+                return Ty::error(self.gcx());
+            };
+
+            if property.getter_is_async {
+                self.cancel_async_property_surface_check(lhs.id);
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "async getter for property '{}' cannot be used in compound assignment",
+                        self.gcx().symbol_text(name.symbol)
+                    ),
+                    Some(lhs.span),
+                );
+                return Ty::error(self.gcx());
+            }
+
+            if !self.require_mut_borrow(target, cs) {
+                return Ty::error(self.gcx());
+            }
+
+            let getter_sig = self.gcx().get_signature(property.getter_id);
+            let getter_consumes_receiver = getter_sig
+                .inputs
+                .first()
+                .is_some_and(|input| !matches!(input.ty.kind(), TyKind::Reference(_, _)));
+            if getter_consumes_receiver && !self.gcx().is_type_copyable(property.receiver_ty) {
+                self.gcx().dcx().emit_error(
+                    format!(
+                        "compound assignment to property '{}' cannot use a consuming getter on non-Copy receiver type '{}'",
+                        self.gcx().symbol_text(name.symbol),
+                        property.receiver_ty.format(self.gcx())
+                    ),
+                    Some(lhs.span),
+                );
+                return Ty::error(self.gcx());
+            }
+
+            cs.record_property_write(
+                expression.id,
+                crate::sema::tycheck::solve::ResolvedPropertyWrite {
+                    property_id: property.property_id,
+                    setter_id,
+                    ty: property.ty,
+                },
+            );
+        } else if !self.require_mut_place(lhs, cs) {
             return Ty::error(self.gcx());
         }
 
         let rhs_ty = self.synth(rhs, cs);
-        if lhs_ty.is_error() || rhs_ty.is_error() {
+        if rhs_ty.is_error() {
             return Ty::error(self.gcx());
-        }
-
-        if let hir::ExpressionKind::Member { target, name } = &lhs.kind
-            && let Some(receiver_ty) = cs.expr_ty(target.id)
-        {
-            let receiver_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
-            let base_ty = match receiver_ty.kind() {
-                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => inner,
-                _ => receiver_ty,
-            };
-
-            if self
-                .lookup_member_property_on_base_ty(base_ty, name.symbol)
-                .is_some()
-            {
-                self.gcx().dcx().emit_error(
-                    "compound assignment on computed properties is not supported".into(),
-                    Some(expression.span),
-                );
-                return Ty::error(self.gcx());
-            }
         }
 
         let data = AssignOpGoalData {

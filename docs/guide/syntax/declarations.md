@@ -310,7 +310,9 @@ Rules:
 - `set` must use `set(&mut self, value: T)` where `T` matches the property type.
 - `set` cannot be `async` in v1.
 - Async getters require explicit await at the read site: `await obj.prop`.
-- Compound assignment on computed properties (for example `obj.prop += 1`) is not supported in v1.
+- Compound assignment on a writable property evaluates the receiver once, reads
+  through `get`, applies the assignment operator, and writes through `set`.
+- Async getters cannot be used in compound assignment.
 - Computed properties are supported in `impl` blocks only in v1.
 - Interface computed properties are deferred for safety in this cycle.
 - `get` and `set` are contextual keywords only inside accessor blocks.

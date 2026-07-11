@@ -134,6 +134,10 @@ pub struct ResolvedPropertyRead<'ctx> {
     pub getter_id: DefinitionID,
     pub setter_id: Option<DefinitionID>,
     pub ty: Ty<'ctx>,
+    /// The concrete receiver type on which the property was found, after autoderef.
+    pub receiver_ty: Ty<'ctx>,
+    /// The number of receiver dereferences applied before borrowing for the getter.
+    pub autoderef_count: usize,
     pub getter_is_async: bool,
 }
 

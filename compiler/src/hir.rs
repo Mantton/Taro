@@ -962,17 +962,27 @@ pub enum StdItem {
     AsyncFnOnce,
     Tuple,
     Add,
+    AddAssign,
     Sub,
+    SubAssign,
     Mul,
+    MulAssign,
     Div,
+    DivAssign,
     Rem,
+    RemAssign,
     Neg,
     Not,
     BitAnd,
+    BitAndAssign,
     BitOr,
+    BitOrAssign,
     BitXor,
+    BitXorAssign,
     Shl,
+    ShlAssign,
     Shr,
+    ShrAssign,
     BitNot,
     PartialEq,
     PartialOrd,
@@ -1024,17 +1034,27 @@ impl StdItem {
             StdItem::AsyncFnOnce => Some("AsyncFnOnce"),
             StdItem::Tuple => Some("Tuple"),
             StdItem::Add => Some("Add"),
+            StdItem::AddAssign => Some("AddAssign"),
             StdItem::Sub => Some("Sub"),
+            StdItem::SubAssign => Some("SubAssign"),
             StdItem::Mul => Some("Mul"),
+            StdItem::MulAssign => Some("MulAssign"),
             StdItem::Div => Some("Div"),
+            StdItem::DivAssign => Some("DivAssign"),
             StdItem::Rem => Some("Rem"),
+            StdItem::RemAssign => Some("RemAssign"),
             StdItem::Neg => Some("Neg"),
             StdItem::Not => Some("Not"),
             StdItem::BitAnd => Some("BitAnd"),
+            StdItem::BitAndAssign => Some("BitAndAssign"),
             StdItem::BitOr => Some("BitOr"),
+            StdItem::BitOrAssign => Some("BitOrAssign"),
             StdItem::BitXor => Some("BitXor"),
+            StdItem::BitXorAssign => Some("BitXorAssign"),
             StdItem::Shl => Some("Shl"),
+            StdItem::ShlAssign => Some("ShlAssign"),
             StdItem::Shr => Some("Shr"),
+            StdItem::ShrAssign => Some("ShrAssign"),
             StdItem::BitNot => Some("BitNot"),
             StdItem::PartialEq => Some("PartialEq"),
             StdItem::PartialOrd => Some("PartialOrd"),
@@ -1080,17 +1100,27 @@ impl StdItem {
             "AsyncFnOnce" => Some(Self::AsyncFnOnce),
             "Tuple" => Some(Self::Tuple),
             "Add" => Some(Self::Add),
+            "AddAssign" => Some(Self::AddAssign),
             "Sub" => Some(Self::Sub),
+            "SubAssign" => Some(Self::SubAssign),
             "Mul" => Some(Self::Mul),
+            "MulAssign" => Some(Self::MulAssign),
             "Div" => Some(Self::Div),
+            "DivAssign" => Some(Self::DivAssign),
             "Rem" => Some(Self::Rem),
+            "RemAssign" => Some(Self::RemAssign),
             "Neg" => Some(Self::Neg),
             "Not" => Some(Self::Not),
             "BitAnd" => Some(Self::BitAnd),
+            "BitAndAssign" => Some(Self::BitAndAssign),
             "BitOr" => Some(Self::BitOr),
+            "BitOrAssign" => Some(Self::BitOrAssign),
             "BitXor" => Some(Self::BitXor),
+            "BitXorAssign" => Some(Self::BitXorAssign),
             "Shl" => Some(Self::Shl),
+            "ShlAssign" => Some(Self::ShlAssign),
             "Shr" => Some(Self::Shr),
+            "ShrAssign" => Some(Self::ShrAssign),
             "BitNot" => Some(Self::BitNot),
             "PartialEq" => Some(Self::PartialEq),
             "PartialOrd" => Some(Self::PartialOrd),
@@ -1129,17 +1159,27 @@ impl StdItem {
             | StdItem::AsyncFnOnce
             | StdItem::Tuple
             | StdItem::Add
+            | StdItem::AddAssign
             | StdItem::Sub
+            | StdItem::SubAssign
             | StdItem::Mul
+            | StdItem::MulAssign
             | StdItem::Div
+            | StdItem::DivAssign
             | StdItem::Rem
+            | StdItem::RemAssign
             | StdItem::Neg
             | StdItem::Not
             | StdItem::BitAnd
+            | StdItem::BitAndAssign
             | StdItem::BitOr
+            | StdItem::BitOrAssign
             | StdItem::BitXor
+            | StdItem::BitXorAssign
             | StdItem::Shl
+            | StdItem::ShlAssign
             | StdItem::Shr
+            | StdItem::ShrAssign
             | StdItem::BitNot
             | StdItem::PartialEq
             | StdItem::PartialOrd => Some(DefinitionKind::Interface),
@@ -1193,17 +1233,27 @@ impl StdItem {
                 | StdItem::PanicPayload
                 | StdItem::Tuple
                 | StdItem::Add
+                | StdItem::AddAssign
                 | StdItem::Sub
+                | StdItem::SubAssign
                 | StdItem::Mul
+                | StdItem::MulAssign
                 | StdItem::Div
+                | StdItem::DivAssign
                 | StdItem::Rem
+                | StdItem::RemAssign
                 | StdItem::Neg
                 | StdItem::Not
                 | StdItem::BitAnd
+                | StdItem::BitAndAssign
                 | StdItem::BitOr
+                | StdItem::BitOrAssign
                 | StdItem::BitXor
+                | StdItem::BitXorAssign
                 | StdItem::Shl
+                | StdItem::ShlAssign
                 | StdItem::Shr
+                | StdItem::ShrAssign
                 | StdItem::BitNot
                 | StdItem::PartialEq
                 | StdItem::PartialOrd
@@ -1218,7 +1268,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 50] = [
+    pub const ALL_REQUIRED: [StdItem; 60] = [
         StdItem::Optional,
         StdItem::Result,
         StdItem::List,
@@ -1245,17 +1295,27 @@ impl StdItem {
         StdItem::AsyncFnOnce,
         StdItem::Tuple,
         StdItem::Add,
+        StdItem::AddAssign,
         StdItem::Sub,
+        StdItem::SubAssign,
         StdItem::Mul,
+        StdItem::MulAssign,
         StdItem::Div,
+        StdItem::DivAssign,
         StdItem::Rem,
+        StdItem::RemAssign,
         StdItem::Neg,
         StdItem::Not,
         StdItem::BitAnd,
+        StdItem::BitAndAssign,
         StdItem::BitOr,
+        StdItem::BitOrAssign,
         StdItem::BitXor,
+        StdItem::BitXorAssign,
         StdItem::Shl,
+        StdItem::ShlAssign,
         StdItem::Shr,
+        StdItem::ShrAssign,
         StdItem::BitNot,
         StdItem::PartialEq,
         StdItem::PartialOrd,
@@ -1271,7 +1331,7 @@ impl StdItem {
         StdItem::ResultErrCtor,
     ];
 
-    pub const ALL_INTERFACES: [StdItem; 31] = [
+    pub const ALL_INTERFACES: [StdItem; 41] = [
         StdItem::Copy,
         StdItem::Clone,
         StdItem::Sendable,
@@ -1289,17 +1349,27 @@ impl StdItem {
         StdItem::AsyncFnOnce,
         StdItem::Tuple,
         StdItem::Add,
+        StdItem::AddAssign,
         StdItem::Sub,
+        StdItem::SubAssign,
         StdItem::Mul,
+        StdItem::MulAssign,
         StdItem::Div,
+        StdItem::DivAssign,
         StdItem::Rem,
+        StdItem::RemAssign,
         StdItem::Neg,
         StdItem::Not,
         StdItem::BitAnd,
+        StdItem::BitAndAssign,
         StdItem::BitOr,
+        StdItem::BitOrAssign,
         StdItem::BitXor,
+        StdItem::BitXorAssign,
         StdItem::Shl,
+        StdItem::ShlAssign,
         StdItem::Shr,
+        StdItem::ShrAssign,
         StdItem::BitNot,
         StdItem::PartialEq,
         StdItem::PartialOrd,
@@ -1323,17 +1393,27 @@ impl StdItem {
         matches!(
             self,
             Self::Add
+                | Self::AddAssign
                 | Self::Sub
+                | Self::SubAssign
                 | Self::Mul
+                | Self::MulAssign
                 | Self::Div
+                | Self::DivAssign
                 | Self::Rem
+                | Self::RemAssign
                 | Self::Neg
                 | Self::Not
                 | Self::BitAnd
+                | Self::BitAndAssign
                 | Self::BitOr
+                | Self::BitOrAssign
                 | Self::BitXor
+                | Self::BitXorAssign
                 | Self::Shl
+                | Self::ShlAssign
                 | Self::Shr
+                | Self::ShrAssign
                 | Self::BitNot
                 | Self::PartialEq
                 | Self::PartialOrd
@@ -1344,17 +1424,27 @@ impl StdItem {
     pub fn operator_method_name(self) -> Option<&'static str> {
         match self {
             Self::Add => Some("add"),
+            Self::AddAssign => Some("addAssign"),
             Self::Sub => Some("sub"),
+            Self::SubAssign => Some("subAssign"),
             Self::Mul => Some("mul"),
+            Self::MulAssign => Some("mulAssign"),
             Self::Div => Some("div"),
+            Self::DivAssign => Some("divAssign"),
             Self::Rem => Some("rem"),
+            Self::RemAssign => Some("remAssign"),
             Self::Neg => Some("neg"),
             Self::Not => Some("not"),
             Self::BitAnd => Some("bitand"),
+            Self::BitAndAssign => Some("bitandAssign"),
             Self::BitOr => Some("bitor"),
+            Self::BitOrAssign => Some("bitorAssign"),
             Self::BitXor => Some("bitxor"),
+            Self::BitXorAssign => Some("bitxorAssign"),
             Self::Shl => Some("shl"),
+            Self::ShlAssign => Some("shlAssign"),
             Self::Shr => Some("shr"),
+            Self::ShrAssign => Some("shrAssign"),
             Self::BitNot => Some("bitnot"),
             Self::PartialEq => Some("eq"),
             Self::PartialOrd => Some("cmp"),
@@ -1402,17 +1492,27 @@ impl StdItem {
         use crate::ast::OperatorKind;
         match kind {
             // Arithmetic operators
-            OperatorKind::Add | OperatorKind::AddAssign => Some(Self::Add),
-            OperatorKind::Sub | OperatorKind::SubAssign => Some(Self::Sub),
-            OperatorKind::Mul | OperatorKind::MulAssign => Some(Self::Mul),
-            OperatorKind::Div | OperatorKind::DivAssign => Some(Self::Div),
-            OperatorKind::Rem | OperatorKind::RemAssign => Some(Self::Rem),
+            OperatorKind::Add => Some(Self::Add),
+            OperatorKind::AddAssign => Some(Self::AddAssign),
+            OperatorKind::Sub => Some(Self::Sub),
+            OperatorKind::SubAssign => Some(Self::SubAssign),
+            OperatorKind::Mul => Some(Self::Mul),
+            OperatorKind::MulAssign => Some(Self::MulAssign),
+            OperatorKind::Div => Some(Self::Div),
+            OperatorKind::DivAssign => Some(Self::DivAssign),
+            OperatorKind::Rem => Some(Self::Rem),
+            OperatorKind::RemAssign => Some(Self::RemAssign),
             // Bitwise operators
-            OperatorKind::BitAnd | OperatorKind::BitAndAssign => Some(Self::BitAnd),
-            OperatorKind::BitOr | OperatorKind::BitOrAssign => Some(Self::BitOr),
-            OperatorKind::BitXor | OperatorKind::BitXorAssign => Some(Self::BitXor),
-            OperatorKind::BitShl | OperatorKind::BitShlAssign => Some(Self::Shl),
-            OperatorKind::BitShr | OperatorKind::BitShrAssign => Some(Self::Shr),
+            OperatorKind::BitAnd => Some(Self::BitAnd),
+            OperatorKind::BitAndAssign => Some(Self::BitAndAssign),
+            OperatorKind::BitOr => Some(Self::BitOr),
+            OperatorKind::BitOrAssign => Some(Self::BitOrAssign),
+            OperatorKind::BitXor => Some(Self::BitXor),
+            OperatorKind::BitXorAssign => Some(Self::BitXorAssign),
+            OperatorKind::BitShl => Some(Self::Shl),
+            OperatorKind::BitShlAssign => Some(Self::ShlAssign),
+            OperatorKind::BitShr => Some(Self::Shr),
+            OperatorKind::BitShrAssign => Some(Self::ShrAssign),
             // Unary operators
             OperatorKind::Neg => Some(Self::Neg),
             OperatorKind::Not => Some(Self::Not),

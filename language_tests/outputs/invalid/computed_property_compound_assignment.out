@@ -1,0 +1,16 @@
+error: cannot apply compound assignment to read-only property 'current'; property has no setter
+ -> language_tests/source_files/invalid/computed_property_compound_assignment.tr:15:4
+	    counter.current += 1
+	    ^^^^^^^^^^^^^^^
+error: async getter for property 'current' cannot be used in compound assignment
+ -> language_tests/source_files/invalid/computed_property_compound_assignment.tr:36:4
+	    counter.current += 1
+	    ^^^^^^^^^^^^^^^
+error: cannot take a mutable reference to an immutable binding
+ -> language_tests/source_files/invalid/computed_property_compound_assignment.tr:57:4
+	    counter.current += 1
+	    ^^^^^^^
+error: compound assignment to property 'current' cannot use a consuming getter on non-Copy receiver type 'ConsumedCounter'
+ -> language_tests/source_files/invalid/computed_property_compound_assignment.tr:78:4
+	    counter.current += 1
+	    ^^^^^^^^^^^^^^^

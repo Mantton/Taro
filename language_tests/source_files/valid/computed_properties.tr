@@ -36,6 +36,10 @@ impl CopyValue {
         get(self) {
             self.value
         }
+
+        set(&mut self, value: int32) {
+            self.value = value
+        }
     };
 }
 
@@ -47,6 +51,75 @@ impl MoveValue {
     var takeValues: std.collections.List[int32] {
         get(self) {
             self.values
+        }
+    };
+}
+
+struct TrackedCounter {
+    value: int32
+    getterCalls: int32
+    setterCalls: int32
+}
+
+impl TrackedCounter {
+    var current: int32 {
+        get(&mut self) {
+            self.getterCalls += 1
+            self.value
+        }
+
+        set(&mut self, value: int32) {
+            self.setterCalls += 1
+            self.value = value
+        }
+    };
+}
+
+struct ReceiverProbe {
+    counter: TrackedCounter
+    receiverCalls: int32
+}
+
+impl ReceiverProbe {
+    func counterRef(&mut self) -> &mut TrackedCounter {
+        self.receiverCalls += 1
+        return &mut self.counter
+    }
+}
+
+struct RhsProbe {
+    calls: int32
+}
+
+impl RhsProbe {
+    func next(&mut self) -> int32 {
+        self.calls += 1
+        4
+    }
+}
+
+struct Score: Copy {
+    value: int32
+}
+
+impl std.ops.AddAssign[int32] for Score {
+    func addAssign(&mut self, rhs: int32) {
+        self.value += rhs
+    }
+}
+
+struct ScoreBox {
+    score: Score
+}
+
+impl ScoreBox {
+    var current: Score {
+        get(&self) {
+            self.score
+        }
+
+        set(&mut self, value: Score) {
+            self.score = value
         }
     };
 }
@@ -68,11 +141,13 @@ func main() async {
     assert(inc1 == 26, "&mut self getter first read")
     assert(inc2 == 27, "&mut self getter second read")
 
-    let copy_value = CopyValue { value: 7 }
+    var copy_value = CopyValue { value: 7 }
     let snap1 = copy_value.snapshot
     let snap2 = copy_value.snapshot
     assert(snap1 == 7, "self getter with Copy receiver (first)")
     assert(snap2 == 7, "self getter with Copy receiver (second)")
+    copy_value.snapshot += 1
+    assert(copy_value.value == 8, "compound property with consuming Copy getter")
 
     var items: std.collections.List[int32] = std.collections.List()
     items.append(10)
@@ -80,6 +155,26 @@ func main() async {
     let move_value = MoveValue { values: items }
     let taken = move_value.takeValues
     assert(taken.len() == 2, "self getter moves non-copy payload")
+
+    var receiver = ReceiverProbe {
+        counter: TrackedCounter { value: 10, getterCalls: 0, setterCalls: 0 },
+        receiverCalls: 0,
+    }
+    var rhs = RhsProbe { calls: 0 }
+    receiver.counterRef().current += rhs.next()
+    assert(receiver.receiverCalls == 1, "compound property receiver evaluated once")
+    assert(receiver.counter.getterCalls == 1, "compound property getter evaluated once")
+    assert(rhs.calls == 1, "compound property RHS evaluated once")
+    assert(receiver.counter.setterCalls == 1, "compound property setter evaluated once")
+    assert(receiver.counter.value == 14, "compound property stores updated value")
+
+    var score = Score { value: 5 }
+    score += 2
+    assert(score.value == 7, "AddAssign overload on ordinary place")
+
+    var scoreBox = ScoreBox { score: Score { value: 8 } }
+    scoreBox.current += 3
+    assert(scoreBox.score.value == 11, "AddAssign overload on computed property")
 
     std.print("PASS: computed properties\n")
 }

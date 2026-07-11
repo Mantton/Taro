@@ -515,6 +515,240 @@ impl<'ctx> FunctionLower<'ctx> {
         self.lower_expr_inner(expr)
     }
 
+    fn lower_property_receiver_place(
+        &mut self,
+        target: &hir::Expression,
+        property: crate::sema::tycheck::solve::ResolvedPropertyRead<'ctx>,
+    ) -> ExprId {
+        let mut receiver = self.lower_expr_unadjusted(target);
+        for _ in 0..property.autoderef_count {
+            receiver =
+                self.apply_adjustment(target.id, receiver, Adjustment::Dereference, target.span);
+        }
+        self.push_expr(receiver.kind, receiver.ty, receiver.span)
+    }
+
+    fn lower_property_receiver_reborrow(
+        &mut self,
+        receiver_local: hir::NodeID,
+        receiver_ty: Ty<'ctx>,
+        mutability: Mutability,
+        span: crate::span::Span,
+    ) -> ExprId {
+        let receiver_ref_ty = Ty::new(
+            TyKind::Reference(receiver_ty, Mutability::Mutable),
+            self.gcx,
+        );
+        let receiver_ref = self.push_expr(ExprKind::Local(receiver_local), receiver_ref_ty, span);
+        let receiver_place = self.push_expr(ExprKind::Deref(receiver_ref), receiver_ty, span);
+        let ty = Ty::new(TyKind::Reference(receiver_ty, mutability), self.gcx);
+        self.push_expr(
+            ExprKind::Reference {
+                mutable: mutability == Mutability::Mutable,
+                expr: receiver_place,
+            },
+            ty,
+            span,
+        )
+    }
+
+    fn lower_computed_property_assign_op(
+        &mut self,
+        expr: &hir::Expression,
+        op: hir::BinaryOperator,
+        lhs: &hir::Expression,
+        rhs: &hir::Expression,
+        property_read: crate::sema::tycheck::solve::ResolvedPropertyRead<'ctx>,
+        property_write: crate::sema::tycheck::solve::ResolvedPropertyWrite<'ctx>,
+    ) -> ExprKind<'ctx> {
+        let hir::ExpressionKind::Member { target, .. } = &lhs.kind else {
+            unreachable!("resolved property read must originate from a member expression");
+        };
+
+        // Capture a mutable reference to the receiver so evaluating the receiver,
+        // getter, RHS, and setter remains strictly left-to-right and exactly once.
+        let receiver_place = self.lower_property_receiver_place(target, property_read);
+        let receiver_ref_ty = Ty::new(
+            TyKind::Reference(property_read.receiver_ty, Mutability::Mutable),
+            self.gcx,
+        );
+        let receiver_init = self.push_expr(
+            ExprKind::Reference {
+                mutable: true,
+                expr: receiver_place,
+            },
+            receiver_ref_ty,
+            target.span,
+        );
+        let receiver_local = self.fresh_synthetic_local();
+        let receiver_pattern = thir::Pattern {
+            ty: receiver_ref_ty,
+            span: target.span,
+            kind: thir::PatternKind::Binding {
+                name: self.gcx.intern_symbol("__compound_property_receiver"),
+                local: receiver_local,
+                ty: receiver_ref_ty,
+                mode: hir::BindingMode::ByValue,
+            },
+        };
+        let receiver_stmt = self.push_stmt(Stmt {
+            kind: StmtKind::Let {
+                id: receiver_local,
+                pattern: receiver_pattern,
+                expr: Some(receiver_init),
+                ty: receiver_ref_ty,
+                mutable: false,
+            },
+            span: target.span,
+        });
+
+        let getter_sig = self.gcx.get_signature(property_read.getter_id);
+        let getter_receiver_ty = getter_sig
+            .inputs
+            .first()
+            .expect("computed property getter receiver")
+            .ty;
+        let getter_receiver = match getter_receiver_ty.kind() {
+            TyKind::Reference(_, mutability) => self.lower_property_receiver_reborrow(
+                receiver_local,
+                property_read.receiver_ty,
+                mutability,
+                lhs.span,
+            ),
+            _ => {
+                let receiver_ref =
+                    self.push_expr(ExprKind::Local(receiver_local), receiver_ref_ty, lhs.span);
+                self.push_expr(
+                    ExprKind::Deref(receiver_ref),
+                    property_read.receiver_ty,
+                    lhs.span,
+                )
+            }
+        };
+        let property_generic_args = self.results.instantiation(lhs.id);
+        let getter_callee = self.push_expr(
+            ExprKind::Zst {
+                id: property_read.getter_id,
+                generic_args: property_generic_args,
+            },
+            self.gcx.get_type(property_read.getter_id),
+            lhs.span,
+        );
+        let getter_call = self.push_expr(
+            ExprKind::Call {
+                callee: getter_callee,
+                args: vec![getter_receiver],
+                is_async: false,
+            },
+            property_read.ty,
+            lhs.span,
+        );
+
+        let value_local = self.fresh_synthetic_local();
+        let value_pattern = thir::Pattern {
+            ty: property_read.ty,
+            span: lhs.span,
+            kind: thir::PatternKind::Binding {
+                name: self.gcx.intern_symbol("__compound_property_value"),
+                local: value_local,
+                ty: property_read.ty,
+                mode: hir::BindingMode::ByValue,
+            },
+        };
+        let value_stmt = self.push_stmt(Stmt {
+            kind: StmtKind::Let {
+                id: value_local,
+                pattern: value_pattern,
+                expr: Some(getter_call),
+                ty: property_read.ty,
+                mutable: true,
+            },
+            span: lhs.span,
+        });
+
+        let rhs_expr = self.lower_expr(rhs);
+        let value_place = self.push_expr(ExprKind::Local(value_local), property_read.ty, lhs.span);
+        let assign_expr = if let Some(def_id) = self.results.overload_source(expr.id) {
+            let value_ref_ty = Ty::new(
+                TyKind::Reference(property_read.ty, Mutability::Mutable),
+                self.gcx,
+            );
+            let value_ref = self.push_expr(
+                ExprKind::Reference {
+                    mutable: true,
+                    expr: value_place,
+                },
+                value_ref_ty,
+                lhs.span,
+            );
+            let callee = self.push_expr(
+                ExprKind::Zst {
+                    id: def_id,
+                    generic_args: self.results.instantiation(expr.id),
+                },
+                self.gcx.get_type(def_id),
+                expr.span,
+            );
+            self.push_expr(
+                ExprKind::Call {
+                    callee,
+                    args: vec![value_ref, rhs_expr],
+                    is_async: false,
+                },
+                self.gcx.types.void,
+                expr.span,
+            )
+        } else {
+            self.push_expr(
+                ExprKind::AssignOp {
+                    op: bin_op(op),
+                    target: value_place,
+                    value: rhs_expr,
+                },
+                self.gcx.types.void,
+                expr.span,
+            )
+        };
+        let assign_stmt = self.push_stmt(Stmt {
+            kind: StmtKind::Expr(assign_expr),
+            span: expr.span,
+        });
+
+        let setter_receiver = self.lower_property_receiver_reborrow(
+            receiver_local,
+            property_read.receiver_ty,
+            Mutability::Mutable,
+            lhs.span,
+        );
+        let setter_value =
+            self.push_expr(ExprKind::Local(value_local), property_write.ty, lhs.span);
+        let setter_callee = self.push_expr(
+            ExprKind::Zst {
+                id: property_write.setter_id,
+                generic_args: property_generic_args,
+            },
+            self.gcx.get_type(property_write.setter_id),
+            expr.span,
+        );
+        let setter_call = self.push_expr(
+            ExprKind::Call {
+                callee: setter_callee,
+                args: vec![setter_receiver, setter_value],
+                is_async: false,
+            },
+            self.gcx.types.void,
+            expr.span,
+        );
+
+        let block_id = BlockId::from_raw(self.func.blocks.len() as u32);
+        self.func.blocks.push(Block {
+            id: block_id,
+            stmts: vec![receiver_stmt, value_stmt, assign_stmt],
+            expr: Some(setter_call),
+        });
+        ExprKind::Block(block_id)
+    }
+
     fn lower_expr_inner(&mut self, expr: &hir::Expression) -> ExprId {
         let mut thir_expr = self.lower_expr_unadjusted(expr);
         // Apply adjustments if any
@@ -998,8 +1232,20 @@ impl<'ctx> FunctionLower<'ctx> {
                 }
             }
             hir::ExpressionKind::AssignOp(op, lhs, rhs) => {
+                if let (Some(property_read), Some(property_write)) = (
+                    self.results.property_read(lhs.id),
+                    self.results.property_write(expr.id),
+                ) {
+                    self.lower_computed_property_assign_op(
+                        expr,
+                        *op,
+                        lhs,
+                        rhs,
+                        property_read,
+                        property_write,
+                    )
                 // Check if this is an operator method call (e.g., AddAssign)
-                if let Some(def_id) = self.results.overload_source(expr.id) {
+                } else if let Some(def_id) = self.results.overload_source(expr.id) {
                     // Lower as a method call
                     let lhs_expr = self.lower_expr(lhs);
                     let rhs_expr = self.lower_expr(rhs);

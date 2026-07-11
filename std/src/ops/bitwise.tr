@@ -4,9 +4,19 @@ public interface BitAnd[Rhs=Self, Output=Self] {
     func bitand(self, rhs: Rhs) -> Output
 }
 
+@lang("BitAndAssign")
+public interface BitAndAssign[Rhs=Self] {
+    func bitandAssign(&mut self, rhs: Rhs)
+}
+
 @lang("BitOr")
 public interface BitOr[Rhs=Self, Output=Self] {
     func bitor(self, rhs: Rhs) -> Output
+}
+
+@lang("BitOrAssign")
+public interface BitOrAssign[Rhs=Self] {
+    func bitorAssign(&mut self, rhs: Rhs)
 }
 
 @lang("BitXor")
@@ -14,14 +24,29 @@ public interface BitXor[Rhs=Self, Output=Self] {
     func bitxor(self, rhs: Rhs) -> Output
 }
 
+@lang("BitXorAssign")
+public interface BitXorAssign[Rhs=Self] {
+    func bitxorAssign(&mut self, rhs: Rhs)
+}
+
 @lang("Shl")
 public interface Shl[Rhs=Self, Output=Self] {
     func shl(self, rhs: Rhs) -> Output
 }
 
+@lang("ShlAssign")
+public interface ShlAssign[Rhs=Self] {
+    func shlAssign(&mut self, rhs: Rhs)
+}
+
 @lang("Shr")
 public interface Shr[Rhs=Self, Output=Self] {
     func shr(self, rhs: Rhs) -> Output
+}
+
+@lang("ShrAssign")
+public interface ShrAssign[Rhs=Self] {
+    func shrAssign(&mut self, rhs: Rhs)
 }
 
 @lang("BitNot")

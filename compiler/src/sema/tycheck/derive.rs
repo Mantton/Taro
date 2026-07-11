@@ -102,17 +102,27 @@ pub fn try_synthesize_method<'ctx>(
         | StdItem::AsyncFnMut
         | StdItem::AsyncFnOnce
         | StdItem::Add
+        | StdItem::AddAssign
         | StdItem::Sub
+        | StdItem::SubAssign
         | StdItem::Mul
+        | StdItem::MulAssign
         | StdItem::Div
+        | StdItem::DivAssign
         | StdItem::Rem
+        | StdItem::RemAssign
         | StdItem::Neg
         | StdItem::Not
         | StdItem::BitAnd
+        | StdItem::BitAndAssign
         | StdItem::BitOr
+        | StdItem::BitOrAssign
         | StdItem::BitXor
+        | StdItem::BitXorAssign
         | StdItem::Shl
+        | StdItem::ShlAssign
         | StdItem::Shr
+        | StdItem::ShrAssign
         | StdItem::BitNot
         | StdItem::PartialOrd => None,
         _ => None,

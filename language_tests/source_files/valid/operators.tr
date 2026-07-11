@@ -6,6 +6,50 @@ func mustNotCall() -> bool {
 
 func identity(_ v: bool) -> bool { v }
 
+struct AssignNumber {
+    value: int32
+}
+
+impl std.ops.AddAssign[int32] for AssignNumber {
+    func addAssign(&mut self, rhs: int32) { self.value += rhs }
+}
+
+impl std.ops.SubAssign[int32] for AssignNumber {
+    func subAssign(&mut self, rhs: int32) { self.value -= rhs }
+}
+
+impl std.ops.MulAssign[int32] for AssignNumber {
+    func mulAssign(&mut self, rhs: int32) { self.value *= rhs }
+}
+
+impl std.ops.DivAssign[int32] for AssignNumber {
+    func divAssign(&mut self, rhs: int32) { self.value /= rhs }
+}
+
+impl std.ops.RemAssign[int32] for AssignNumber {
+    func remAssign(&mut self, rhs: int32) { self.value %= rhs }
+}
+
+impl std.ops.BitAndAssign[int32] for AssignNumber {
+    func bitandAssign(&mut self, rhs: int32) { self.value &= rhs }
+}
+
+impl std.ops.BitOrAssign[int32] for AssignNumber {
+    func bitorAssign(&mut self, rhs: int32) { self.value |= rhs }
+}
+
+impl std.ops.BitXorAssign[int32] for AssignNumber {
+    func bitxorAssign(&mut self, rhs: int32) { self.value ^= rhs }
+}
+
+impl std.ops.ShlAssign[int32] for AssignNumber {
+    func shlAssign(&mut self, rhs: int32) { self.value <<= rhs }
+}
+
+impl std.ops.ShrAssign[int32] for AssignNumber {
+    func shrAssign(&mut self, rhs: int32) { self.value >>= rhs }
+}
+
 func testBitwiseIntegerMatrix() {
     let x: uint8 = 10
 
@@ -44,6 +88,21 @@ func testCompoundAssignmentMatrix() {
     assert(x == 2, ">>=")
 }
 
+func testOverloadedCompoundAssignmentMatrix() {
+    var x = AssignNumber { value: 10 }
+    x += 2
+    x -= 3
+    x *= 2
+    x /= 3
+    x %= 4
+    x |= 8
+    x &= 11
+    x ^= 3
+    x <<= 1
+    x >>= 2
+    assert(x.value == 4, "overloaded compound assignment interface matrix")
+}
+
 func testShortCircuitSideEffects() {
     let a = false && mustNotCall()
     assert(a == false, "&& with false lhs should be false")
@@ -77,6 +136,7 @@ func testTernaryPrecedenceBasic() {
 func main() {
     testBitwiseIntegerMatrix()
     testCompoundAssignmentMatrix()
+    testOverloadedCompoundAssignmentMatrix()
     testShortCircuitSideEffects()
     testTernaryPrecedenceBasic()
 

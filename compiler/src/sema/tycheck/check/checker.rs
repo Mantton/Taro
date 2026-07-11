@@ -201,6 +201,12 @@ impl<'arena> Checker<'arena> {
             });
     }
 
+    pub(super) fn cancel_async_property_surface_check(&self, node_id: NodeID) {
+        self.pending_async_property_surface_checks
+            .borrow_mut()
+            .retain(|pending| pending.node_id != node_id);
+    }
+
     pub fn get_local(&self, id: NodeID) -> LocalBinding<'arena> {
         *self
             .locals

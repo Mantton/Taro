@@ -318,10 +318,18 @@ x <<= 1             // Left shift and assign
 x >>= 1             // Right shift and assign
 ```
 
+For user-defined types, compound assignments use the distinct `std.ops.AddAssign`,
+`SubAssign`, `MulAssign`, `DivAssign`, `RemAssign`, `BitAndAssign`, `BitOrAssign`,
+`BitXorAssign`, `ShlAssign`, and `ShrAssign` interfaces rather than their
+value-producing operator interfaces.
+
 For computed properties:
 
 - `obj.prop = value` is valid only when a setter is declared.
-- `obj.prop += value` and other compound assignments are not supported in v1.
+- `obj.prop += value` and other compound assignments read through the getter,
+  apply the corresponding assignment operator, then write through the setter.
+- The receiver, getter, and right-hand side are each evaluated exactly once.
+- Async getters cannot be used in compound assignment.
 
 ---
 
