@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration as StdDuration, Instant};
 
-use crate::garbage_collector::with_gc;
+use crate::garbage_collector::{__gc__makebuf, GcDesc, with_gc};
 use crate::io_poller::{self, Interest};
 use crate::task::{
     __rt__async_destroy, __rt__async_poll, TaskMobility, async_handle_frame, async_handle_mobility,
@@ -23,6 +23,28 @@ const IDLE_YIELDS: usize = 8;
 const TASK_TOKEN_INDEX_BITS: u32 = 32;
 const TASK_TOKEN_INDEX_MASK: u64 = (1u64 << TASK_TOKEN_INDEX_BITS) - 1;
 const TASK_INITIAL_GENERATION: TaskGeneration = 1;
+static PANIC_PAYLOAD_BYTE_DESC: GcDesc = GcDesc {
+    size: 1,
+    align: 1,
+    ptr_offsets: std::ptr::null(),
+    ptr_count: 0,
+};
+
+fn allocate_panic_payload(
+    report: &crate::panic_unwind::PanicReport,
+) -> crate::panic_unwind::RtString {
+    let encoded = crate::panic_unwind::serialize_panic_report(report);
+    let ptr = __gc__makebuf(&PANIC_PAYLOAD_BYTE_DESC, encoded.len(), encoded.len());
+    assert!(
+        !ptr.is_null(),
+        "ICE: failed to allocate serialized panic payload"
+    );
+    unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), ptr, encoded.len()) };
+    crate::panic_unwind::RtString {
+        ptr,
+        len: encoded.len(),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerEntry {
@@ -58,6 +80,8 @@ struct TaskSlotInner {
     out_buf: Option<Vec<u8>>,
     completed: bool,
     cancelled: bool,
+    detached: bool,
+    polled: bool,
     queued: bool,
     running: bool,
     wake_requested: bool,
@@ -92,6 +116,8 @@ impl TaskSlot {
                 out_buf,
                 completed: false,
                 cancelled: false,
+                detached: false,
+                polled: false,
                 queued: false,
                 running: false,
                 wake_requested: false,
@@ -536,6 +562,8 @@ impl Scheduler {
                 inner.out_buf = out_buf;
                 inner.completed = false;
                 inner.cancelled = false;
+                inner.detached = false;
+                inner.polled = false;
                 inner.queued = false;
                 inner.running = false;
                 inner.wake_requested = false;
@@ -590,7 +618,14 @@ impl Scheduler {
         let Some(slot) = self.lookup_task_slot(task_index) else {
             return;
         };
-        let (handle, out_ptr, cancelled, group_id, is_spawned) = {
+        let (
+            handle,
+            out_ptr,
+            cancellation_requested,
+            cancelled_before_first_poll,
+            group_id,
+            is_spawned,
+        ) = {
             let mut inner = slot
                 .inner
                 .lock()
@@ -605,6 +640,8 @@ impl Scheduler {
             }
             inner.queued = false;
             inner.running = true;
+            let cancelled_before_first_poll = inner.cancelled && !inner.polled;
+            inner.polled = true;
             inner.last_worker = worker_id;
             debug_assert!(
                 matches!(inner.mobility, TaskMobility::Movable) || inner.owner_worker == worker_id,
@@ -614,11 +651,12 @@ impl Scheduler {
                 inner.handle,
                 inner.out_ptr,
                 inner.cancelled,
+                cancelled_before_first_poll,
                 inner.group_id,
                 inner.is_spawned,
             )
         };
-        if cancelled {
+        if cancelled_before_first_poll {
             self.complete_task_cancelled(task_token);
             return;
         }
@@ -653,7 +691,13 @@ impl Scheduler {
             }
         };
 
-        if tag == 0 {
+        if tag == 0 && cancellation_requested {
+            // Compiler-generated frames complete their cancellation cleanup
+            // with tag 2. A runtime-authored or older pending future may not
+            // understand that protocol, so destroy it after giving it one
+            // cancellation-aware poll instead of requeueing forever.
+            self.complete_task_cancelled(task_token);
+        } else if tag == 0 {
             let requeue_target = {
                 let mut inner = slot.inner.lock().unwrap();
                 inner.running = false;
@@ -682,6 +726,8 @@ impl Scheduler {
             if let Some(preferred_worker) = requeue_target {
                 self.schedule_task(task_token, preferred_worker);
             }
+        } else if tag == 2 {
+            self.complete_task_cancelled(task_token);
         } else {
             self.complete_task(task_token);
         }
@@ -692,7 +738,7 @@ impl Scheduler {
         let Some(slot) = self.lookup_task_slot(task_index) else {
             return;
         };
-        let (frame, handle, waiter, group_id, out_buf_clone) = {
+        let (frame, handle, waiter, group_id, out_buf_clone, detached) = {
             let mut inner = slot.inner.lock().unwrap();
             if !inner.occupied || inner.generation != task_generation {
                 return;
@@ -723,6 +769,7 @@ impl Scheduler {
                 inner.waiter.take(),
                 inner.group_id,
                 out_buf_clone,
+                inner.detached,
             )
         };
 
@@ -742,6 +789,10 @@ impl Scheduler {
 
         if let Some(waiter) = waiter {
             self.wake_tasks(&[waiter]);
+        }
+
+        if detached {
+            self.reclaim_detached_task_slot(task_token);
         }
 
         if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -779,12 +830,57 @@ impl Scheduler {
         }
     }
 
+    /// Transfer a spawned task's result ownership to the executor. Scope-drop
+    /// requests cancellation; explicit detach leaves the task running. In
+    /// either case the slot is reclaimed automatically at completion.
+    fn release_task(&self, task_token: TaskToken, cancel: bool) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
+        let (should_wake, unobserved_panic) = {
+            let mut inner = slot.inner.lock().unwrap();
+            if !inner.occupied || inner.generation != task_generation || inner.detached {
+                return;
+            }
+            debug_assert!(inner.is_spawned, "only spawned tasks have owned handles");
+            debug_assert!(
+                inner.waiter.is_none(),
+                "a task cannot be released while its result has an active waiter"
+            );
+            inner.detached = true;
+
+            if inner.completed {
+                let report = inner.panic_info.take();
+                self.reclaim_task_slot(task_token, &mut inner);
+                (false, report)
+            } else if !cancel || inner.cancelled {
+                (false, None)
+            } else {
+                inner.cancelled = true;
+                if inner.running {
+                    inner.wake_requested = true;
+                    (false, None)
+                } else {
+                    (!inner.queued, None)
+                }
+            }
+        };
+
+        if let Some(report) = unobserved_panic {
+            crate::panic_unwind::write_unobserved_task_panic(&report);
+        }
+        if should_wake {
+            self.wake_tasks(&[task_token]);
+        }
+    }
+
     fn complete_task_cancelled(&self, task_token: TaskToken) {
         let (task_index, task_generation) = unpack_task_token(task_token);
         let Some(slot) = self.lookup_task_slot(task_index) else {
             return;
         };
-        let (frame, handle, waiter, group_id) = {
+        let (frame, handle, waiter, group_id, detached) = {
             let mut inner = slot.inner.lock().unwrap();
             if !inner.occupied || inner.generation != task_generation {
                 return;
@@ -802,7 +898,13 @@ impl Scheduler {
             let handle = inner.handle;
             inner.frame = std::ptr::null_mut();
             inner.handle = std::ptr::null_mut();
-            (frame, handle, inner.waiter.take(), inner.group_id)
+            (
+                frame,
+                handle,
+                inner.waiter.take(),
+                inner.group_id,
+                inner.detached,
+            )
         };
 
         io_poller::cancel_task(task_token);
@@ -823,6 +925,10 @@ impl Scheduler {
             self.wake_tasks(&[waiter]);
         }
 
+        if detached {
+            self.reclaim_detached_task_slot(task_token);
+        }
+
         if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.force_shutdown();
         }
@@ -837,7 +943,7 @@ impl Scheduler {
         let Some(slot) = self.lookup_task_slot(task_index) else {
             return;
         };
-        let (frame, handle, waiter, group_id) = {
+        let (frame, handle, waiter, group_id, detached) = {
             let mut inner = slot.inner.lock().unwrap();
             if !inner.occupied || inner.generation != task_generation {
                 return;
@@ -857,12 +963,12 @@ impl Scheduler {
             let handle = inner.handle;
             inner.frame = std::ptr::null_mut();
             inner.handle = std::ptr::null_mut();
-            if inner.group_id.is_none() {
+            if inner.group_id.is_none() && !inner.detached {
                 // Store the report so the awaiter can retrieve it.
                 inner.panic_info = Some(report.clone());
             }
             let waiter = inner.waiter.take();
-            (frame, handle, waiter, inner.group_id)
+            (frame, handle, waiter, inner.group_id, inner.detached)
         };
 
         io_poller::cancel_task(task_token);
@@ -876,11 +982,16 @@ impl Scheduler {
         }
 
         if let Some(group_id) = group_id {
-            self.notify_group_task_panicked(group_id, task_token, report.message);
+            self.notify_group_task_panicked(group_id, task_token, report.message.clone());
         }
 
         if let Some(waiter) = waiter {
             self.wake_tasks(&[waiter]);
+        }
+
+        if detached {
+            crate::panic_unwind::write_unobserved_task_panic(&report);
+            self.reclaim_detached_task_slot(task_token);
         }
 
         if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -900,6 +1011,8 @@ impl Scheduler {
         );
         inner.occupied = false;
         inner.cancelled = false;
+        inner.detached = false;
+        inner.polled = false;
         inner.waiter = None;
         inner.queued = false;
         inner.running = false;
@@ -911,6 +1024,21 @@ impl Scheduler {
         inner.group_id = None;
         inner.panic_info = None;
         self.free_slots.lock().unwrap().push(task_index);
+    }
+
+    fn reclaim_detached_task_slot(&self, task_token: TaskToken) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
+        let mut inner = slot.inner.lock().unwrap();
+        if inner.occupied
+            && inner.generation == task_generation
+            && inner.completed
+            && inner.detached
+        {
+            self.reclaim_task_slot(task_token, &mut inner);
+        }
     }
 
     fn notify_group_task_completed(
@@ -1299,14 +1427,22 @@ impl Scheduler {
     fn teardown_remaining_tasks(&self) {
         let tasks: Vec<_> = self.tasks.read().unwrap().iter().cloned().collect();
         for (task_index, slot) in tasks.iter().enumerate() {
-            let (task_token, frame, handle) = {
+            let (task_token, frame, handle, unobserved_panic) = {
                 let mut inner = slot
                     .inner
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !inner.occupied || inner.completed {
+                if !inner.occupied {
                     inner.occupied = false;
-                    (None, std::ptr::null_mut(), std::ptr::null_mut())
+                    (None, std::ptr::null_mut(), std::ptr::null_mut(), None)
+                } else if inner.completed {
+                    inner.occupied = false;
+                    (
+                        None,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        inner.panic_info.take(),
+                    )
                 } else {
                     let generation = inner.generation;
                     let task_token = pack_task_token(task_index, generation);
@@ -1318,9 +1454,12 @@ impl Scheduler {
                     let handle = inner.handle;
                     inner.frame = std::ptr::null_mut();
                     inner.handle = std::ptr::null_mut();
-                    (Some(task_token), frame, handle)
+                    (Some(task_token), frame, handle, None)
                 }
             };
+            if let Some(report) = unobserved_panic {
+                crate::panic_unwind::write_unobserved_task_panic(&report);
+            }
             let Some(task_token) = task_token else {
                 continue;
             };
@@ -1588,10 +1727,12 @@ pub extern "C-unwind" fn __rt__executor_task_completion_status(task_token: u64) 
         inner.completed,
         "task_completion_status called on incomplete task"
     );
-    if inner.cancelled {
-        2
-    } else if inner.panic_info.is_some() {
+    // Cleanup runs after cancellation is requested and may itself panic. The
+    // panic is the observable terminal outcome when both states are present.
+    if inner.panic_info.is_some() {
         3
+    } else if inner.cancelled {
+        2
     } else {
         1
     }
@@ -1621,46 +1762,79 @@ pub extern "C-unwind" fn __rt__executor_reclaim_spawned(task_token: u64) {
     });
 }
 
-/// Take the panic info from a completed spawned task slot, returning a raw pointer
-/// to a heap-allocated `PanicReport` (cast to `*mut u8`). Returns null if the task
-/// did not panic. Must be called before `__rt__executor_reclaim_spawned`.
+/// Take a completed spawned task's panic report and serialize it into a
+/// GC-managed string payload. An empty string means the task did not panic.
+/// Must be called before `__rt__executor_reclaim_spawned`.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__executor_take_task_panic_info(task_token: u64) -> *mut u8 {
+pub extern "C" fn __rt__executor_take_task_panic_payload(
+    task_token: u64,
+) -> crate::panic_unwind::RtString {
     let scheduler = current_worker_scheduler()
-        .unwrap_or_else(|| panic!("take_task_panic_info called outside executor"));
+        .unwrap_or_else(|| panic!("take_task_panic_payload called outside executor"));
     let (task_index, task_generation) = unpack_task_token(task_token);
     let slot = scheduler
         .lookup_task_slot(task_index)
         .unwrap_or_else(|| panic!("invalid task token {task_token}"));
     let mut inner = slot.inner.lock().unwrap();
     if !inner.occupied || inner.generation != task_generation {
-        return std::ptr::null_mut();
+        return crate::panic_unwind::RtString {
+            ptr: std::ptr::null(),
+            len: 0,
+        };
     }
-    let ptr = match inner.panic_info.take() {
-        Some(report) => Box::into_raw(Box::new(report)) as *mut u8,
-        None => std::ptr::null_mut(),
+    let report = inner.panic_info.take();
+    drop(inner);
+    report.as_ref().map_or(
+        crate::panic_unwind::RtString {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        allocate_panic_payload,
+    )
+}
+
+/// Return the message slice stored inside a GC-managed panic payload.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__panic_payload_message(
+    payload: crate::panic_unwind::RtString,
+) -> crate::panic_unwind::RtString {
+    const INVALID_PAYLOAD: &[u8] = b"invalid captured task panic payload";
+    if payload.ptr.is_null() || payload.len == 0 {
+        return crate::panic_unwind::RtString {
+            ptr: INVALID_PAYLOAD.as_ptr(),
+            len: INVALID_PAYLOAD.len(),
+        };
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(payload.ptr, payload.len) };
+    let Some(message) = crate::panic_unwind::serialized_panic_message(bytes) else {
+        return crate::panic_unwind::RtString {
+            ptr: INVALID_PAYLOAD.as_ptr(),
+            len: INVALID_PAYLOAD.len(),
+        };
     };
-    ptr
-}
-
-/// Return the message from a `PanicReport` heap pointer (produced by
-/// `__rt__executor_take_task_panic_info`). The pointer remains valid after this call.
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__panic_payload_message(ptr: *mut u8) -> crate::panic_unwind::RtString {
-    let report = unsafe { &*(ptr as *const crate::panic_unwind::PanicReport) };
     crate::panic_unwind::RtString {
-        ptr: report.message.as_ptr(),
-        len: report.message.len(),
+        ptr: message.as_ptr(),
+        len: message.len(),
     }
 }
 
-/// Re-raise the original panic captured in a `PanicReport` heap pointer.
-/// Frees the report allocation before raising.
+/// Re-raise the original panic captured in a GC-managed payload.
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn __rt__panic_payload_rethrow(ptr: *mut u8) -> ! {
-    let report = unsafe { Box::from_raw(ptr as *mut crate::panic_unwind::PanicReport) };
+pub extern "C-unwind" fn __rt__panic_payload_rethrow(payload: crate::panic_unwind::RtString) -> ! {
+    let report = if payload.ptr.is_null() || payload.len == 0 {
+        None
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(payload.ptr, payload.len) };
+        crate::panic_unwind::deserialize_panic_report(bytes)
+    }
+    .unwrap_or_else(|| crate::panic_unwind::PanicReport {
+        message: "invalid captured task panic payload".into(),
+        backtrace: String::new(),
+        location: None,
+        logical_stack: Vec::new(),
+    });
     // Restore the original report so the unwind shows the original backtrace.
-    crate::panic_unwind::restore_panic_report(*report);
+    crate::panic_unwind::restore_panic_report(report);
     // Choose the appropriate unwind mechanism for the current context.
     crate::panic_unwind::rethrow_restored_panic()
 }
@@ -1672,6 +1846,26 @@ pub extern "C-unwind" fn __rt__executor_cancel_task(task_token: u64) {
         .or_else(|| session_cell().lock().unwrap().clone())
         .expect("cancel_task called outside executor");
     scheduler.cancel_task(task_token);
+}
+
+/// Explicitly transfer a spawned task to the executor without cancelling it.
+/// Its output is discarded and its slot is reclaimed automatically.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_detach_task(task_token: u64) {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("detach_task called outside executor");
+    scheduler.release_task(task_token, false);
+}
+
+/// Release an owned spawned task at scope exit. Unfinished work is cancelled;
+/// completed output is discarded, and the slot is reclaimed automatically.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_drop_task(task_token: u64) {
+    let scheduler = current_worker_scheduler()
+        .or_else(|| session_cell().lock().unwrap().clone())
+        .expect("drop_task called outside executor");
+    scheduler.release_task(task_token, true);
 }
 
 /// Create a new task group. Returns a group ID.
@@ -2254,6 +2448,82 @@ mod tests {
         assert!(inner.completed);
         assert_eq!(inner.generation, task_generation);
         assert!(inner.out_buf.is_some());
+    }
+
+    #[test]
+    fn detached_task_slot_is_reclaimed_on_completion() {
+        let scheduler = Scheduler::new(false, 1);
+        let token = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            true,
+        );
+
+        scheduler.release_task(token, false);
+        scheduler.complete_task(token);
+
+        let (task_index, _) = unpack_task_token(token);
+        let slot = scheduler.lookup_task_slot(task_index).unwrap();
+        assert!(!slot.inner.lock().unwrap().occupied);
+        assert_eq!(
+            scheduler.free_slots.lock().unwrap().as_slice(),
+            &[task_index]
+        );
+    }
+
+    #[test]
+    fn completed_owned_task_slot_is_reclaimed_when_released() {
+        let scheduler = Scheduler::new(false, 1);
+        let token = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            true,
+        );
+
+        scheduler.complete_task(token);
+        scheduler.release_task(token, true);
+
+        let (task_index, _) = unpack_task_token(token);
+        let slot = scheduler.lookup_task_slot(task_index).unwrap();
+        assert!(!slot.inner.lock().unwrap().occupied);
+        assert_eq!(
+            scheduler.free_slots.lock().unwrap().as_slice(),
+            &[task_index]
+        );
+    }
+
+    #[test]
+    fn releasing_owned_task_cancels_and_reclaims_it() {
+        let scheduler = Scheduler::new(false, 1);
+        let polls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let token = scheduler.add_task(
+            make_pending_handle(Arc::clone(&polls), Arc::clone(&drops)),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            Some(0),
+            true,
+        );
+
+        scheduler.release_task(token, true);
+        scheduler.run_task(0, token);
+
+        let (task_index, _) = unpack_task_token(token);
+        let slot = scheduler.lookup_task_slot(task_index).unwrap();
+        assert_eq!(polls.load(Ordering::Acquire), 0);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+        assert!(!slot.inner.lock().unwrap().occupied);
+        assert_eq!(
+            scheduler.free_slots.lock().unwrap().as_slice(),
+            &[task_index]
+        );
     }
 
     #[test]

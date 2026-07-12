@@ -121,6 +121,24 @@ pub extern "C" fn __rt__async_destroy(handle: *mut u8) {
     }
 }
 
+/// Cancel an awaited child handle while the enclosing executor task is still
+/// marked cancelled, then destroy it. Compiler-generated poll thunks observe
+/// the current task's cancellation flag and run their saved cleanup path;
+/// small runtime-provided futures that do not have language-level cleanups may
+/// remain pending and are simply destroyed afterwards.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__async_cancel(handle: *mut u8) {
+    if handle.is_null() {
+        return;
+    }
+
+    let completed = unsafe { (*(handle as *mut AsyncHandle)).completed };
+    if !completed {
+        let _ = __rt__async_poll(handle, std::ptr::null_mut());
+    }
+    __rt__async_destroy(handle);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn __rt__async_run_root(handle: *mut u8, out: *mut u8) {
     if handle.is_null() {

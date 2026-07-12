@@ -3,7 +3,7 @@ use crate::{
     hir::{self, StdItem},
     mir::{
         self, BasicBlockData, BasicBlockId, BlockAnd, BlockAndExtension, Body, LocalDecl, LocalId,
-        LocalKind, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+        LocalKind, Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
         pretty::PrettyPrintMir,
     },
     sema::models::{AdtKind, Constraint, EnumVariantKind, LabeledFunctionSignature, Ty, TyKind},
@@ -29,8 +29,18 @@ struct CleanupNode {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct TaskDropState {
+    active_local: LocalId,
+    token_local: LocalId,
+}
+
+#[derive(Clone, Copy, Debug)]
 enum CleanupAction {
     DeferBlock(thir::BlockId),
+    Task {
+        token_local: LocalId,
+        active_local: LocalId,
+    },
 }
 
 #[derive(Debug)]
@@ -91,6 +101,10 @@ pub struct MirBuilder<'ctx, 'thir> {
     /// Tracks MIR locals by (arm_id, binding_name) for or-patterns.
     /// Ensures all alternatives in an or-pattern share the same local.
     arm_binding_locals: FxHashMap<(thir::ArmId, Symbol), LocalId>,
+    /// Runtime flags for Task locals that still own their spawned task. Moves
+    /// clear the source flag; assignments initialize the destination flag.
+    task_drop_flags: FxHashMap<LocalId, TaskDropState>,
+    task_parameter_locals: Vec<LocalId>,
     cleanup_nodes: IndexVec<CleanupId, CleanupNode>,
     current_cleanup: Option<CleanupId>,
     resume_unwind_block: Option<BasicBlockId>,
@@ -153,6 +167,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             immutable_binding_initializers,
             place_bindings: FxHashMap::default(),
             arm_binding_locals: FxHashMap::default(),
+            task_drop_flags: FxHashMap::default(),
+            task_parameter_locals: Vec::new(),
             cleanup_nodes: IndexVec::new(),
             current_cleanup: None,
             resume_unwind_block: None,
@@ -183,6 +199,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let ty = if normalized != ty { normalized } else { ty };
 
         self.gcx.is_type_copyable_in_def(ty, self.thir.id)
+    }
+
+    pub(super) fn is_task_ty(&self, ty: Ty<'ctx>) -> bool {
+        matches!(
+            ty.kind(),
+            TyKind::Adt(def, _) if Some(def.id) == self.gcx.std_item_def(StdItem::Task)
+        )
     }
 
     fn definition_belongs_to_std_item(&self, def_id: hir::DefinitionID, item: StdItem) -> bool {
@@ -399,6 +422,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         for (id, name, span, ty) in params {
             let local = self.push_local(ty, LocalKind::Param, false, Some(name), span);
             self.locals.insert(id, local);
+            if self.is_task_ty(ty) {
+                self.task_parameter_locals.push(local);
+            }
         }
     }
 
@@ -413,9 +439,17 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return;
         };
 
+        let parameter_tasks = self.task_parameter_locals.clone();
         let return_block = self
             .in_breakable_scope(None, BreakExit::Return, span, |this| {
-                Some(this.lower_block(Place::return_place(), start_block, thir_block))
+                for task_local in parameter_tasks {
+                    this.register_task_cleanup(task_local, start_block, span, true);
+                }
+                let normal_exit = this
+                    .lower_block(Place::return_place(), start_block, thir_block)
+                    .into_block();
+                let _ = this.record_return_edge(normal_exit, span);
+                None
             })
             .into_block();
         self.terminate(return_block, span, TerminatorKind::Return);
@@ -539,10 +573,134 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         value: Rvalue<'ctx>,
         span: Span,
     ) {
+        let task_state = place
+            .projection
+            .is_empty()
+            .then(|| self.task_drop_flags.get(&place.local).copied())
+            .flatten();
+        let assigned_place = place.clone();
         self.body.basic_blocks[block].statements.push(Statement {
             kind: StatementKind::Assign(place, value),
             span,
         });
+        if let Some(state) = task_state {
+            self.push_task_token_assignment(block, state.token_local, assigned_place, span);
+            self.push_task_active_assignment(block, state.active_local, true, span);
+        }
+    }
+
+    fn push_task_token_assignment(
+        &mut self,
+        block: BasicBlockId,
+        token_local: LocalId,
+        mut task_place: Place<'ctx>,
+        span: Span,
+    ) {
+        task_place.projection.push(PlaceElem::Field(
+            thir::FieldIndex::from_raw(0),
+            self.gcx.types.uint,
+        ));
+        self.body.basic_blocks[block].statements.push(Statement {
+            kind: StatementKind::Assign(
+                Place::from_local(token_local),
+                Rvalue::Use(mir::Operand::Copy(task_place)),
+            ),
+            span,
+        });
+    }
+
+    fn push_task_active_assignment(
+        &mut self,
+        block: BasicBlockId,
+        active_local: LocalId,
+        active: bool,
+        span: Span,
+    ) {
+        self.body.basic_blocks[block].statements.push(Statement {
+            kind: StatementKind::Assign(
+                Place::from_local(active_local),
+                Rvalue::Use(mir::Operand::Constant(mir::Constant {
+                    ty: self.gcx.types.bool,
+                    value: mir::ConstantKind::Bool(active),
+                })),
+            ),
+            span,
+        });
+    }
+
+    pub(super) fn register_task_cleanup(
+        &mut self,
+        task_local: LocalId,
+        block: BasicBlockId,
+        span: Span,
+        active: bool,
+    ) {
+        if self.task_drop_flags.contains_key(&task_local) {
+            return;
+        }
+        debug_assert!(self.is_task_ty(self.body.locals[task_local].ty));
+        let active_local = self.push_local(
+            self.gcx.types.bool,
+            LocalKind::Temp,
+            true,
+            Some(self.gcx.intern_symbol("$task_live")),
+            span,
+        );
+        let token_local = self.push_local(
+            self.gcx.types.uint,
+            LocalKind::Temp,
+            true,
+            Some(self.gcx.intern_symbol("$task_token")),
+            span,
+        );
+        let state = TaskDropState {
+            active_local,
+            token_local,
+        };
+        self.task_drop_flags.insert(task_local, state);
+        self.body.basic_blocks[block].statements.push(Statement {
+            kind: StatementKind::Assign(
+                Place::from_local(token_local),
+                Rvalue::Use(mir::Operand::Constant(mir::Constant {
+                    ty: self.gcx.types.uint,
+                    value: mir::ConstantKind::Integer(0),
+                })),
+            ),
+            span,
+        });
+        if active {
+            self.push_task_token_assignment(
+                block,
+                token_local,
+                Place::from_local(task_local),
+                span,
+            );
+        }
+        self.push_task_active_assignment(block, active_local, active, span);
+
+        let node = CleanupNode {
+            action: CleanupAction::Task {
+                token_local,
+                active_local,
+            },
+            parent: self.current_cleanup,
+            span,
+        };
+        self.current_cleanup = Some(self.cleanup_nodes.push(node));
+    }
+
+    pub(super) fn deactivate_task_cleanup(
+        &mut self,
+        block: BasicBlockId,
+        place: &Place<'ctx>,
+        span: Span,
+    ) {
+        if !place.projection.is_empty() {
+            return;
+        }
+        if let Some(state) = self.task_drop_flags.get(&place.local).copied() {
+            self.push_task_active_assignment(block, state.active_local, false, span);
+        }
     }
 
     fn push_shadow_resync(&mut self, block: BasicBlockId, locals: Vec<LocalId>, span: Span) {
@@ -864,8 +1022,119 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let end = self.lower_block(unit, start, block_id).into_block();
                 self.goto(end, next_block, node.span);
             }
+            CleanupAction::Task {
+                token_local,
+                active_local,
+            } => {
+                let drop_block = self.new_block_with_note("task scope drop".into());
+                self.terminate(
+                    start,
+                    node.span,
+                    TerminatorKind::SwitchInt {
+                        discr: mir::Operand::Copy(Place::from_local(active_local)),
+                        targets: vec![(0, next_block)],
+                        otherwise: drop_block,
+                    },
+                );
+                self.terminate_task_release_call(
+                    drop_block,
+                    Place::from_local(token_local),
+                    next_block,
+                    node.span,
+                    crate::mir::optimize::async_transform::AsyncRuntimeFn::DropTask,
+                );
+            }
         }
         self.current_cleanup = saved_cleanup;
+    }
+
+    fn terminate_task_release_call(
+        &mut self,
+        block: BasicBlockId,
+        token_place: Place<'ctx>,
+        target: BasicBlockId,
+        span: Span,
+        which: crate::mir::optimize::async_transform::AsyncRuntimeFn,
+    ) {
+        use crate::mir::optimize::async_transform::find_or_register_async_runtime_function;
+
+        let release_id = find_or_register_async_runtime_function(self.gcx, which, span);
+        let release_ty = self.gcx.get_type(release_id);
+        let destination = self.new_temp_with_ty(self.gcx.types.void, span);
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: mir::Operand::Constant(mir::Constant {
+                    ty: release_ty,
+                    value: mir::ConstantKind::Function(
+                        release_id,
+                        crate::sema::models::GenericArguments::empty(),
+                        release_ty,
+                    ),
+                }),
+                args: vec![mir::Operand::Copy(token_place)],
+                devirt_hint: None,
+                destination: Place::from_local(destination),
+                target,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+    }
+
+    pub(super) fn drop_task_place(
+        &mut self,
+        block: BasicBlockId,
+        mut task_place: Place<'ctx>,
+        span: Span,
+    ) -> BlockAnd<()> {
+        task_place.projection.push(PlaceElem::Field(
+            thir::FieldIndex::from_raw(0),
+            self.gcx.types.uint,
+        ));
+        let next = self.new_block_with_note("after task drop".into());
+        self.terminate_task_release_call(
+            block,
+            task_place,
+            next,
+            span,
+            crate::mir::optimize::async_transform::AsyncRuntimeFn::DropTask,
+        );
+        next.unit()
+    }
+
+    pub(super) fn drop_task_before_overwrite(
+        &mut self,
+        block: BasicBlockId,
+        task_place: &Place<'ctx>,
+        span: Span,
+    ) -> BlockAnd<()> {
+        if !task_place.projection.is_empty() {
+            return block.unit();
+        }
+        let Some(state) = self.task_drop_flags.get(&task_place.local).copied() else {
+            return block.unit();
+        };
+
+        let drop_block = self.new_block_with_note("task overwrite drop".into());
+        let next = self.new_block_with_note("after task overwrite drop".into());
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::SwitchInt {
+                discr: mir::Operand::Copy(Place::from_local(state.active_local)),
+                targets: vec![(0, next)],
+                otherwise: drop_block,
+            },
+        );
+        self.terminate_task_release_call(
+            drop_block,
+            Place::from_local(state.token_local),
+            next,
+            span,
+            crate::mir::optimize::async_transform::AsyncRuntimeFn::DropTask,
+        );
+        next.unit()
     }
 
     fn patch_unresolved(&mut self, block: BasicBlockId, target: BasicBlockId) {
@@ -897,6 +1166,24 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let cleanup_entry =
             self.ensure_cleanup_path(self.current_cleanup, None, resume_unwind, &mut cache);
         mir::CallUnwindAction::Cleanup(cleanup_entry)
+    }
+
+    /// Build the ordinary control-flow cleanup path used when an async frame
+    /// is cancelled while suspended. Unlike `call_unwind_action`, this path
+    /// ends at a marker block rather than `ResumeUnwind`: cancellation is not
+    /// itself a panic, so defer bodies run normally and may independently
+    /// panic through their existing unwind edges.
+    pub(crate) fn async_cancel_cleanup_target(
+        &mut self,
+        span: Span,
+    ) -> (BasicBlockId, BasicBlockId) {
+        let cancelled = self.new_block_with_note("async-cancelled".into());
+        self.terminate(cancelled, span, TerminatorKind::Unreachable);
+
+        let mut cache = FxHashMap::default();
+        cache.insert(None, cancelled);
+        let entry = self.ensure_cleanup_path(self.current_cleanup, None, cancelled, &mut cache);
+        (entry, cancelled)
     }
 
     fn ensure_resume_unwind_block(&mut self, span: Span) -> BasicBlockId {

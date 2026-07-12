@@ -101,6 +101,8 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
       // EXPECT_STDOUT_CONTAINS: … — assert this substring appears in stdout
       // EXPECT_STDERR_CONTAINS: … — assert this substring appears in stderr
+      // EXPECT_STDERR_NOT_CONTAINS: … — assert this substring is absent from stderr
+      // EXPECT_STDERR_COUNT: <n> <substring> — assert an exact stderr occurrence count
       // PACKAGE: <fixture>        — run package_fixtures/<fixture>/app
     """
     result = {
@@ -111,6 +113,8 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "expect_exit": None,
         "expect_stdout_contains": [],
         "expect_stderr_contains": [],
+        "expect_stderr_not_contains": [],
+        "expect_stderr_counts": [],
         "package_fixture": None,
     }
     try:
@@ -143,6 +147,20 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     needle = line[len("// EXPECT_STDERR_CONTAINS:") :].strip()
                     if needle:
                         result["expect_stderr_contains"].append(needle)
+                elif line.startswith("// EXPECT_STDERR_NOT_CONTAINS:"):
+                    needle = line[len("// EXPECT_STDERR_NOT_CONTAINS:") :].strip()
+                    if needle:
+                        result["expect_stderr_not_contains"].append(needle)
+                elif line.startswith("// EXPECT_STDERR_COUNT:"):
+                    value = line[len("// EXPECT_STDERR_COUNT:") :].strip()
+                    count_text, separator, needle = value.partition(" ")
+                    if separator and needle.strip():
+                        try:
+                            result["expect_stderr_counts"].append(
+                                (int(count_text), needle.strip())
+                            )
+                        except ValueError:
+                            pass
                 elif line.startswith("// PACKAGE:"):
                     fixture = line[len("// PACKAGE:") :].strip()
                     if fixture:
@@ -178,6 +196,8 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         expected_exit = directives["expect_exit"]
         expected_stdout_contains = directives["expect_stdout_contains"]
         expected_stderr_contains = directives["expect_stderr_contains"]
+        expected_stderr_not_contains = directives["expect_stderr_not_contains"]
+        expected_stderr_counts = directives["expect_stderr_counts"]
         package_fixture = directives["package_fixture"]
 
         compile_input = file_path
@@ -291,6 +311,29 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
                         {
                             "stderr": result.stderr,
                             "missing": needle,
+                        },
+                    )
+            for needle in expected_stderr_not_contains:
+                if needle in result.stderr:
+                    return (
+                        False,
+                        "Unexpected stderr fragment",
+                        {
+                            "stderr": result.stderr,
+                            "unexpected": needle,
+                        },
+                    )
+            for expected_count, needle in expected_stderr_counts:
+                actual_count = result.stderr.count(needle)
+                if actual_count != expected_count:
+                    return (
+                        False,
+                        "Unexpected stderr fragment count",
+                        {
+                            "stderr": result.stderr,
+                            "fragment": needle,
+                            "expected_count": expected_count,
+                            "actual_count": actual_count,
                         },
                     )
             # CHECK_ONLY and TEST files have no output snapshot to compare —

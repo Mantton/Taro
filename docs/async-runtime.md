@@ -21,6 +21,10 @@ Compiler-generated async functions return an opaque runtime handle created by
   a handle and calls `drop_fn` once on readiness.
 - `__rt__async_destroy(handle)` is the final handle cleanup path. It also
   unlinks shadow frames and removes persistent roots.
+- `__rt__async_cancel(handle)` gives a suspended compiler-generated child one
+  cancellation poll so its active language-level cleanups run, then destroys
+  the handle. Runtime-provided leaf futures without cleanup state are destroyed
+  directly if that poll remains pending.
 - `__rt__async_run_root(handle, out)` installs a rooted scheduler session and
   drives the root handle to completion.
 
@@ -43,8 +47,23 @@ prevents stale task handles from observing a reused slot.
 - Completion, cancellation, and panic all pass through task finalization:
   I/O waits are cancelled, sync ownership/waiters are finalized, timers are
   cleared, GC roots are removed, and the async handle is destroyed.
-- Completed spawned tasks remain occupied until the awaiter consumes and
+- An owned `Task[T]` is cancelled and transferred to the executor when its
+  live handle leaves scope without being consumed. Hidden move-aware compiler
+  flags ensure only the current owner performs this cleanup.
+- `Task.detach()` transfers an existing handle without cancellation, while
+  `std.task.detached(...)` provides the same behavior at the launch site.
+  Detached output is discarded and its slot is reclaimed at completion.
+- Until recursive `Drop` support is available, automatic ownership cleanup is
+  limited to direct `Task` locals and parameters. A container of tasks must be
+  drained so each handle is awaited or detached before the container is lost.
+- Completed, still-owned tasks remain occupied until the awaiter consumes and
   reclaims the result. This preserves one-shot `Task[T]` result ownership.
+- A panic remains silent while an owned task can still be observed. Calling
+  `Task.result()` moves its report into a GC-backed `PanicPayload`; detaching or
+  abandoning the handle reports it exactly once as `unobserved task panic`.
+- `PanicPayload.message()` borrows its original message, and
+  `PanicPayload.rethrow()` restores the captured report. The serialized backing
+  storage is reclaimed by the GC even when a payload is nested or discarded.
 - Reclaimed slots are put on `free_slots` and may be reused only after the
   generation is advanced.
 

@@ -18,6 +18,10 @@ static var SHARED_PIPE_READ_STREAM: Optional[std.io.task.AsyncStream] = .none
 static var SHARED_PIPE_WRITE_STREAM: Optional[std.io.task.AsyncStream] = .none
 
 static var ASYNC_DEFER_RETURN_COUNT: int32 = 0
+static var ASYNC_CANCEL_DEFER_TRACE: int32 = 0
+static var TASK_SCOPE_CLEANUP_COUNT: int32 = 0
+static var DETACHED_TASK_COMPLETED: int32 = 0
+static var DETACHED_FUNCTION_COMPLETED: int32 = 0
 
 func asyncDeferReturnProbe() async -> int32 {
     defer {
@@ -26,6 +30,63 @@ func asyncDeferReturnProbe() async -> int32 {
 
     await std.testing.yieldNow()
     return 77 as int32
+}
+
+func asyncCancellationCleanupProbe(_ ready: std.sync.Channel[int32]) async -> int32 {
+    defer {
+        ASYNC_CANCEL_DEFER_TRACE = (ASYNC_CANCEL_DEFER_TRACE * 10_i32) + 1_i32
+    }
+
+    {
+        defer {
+            ASYNC_CANCEL_DEFER_TRACE = (ASYNC_CANCEL_DEFER_TRACE * 10_i32) + 2_i32
+        }
+
+        match await ready.send(1_i32) {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("cancellation cleanup probe should signal readiness")
+        }
+        await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    }
+
+    return 99_i32
+}
+
+func asyncCancellationCleanupPanicProbe(_ ready: std.sync.Channel[int32]) async -> int32 {
+    defer {
+        std.panic.panic("panic from cancellation cleanup")
+    }
+
+    match await ready.send(1_i32) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("cancellation panic probe should signal readiness")
+    }
+    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    return 1_i32
+}
+
+func taskScopeCleanupProbe(_ ready: std.sync.Channel[int32]) async -> int32 {
+    defer {
+        TASK_SCOPE_CLEANUP_COUNT = TASK_SCOPE_CLEANUP_COUNT + 1_i32
+    }
+
+    match await ready.send(1_i32) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("task scope cleanup probe should signal readiness")
+    }
+    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    return 1_i32
+}
+
+func returnedOwnedTask() -> std.task.Task[int32] {
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 73_i32
+    })
+    return task
+}
+
+func releaseOwnedTaskParameter(_ task: std.task.Task[int32]) {
 }
 
 @cfg(family("unix"))
@@ -556,6 +617,228 @@ func asyncDeferRunsOnNormalReturnAfterSuspension() async {
 }
 
 @test
+func cancellingSuspendedTaskRunsNestedDefersInLifoOrder() async {
+    ASYNC_CANCEL_DEFER_TRACE = 0_i32
+    let ready = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("cancellation cleanup channel should be created")
+    }
+    let childReady = ready
+    let task = std.task.spawn(|| async {
+        return await asyncCancellationCleanupProbe(childReady)
+    })
+
+    match await ready.recv() {
+        case .some(_) => {}
+        case .none => std.panic.panic("cancellation cleanup probe should become ready")
+    }
+    task.cancel()
+
+    match await task.result() {
+        case .ok(_) => std.panic.panic("cancelled cleanup probe should not complete normally")
+        case .err(.cancelled) => {}
+        case .err(.panicked(_)) => std.panic.panic("cancelled cleanup probe should not panic")
+    }
+
+    std.testing.assertEqual(
+        ASYNC_CANCEL_DEFER_TRACE,
+        21_i32,
+        "cancellation should run active nested defers from inner to outer",
+    )
+    std.testing.assertTrue(ready.destroy().isOk(), "cancellation cleanup channel should be destroyed")
+}
+
+@test
+func panicDuringCancellationCleanupBecomesTaskPanic() async {
+    let ready = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("cancellation panic channel should be created")
+    }
+    let childReady = ready
+    let task = std.task.spawn(|| async {
+        return await asyncCancellationCleanupPanicProbe(childReady)
+    })
+
+    match await ready.recv() {
+        case .some(_) => {}
+        case .none => std.panic.panic("cancellation panic probe should become ready")
+    }
+    task.cancel()
+
+    match await task.result() {
+        case .ok(_) => std.panic.panic("cancellation cleanup panic should not succeed")
+        case .err(.cancelled) => std.panic.panic("cleanup panic should supersede cancellation")
+        case .err(.panicked(payload)) => {
+            std.testing.assertTrue(
+                payload.message() == "panic from cancellation cleanup",
+                "cleanup panic payload should preserve its message",
+            )
+        }
+    }
+    std.testing.assertTrue(ready.destroy().isOk(), "cancellation panic channel should be destroyed")
+}
+
+@test
+func taskScopeExitCancelsAndReclaimsOwnedWork() async {
+    TASK_SCOPE_CLEANUP_COUNT = 0_i32
+    let ready = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("task scope channel should be created")
+    }
+
+    {
+        let childReady = ready
+        let task = std.task.spawn(|| async {
+            return await taskScopeCleanupProbe(childReady)
+        })
+        match await ready.recv() {
+            case .some(_) => {}
+            case .none => std.panic.panic("owned task should reach its suspension point")
+        }
+    }
+
+    var attempts: int32 = 0_i32
+    while TASK_SCOPE_CLEANUP_COUNT == 0_i32 && attempts < 100_i32 {
+        await std.testing.yieldNow()
+        attempts = attempts + 1_i32
+    }
+    std.testing.assertEqual(
+        TASK_SCOPE_CLEANUP_COUNT,
+        1_i32,
+        "leaving a Task scope should cancel it and run cleanup",
+    )
+    std.testing.assertTrue(ready.destroy().isOk(), "task scope channel should be destroyed")
+}
+
+@test
+func overwritingTaskCancelsAndReclaimsPreviousWork() async {
+    TASK_SCOPE_CLEANUP_COUNT = 0_i32
+    let ready = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("task overwrite channel should be created")
+    }
+    let childReady = ready
+    var task = std.task.spawn(|| async {
+        return await taskScopeCleanupProbe(childReady)
+    })
+    match await ready.recv() {
+        case .some(_) => {}
+        case .none => std.panic.panic("overwritten task should reach its suspension point")
+    }
+
+    task = std.task.spawn(|| async { return 29_i32 })
+    match await task.result() {
+        case .ok(value) => std.testing.assertEqual(value, 29_i32, "replacement Task should stay live")
+        case .err(_) => std.panic.panic("replacement Task should complete normally")
+    }
+
+    var attempts: int32 = 0_i32
+    while TASK_SCOPE_CLEANUP_COUNT == 0_i32 && attempts < 100_i32 {
+        await std.testing.yieldNow()
+        attempts = attempts + 1_i32
+    }
+    std.testing.assertEqual(
+        TASK_SCOPE_CLEANUP_COUNT,
+        1_i32,
+        "overwriting a Task should cancel and reclaim the previous handle",
+    )
+    std.testing.assertTrue(ready.destroy().isOk(), "task overwrite channel should be destroyed")
+}
+
+@test
+func movingAndReturningTasksTransferScopeOwnership() async {
+    let original = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 41_i32
+    })
+    let moved = original
+    match await moved.result() {
+        case .ok(value) => std.testing.assertEqual(value, 41_i32, "moved Task should stay live")
+        case .err(_) => std.panic.panic("moving a Task should not cancel it")
+    }
+
+    let returned = returnedOwnedTask()
+    match await returned.result() {
+        case .ok(value) => std.testing.assertEqual(value, 73_i32, "returned Task should stay live")
+        case .err(_) => std.panic.panic("returning a Task should transfer ownership")
+    }
+}
+
+@test
+func taskParameterOwnsAndReleasesMovedHandle() async {
+    TASK_SCOPE_CLEANUP_COUNT = 0_i32
+    let ready = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("task parameter channel should be created")
+    }
+    let childReady = ready
+    let task = std.task.spawn(|| async {
+        return await taskScopeCleanupProbe(childReady)
+    })
+    match await ready.recv() {
+        case .some(_) => {}
+        case .none => std.panic.panic("task parameter probe should become ready")
+    }
+
+    releaseOwnedTaskParameter(task)
+    var attempts: int32 = 0_i32
+    while TASK_SCOPE_CLEANUP_COUNT == 0_i32 && attempts < 100_i32 {
+        await std.testing.yieldNow()
+        attempts = attempts + 1_i32
+    }
+    std.testing.assertEqual(
+        TASK_SCOPE_CLEANUP_COUNT,
+        1_i32,
+        "a Task parameter should release an unconsumed handle on return",
+    )
+    std.testing.assertTrue(ready.destroy().isOk(), "task parameter channel should be destroyed")
+}
+
+@test
+func detachedTaskContinuesAfterHandleScopeEnds() async {
+    DETACHED_TASK_COMPLETED = 0_i32
+    {
+        let task = std.task.spawn(|| async {
+            await std.testing.yieldNow()
+            DETACHED_TASK_COMPLETED = 1_i32
+            return 9_i32
+        })
+        task.detach()
+    }
+
+    var attempts: int32 = 0_i32
+    while DETACHED_TASK_COMPLETED == 0_i32 && attempts < 100_i32 {
+        await std.testing.yieldNow()
+        attempts = attempts + 1_i32
+    }
+    std.testing.assertEqual(
+        DETACHED_TASK_COMPLETED,
+        1_i32,
+        "detached Task should continue and discard its result",
+    )
+}
+
+@test
+func detachedFunctionStartsExplicitFireAndForgetWork() async {
+    DETACHED_FUNCTION_COMPLETED = 0_i32
+    std.task.detached(|| async {
+        await std.testing.yieldNow()
+        DETACHED_FUNCTION_COMPLETED = 1_i32
+    })
+
+    var attempts: int32 = 0_i32
+    while DETACHED_FUNCTION_COMPLETED == 0_i32 && attempts < 100_i32 {
+        await std.testing.yieldNow()
+        attempts = attempts + 1_i32
+    }
+    std.testing.assertEqual(
+        DETACHED_FUNCTION_COMPLETED,
+        1_i32,
+        "std.task.detached work should continue without an owned handle",
+    )
+}
+
+@test
 func cancellingCompletedTaskIsHarmless() async {
     let task = std.task.spawn(|| async {
         await std.task.sleep(std.time.Duration.fromMillis(1_u64))
@@ -748,7 +1031,7 @@ func spawnedTaskPanicIsolatedFromTest() async {
 func syncSpawnedTaskPanicIsIsolated() {
     // Detached spawned task panics are now isolated: they print to stderr
     // but do not crash the program or fail the test.
-    let _ = std.task.spawn(|| async {
+    std.task.detached(|| async {
         await std.testing.yieldNow()
         std.panic.panic("spawned task panic should be isolated in sync test")
     })
@@ -920,18 +1203,18 @@ func awaitedPanickedTaskResultReturnsPanickedError() async {
         std.panic.panic("intentional task panic")
     })
     let result = await task.result()
-    match result {
+    let message = match result {
         case .ok(_) => std.panic.panic("panicking task should not succeed")
         case .err(err) => match err {
-            case .panicked(payload) => {
-                std.testing.assertTrue(
-                    payload.message() == "intentional task panic",
-                    "panic payload message should match the original panic message",
-                )
-            }
+            case .panicked(payload) => payload.message()
             case .cancelled => std.panic.panic("panicking task should not report as cancelled")
         }
     }
+    std.runtime.collect()
+    std.testing.assertTrue(
+        message == "intentional task panic",
+        "panic payload message should survive collection after its payload leaves scope",
+    )
 }
 
 @test

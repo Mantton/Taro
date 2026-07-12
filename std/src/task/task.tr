@@ -1,4 +1,5 @@
 import std.intrinsic.__intrinsic_cancel_task
+import std.intrinsic.__intrinsic_detach_task
 import std.intrinsic.__intrinsic_is_task_cancelled
 import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
@@ -20,6 +21,13 @@ public enum TaskError {
 /// handle that can be awaited later via `await task.result()`.
 public func spawn[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) -> Task[T] {
     return __intrinsic_spawn_async[T, F](thunk)
+}
+
+/// Enqueue explicit fire-and-forget work on the executor.
+/// The task continues running and its eventual result is discarded.
+public func detached[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) {
+    let task = spawn[T, F](thunk)
+    task.detach()
 }
 
 public func isCancelled() -> bool {
@@ -51,6 +59,12 @@ impl[T] Task[T] {
 
     public func cancel(&self) {
         __intrinsic_cancel_task[T](self)
+    }
+
+    /// Transfer this task to the executor as explicit fire-and-forget work.
+    /// The task continues running and its eventual result is discarded.
+    public func detach(self) {
+        __intrinsic_detach_task[T](self)
     }
 
     public func result(self) async -> std.result.Result[T, TaskError] {

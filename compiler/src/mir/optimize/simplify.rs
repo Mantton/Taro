@@ -52,6 +52,20 @@ pub fn collapse_trivial_gotos(body: &mut Body<'_>) {
                         *bb = *cache.get(bb).unwrap_or(bb);
                     }
                 }
+                TerminatorKind::Yield {
+                    resume,
+                    cancel,
+                    cancel_complete,
+                    unwind,
+                    ..
+                } => {
+                    *resume = *cache.get(resume).unwrap_or(resume);
+                    *cancel = *cache.get(cancel).unwrap_or(cancel);
+                    *cancel_complete = *cache.get(cancel_complete).unwrap_or(cancel_complete);
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        *bb = *cache.get(bb).unwrap_or(bb);
+                    }
+                }
                 _ => {}
             }
         }
@@ -80,6 +94,24 @@ pub fn merge_linear_blocks(body: &mut Body<'_>) {
                 }
                 TerminatorKind::Call { target, unwind, .. } => {
                     pred_count[target.index()] += 1;
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        pred_count[bb.index()] += 1;
+                    }
+                }
+                TerminatorKind::Yield {
+                    resume,
+                    cancel,
+                    cancel_complete,
+                    unwind,
+                    ..
+                } => {
+                    pred_count[resume.index()] += 1;
+                    pred_count[cancel.index()] += 1;
+                    // This metadata edge pins the unique cancellation marker.
+                    // If it is merged into the preceding cleanup block, the
+                    // async transform can no longer rewrite cancellation into
+                    // a completed poll result.
+                    pred_count[cancel_complete.index()] += 1;
                     if let CallUnwindAction::Cleanup(bb) = unwind {
                         pred_count[bb.index()] += 1;
                     }
@@ -161,6 +193,20 @@ pub fn merge_linear_blocks(body: &mut Body<'_>) {
                                 pred_count[bb.index()] += 1;
                             }
                         }
+                        TerminatorKind::Yield {
+                            resume,
+                            cancel,
+                            cancel_complete,
+                            unwind,
+                            ..
+                        } => {
+                            pred_count[resume.index()] += 1;
+                            pred_count[cancel.index()] += 1;
+                            pred_count[cancel_complete.index()] += 1;
+                            if let CallUnwindAction::Cleanup(bb) = unwind {
+                                pred_count[bb.index()] += 1;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -197,8 +243,22 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
                         stack.push(*bb);
                     }
                 }
-                TerminatorKind::Yield { resume, .. } => {
+                TerminatorKind::Yield {
+                    resume,
+                    cancel,
+                    cancel_complete,
+                    unwind,
+                    ..
+                } => {
                     stack.push(*resume);
+                    stack.push(*cancel);
+                    // `cancel_complete` is metadata for the async transform,
+                    // not necessarily reachable when a cleanup diverges. Keep
+                    // its marker block until that transform consumes it.
+                    stack.push(*cancel_complete);
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        stack.push(*bb);
+                    }
                 }
                 TerminatorKind::Return
                 | TerminatorKind::ResumeUnwind
@@ -243,8 +303,19 @@ pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
                         *bb = remap_bb(*bb);
                     }
                 }
-                TerminatorKind::Yield { resume, .. } => {
+                TerminatorKind::Yield {
+                    resume,
+                    cancel,
+                    cancel_complete,
+                    unwind,
+                    ..
+                } => {
                     *resume = remap_bb(*resume);
+                    *cancel = remap_bb(*cancel);
+                    *cancel_complete = remap_bb(*cancel_complete);
+                    if let CallUnwindAction::Cleanup(bb) = unwind {
+                        *bb = remap_bb(*bb);
+                    }
                 }
                 TerminatorKind::Return
                 | TerminatorKind::ResumeUnwind
@@ -558,10 +629,16 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                     value,
                     resume,
                     resume_arg,
+                    cancel,
+                    cancel_complete,
+                    unwind,
                 } => TerminatorKind::Yield {
                     value: remap_operand(value, &remap),
                     resume: *resume,
                     resume_arg: remap_place(resume_arg, &remap),
+                    cancel: *cancel,
+                    cancel_complete: *cancel_complete,
+                    unwind: *unwind,
                 },
             };
         }

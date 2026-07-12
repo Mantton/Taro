@@ -1,0 +1,31 @@
+// TEST
+// EXPECT_EXIT: 101
+// EXPECT_STDOUT_CONTAINS: test matchingExpectedPanicSubstring ... ok
+// EXPECT_STDOUT_CONTAINS: test mismatchedExpectedPanicMessage ... FAILED (panic message mismatch)
+// EXPECT_STDOUT_CONTAINS: test missingExpectedPanic ... FAILED (expected panic but test completed normally)
+// EXPECT_STDOUT_CONTAINS: test unexpectedPanicShowsDetails ... FAILED (panicked)
+// EXPECT_STDERR_CONTAINS: expected panic message containing: "wanted fragment"
+// EXPECT_STDERR_CONTAINS: panic: actual panic text
+// EXPECT_STDERR_CONTAINS: panic: unexpected panic detail
+
+@test
+@expectPanic("stable fragment")
+func matchingExpectedPanicSubstring() {
+    std.panic.panic("prefix stable fragment suffix")
+}
+
+@test
+@expectPanic("wanted fragment")
+func mismatchedExpectedPanicMessage() {
+    std.panic.panic("actual panic text")
+}
+
+@test
+@expectPanic("never raised")
+func missingExpectedPanic() {
+}
+
+@test
+func unexpectedPanicShowsDetails() {
+    std.panic.panic("unexpected panic detail")
+}

@@ -16,6 +16,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ExprKind::Assign { target, value } => {
                 let rhs = unpack!(block = self.as_local_rvalue(block, *value));
                 let lhs = unpack!(block = self.as_place(block, *target));
+                if self.is_task_ty(self.thir.exprs[*target].ty) {
+                    block = self
+                        .drop_task_before_overwrite(block, &lhs, expression.span)
+                        .into_block();
+                }
                 self.push_assign(block, lhs, rhs, expression.span);
                 block.unit()
             }
@@ -62,8 +67,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 block.unit()
             }
             _ => {
-                let _ = unpack!(block = self.as_temp(block, expr_id));
-                block.unit()
+                let temp = unpack!(block = self.as_temp(block, expr_id));
+                if self.is_task_ty(expression.ty) {
+                    self.drop_task_place(block, Place::from_local(temp), expression.span)
+                } else {
+                    block.unit()
+                }
             }
         }
     }

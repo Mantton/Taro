@@ -1,0 +1,21 @@
+// EXPECT_STDERR_CONTAINS: unused Task is cancelled immediately
+
+func main() async {
+    std.task.spawn(|| async {
+        return 1_i32
+    })
+
+    let _ = std.task.spawn(|| async {
+        return 2_i32
+    })
+
+    let detached = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return 3_i32
+    })
+    detached.detach()
+
+    std.task.detached(|| async {
+        await std.testing.yieldNow()
+    })
+}

@@ -127,12 +127,19 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 value,
                 resume,
                 resume_arg,
+                cancel,
+                unwind,
+                ..
             } => {
                 write!(f, "yield(")?;
                 self.write_operand(value, f)?;
                 write!(f, ") -> ")?;
                 self.write_place(resume_arg, f)?;
-                write!(f, " resume bb{:?}", resume)
+                write!(f, " resume bb{:?} cancel bb{:?}", resume, cancel)?;
+                match unwind {
+                    CallUnwindAction::Cleanup(bb) => write!(f, " unwind bb{:?}", bb),
+                    CallUnwindAction::Terminate => write!(f, " unwind terminate"),
+                }
             }
         }
     }

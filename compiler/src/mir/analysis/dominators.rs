@@ -84,7 +84,18 @@ fn successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
             }
             succ
         }
-        TerminatorKind::Yield { resume, .. } => vec![*resume],
+        TerminatorKind::Yield {
+            resume,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let mut succ = vec![*resume, *cancel];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                succ.push(*bb);
+            }
+            succ
+        }
         _ => vec![],
     }
 }

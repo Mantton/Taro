@@ -424,7 +424,7 @@ taro test my-package/
 | `@test` | Marks a function as a test case. Must be `() -> void`. |
 | `@tag` | Adds tags for test selection. Valid on `@test` functions and `namespace` declarations. Uses string literals: `@tag("smoke", "slow")`. |
 | `@skip` | Skips the test. Accepts an optional reason string: `@skip("not yet implemented")`. |
-| `@expectPanic` | Passes if the function panics, fails if it returns normally. Accepts an optional expected message: `@expectPanic("out of bounds")`. |
+| `@expectPanic` | Passes if the function panics, fails if it returns normally. An optional message is matched as a substring: `@expectPanic("out of bounds")`. Mismatches show the expected substring and actual panic report. |
 
 ### Filtering Tests
 
@@ -623,7 +623,12 @@ Taro includes a multithreaded async runtime:
 
 - `std.task.spawn` runs async closures concurrently and returns `Task[T]`
 - `Task.result()` returns `Result[T, TaskError]` with cancellation/panic reporting
+- Awaited task panics are silent and inspectable through `PanicPayload`; detached
+  or abandoned task panics are reported once as `unobserved task panic`
 - `Task.cancel()` and `std.task.isCancelled()` provide cancellation controls
+- An unconsumed `Task` is cancelled and reclaimed at scope exit. Use
+  `Task.detach()` to transfer an existing handle, or `std.task.detached(...)`
+  to launch explicit fire-and-forget work
 - `withTaskGroup` supports `.cancelOnPanic` and `.independent` policies
 - `std.task.sleep` and `std.io.task.AsyncStream` provide timer and async I/O integration
 

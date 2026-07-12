@@ -6,13 +6,13 @@ func testPasses() {
 }
 
 @test
-@expectPanic
+@expectPanic("intent")
 func testExpectPanic() {
     std.panic.panic("intentional")
 }
 
 @test
-@expectPanic
+@expectPanic("assert should")
 func testAssertPanics() {
     std.assert(false, "assert should panic")
 }

@@ -38,6 +38,10 @@ use std::{
 };
 
 const PANIC_EXIT_CODE: i32 = 101;
+const TEST_PANIC_PASSED: u8 = 0;
+const TEST_PANIC_UNEXPECTED: u8 = 1;
+const TEST_PANIC_MISSING: u8 = 2;
+const TEST_PANIC_MESSAGE_MISMATCH: u8 = 3;
 #[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
 const TARO_EXCEPTION_CLASS: u64 = u64::from_be_bytes(*b"TAROPAN!");
 
@@ -58,12 +62,104 @@ impl RtString {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PanicReport {
     pub(crate) message: String,
     pub(crate) backtrace: String,
     pub(crate) location: Option<String>,
     pub(crate) logical_stack: Vec<String>,
+}
+
+const PANIC_PAYLOAD_MAGIC: &[u8; 8] = b"TAROPN\0\x01";
+
+fn append_payload_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
+    let len = u64::try_from(bytes.len()).expect("panic payload field exceeds u64::MAX bytes");
+    output.extend_from_slice(&len.to_le_bytes());
+    output.extend_from_slice(bytes);
+}
+
+fn read_payload_bytes<'a>(payload: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    let len_end = cursor.checked_add(std::mem::size_of::<u64>())?;
+    let len_bytes: [u8; 8] = payload.get(*cursor..len_end)?.try_into().ok()?;
+    *cursor = len_end;
+    let len = usize::try_from(u64::from_le_bytes(len_bytes)).ok()?;
+    let end = cursor.checked_add(len)?;
+    let bytes = payload.get(*cursor..end)?;
+    *cursor = end;
+    Some(bytes)
+}
+
+pub(crate) fn serialize_panic_report(report: &PanicReport) -> Vec<u8> {
+    let mut output = Vec::new();
+    output.extend_from_slice(PANIC_PAYLOAD_MAGIC);
+    append_payload_bytes(&mut output, report.message.as_bytes());
+    append_payload_bytes(&mut output, report.backtrace.as_bytes());
+    match report.location.as_deref() {
+        Some(location) => {
+            output.push(1);
+            append_payload_bytes(&mut output, location.as_bytes());
+        }
+        None => output.push(0),
+    }
+    let frame_count =
+        u64::try_from(report.logical_stack.len()).expect("panic logical stack is too large");
+    output.extend_from_slice(&frame_count.to_le_bytes());
+    for frame in &report.logical_stack {
+        append_payload_bytes(&mut output, frame.as_bytes());
+    }
+    output
+}
+
+pub(crate) fn deserialize_panic_report(payload: &[u8]) -> Option<PanicReport> {
+    if !payload.starts_with(PANIC_PAYLOAD_MAGIC) {
+        return None;
+    }
+    let mut cursor = PANIC_PAYLOAD_MAGIC.len();
+    let message = String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?;
+    let backtrace = String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?;
+    let location = match *payload.get(cursor)? {
+        0 => {
+            cursor += 1;
+            None
+        }
+        1 => {
+            cursor += 1;
+            Some(String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?)
+        }
+        _ => return None,
+    };
+    let count_end = cursor.checked_add(std::mem::size_of::<u64>())?;
+    let count_bytes: [u8; 8] = payload.get(cursor..count_end)?.try_into().ok()?;
+    cursor = count_end;
+    let frame_count = usize::try_from(u64::from_le_bytes(count_bytes)).ok()?;
+    // Every encoded frame needs at least its eight-byte length prefix. Reject
+    // impossible counts before reserving attacker- or corruption-controlled
+    // capacity, even though payloads are normally private runtime values.
+    if frame_count > payload.len().saturating_sub(cursor) / std::mem::size_of::<u64>() {
+        return None;
+    }
+    let mut logical_stack = Vec::with_capacity(frame_count);
+    for _ in 0..frame_count {
+        logical_stack
+            .push(String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?);
+    }
+    if cursor != payload.len() {
+        return None;
+    }
+    Some(PanicReport {
+        message,
+        backtrace,
+        location,
+        logical_stack,
+    })
+}
+
+pub(crate) fn serialized_panic_message(payload: &[u8]) -> Option<&[u8]> {
+    if !payload.starts_with(PANIC_PAYLOAD_MAGIC) {
+        return None;
+    }
+    let mut cursor = PANIC_PAYLOAD_MAGIC.len();
+    read_payload_bytes(payload, &mut cursor)
 }
 
 #[derive(Clone, Copy)]
@@ -155,8 +251,6 @@ pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, PanicR
     match result {
         Ok(value) => Ok(value),
         Err(_) => {
-            // Print the full backtrace to stderr immediately before consuming the report.
-            write_report("spawned task panicked");
             let report = take_full_panic_report().unwrap_or_else(|| PanicReport {
                 message: "task panicked on executor worker".into(),
                 backtrace: String::new(),
@@ -477,35 +571,50 @@ fn render_logical_stack(frames: &[String]) -> String {
     lines.join("\n")
 }
 
+fn write_captured_report(
+    output: &mut impl Write,
+    headline: &str,
+    report: &PanicReport,
+    policy: BacktracePolicy,
+) {
+    let _ = writeln!(output, "{headline}: {}", report.message);
+    if let Some(location) = report.location.as_ref() {
+        let _ = writeln!(output, "  at {location}");
+    }
+    if matches!(policy, BacktracePolicy::Compact) {
+        let logical = render_logical_stack(&report.logical_stack);
+        if !logical.is_empty() {
+            let _ = writeln!(output, "taro stack:");
+            let _ = writeln!(output, "{logical}");
+        } else {
+            let _ = writeln!(output, "stack backtrace:");
+            let _ = writeln!(output, "{}", render_panic_backtrace(&report.backtrace));
+        }
+    } else {
+        let _ = writeln!(output, "stack backtrace:");
+        let _ = writeln!(output, "{}", render_panic_backtrace(&report.backtrace));
+    }
+}
+
+pub(crate) fn write_unobserved_task_panic(report: &PanicReport) {
+    let mut stderr = std::io::stderr().lock();
+    write_captured_report(
+        &mut stderr,
+        "unobserved task panic",
+        report,
+        backtrace_policy(),
+    );
+    let _ = stderr.flush();
+}
+
 pub(crate) fn write_report(default_message: &str) {
     let mut stderr = std::io::stderr().lock();
-    let mut had_report = false;
     let policy = backtrace_policy();
+    let report = PANIC_REPORT.with(|slot| slot.borrow().clone());
 
-    PANIC_REPORT.with(|slot| {
-        if let Some(report) = slot.borrow().as_ref() {
-            had_report = true;
-            let _ = writeln!(stderr, "panic: {}", report.message);
-            if let Some(location) = report.location.as_ref() {
-                let _ = writeln!(stderr, "  at {}", location);
-            }
-            if matches!(policy, BacktracePolicy::Compact) {
-                let logical = render_logical_stack(&report.logical_stack);
-                if !logical.is_empty() {
-                    let _ = writeln!(stderr, "taro stack:");
-                    let _ = writeln!(stderr, "{logical}");
-                } else {
-                    let _ = writeln!(stderr, "stack backtrace:");
-                    let _ = writeln!(stderr, "{}", render_panic_backtrace(&report.backtrace));
-                }
-            } else {
-                let _ = writeln!(stderr, "stack backtrace:");
-                let _ = writeln!(stderr, "{}", render_panic_backtrace(&report.backtrace));
-            }
-        }
-    });
-
-    if !had_report {
+    if let Some(report) = report.as_ref() {
+        write_captured_report(&mut stderr, "panic", report, policy);
+    } else {
         let raw_backtrace = format!("{:#}", Backtrace::force_capture());
         let _ = writeln!(stderr, "panic: {}", default_message);
         if matches!(policy, BacktracePolicy::Compact) {
@@ -613,10 +722,99 @@ pub extern "C" fn __rt__panic_take_report() -> PanicTakeReportResult {
     }
 }
 
+fn classify_test_panic(
+    panicked: bool,
+    expect_panic: bool,
+    expected_message: &str,
+    actual_message: Option<&str>,
+) -> u8 {
+    match (panicked, expect_panic) {
+        (false, false) => TEST_PANIC_PASSED,
+        (false, true) => TEST_PANIC_MISSING,
+        (true, false) => TEST_PANIC_UNEXPECTED,
+        (true, true)
+            if !expected_message.is_empty()
+                && !actual_message
+                    .unwrap_or_default()
+                    .contains(expected_message) =>
+        {
+            TEST_PANIC_MESSAGE_MISMATCH
+        }
+        (true, true) => TEST_PANIC_PASSED,
+    }
+}
+
+/// Classify one test's panic outcome without consuming the report. A non-empty
+/// expected message uses substring matching so callers can assert the stable,
+/// relevant portion of a panic without coupling tests to incidental context.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__test_panic_status(
+    panicked: bool,
+    expect_panic: bool,
+    expected_message_ptr: *const u8,
+    expected_message_len: usize,
+) -> u8 {
+    let expected_message = if expected_message_ptr.is_null() || expected_message_len == 0 {
+        String::new()
+    } else {
+        let bytes =
+            unsafe { std::slice::from_raw_parts(expected_message_ptr, expected_message_len) };
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    PANIC_REPORT.with(|slot| {
+        let report = slot.borrow();
+        classify_test_panic(
+            panicked,
+            expect_panic,
+            &expected_message,
+            report.as_ref().map(|report| report.message.as_str()),
+        )
+    })
+}
+
+/// Emit actionable details for a failed test panic classification, then reset
+/// all per-test panic and shadow-stack state. The harness prints its one-line
+/// result before calling this function, so flush C stdio before writing the
+/// multi-line diagnostic through Rust's stderr handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__test_panic_finish(
+    status: u8,
+    expected_message_ptr: *const u8,
+    expected_message_len: usize,
+) {
+    if matches!(status, TEST_PANIC_UNEXPECTED | TEST_PANIC_MESSAGE_MISMATCH) {
+        unsafe {
+            libc::fflush(std::ptr::null_mut());
+        }
+    }
+
+    if status == TEST_PANIC_MESSAGE_MISMATCH {
+        let expected_message = if expected_message_ptr.is_null() || expected_message_len == 0 {
+            String::new()
+        } else {
+            let bytes =
+                unsafe { std::slice::from_raw_parts(expected_message_ptr, expected_message_len) };
+            String::from_utf8_lossy(bytes).into_owned()
+        };
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(
+            stderr,
+            "  expected panic message containing: {expected_message:?}"
+        );
+        let _ = stderr.flush();
+        drop(stderr);
+        write_report("test panicked without a recorded message");
+    } else if status == TEST_PANIC_UNEXPECTED {
+        write_report("test panicked without a recorded message");
+    }
+
+    __rt__panic_clear();
+}
+
 /// Clears the panic state after a caught panic so the next test can run cleanly.
 ///
-/// Called by the compiler-generated test harness in the `bb_panicked` branch.
-/// Returns `void` to avoid ARM64 sret ABI complications.
+/// Called by `__rt__test_panic_finish` and kept as a small public runtime ABI
+/// helper. Returning `void` avoids ARM64 sret ABI complications.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__panic_clear() {
     PANIC_ACTIVE.with(|f| f.set(false));
@@ -849,9 +1047,101 @@ extern "C" fn forced_unwind_stop(
 #[cfg(test)]
 mod tests {
     use super::{
-        BacktracePolicy, FrameKind, parse_backtrace_frames, parse_backtrace_policy,
-        render_panic_backtrace_with_policy,
+        BacktracePolicy, FrameKind, PanicReport, TEST_PANIC_MESSAGE_MISMATCH, TEST_PANIC_MISSING,
+        TEST_PANIC_PASSED, TEST_PANIC_UNEXPECTED, classify_test_panic, deserialize_panic_report,
+        parse_backtrace_frames, parse_backtrace_policy, render_panic_backtrace_with_policy,
+        serialize_panic_report, serialized_panic_message, write_captured_report,
     };
+
+    #[test]
+    fn panic_payload_serialization_round_trips_every_report_field() {
+        let report = PanicReport {
+            message: "child failed".into(),
+            backtrace: "frame one\nframe two".into(),
+            location: Some("src/main.tr:12:7".into()),
+            logical_stack: vec!["app__bt_usr__main".into(), "std__bt_std__task".into()],
+        };
+
+        let encoded = serialize_panic_report(&report);
+        assert_eq!(
+            serialized_panic_message(&encoded),
+            Some(b"child failed".as_slice())
+        );
+        assert_eq!(deserialize_panic_report(&encoded), Some(report));
+    }
+
+    #[test]
+    fn panic_payload_deserialization_rejects_corrupt_data() {
+        let report = PanicReport {
+            message: "child failed".into(),
+            backtrace: String::new(),
+            location: None,
+            logical_stack: Vec::new(),
+        };
+        let mut encoded = serialize_panic_report(&report);
+        encoded.push(0xff);
+        assert!(deserialize_panic_report(&encoded).is_none());
+
+        let mut impossible_count = serialize_panic_report(&report);
+        let count_offset = impossible_count.len() - std::mem::size_of::<u64>();
+        impossible_count[count_offset..].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(deserialize_panic_report(&impossible_count).is_none());
+        assert!(serialized_panic_message(b"not a panic payload").is_none());
+    }
+
+    #[test]
+    fn captured_task_reports_use_unobserved_headline() {
+        let report = PanicReport {
+            message: "detached child failed".into(),
+            backtrace: String::new(),
+            location: Some("src/main.tr:4:5".into()),
+            logical_stack: vec!["app__bt_usr__child".into()],
+        };
+        let mut rendered = Vec::new();
+        write_captured_report(
+            &mut rendered,
+            "unobserved task panic",
+            &report,
+            BacktracePolicy::Compact,
+        );
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert!(rendered.starts_with("unobserved task panic: detached child failed\n"));
+        assert!(rendered.contains("  at src/main.tr:4:5"));
+        assert!(rendered.contains("taro stack:"));
+    }
+
+    #[test]
+    fn test_panic_classification_enforces_expected_message_substrings() {
+        assert_eq!(
+            classify_test_panic(
+                true,
+                true,
+                "stable detail",
+                Some("prefix stable detail suffix")
+            ),
+            TEST_PANIC_PASSED
+        );
+        assert_eq!(
+            classify_test_panic(true, true, "different detail", Some("actual panic")),
+            TEST_PANIC_MESSAGE_MISMATCH
+        );
+        assert_eq!(
+            classify_test_panic(true, true, "", Some("any panic")),
+            TEST_PANIC_PASSED
+        );
+        assert_eq!(
+            classify_test_panic(false, true, "expected", None),
+            TEST_PANIC_MISSING
+        );
+        assert_eq!(
+            classify_test_panic(true, false, "", Some("unexpected")),
+            TEST_PANIC_UNEXPECTED
+        );
+        assert_eq!(
+            classify_test_panic(false, false, "", None),
+            TEST_PANIC_PASSED
+        );
+    }
 
     #[test]
     fn parse_backtrace_frames_classifies_compiler_tagged_symbols() {

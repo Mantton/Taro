@@ -16,9 +16,9 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::hir::{DefinitionID, Mutability};
 use crate::mir::{
-    BasicBlockData, BasicBlockId, Body, ConstantKind, CopyModifiers, EscapeSummary, LocalDecl,
-    LocalId, LocalKind, Operand, ParamEscapeInfo, Place, PlaceElem, Rvalue, Statement,
-    StatementKind, Terminator, TerminatorKind,
+    BasicBlockData, BasicBlockId, Body, CallUnwindAction, ConstantKind, CopyModifiers,
+    EscapeSummary, LocalDecl, LocalId, LocalKind, Operand, ParamEscapeInfo, Place, PlaceElem,
+    Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
 };
 use crate::sema::models::{GenericArguments, Ty, TyKind};
 use index_vec::IndexVec;
@@ -717,7 +717,18 @@ fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
             }
             out
         }
-        TerminatorKind::Yield { resume, .. } => vec![*resume],
+        TerminatorKind::Yield {
+            resume,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let mut out = vec![*resume, *cancel];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                out.push(*bb);
+            }
+            out
+        }
         TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable

@@ -163,6 +163,18 @@ pub enum TerminatorKind<'ctx> {
         resume: BasicBlockId,
         /// Place to write the awaited value into on resume
         resume_arg: Place<'ctx>,
+        /// Normal control-flow path that runs the active cleanup chain when a
+        /// suspended task is cancelled. The async transform replaces the
+        /// terminal marker at the end of this path with a cancelled poll
+        /// return.
+        cancel: BasicBlockId,
+        /// Terminal marker reached after the cancellation cleanup chain has
+        /// completed normally.
+        cancel_complete: BasicBlockId,
+        /// Unwind path for a panic raised while polling or destroying the
+        /// awaited child future. This preserves the same active defer chain
+        /// that surrounded the source-level `await`.
+        unwind: CallUnwindAction,
     },
 }
 

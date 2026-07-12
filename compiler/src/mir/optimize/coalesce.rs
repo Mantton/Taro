@@ -3,8 +3,8 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     mir::{
-        BasicBlockId, Body, Constant, LocalId, LocalKind, Operand, Place, Rvalue, StatementKind,
-        TerminatorKind,
+        BasicBlockId, Body, CallUnwindAction, Constant, LocalId, LocalKind, Operand, Place, Rvalue,
+        StatementKind, TerminatorKind,
     },
 };
 use index_vec::IndexVec;
@@ -623,7 +623,18 @@ fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
             }
             out
         }
-        TerminatorKind::Yield { resume, .. } => vec![*resume],
+        TerminatorKind::Yield {
+            resume,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let mut out = vec![*resume, *cancel];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                out.push(*bb);
+            }
+            out
+        }
         TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable

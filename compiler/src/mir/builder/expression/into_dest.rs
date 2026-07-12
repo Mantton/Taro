@@ -6,7 +6,7 @@ use crate::{
         Category, Constant, LocalId, Operand, Place, PlaceElem, Rvalue, RvalueFunc, TerminatorKind,
         builder::MirBuilder,
         optimize::async_transform::{
-            AsyncRuntimeFn, find_or_register_async_runtime_function, find_std_function, raw_ptr_ty,
+            AsyncRuntimeFn, find_or_register_async_runtime_function, find_std_function,
         },
     },
     sema::{
@@ -35,6 +35,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let operand = if self.is_type_copyable(expr.ty) {
                     Operand::Copy(place)
                 } else {
+                    self.deactivate_task_cleanup(block, &place, expr.span);
                     Operand::Move(place)
                 };
                 let rvalue = Rvalue::Use(operand);
@@ -276,6 +277,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 let operand = if self.is_type_copyable(expr.ty) {
                     Operand::Copy(place)
                 } else {
+                    self.deactivate_task_cleanup(block, &place, expr.span);
                     Operand::Move(place)
                 };
                 let rvalue = Rvalue::Use(operand);
@@ -355,6 +357,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     unpack!(block = self.as_operand(block, *future))
                 };
                 let resume = self.new_block_with_note("await-resume".into());
+                let (cancel, cancel_complete) = self.async_cancel_cleanup_target(expr.span);
+                let unwind = self.call_unwind_action(expr.span);
                 self.terminate(
                     block,
                     expr.span,
@@ -362,6 +366,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                         value: future_op,
                         resume,
                         resume_arg: destination.clone(),
+                        cancel,
+                        cancel_complete,
+                        unwind,
                     },
                 );
                 resume.unit()
@@ -481,6 +488,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
         if self.is_hidden_cancel_task_intrinsic(callee) {
             return self.lower_cancel_task_call(destination, block, args, span);
+        }
+        if self.is_hidden_detach_task_intrinsic(callee) {
+            return self.lower_detach_task_call(destination, block, args, span);
         }
         if self.is_hidden_task_result_intrinsic(callee) {
             return self.lower_task_result_call(destination, block, args, span);
@@ -948,6 +958,45 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         next.unit()
     }
 
+    fn lower_detach_task_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [task] = args else {
+            panic!("ICE: detach task lowering expects exactly one task argument");
+        };
+
+        let token_local = unpack!(block = self.lower_task_token_local(block, *task, span));
+        let detach_id =
+            find_or_register_async_runtime_function(self.gcx, AsyncRuntimeFn::DetachTask, span);
+        let detach_ty = self.gcx.get_type(detach_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: detach_ty,
+                    value: mir::ConstantKind::Function(
+                        detach_id,
+                        GenericArguments::empty(),
+                        detach_ty,
+                    ),
+                }),
+                args: vec![Operand::Copy(Place::from_local(token_local))],
+                devirt_hint: None,
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+
+        next.unit()
+    }
+
     fn lower_task_result_call(
         &mut self,
         destination: Place<'ctx>,
@@ -1056,6 +1105,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         let resume = self.new_block_with_note("task-result-resume".into());
+        let (cancel, cancel_complete) = self.async_cancel_cleanup_target(span);
+        let unwind = self.call_unwind_action(span);
         self.terminate(
             after_handle,
             span,
@@ -1063,6 +1114,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 value: Operand::Copy(Place::from_local(handle_local)),
                 resume,
                 resume_arg: Place::from_local(resume_local),
+                cancel,
+                cancel_complete,
+                unwind,
             },
         );
 
@@ -1094,16 +1148,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             },
         );
 
-        // Take the panic payload pointer BEFORE reclaiming the slot (reclaim clears panic_info).
-        let ptr_u8_mut_ty = raw_ptr_ty(
-            self.gcx,
-            self.gcx.types.uint8,
-            crate::hir::Mutability::Mutable,
-        );
-        let raw_ptr_local = self.new_temp_with_ty(ptr_u8_mut_ty, span);
+        // Move panic information into a GC-backed payload before reclaiming
+        // the task slot (reclaim clears panic_info).
+        let payload_data_local = self.new_temp_with_ty(self.gcx.types.string, span);
         let take_panic_id = find_or_register_async_runtime_function(
             self.gcx,
-            AsyncRuntimeFn::TakeTaskPanicInfo,
+            AsyncRuntimeFn::TakeTaskPanicPayload,
             span,
         );
         let take_panic_ty = self.gcx.get_type(take_panic_id);
@@ -1122,7 +1172,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }),
                 args: vec![Operand::Copy(Place::from_local(token_local))],
                 devirt_hint: None,
-                destination: Place::from_local(raw_ptr_local),
+                destination: Place::from_local(payload_data_local),
                 target: after_take_panic,
                 unwind: mir::CallUnwindAction::Terminate,
             },
@@ -1229,7 +1279,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
         self.goto(cancelled_block, join_block, span);
 
-        // panicked branch: Result.err(TaskError.panicked(PanicPayload { data: raw_ptr }))  [variant 1]
+        // panicked branch: Result.err(TaskError.panicked(PanicPayload { data }))  [variant 1]
         let panic_payload_def_id = self
             .gcx
             .std_item_def(StdItem::PanicPayload)
@@ -1248,7 +1298,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     variant_index: None,
                     generic_args: panic_payload_args,
                 },
-                fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(raw_ptr_local))]),
+                fields: IndexVec::from_vec(vec![Operand::Copy(Place::from_local(
+                    payload_data_local,
+                ))]),
             },
             span,
         );
@@ -1489,6 +1541,8 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         );
 
         let resume = self.new_block_with_note("task-group-next-resume".into());
+        let (cancel, cancel_complete) = self.async_cancel_cleanup_target(span);
+        let unwind = self.call_unwind_action(span);
         self.terminate(
             after_handle,
             span,
@@ -1496,6 +1550,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 value: Operand::Copy(Place::from_local(handle_local)),
                 resume,
                 resume_arg: Place::from_local(ready_local),
+                cancel,
+                cancel_complete,
+                unwind,
             },
         );
 
@@ -1705,11 +1762,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         span: Span,
     ) -> BlockAnd<LocalId> {
         let mut task_place = unpack!(block = self.as_place(block, task));
-        if matches!(
+        let task_is_indirect = matches!(
             self.thir.exprs[task].ty.kind(),
             TyKind::Reference(..) | TyKind::Pointer(..)
-        ) {
+        );
+        if task_is_indirect {
             task_place.projection.push(PlaceElem::Deref);
+        } else {
+            self.deactivate_task_cleanup(block, &task_place, span);
         }
         let token_local = self.new_temp_with_ty(self.gcx.types.uint, span);
         self.push_assign(
@@ -1965,6 +2025,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
     fn is_hidden_cancel_task_intrinsic(&self, callee: ExprId) -> bool {
         self.is_hidden_intrinsic_named(callee, "__intrinsic_cancel_task")
+    }
+
+    fn is_hidden_detach_task_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_detach_task")
     }
 
     fn is_hidden_task_result_intrinsic(&self, callee: ExprId) -> bool {

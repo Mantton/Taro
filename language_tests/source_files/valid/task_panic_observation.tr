@@ -1,0 +1,53 @@
+// EXPECT_STDERR_NOT_CONTAINS: handled-observation-panic
+// EXPECT_STDERR_COUNT: 1 unobserved task panic: abandoned-observation-panic
+// EXPECT_STDERR_COUNT: 1 unobserved task panic: detached-observation-panic
+
+func main() async {
+    let handled = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        std.panic.panic("handled-observation-panic")
+    })
+    let result = await handled.result()
+    let message = match result {
+        case .ok(_) => std.panic.panic("handled task panic should not succeed")
+        case .err(error) => match error {
+            case .cancelled => std.panic.panic("handled task panic should not be cancelled")
+            case .panicked(payload) => payload.message()
+        }
+    }
+
+    // The returned message points into the GC-backed payload. It must remain
+    // valid after the original PanicPayload leaves scope and collection runs.
+    std.runtime.collect()
+    std.testing.assertEqual(
+        message,
+        "handled-observation-panic",
+        "handled panic payload should survive collection",
+    )
+    std.print("handled task panic observed\n")
+
+    let ready = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("observation channel should be created")
+    }
+    {
+        let childReady = ready
+        let abandoned = std.task.spawn(|| async {
+            match await childReady.send(1_i32) {
+                case .ok(_) => {}
+                case .err(_) => std.panic.panic("observation signal should be sent")
+            }
+            std.panic.panic("abandoned-observation-panic")
+        })
+        match await ready.recv() {
+            case .some(_) => {}
+            case .none => std.panic.panic("observation signal should be received")
+        }
+    }
+    std.testing.assertTrue(ready.destroy().isOk(), "observation channel should be destroyed")
+
+    std.task.detached(|| async {
+        await std.testing.yieldNow()
+        std.panic.panic("detached-observation-panic")
+    })
+}

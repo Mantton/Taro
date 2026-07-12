@@ -440,10 +440,19 @@ fn remap_terminator<'ctx>(
             value,
             resume,
             resume_arg,
+            cancel,
+            cancel_complete,
+            unwind,
         } => TerminatorKind::Yield {
             value: remap_operand(gcx, value, local_map, gen_args),
             resume: block_map[resume.index()],
             resume_arg: remap_place(gcx, resume_arg, local_map, gen_args),
+            cancel: block_map[cancel.index()],
+            cancel_complete: block_map[cancel_complete.index()],
+            unwind: match unwind {
+                CallUnwindAction::Cleanup(bb) => CallUnwindAction::Cleanup(block_map[bb.index()]),
+                CallUnwindAction::Terminate => CallUnwindAction::Terminate,
+            },
         },
     };
     Terminator {

@@ -1204,9 +1204,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     ///    - If `@skip`, print `SKIPPED` and move on without calling the function.
     ///    - Otherwise call the function via `__rt__test_call_fn`, which wraps the
     ///      call in `catch_unwind` and returns `true` if the function panicked.
-    ///    - Combine the panicked flag with `@expectPanic` to decide pass/fail.
-    ///    - Call `__rt__panic_clear()` after any caught panic so thread-local
-    ///      panic state is reset before the next test runs.
+    ///    - Ask the runtime to combine the panic flag with `@expectPanic` and
+    ///      its optional expected-message substring.
+    ///    - Print the result, then let the runtime report unexpected/mismatched
+    ///      panic details and reset state before the next test runs.
     /// 3. Print a `test result:` summary line and exit with 0 (all passed) or 101
     ///    (at least one failure).
     ///
@@ -1222,8 +1223,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Declare runtime/libc helpers
         let puts_fn = self.declare_puts_fn();
         let printf_fn = self.declare_printf_fn();
-        let panic_clear_fn = self.declare_panic_clear_fn();
         let test_call_fn = self.declare_test_call_fn();
+        let test_panic_status_fn = self.declare_test_panic_status_fn();
+        let test_panic_finish_fn = self.declare_test_panic_finish_fn();
         let async_run_root_fn = self.declare_async_run_root_fn();
         let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
         let abort_rootless_fn = self.declare_executor_abort_rootless_fn();
@@ -1254,6 +1256,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut prefix_ptrs: Vec<PointerValue<'llvm>> = Vec::new();
         let mut skipped_msg_ptrs: Vec<PointerValue<'llvm>> = Vec::new();
         let mut expect_flags: Vec<u8> = Vec::new();
+        let mut expected_panic_message_ptrs: Vec<PointerValue<'llvm>> = Vec::new();
+        let mut expected_panic_message_lens: Vec<u64> = Vec::new();
         let mut skipped_flags: Vec<u8> = Vec::new();
 
         for (idx, test) in tests.iter().enumerate() {
@@ -1286,6 +1290,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             };
             fn_ptrs.push(fn_ptr);
             expect_flags.push(if test.expect_panic { 1 } else { 0 });
+            let expected_message = test.expected_panic_message.as_deref().unwrap_or("");
+            expected_panic_message_ptrs.push(self.build_global_cstring(
+                expected_message,
+                &format!("test_expected_panic_message_{idx}"),
+            ));
+            expected_panic_message_lens.push(expected_message.len() as u64);
             skipped_flags.push(if test.skipped { 1 } else { 0 });
         }
 
@@ -1309,6 +1319,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             "FAILED (expected panic but test completed normally)\n",
             "test_fail_expected_msg",
         );
+        let fail_panic_message_msg = self.build_global_cstring(
+            "FAILED (panic message mismatch)\n",
+            "test_fail_panic_message_msg",
+        );
         let string_fmt = self.build_global_cstring("%s", "test_string_fmt");
 
         if test_count > 0 {
@@ -1317,6 +1331,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let skipped_msg_table =
                 self.build_global_ptr_array(&skipped_msg_ptrs, "test_skipped_msg_table");
             let expect_table = self.build_global_i8_array(&expect_flags, "test_expect_table");
+            let expected_panic_message_table = self.build_global_ptr_array(
+                &expected_panic_message_ptrs,
+                "test_expected_panic_message_table",
+            );
+            let expected_panic_message_len_table = self.build_global_usize_array(
+                &expected_panic_message_lens,
+                "test_expected_panic_message_len_table",
+            );
             let skipped_table = self.build_global_i8_array(&skipped_flags, "test_skipped_table");
 
             let idx_ptr = builder.build_alloca(self.usize_ty, "test_idx").unwrap();
@@ -1328,6 +1350,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             let prefix_table_ty = ptr_ty.array_type(test_count as u32);
             let skipped_msg_table_ty = ptr_ty.array_type(test_count as u32);
             let expect_table_ty = i8_ty.array_type(test_count as u32);
+            let expected_panic_message_table_ty = ptr_ty.array_type(test_count as u32);
+            let expected_panic_message_len_table_ty = self.usize_ty.array_type(test_count as u32);
             let skipped_table_ty = i8_ty.array_type(test_count as u32);
 
             let loop_cond = self.context.append_basic_block(start_fn, "test_loop_cond");
@@ -1452,10 +1476,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 .unwrap()
                 .into_int_value();
 
-            // Reset panic state for next iteration; this is harmless in non-panicked cases.
-            builder
-                .build_call(panic_clear_fn, &[], "test_panic_clear")
-                .unwrap();
             builder
                 .build_call(abort_rootless_fn, &[], "test_executor_abort")
                 .unwrap();
@@ -1483,14 +1503,97 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 )
                 .unwrap();
 
+            let expected_message_ptr_ptr = unsafe {
+                builder
+                    .build_gep(
+                        expected_panic_message_table_ty,
+                        expected_panic_message_table,
+                        &[zero, idx],
+                        "test_expected_panic_message_ptr_ptr",
+                    )
+                    .unwrap()
+            };
+            let expected_message_ptr = builder
+                .build_load(
+                    ptr_ty,
+                    expected_message_ptr_ptr,
+                    "test_expected_panic_message_ptr",
+                )
+                .unwrap()
+                .into_pointer_value();
+            let expected_message_len_ptr = unsafe {
+                builder
+                    .build_gep(
+                        expected_panic_message_len_table_ty,
+                        expected_panic_message_len_table,
+                        &[zero, idx],
+                        "test_expected_panic_message_len_ptr",
+                    )
+                    .unwrap()
+            };
+            let expected_message_len = builder
+                .build_load(
+                    self.usize_ty,
+                    expected_message_len_ptr,
+                    "test_expected_panic_message_len",
+                )
+                .unwrap()
+                .into_int_value();
+
+            let panic_status = builder
+                .build_call(
+                    test_panic_status_fn,
+                    &[
+                        panicked.into(),
+                        expect_panic.into(),
+                        expected_message_ptr.into(),
+                        expected_message_len.into(),
+                    ],
+                    "test_panic_status",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_int_value();
             let passed_case = builder
-                .build_int_compare(IntPredicate::EQ, panicked, expect_panic, "test_passed")
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    panic_status,
+                    i8_ty.const_zero(),
+                    "test_passed",
+                )
                 .unwrap();
-            let fail_msg = builder
+            let missing_panic = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    panic_status,
+                    i8_ty.const_int(2, false),
+                    "test_missing_panic",
+                )
+                .unwrap();
+            let panic_message_mismatch = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    panic_status,
+                    i8_ty.const_int(3, false),
+                    "test_panic_message_mismatch",
+                )
+                .unwrap();
+            let base_fail_msg = builder
                 .build_select(
-                    expect_panic,
+                    missing_panic,
                     fail_expected_msg,
                     fail_panic_msg,
+                    "test_base_fail_msg",
+                )
+                .unwrap()
+                .into_pointer_value();
+            let fail_msg = builder
+                .build_select(
+                    panic_message_mismatch,
+                    fail_panic_message_msg,
+                    base_fail_msg,
                     "test_fail_msg",
                 )
                 .unwrap()
@@ -1503,6 +1606,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     printf_fn,
                     &[string_fmt.into(), result_msg.into()],
                     "test_result_print",
+                )
+                .unwrap();
+            builder
+                .build_call(
+                    test_panic_finish_fn,
+                    &[
+                        panic_status.into(),
+                        expected_message_ptr.into(),
+                        expected_message_len.into(),
+                    ],
+                    "test_panic_finish",
                 )
                 .unwrap();
 
@@ -1655,6 +1769,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         global.as_pointer_value()
     }
 
+    fn build_global_usize_array(&self, values: &[u64], name: &str) -> PointerValue<'llvm> {
+        let arr_ty = self.usize_ty.array_type(values.len() as u32);
+        let vals: Vec<_> = values
+            .iter()
+            .map(|value| self.usize_ty.const_int(*value, false))
+            .collect();
+        let global = self.module.add_global(arr_ty, None, name);
+        global.set_initializer(&self.usize_ty.const_array(&vals));
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_unnamed_addr(true);
+        global.as_pointer_value()
+    }
+
     /// Helper: Increment an i32 counter via load-add-store
     fn increment_counter(
         &self,
@@ -1692,18 +1820,37 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         })
     }
 
-    /// Helper: declare __rt__panic_clear() -> void
-    ///
-    /// Resets PANIC_ACTIVE and PANIC_REPORT after a caught panic so the next
-    /// test starts cleanly.  Returning void avoids struct-return ABI issues on
-    /// ARM64 that `__rt__panic_take_report` (24-byte sret) can trigger.
-    fn declare_panic_clear_fn(&self) -> FunctionValue<'llvm> {
-        let fn_ty = self.context.void_type().fn_type(&[], false);
+    /// Helper: declare
+    /// `__rt__test_panic_status(i1, i1, ptr, usize) -> i8`.
+    fn declare_test_panic_status_fn(&self) -> FunctionValue<'llvm> {
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let i1 = self.context.bool_type();
+        let i8 = self.context.i8_type();
+        let fn_ty = i8.fn_type(
+            &[i1.into(), i1.into(), ptr.into(), self.usize_ty.into()],
+            false,
+        );
         self.module
-            .get_function("__rt__panic_clear")
+            .get_function("__rt__test_panic_status")
             .unwrap_or_else(|| {
                 self.module
-                    .add_function("__rt__panic_clear", fn_ty, Some(Linkage::External))
+                    .add_function("__rt__test_panic_status", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    /// Helper: declare `__rt__test_panic_finish(i8, ptr, usize) -> void`.
+    fn declare_test_panic_finish_fn(&self) -> FunctionValue<'llvm> {
+        let ptr = self.context.ptr_type(AddressSpace::default());
+        let i8 = self.context.i8_type();
+        let fn_ty = self
+            .context
+            .void_type()
+            .fn_type(&[i8.into(), ptr.into(), self.usize_ty.into()], false);
+        self.module
+            .get_function("__rt__test_panic_finish")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__test_panic_finish", fn_ty, Some(Linkage::External))
             })
     }
 

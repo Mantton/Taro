@@ -494,7 +494,18 @@ fn terminator_successors(term: &crate::mir::Terminator<'_>) -> Vec<BasicBlockId>
             }
             succs
         }
-        TerminatorKind::Yield { resume, .. } => vec![*resume],
+        TerminatorKind::Yield {
+            resume,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let mut succs = vec![*resume, *cancel];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                succs.push(*bb);
+            }
+            succs
+        }
         TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable

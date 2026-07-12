@@ -351,10 +351,18 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                 value,
                 resume,
                 resume_arg,
+                cancel,
+                cancel_complete,
+                unwind,
             } => {
                 self.check_operand(value, span);
                 self.check_place(resume_arg, span);
                 self.check_edge(*resume, span);
+                self.check_edge(*cancel, span);
+                self.check_edge(*cancel_complete, span);
+                if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                    self.check_edge(*cleanup, span);
+                }
             }
             TerminatorKind::Return | TerminatorKind::ResumeUnwind | TerminatorKind::Unreachable => {
             }
@@ -529,13 +537,31 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                     }
                 }
                 TerminatorKind::Yield {
-                    resume, resume_arg, ..
+                    resume,
+                    resume_arg,
+                    cancel,
+                    unwind,
+                    ..
                 } => {
                     let mut resume_state = return_slot_initialized;
                     if is_full_return_place(body, resume_arg) {
                         resume_state = true;
                     }
                     propagate_bool_state(&mut block_states, &mut worklist, *resume, resume_state);
+                    propagate_bool_state(
+                        &mut block_states,
+                        &mut worklist,
+                        *cancel,
+                        return_slot_initialized,
+                    );
+                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                        propagate_bool_state(
+                            &mut block_states,
+                            &mut worklist,
+                            *cleanup,
+                            return_slot_initialized,
+                        );
+                    }
                 }
                 TerminatorKind::Return => {
                     if require_return_slot && !return_slot_initialized {
@@ -656,7 +682,18 @@ fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
             }
             succs
         }
-        TerminatorKind::Yield { resume, .. } => vec![*resume],
+        TerminatorKind::Yield {
+            resume,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let mut succs = vec![*resume, *cancel];
+            if let CallUnwindAction::Cleanup(bb) = unwind {
+                succs.push(*bb);
+            }
+            succs
+        }
         TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable
@@ -1280,12 +1317,20 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                     }
                 }
                 TerminatorKind::Yield {
-                    resume, resume_arg, ..
+                    resume,
+                    resume_arg,
+                    cancel,
+                    unwind,
+                    ..
                 } => {
                     let mut resume_state = state.clone();
                     resume_state.reinitialize(resume_arg.local);
                     reinitialize_borrowed_content_if_needed(body, resume_arg, &mut resume_state);
                     propagate_move_state(&mut block_states, &mut worklist, *resume, &resume_state);
+                    propagate_move_state(&mut block_states, &mut worklist, *cancel, &state);
+                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                        propagate_move_state(&mut block_states, &mut worklist, *cleanup, &state);
+                    }
                 }
                 _ => {
                     for succ in successors(&term.kind) {
@@ -1714,7 +1759,11 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                     }
                 }
                 TerminatorKind::Yield {
-                    resume, resume_arg, ..
+                    resume,
+                    resume_arg,
+                    cancel,
+                    unwind,
+                    ..
                 } => {
                     let mut resume_state = active_borrows.clone();
                     if resume_arg.projection.is_empty() {
@@ -1726,6 +1775,20 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                         *resume,
                         &resume_state,
                     );
+                    propagate_borrow_state(
+                        &mut block_in_states,
+                        &mut worklist,
+                        *cancel,
+                        &active_borrows,
+                    );
+                    if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                        propagate_borrow_state(
+                            &mut block_in_states,
+                            &mut worklist,
+                            *cleanup,
+                            &active_borrows,
+                        );
+                    }
                 }
                 _ => {
                     for succ in successors(&term.kind) {

@@ -147,7 +147,14 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mutable: bool,
     ) -> BlockAnd<()> {
         match &pattern.kind {
-            thir::PatternKind::Wild => block.unit(),
+            thir::PatternKind::Wild => {
+                if self.is_task_ty(pattern.ty)
+                    && let Some(task_place) = place
+                {
+                    return self.drop_task_place(block, task_place.clone(), pattern.span);
+                }
+                block.unit()
+            }
             thir::PatternKind::Binding {
                 local: pat_id,
                 name,
@@ -162,6 +169,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     pattern.span,
                 );
                 self.locals.insert(*pat_id, local);
+                if self.is_task_ty(*ty) {
+                    self.register_task_cleanup(local, block, pattern.span, false);
+                }
                 if let Some(src) = place {
                     let operand = if self.is_type_copyable(*ty) {
                         Operand::Copy(src.clone())

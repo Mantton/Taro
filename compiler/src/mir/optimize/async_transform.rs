@@ -36,6 +36,9 @@ struct YieldSite<'ctx> {
     future_place: Place<'ctx>,
     resume: BasicBlockId,
     resume_arg: Place<'ctx>,
+    cancel: BasicBlockId,
+    cancel_complete: BasicBlockId,
+    unwind: CallUnwindAction,
     span: Span,
 }
 
@@ -197,6 +200,9 @@ fn materialize_await_futures<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Vec
             value,
             resume,
             resume_arg,
+            cancel,
+            cancel_complete,
+            unwind,
         } = terminator.kind
         else {
             unreachable!();
@@ -225,6 +231,9 @@ fn materialize_await_futures<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Vec
             future_place,
             resume,
             resume_arg,
+            cancel,
+            cancel_complete,
+            unwind,
             span: terminator.span,
         });
     }
@@ -596,13 +605,17 @@ fn rewrite_yields<'ctx>(
     locals: &PollThunkLocals<'ctx>,
 ) -> CompileResult<()> {
     let span = body_span(body);
-    let resume_unwind = ensure_resume_unwind_block(body, span);
-    let unwind = CallUnwindAction::Cleanup(resume_unwind);
     let async_poll_id = find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Poll, span);
     let async_poll_ty = gcx.get_type(async_poll_id);
     let async_destroy_id =
         find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::Destroy, span);
     let async_destroy_ty = gcx.get_type(async_destroy_id);
+    let async_cancel_id =
+        find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::CancelHandle, span);
+    let async_cancel_ty = gcx.get_type(async_cancel_id);
+    let is_cancelled_id =
+        find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::IsTaskCancelled, span);
+    let is_cancelled_ty = gcx.get_type(is_cancelled_id);
     for (index, site) in yields.iter().enumerate() {
         let ready_ty = place_ty(body, gcx, &site.resume_arg);
         let ready_is_never = matches!(ready_ty.kind(), TyKind::Never);
@@ -662,6 +675,32 @@ fn rewrite_yields<'ctx>(
             Some(gcx.intern_symbol("$await_tag")),
             site.span,
         );
+        let cancelled_local = push_local(
+            body,
+            gcx.types.bool,
+            LocalKind::Temp,
+            true,
+            Some(gcx.intern_symbol("$await_cancelled")),
+            site.span,
+        );
+
+        // The MIR builder leaves a unique unreachable marker at the end of
+        // each ordinary cancellation cleanup path. Turn that marker into the
+        // poll ABI's distinct cancelled completion tag after normal returns
+        // have already been rewritten.
+        body.basic_blocks[site.cancel_complete]
+            .statements
+            .push(Statement {
+                kind: StatementKind::Assign(
+                    Place::from_local(locals.tag_return),
+                    Rvalue::Use(const_uint8_operand(gcx, 2)),
+                ),
+                span: site.span,
+            });
+        body.basic_blocks[site.cancel_complete].terminator = Some(Terminator {
+            kind: TerminatorKind::Return,
+            span: site.span,
+        });
 
         let mut poll_statements = Vec::with_capacity(4);
         poll_statements.push(Statement {
@@ -742,6 +781,26 @@ fn rewrite_yields<'ctx>(
             Some(gcx.intern_symbol("$await_destroy_void")),
             site.span,
         );
+        let cancel_switch_block = body.basic_blocks.push(BasicBlockData {
+            note: Some(format!("await-cancel-check-{}", index)),
+            statements: vec![],
+            terminator: None,
+        });
+        let cancel_destroy_block = body.basic_blocks.push(BasicBlockData {
+            note: Some(format!("await-cancel-destroy-{}", index)),
+            statements: vec![],
+            terminator: Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: fn_operand(async_cancel_id, GenericArguments::empty(), async_cancel_ty),
+                    args: vec![Operand::Copy(Place::from_local(handle_local))],
+                    devirt_hint: None,
+                    destination: Place::from_local(destroy_void_local),
+                    target: site.cancel,
+                    unwind: site.unwind,
+                },
+                span: site.span,
+            }),
+        });
         let ready_target = body.basic_blocks.push(BasicBlockData {
             note: Some(format!("await-destroy-{}", index)),
             statements: vec![],
@@ -756,7 +815,7 @@ fn rewrite_yields<'ctx>(
                     devirt_hint: None,
                     destination: Place::from_local(destroy_void_local),
                     target: site.resume,
-                    unwind,
+                    unwind: site.unwind,
                 },
                 span: site.span,
             }),
@@ -820,13 +879,26 @@ fn rewrite_yields<'ctx>(
                 devirt_hint: None,
                 destination: Place::from_local(tag_local),
                 target: check_block,
-                unwind,
+                unwind: site.unwind,
+            },
+            span: site.span,
+        });
+        body.basic_blocks[cancel_switch_block].terminator = Some(Terminator {
+            kind: TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Place::from_local(cancelled_local)),
+                targets: vec![(0, poll_handle_block)],
+                otherwise: cancel_destroy_block,
             },
             span: site.span,
         });
         body.basic_blocks[poll_block].terminator = Some(Terminator {
-            kind: TerminatorKind::Goto {
-                target: poll_handle_block,
+            kind: TerminatorKind::Call {
+                func: fn_operand(is_cancelled_id, GenericArguments::empty(), is_cancelled_ty),
+                args: vec![],
+                devirt_hint: None,
+                destination: Place::from_local(cancelled_local),
+                target: cancel_switch_block,
+                unwind: site.unwind,
             },
             span: site.span,
         });
@@ -836,27 +908,6 @@ fn rewrite_yields<'ctx>(
         });
     }
     Ok(())
-}
-
-fn ensure_resume_unwind_block<'ctx>(body: &mut Body<'ctx>, span: Span) -> BasicBlockId {
-    for (block, data) in body.basic_blocks.iter_enumerated() {
-        if data
-            .terminator
-            .as_ref()
-            .is_some_and(|term| matches!(term.kind, TerminatorKind::ResumeUnwind))
-        {
-            return block;
-        }
-    }
-
-    body.basic_blocks.push(BasicBlockData {
-        note: Some("resume_unwind".into()),
-        statements: vec![],
-        terminator: Some(Terminator {
-            kind: TerminatorKind::ResumeUnwind,
-            span,
-        }),
-    })
 }
 
 fn install_dispatch<'ctx>(
@@ -1643,12 +1694,15 @@ pub(crate) enum AsyncRuntimeFn {
     Create,
     Poll,
     Destroy,
+    CancelHandle,
     RunRoot,
     Spawn,
     FromSpawnedChecked,
     TaskCompletionStatus,
     ReclaimSpawned,
     CancelTask,
+    DetachTask,
+    DropTask,
     WaitReadable,
     WaitWritable,
     ChannelWaitSend,
@@ -1667,7 +1721,7 @@ pub(crate) enum AsyncRuntimeFn {
     TaskGroupDestroyAndRethrowPanic,
     TaskGroupNextStatus,
     GroupNext,
-    TakeTaskPanicInfo,
+    TakeTaskPanicPayload,
     PanicPayloadMessage,
     PanicPayloadRethrow,
 }
@@ -1698,6 +1752,11 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
         ),
         AsyncRuntimeFn::Destroy => (
             "__rt__async_destroy",
+            vec![gcx.async_handle_ty()],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::CancelHandle => (
+            "__rt__async_cancel",
             vec![gcx.async_handle_ty()],
             gcx.types.void,
         ),
@@ -1780,6 +1839,16 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
             vec![gcx.types.uint],
             gcx.types.void,
         ),
+        AsyncRuntimeFn::DetachTask => (
+            "__rt__executor_detach_task",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
+        AsyncRuntimeFn::DropTask => (
+            "__rt__executor_drop_task",
+            vec![gcx.types.uint],
+            gcx.types.void,
+        ),
         AsyncRuntimeFn::TaskGroupCreate => (
             "__rt__task_group_create",
             vec![gcx.types.uint, gcx.types.uint8],
@@ -1820,27 +1889,19 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
             vec![gcx.types.uint],
             gcx.async_handle_ty(),
         ),
-        AsyncRuntimeFn::TakeTaskPanicInfo => (
-            "__rt__executor_take_task_panic_info",
+        AsyncRuntimeFn::TakeTaskPanicPayload => (
+            "__rt__executor_take_task_panic_payload",
             vec![gcx.types.uint],
-            raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable),
+            gcx.types.string,
         ),
         AsyncRuntimeFn::PanicPayloadMessage => (
             "__rt__panic_payload_message",
-            vec![raw_ptr_ty(
-                gcx,
-                gcx.types.uint8,
-                crate::hir::Mutability::Mutable,
-            )],
+            vec![gcx.types.string],
             gcx.types.string,
         ),
         AsyncRuntimeFn::PanicPayloadRethrow => (
             "__rt__panic_payload_rethrow",
-            vec![raw_ptr_ty(
-                gcx,
-                gcx.types.uint8,
-                crate::hir::Mutability::Mutable,
-            )],
+            vec![gcx.types.string],
             Ty::new(TyKind::Never, gcx),
         ),
     };
