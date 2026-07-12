@@ -63,6 +63,9 @@ pub fn compile_std<'a>(
             dump_mir: false,
             dump_llvm: false,
             timings: compile_options.timings,
+            // Attached std is a reusable optimized artifact and intentionally
+            // carries no per-invocation source metadata.
+            debug_info: compiler::compile::config::DebugInfo::None,
         },
         test_mode: false,
         std_mode: StdMode::BootstrapStd,

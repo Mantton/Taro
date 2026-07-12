@@ -116,6 +116,7 @@ fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
             dump_mir: false,
             dump_llvm: false,
             timings: arguments.timings,
+            debug_info: compile_options.debug_info,
         },
         test_mode: false,
         std_mode: StdMode::FullStd,
@@ -323,6 +324,7 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
                 dump_mir: false,
                 dump_llvm: false,
                 timings: arguments.timings,
+                debug_info: compile_options.debug_info,
             },
             test_mode: false,
             std_mode: if is_std_package {

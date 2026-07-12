@@ -4,7 +4,7 @@ use crate::{
         mangle::{mangle, mangle_instance},
     },
     compile::{
-        config::BuildProfile,
+        config::{BuildProfile, DebugInfo},
         context::{Gcx, GlobalContext},
     },
     error::CompileResult,
@@ -46,6 +46,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod debug;
 mod existentials;
 mod intrinsics;
 mod normalize;
@@ -137,6 +138,8 @@ pub fn emit_package_with_timings<'gcx>(
     emitter.emit_start_shim(package);
     timings.emit_entry_or_harness = phase_started_at.elapsed();
 
+    emitter.finalize_debug_info();
+
     let phase_started_at = Instant::now();
     if let Err(e) = emitter.module.verify() {
         let msg = format!("invalid LLVM module: {}", e.to_string());
@@ -209,6 +212,8 @@ pub fn emit_test_package_with_timings<'gcx>(
     emitter.emit_test_harness(tests);
     timings.emit_entry_or_harness = phase_started_at.elapsed();
 
+    emitter.finalize_debug_info();
+
     let phase_started_at = Instant::now();
     if let Err(e) = emitter.module.verify() {
         let msg = format!("invalid LLVM module: {}", e.to_string());
@@ -240,6 +245,7 @@ struct Emitter<'llvm, 'gcx> {
     context: &'llvm Context,
     module: Module<'llvm>,
     builder: Builder<'llvm>,
+    debug: Option<debug::DebugContext<'llvm>>,
     gcx: GlobalContext<'gcx>,
     functions: FxHashMap<Instance<'gcx>, FunctionValue<'llvm>>,
     fn_abis: FxHashMap<Instance<'gcx>, abi::FnAbi<'gcx>>,
@@ -349,10 +355,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(0);
+        let debug = matches!(gcx.config.debug.debug_info, DebugInfo::LineTables)
+            .then(|| debug::DebugContext::new(context, &module, gcx));
         Emitter {
             context,
             module,
             builder,
+            debug,
             gcx,
             functions: FxHashMap::default(),
             fn_abis: FxHashMap::default(),
@@ -2030,6 +2039,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .expect("function ABI must be declared");
         self.current_fn = Some(function);
         self.current_fn_abi = Some(fn_abi.clone());
+        if let Some(debug) = &mut self.debug {
+            debug.begin_function(function, body, self.gcx);
+        }
         self.current_sret_ptr = if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
             function
                 .get_nth_param(0)
@@ -2062,22 +2074,46 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.builder.position_at_end(llvm_bb);
 
             for stmt in &bb.statements {
+                self.set_debug_location(stmt.span);
                 self.lower_statement(body, &mut locals, stmt)?;
             }
 
             if let Some(term) = &bb.terminator {
+                self.set_debug_location(term.span);
                 self.lower_terminator(body, &mut locals, term, &llvm_blocks)?;
             } else if llvm_bb.get_terminator().is_none() {
+                self.unset_debug_location();
                 let _ = self.builder.build_unreachable().unwrap();
             }
         }
 
+        if let Some(debug) = &mut self.debug {
+            debug.end_function(&self.builder);
+        }
         self.shadow = None;
         self.eh_slot = None;
         self.current_fn = None;
         self.current_fn_abi = None;
         self.current_sret_ptr = None;
         Ok(())
+    }
+
+    fn set_debug_location(&mut self, span: crate::span::Span) {
+        if let Some(debug) = &mut self.debug {
+            debug.set_location(self.context, &self.builder, self.gcx, span);
+        }
+    }
+
+    fn unset_debug_location(&self) {
+        if self.debug.is_some() {
+            self.builder.unset_current_debug_location();
+        }
+    }
+
+    fn finalize_debug_info(&self) {
+        if let Some(debug) = &self.debug {
+            debug.finalize();
+        }
     }
 
     fn body_has_unwind(&self, body: &mir::Body<'gcx>) -> bool {

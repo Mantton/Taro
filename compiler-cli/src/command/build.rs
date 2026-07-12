@@ -124,6 +124,7 @@ fn run_single_file(
             dump_mir: arguments.dump_mir,
             dump_llvm: arguments.dump_llvm,
             timings: arguments.timings,
+            debug_info: compile_options.debug_info,
         },
         test_mode: false,
         std_mode: StdMode::FullStd,
@@ -348,6 +349,7 @@ fn run_package(
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
                 timings: arguments.timings,
+                debug_info: compile_options.debug_info,
             },
             test_mode: false,
             std_mode: if is_std_package {
@@ -726,6 +728,7 @@ fn run_single_file_test(
             dump_mir: arguments.dump_mir,
             dump_llvm: arguments.dump_llvm,
             timings: arguments.timings,
+            debug_info: compile_options.debug_info,
         },
         test_mode: true,
         std_mode: StdMode::FullStd,
@@ -963,6 +966,7 @@ fn run_package_test(
                 dump_mir: arguments.dump_mir,
                 dump_llvm: arguments.dump_llvm,
                 timings: arguments.timings,
+                debug_info: compile_options.debug_info,
             },
             test_mode,
             std_mode: if is_std_package {

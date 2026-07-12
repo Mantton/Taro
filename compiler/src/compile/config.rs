@@ -31,6 +31,15 @@ impl Default for BuildProfile {
     }
 }
 
+/// Amount of source-level debug metadata emitted into generated objects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum DebugInfo {
+    #[default]
+    None,
+    /// Emit function metadata and source line tables without local variables.
+    LineTables,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StdMode {
@@ -53,6 +62,8 @@ pub struct DebugOptions {
     pub dump_llvm: bool,
     /// Print per-phase compiler timings to stderr
     pub timings: bool,
+    /// Source-level debug metadata to emit.
+    pub debug_info: DebugInfo,
 }
 
 #[derive(Debug, Clone)]

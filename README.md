@@ -111,6 +111,7 @@ Common flags:
 | `--sysroot <PATH>` | Use a target SDK/sysroot while linking. |
 | `--timings` | Print compiler phase timings. |
 | `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
+| `--debug-info <none\|line-tables>` | Select source debug metadata. Debug builds default to line tables; release builds default to none. |
 | `--no-incremental` | Disable dependency artifact reuse. |
 | `--locked` | Require `package.lock` to match dependency resolution exactly; use cached locked Git revisions without fetching when available. |
 | `--update-lock` | Refresh lockfile entries from current dependency sources. |

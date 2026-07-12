@@ -316,6 +316,7 @@ mod tests {
                 dump_mir: false,
                 dump_llvm: false,
                 timings: false,
+                debug_info: Default::default(),
             },
             test_mode: false,
             std_mode: StdMode::BootstrapStd,

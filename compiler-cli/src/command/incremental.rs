@@ -1,6 +1,6 @@
 use compiler::{
     compile::{
-        config::{BuildProfile, Config, PackageKind, StdMode},
+        config::{BuildProfile, Config, DebugInfo, PackageKind, StdMode},
         context::CompilerContext,
         test_collector::TestSelection,
     },
@@ -75,6 +75,7 @@ pub fn compute_package_fingerprint_input_with_test_selection(
         config.is_std_provider as u8,
         config.debug.dump_mir as u8,
         config.debug.dump_llvm as u8,
+        debug_info_tag(config.debug.debug_info),
     ]);
     hasher.update(&[package_kind_tag(config.kind), std_mode_tag(config.std_mode)]);
 
@@ -119,6 +120,13 @@ fn package_kind_tag(kind: PackageKind) -> u8 {
         PackageKind::Library => 0,
         PackageKind::Executable => 1,
         PackageKind::Both => 2,
+    }
+}
+
+fn debug_info_tag(debug_info: DebugInfo) -> u8 {
+    match debug_info {
+        DebugInfo::None => 0,
+        DebugInfo::LineTables => 1,
     }
 }
 
@@ -284,7 +292,7 @@ mod tests {
     use compiler::{
         PackageIndex,
         compile::{
-            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+            config::{BuildProfile, Config, DebugInfo, DebugOptions, PackageKind, StdMode},
             context::{CompilerArenas, CompilerContext, CompilerStore},
             test_collector::TestSelection,
         },
@@ -389,6 +397,26 @@ mod tests {
                 .package_fingerprint;
             assert_ne!(base, library);
             assert_ne!(base, wrapping);
+        });
+    }
+
+    #[test]
+    fn debug_info_mode_changes_compilation_fingerprint() {
+        with_context(|context, source| {
+            let without_debug_info = base_config(source.clone());
+            let mut with_line_tables = base_config(source);
+            with_line_tables.debug.debug_info = DebugInfo::LineTables;
+            let known = FxHashMap::default();
+
+            let without_debug_info =
+                compute_package_fingerprint_input(context, &without_debug_info, &known)
+                    .unwrap()
+                    .package_fingerprint;
+            let with_line_tables =
+                compute_package_fingerprint_input(context, &with_line_tables, &known)
+                    .unwrap()
+                    .package_fingerprint;
+            assert_ne!(without_debug_info, with_line_tables);
         });
     }
 

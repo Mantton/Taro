@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use compiler::compile::config::BuildProfile;
+use compiler::compile::config::{BuildProfile, DebugInfo};
 use std::{path::PathBuf, process::exit};
 
 mod command;
@@ -10,6 +10,7 @@ pub struct CompileModeOptions {
     pub profile: BuildProfile,
     pub overflow_checks: bool,
     pub timings: bool,
+    pub debug_info: DebugInfo,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -81,6 +82,9 @@ pub struct CommonCompileArgs {
     /// Dump generated LLVM IR to stderr
     #[arg(long = "dump-llvm")]
     pub dump_llvm: bool,
+    /// Source debug metadata to emit (defaults to line tables in debug builds).
+    #[arg(long = "debug-info", value_enum)]
+    pub debug_info: Option<DebugInfoLevel>,
     #[arg(long = "runtime-path")]
     pub runtime_path: Option<PathBuf>,
     /// Target triple override (e.g., x86_64-unknown-linux-gnu)
@@ -126,6 +130,21 @@ pub enum NewProjectKind {
     Both,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum DebugInfoLevel {
+    None,
+    LineTables,
+}
+
+impl From<DebugInfoLevel> for DebugInfo {
+    fn from(value: DebugInfoLevel) -> Self {
+        match value {
+            DebugInfoLevel::None => DebugInfo::None,
+            DebugInfoLevel::LineTables => DebugInfo::LineTables,
+        }
+    }
+}
+
 impl CommonCompileArgs {
     /// Returns true if the path points to a single .tr file
     pub fn is_single_file(&self) -> bool {
@@ -159,6 +178,13 @@ impl CommonCompileArgs {
             profile: self.build_profile(),
             overflow_checks: self.overflow_checks_enabled(),
             timings: self.timings,
+            debug_info: self.debug_info.map(Into::into).unwrap_or_else(|| {
+                if matches!(self.build_profile(), BuildProfile::Debug) {
+                    DebugInfo::LineTables
+                } else {
+                    DebugInfo::None
+                }
+            }),
         }
     }
 
@@ -213,6 +239,7 @@ pub fn run() {
 mod tests {
     use super::{Cli, CliCommand, NewProjectKind};
     use clap::Parser;
+    use compiler::compile::config::DebugInfo;
 
     #[test]
     fn parses_new_command() {
@@ -337,6 +364,28 @@ mod tests {
             }
             other => panic!("expected build command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn selects_debug_info_from_profile_and_override() {
+        let debug = Cli::parse_from(["taro", "build", "examples/hello.tr"]);
+        let release = Cli::parse_from(["taro", "build", "examples/hello.tr", "--release"]);
+        let overridden = Cli::parse_from([
+            "taro",
+            "build",
+            "examples/hello.tr",
+            "--release",
+            "--debug-info",
+            "line-tables",
+        ]);
+
+        let mode = |cli: Cli| match cli.command {
+            CliCommand::Build(build) => build.common.compile_mode_options().debug_info,
+            other => panic!("expected build command, got {other:?}"),
+        };
+        assert_eq!(mode(debug), DebugInfo::LineTables);
+        assert_eq!(mode(release), DebugInfo::None);
+        assert_eq!(mode(overridden), DebugInfo::LineTables);
     }
 
     #[test]
