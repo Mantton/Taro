@@ -5,6 +5,7 @@ use crate::mir::{Body, MirPhase};
 pub mod alloc_escape;
 pub mod async_transform;
 pub mod coalesce;
+pub mod const_prop;
 pub mod devirtualize;
 pub mod dse;
 pub mod escape;
@@ -71,6 +72,7 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(async_transform::AsyncTransform),
         Box::new(devirtualize::DevirtualizeStaticCalls),
         Box::new(inline::Inline::default()),
+        Box::new(const_prop::ConstantPropagation),
         Box::new(passes::SimplifyCfg), // Clean up after inlining (merges blocks, removes unreachable)
         Box::new(passes::LowerAggregates),
         Box::new(coalesce::CallDestinationCoalescing),
