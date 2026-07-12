@@ -1689,222 +1689,22 @@ fn frame_local_ty<'ctx>(frame: &AsyncFrameLayout<'ctx>, local: LocalId) -> Ty<'c
     items[field_index + 1]
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AsyncRuntimeFn {
-    Create,
-    Poll,
-    Destroy,
-    CancelHandle,
-    RunRoot,
-    Spawn,
-    FromSpawnedChecked,
-    TaskCompletionStatus,
-    ReclaimSpawned,
-    CancelTask,
-    DetachTask,
-    DropTask,
-    WaitReadable,
-    WaitWritable,
-    ChannelWaitSend,
-    ChannelWaitRecv,
-    MutexLock,
-    RwLockRead,
-    RwLockWrite,
-    Sleep,
-    YieldNow,
-    IsTaskCancelled,
-    TaskGroupCreate,
-    TaskGroupSpawn,
-    TaskGroupClose,
-    TaskGroupCancelAll,
-    TaskGroupDestroy,
-    TaskGroupDestroyAndRethrowPanic,
-    TaskGroupNextStatus,
-    GroupNext,
-    TakeTaskPanicPayload,
-    PanicPayloadMessage,
-    PanicPayloadRethrow,
-}
+pub(crate) use crate::runtime_abi::RuntimeAbiFunction as AsyncRuntimeFn;
 
 pub(crate) fn find_or_register_async_runtime_function<'ctx>(
     gcx: Gcx<'ctx>,
     which: AsyncRuntimeFn,
     span: Span,
 ) -> DefinitionID {
-    let (name, inputs, output) = match which {
-        AsyncRuntimeFn::Create => (
-            "__rt__async_create",
-            vec![
-                raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable),
-                raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Immutable),
-                raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Immutable),
-                gcx.types.uint8,
-            ],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::Poll => (
-            "__rt__async_poll",
-            vec![
-                gcx.async_handle_ty(),
-                raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable),
-            ],
-            gcx.types.uint8,
-        ),
-        AsyncRuntimeFn::Destroy => (
-            "__rt__async_destroy",
-            vec![gcx.async_handle_ty()],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::CancelHandle => (
-            "__rt__async_cancel",
-            vec![gcx.async_handle_ty()],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::RunRoot => (
-            "__rt__async_run_root",
-            vec![
-                gcx.async_handle_ty(),
-                raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable),
-            ],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::Spawn => (
-            "__rt__executor_spawn",
-            vec![gcx.async_handle_ty(), gcx.types.uint],
-            gcx.types.uint,
-        ),
-        AsyncRuntimeFn::WaitReadable => (
-            "__rt__async_wait_readable",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::WaitWritable => (
-            "__rt__async_wait_writable",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::ChannelWaitSend => (
-            "__rt__async_channel_wait_send",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::ChannelWaitRecv => (
-            "__rt__async_channel_wait_recv",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::MutexLock => (
-            "__rt__async_mutex_lock",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::RwLockRead => (
-            "__rt__async_rwlock_read",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::RwLockWrite => (
-            "__rt__async_rwlock_write",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::Sleep => (
-            "__rt__async_sleep",
-            vec![gcx.types.uint64, gcx.types.uint32],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::YieldNow => ("__rt__async_yield_now", vec![], gcx.async_handle_ty()),
-        AsyncRuntimeFn::IsTaskCancelled => (
-            "__rt__executor_is_current_task_cancelled",
-            vec![],
-            gcx.types.bool,
-        ),
-        AsyncRuntimeFn::FromSpawnedChecked => (
-            "__rt__async_from_spawned_checked",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::TaskCompletionStatus => (
-            "__rt__executor_task_completion_status",
-            vec![gcx.types.uint],
-            gcx.types.uint8,
-        ),
-        AsyncRuntimeFn::ReclaimSpawned => (
-            "__rt__executor_reclaim_spawned",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::CancelTask => (
-            "__rt__executor_cancel_task",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::DetachTask => (
-            "__rt__executor_detach_task",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::DropTask => (
-            "__rt__executor_drop_task",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::TaskGroupCreate => (
-            "__rt__task_group_create",
-            vec![gcx.types.uint, gcx.types.uint8],
-            gcx.types.uint,
-        ),
-        AsyncRuntimeFn::TaskGroupSpawn => (
-            "__rt__task_group_spawn",
-            vec![gcx.types.uint, gcx.async_handle_ty(), gcx.types.uint],
-            gcx.types.uint,
-        ),
-        AsyncRuntimeFn::TaskGroupClose => (
-            "__rt__task_group_close",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::TaskGroupCancelAll => (
-            "__rt__task_group_cancel_all",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::TaskGroupDestroy => (
-            "__rt__task_group_destroy",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::TaskGroupDestroyAndRethrowPanic => (
-            "__rt__task_group_destroy_and_rethrow_panic",
-            vec![gcx.types.uint],
-            gcx.types.void,
-        ),
-        AsyncRuntimeFn::TaskGroupNextStatus => (
-            "__rt__task_group_next_status",
-            vec![gcx.types.uint],
-            gcx.types.uint8,
-        ),
-        AsyncRuntimeFn::GroupNext => (
-            "__rt__async_group_next",
-            vec![gcx.types.uint],
-            gcx.async_handle_ty(),
-        ),
-        AsyncRuntimeFn::TakeTaskPanicPayload => (
-            "__rt__executor_take_task_panic_payload",
-            vec![gcx.types.uint],
-            gcx.types.string,
-        ),
-        AsyncRuntimeFn::PanicPayloadMessage => (
-            "__rt__panic_payload_message",
-            vec![gcx.types.string],
-            gcx.types.string,
-        ),
-        AsyncRuntimeFn::PanicPayloadRethrow => (
-            "__rt__panic_payload_rethrow",
-            vec![gcx.types.string],
-            Ty::new(TyKind::Never, gcx),
-        ),
-    };
+    let spec = which.spec();
+    let name = spec.symbol;
+    let inputs = spec
+        .inputs
+        .iter()
+        .copied()
+        .map(|ty| lower_runtime_abi_type(gcx, ty, span))
+        .collect::<Vec<_>>();
+    let output = lower_runtime_abi_type(gcx, spec.output, span);
 
     let symbol = gcx.intern_symbol(name);
     if let Some(id) = gcx
@@ -1955,7 +1755,44 @@ pub(crate) fn find_or_register_async_runtime_function<'ctx>(
     id
 }
 
-fn definition_in_std_module<'ctx>(gcx: Gcx<'ctx>, id: DefinitionID, module: &str) -> bool {
+fn lower_runtime_abi_type<'ctx>(
+    gcx: Gcx<'ctx>,
+    ty: crate::runtime_abi::RuntimeAbiType,
+    span: Span,
+) -> Ty<'ctx> {
+    use crate::runtime_abi::RuntimeAbiType;
+
+    match ty {
+        RuntimeAbiType::Void => gcx.types.void,
+        RuntimeAbiType::Never => Ty::new(TyKind::Never, gcx),
+        RuntimeAbiType::Bool => gcx.types.bool,
+        RuntimeAbiType::U8 => gcx.types.uint8,
+        RuntimeAbiType::U32 => gcx.types.uint32,
+        RuntimeAbiType::U64 => gcx.types.uint64,
+        RuntimeAbiType::Usize => gcx.types.uint,
+        RuntimeAbiType::String => gcx.types.string,
+        RuntimeAbiType::MutU8Ptr => {
+            raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Mutable)
+        }
+        RuntimeAbiType::ConstU8Ptr => {
+            raw_ptr_ty(gcx, gcx.types.uint8, crate::hir::Mutability::Immutable)
+        }
+        RuntimeAbiType::AsyncHandle => gcx.async_handle_ty(),
+        RuntimeAbiType::GcDescPtr => {
+            let desc_id = find_std_function(gcx, "intrinsic", "__intrinsic_gc_desc", span)
+                .unwrap_or_else(|_| {
+                    panic!("ICE: missing std.intrinsic.__intrinsic_gc_desc definition")
+                });
+            gcx.get_signature(desc_id).output
+        }
+    }
+}
+
+pub(crate) fn definition_in_std_module<'ctx>(
+    gcx: Gcx<'ctx>,
+    id: DefinitionID,
+    module: &str,
+) -> bool {
     let Some(std_pkg) = gcx.std_package_index() else {
         return false;
     };

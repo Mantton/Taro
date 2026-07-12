@@ -7172,6 +7172,27 @@ mod tests {
     }
 
     #[test]
+    fn test_blocking_extern_function_parsing() {
+        let input =
+            r#"extern "blocking" func read(_ fd: int32, _ ptr: *mut uint8, _ len: usize) -> isize"#;
+        let (decl, symbols) = parse_one_decl_with_symbols(input);
+        let DeclarationKind::Function(function) = &decl.kind else {
+            panic!("expected blocking extern function");
+        };
+        assert_eq!(
+            symbol_text(
+                &symbols,
+                function
+                    .abi
+                    .as_ref()
+                    .expect("expected blocking ABI")
+                    .clone()
+            ),
+            "blocking"
+        );
+    }
+
+    #[test]
     fn test_extern_standalone_function() {
         let input = r#"extern "C" func malloc(size: int32) -> *u8;"#;
         let (decl, symbols) = parse_one_decl_with_symbols(input);

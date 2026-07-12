@@ -1,8 +1,12 @@
 import std.intrinsic.__intrinsic_cancel_task
+import std.intrinsic.__intrinsic_blocking
 import std.intrinsic.__intrinsic_detach_task
+import std.intrinsic.__intrinsic_dump_tasks
 import std.intrinsic.__intrinsic_is_task_cancelled
+import std.intrinsic.__intrinsic_select_tasks
 import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
+import std.intrinsic.__intrinsic_task_timeout
 import std.intrinsic.__intrinsic_task_result
 import std.panic.PanicPayload
 
@@ -14,6 +18,18 @@ public struct Task[T] {
 public enum TaskError {
     case cancelled
     case panicked(PanicPayload)
+}
+
+/// Identifies which branch completed first in a two-way selection.
+public enum SelectResult[First, Second] {
+    case first(First)
+    case second(Second)
+}
+
+/// A deadline can expire or its wrapped operation can fail as a task.
+public enum TimeoutError {
+    case timedOut
+    case operation(TaskError)
 }
 
 /// Enqueue an async call on the executor for concurrent execution.
@@ -30,12 +46,114 @@ public func detached[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) {
     task.detach()
 }
 
+/// Print live tasks, their spawn chains, and current wait reasons to stderr.
+public func dump() {
+    __intrinsic_dump_tasks()
+}
+
 public func isCancelled() -> bool {
     return __intrinsic_is_task_cancelled()
 }
 
 public func sleep(_ duration: std.time.Duration) async {
     return await __intrinsic_sleep(duration)
+}
+
+/// Run synchronous work on the bounded blocking pool without occupying an
+/// async executor worker. Cancellation abandons result delivery; work that has
+/// already started is allowed to finish because terminating a native thread is
+/// unsafe.
+public func blocking[T: std.marker.Sendable, F: std.ops.FnOnce() -> T & std.marker.Sendable](_ thunk: F) async -> T {
+    return await __intrinsic_blocking[T, F](thunk)
+}
+
+/// Compiler adapter whose async frame owns the closure while it is queued or
+/// running on a blocking worker.
+func __blockingInvoke[T: std.marker.Sendable, F: std.ops.FnOnce() -> T & std.marker.Sendable](_ thunk: F) async -> T {
+    return thunk()
+}
+
+func drainSelectionLoser[T](_ task: Task[T]) async -> std.result.Result[(), TaskError] {
+    match await task.result() {
+        case .ok(_) => return .ok(())
+        case .err(.cancelled) => return .ok(())
+        case .err(error) => return .err(error)
+    }
+}
+
+/// Run two async operations concurrently and return the first completion.
+/// If both are ready in the same observation, the first branch wins.
+/// The losing branch is cancelled and drained before this function returns.
+public func select[
+    A,
+    B,
+    First: std.ops.AsyncFnOnce() -> A,
+    Second: std.ops.AsyncFnOnce() -> B,
+](_ first: First, _ second: Second) async -> std.result.Result[SelectResult[A, B], TaskError] {
+    let firstTask = spawn[A, First](first)
+    let secondTask = spawn[B, Second](second)
+    let winner = await __intrinsic_select_tasks[A, B](&firstTask, &secondTask)
+
+    if winner == 0 {
+        secondTask.cancel()
+        let winnerResult = await firstTask.result()
+        let loserResult = await drainSelectionLoser(secondTask)
+        match winnerResult {
+            case .err(error) => return .err(error)
+            case .ok(value) => match loserResult {
+                case .ok(_) => return .ok(.first(value))
+                case .err(error) => return .err(error)
+            }
+        }
+    }
+
+    firstTask.cancel()
+    let winnerResult = await secondTask.result()
+    let loserResult = await drainSelectionLoser(firstTask)
+    match winnerResult {
+        case .err(error) => return .err(error)
+        case .ok(value) => match loserResult {
+            case .ok(_) => return .ok(.second(value))
+            case .err(error) => return .err(error)
+        }
+    }
+}
+
+/// Run two same-typed async operations and return the first completion.
+public func race[
+    T,
+    First: std.ops.AsyncFnOnce() -> T,
+    Second: std.ops.AsyncFnOnce() -> T,
+](_ first: First, _ second: Second) async -> std.result.Result[T, TaskError] {
+    match await select[T, T, First, Second](first, second) {
+        case .ok(.first(value)) => return .ok(value)
+        case .ok(.second(value)) => return .ok(value)
+        case .err(error) => return .err(error)
+    }
+}
+
+/// Run an async operation until it completes or the duration expires.
+/// A zero-duration timeout still gives an already-ready operation priority.
+public func withTimeout[T, Operation: std.ops.AsyncFnOnce() -> T](
+    _ duration: std.time.Duration,
+    _ operation: Operation,
+) async -> std.result.Result[T, TimeoutError] {
+    let operationTask = spawn[T, Operation](operation)
+    let winner = await __intrinsic_task_timeout[T](&operationTask, duration)
+
+    if winner == 0 {
+        match await operationTask.result() {
+            case .err(error) => return .err(.operation(error))
+            case .ok(value) => return .ok(value)
+        }
+    }
+
+    operationTask.cancel()
+    let loserResult = await drainSelectionLoser(operationTask)
+    match loserResult {
+        case .ok(_) => return .err(.timedOut)
+        case .err(error) => return .err(.operation(error))
+    }
 }
 
 public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> std.result.Result[(A, B), TaskError] {

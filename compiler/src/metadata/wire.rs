@@ -566,6 +566,7 @@ pub struct LabeledFunctionParameterWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AbiWire {
     C,
+    Blocking,
     Runtime,
     Intrinsic,
 }
@@ -1663,6 +1664,7 @@ pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
 pub fn abi_to_wire(v: hir::Abi) -> AbiWire {
     match v {
         hir::Abi::C => AbiWire::C,
+        hir::Abi::Blocking => AbiWire::Blocking,
         hir::Abi::Runtime => AbiWire::Runtime,
         hir::Abi::Intrinsic => AbiWire::Intrinsic,
     }
@@ -1672,6 +1674,7 @@ pub fn abi_to_wire(v: hir::Abi) -> AbiWire {
 pub fn abi_from_wire(v: &AbiWire) -> hir::Abi {
     match v {
         AbiWire::C => hir::Abi::C,
+        AbiWire::Blocking => hir::Abi::Blocking,
         AbiWire::Runtime => hir::Abi::Runtime,
         AbiWire::Intrinsic => hir::Abi::Intrinsic,
     }
@@ -5503,6 +5506,19 @@ mod tests {
     fn from_std_item_roundtrips_through_wire() {
         let wire = std_item_to_wire(hir::StdItem::From);
         assert_eq!(std_item_from_wire(&wire), hir::StdItem::From);
+    }
+
+    #[test]
+    fn function_abis_roundtrip_through_wire() {
+        for abi in [
+            hir::Abi::C,
+            hir::Abi::Blocking,
+            hir::Abi::Runtime,
+            hir::Abi::Intrinsic,
+        ] {
+            let wire = abi_to_wire(abi);
+            assert_eq!(abi_from_wire(&wire), abi);
+        }
     }
 
     #[test]

@@ -1,25 +1,26 @@
 import std.io.Error
+import std.mem.GcDesc
 import std.result.Result
 import std.sys.sync.{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus}
 
 extern "taro_rt" {
-    func __rt__sync_channel_create(_ elem_size: usize, _ capacity: usize, _ bounded: uint8) -> usize
-    func __rt__sync_channel_destroy(_ channel_id: usize) -> int32
-    func __rt__sync_channel_close(_ channel_id: usize) -> int32
-    func __rt__sync_channel_try_send(_ channel_id: usize, _ value_ptr: *const uint8) -> int32
-    func __rt__sync_channel_try_recv(_ channel_id: usize, _ out_ptr: *mut uint8) -> int32
+    func __rt__sync_channel_create(_ elem_size: usize, _ capacity: usize, _ bounded: uint8, _ elem_desc: *const GcDesc) -> *mut uint8
+    func __rt__sync_channel_destroy(_ handle: *mut uint8) -> int32
+    func __rt__sync_channel_close(_ handle: *mut uint8) -> int32
+    func __rt__sync_channel_try_send(_ handle: *mut uint8, _ value_ptr: *const uint8) -> int32
+    func __rt__sync_channel_try_recv(_ handle: *mut uint8, _ out_ptr: *mut uint8) -> int32
 
-    func __rt__sync_mutex_create() -> usize
-    func __rt__sync_mutex_destroy(_ mutex_id: usize) -> int32
-    func __rt__sync_mutex_try_lock(_ mutex_id: usize) -> int32
-    func __rt__sync_mutex_unlock(_ mutex_id: usize) -> int32
+    func __rt__sync_mutex_create() -> *mut uint8
+    func __rt__sync_mutex_destroy(_ handle: *mut uint8) -> int32
+    func __rt__sync_mutex_try_lock(_ handle: *mut uint8) -> int32
+    func __rt__sync_mutex_unlock(_ handle: *mut uint8) -> int32
 
-    func __rt__sync_rwlock_create() -> usize
-    func __rt__sync_rwlock_destroy(_ lock_id: usize) -> int32
-    func __rt__sync_rwlock_try_read(_ lock_id: usize) -> int32
-    func __rt__sync_rwlock_try_write(_ lock_id: usize) -> int32
-    func __rt__sync_rwlock_unlock_read(_ lock_id: usize) -> int32
-    func __rt__sync_rwlock_unlock_write(_ lock_id: usize) -> int32
+    func __rt__sync_rwlock_create() -> *mut uint8
+    func __rt__sync_rwlock_destroy(_ handle: *mut uint8) -> int32
+    func __rt__sync_rwlock_try_read(_ handle: *mut uint8) -> int32
+    func __rt__sync_rwlock_try_write(_ handle: *mut uint8) -> int32
+    func __rt__sync_rwlock_unlock_read(_ handle: *mut uint8) -> int32
+    func __rt__sync_rwlock_unlock_write(_ handle: *mut uint8) -> int32
 }
 
 @cfg(os("linux"))
@@ -43,34 +44,44 @@ public func mapStatus(_ code: int32) -> Result[(), Error] {
     return .err(std.sys.io.unix.mapErrno(code))
 }
 
-public func channelCreate(_ elem_size: usize, _ capacity: usize, _ bounded: bool) -> Result[RawChannel, Error] {
+public func channelCreate(
+    _ elemSize: usize,
+    _ elemDesc: *const GcDesc,
+    _ capacity: usize,
+    _ bounded: bool,
+) -> Result[RawChannel, Error] {
     if bounded && capacity == 0 {
         return .err(Error.invalidInput)
     }
 
     let boundedByte: uint8 = if bounded { 1_u8 } else { 0_u8 }
-    let id = __rt__sync_channel_create(elem_size, capacity, boundedByte)
-    if id == 0 {
+    let handle = __rt__sync_channel_create(
+        elemSize,
+        capacity,
+        boundedByte,
+        elemDesc,
+    )
+    if unsafe { handle as usize } == 0 {
         return .err(Error.invalidInput)
     }
 
-    return .ok(RawChannel { id })
+    return .ok(RawChannel { handle })
 }
 
 public func channelDestroy(_ channel: RawChannel) -> Result[(), Error] {
-    mapStatus(__rt__sync_channel_destroy(channel.id))
+    mapStatus(__rt__sync_channel_destroy(channel.handle))
 }
 
 public func channelClose(_ channel: &RawChannel) -> Result[(), Error] {
-    mapStatus(__rt__sync_channel_close(channel.id))
+    mapStatus(__rt__sync_channel_close(channel.handle))
 }
 
 public func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
-    mapStatus(__rt__sync_channel_try_send(channel.id, value_ptr))
+    mapStatus(__rt__sync_channel_try_send(channel.handle, value_ptr))
 }
 
 public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
-    let code = __rt__sync_channel_try_recv(channel.id, out_ptr)
+    let code = __rt__sync_channel_try_recv(channel.handle, out_ptr)
     if code == 0 {
         return .ok(.value)
     }
@@ -84,19 +95,19 @@ public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Res
 }
 
 public func mutexCreate() -> Result[RawMutex, Error] {
-    let id = __rt__sync_mutex_create()
-    if id == 0 {
+    let handle = __rt__sync_mutex_create()
+    if unsafe { handle as usize } == 0 {
         return .err(Error.invalidInput)
     }
-    return .ok(RawMutex { id })
+    return .ok(RawMutex { handle })
 }
 
 public func mutexDestroy(_ mutex: RawMutex) -> Result[(), Error] {
-    mapStatus(__rt__sync_mutex_destroy(mutex.id))
+    mapStatus(__rt__sync_mutex_destroy(mutex.handle))
 }
 
 public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
-    let code = __rt__sync_mutex_try_lock(mutex.id)
+    let code = __rt__sync_mutex_try_lock(mutex.handle)
     if code == 0 {
         return .ok(true)
     }
@@ -107,23 +118,23 @@ public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
 }
 
 public func mutexUnlock(_ mutex: &RawMutex) -> Result[(), Error] {
-    mapStatus(__rt__sync_mutex_unlock(mutex.id))
+    mapStatus(__rt__sync_mutex_unlock(mutex.handle))
 }
 
 public func rwlockCreate() -> Result[RawRwLock, Error] {
-    let id = __rt__sync_rwlock_create()
-    if id == 0 {
+    let handle = __rt__sync_rwlock_create()
+    if unsafe { handle as usize } == 0 {
         return .err(Error.invalidInput)
     }
-    return .ok(RawRwLock { id })
+    return .ok(RawRwLock { handle })
 }
 
 public func rwlockDestroy(_ lock: RawRwLock) -> Result[(), Error] {
-    mapStatus(__rt__sync_rwlock_destroy(lock.id))
+    mapStatus(__rt__sync_rwlock_destroy(lock.handle))
 }
 
 public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
-    let code = __rt__sync_rwlock_try_read(lock.id)
+    let code = __rt__sync_rwlock_try_read(lock.handle)
     if code == 0 {
         return .ok(true)
     }
@@ -134,7 +145,7 @@ public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
 }
 
 public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
-    let code = __rt__sync_rwlock_try_write(lock.id)
+    let code = __rt__sync_rwlock_try_write(lock.handle)
     if code == 0 {
         return .ok(true)
     }
@@ -145,9 +156,9 @@ public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
 }
 
 public func rwlockUnlockRead(_ lock: &RawRwLock) -> Result[(), Error] {
-    mapStatus(__rt__sync_rwlock_unlock_read(lock.id))
+    mapStatus(__rt__sync_rwlock_unlock_read(lock.handle))
 }
 
 public func rwlockUnlockWrite(_ lock: &RawRwLock) -> Result[(), Error] {
-    mapStatus(__rt__sync_rwlock_unlock_write(lock.id))
+    mapStatus(__rt__sync_rwlock_unlock_write(lock.handle))
 }

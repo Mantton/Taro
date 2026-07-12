@@ -826,12 +826,13 @@ impl<'a, 'c> Actor<'a, 'c> {
         let abi_text = self.context.symbol_text(abi);
         match abi_text.as_str() {
             "C" | "c" => Some(hir::Abi::C),
+            "blocking" => Some(hir::Abi::Blocking),
             "taro_rt" | "rt" => Some(hir::Abi::Runtime),
             "taro_intrinsic" | "intrinsic" => Some(hir::Abi::Intrinsic),
             other => {
                 self.context.dcx.emit_error(
                     format!(
-                        "unknown ABI \"{}\" (supported: \"C\", \"taro_rt\", \"taro_intrinsic\")",
+                        "unknown ABI \"{}\" (supported: \"C\", \"blocking\", \"taro_rt\", \"taro_intrinsic\")",
                         other
                     ),
                     Some(span),

@@ -98,6 +98,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // CHECK_ONLY                — compile with `taro check` (no run, no output compare)
       // TEST                      — run with `taro test` instead of `taro run`; passes if exit 0
       // ARGS: <values...>         — forward runtime args to `taro run` after `--`
+      // ENV: KEY=value …          — set environment variables for compile/run
       // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
       // EXPECT_STDOUT_CONTAINS: … — assert this substring appears in stdout
       // EXPECT_STDERR_CONTAINS: … — assert this substring appears in stderr
@@ -110,6 +111,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "check_only": False,
         "run_as_test": False,
         "args": [],
+        "env": {},
         "expect_exit": None,
         "expect_stdout_contains": [],
         "expect_stderr_contains": [],
@@ -133,6 +135,12 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                 elif line.startswith("// ARGS:"):
                     values = line[len("// ARGS:") :].strip()
                     result["args"] = shlex.split(values)
+                elif line.startswith("// ENV:"):
+                    values = shlex.split(line[len("// ENV:") :].strip())
+                    for value in values:
+                        key, separator, env_value = value.partition("=")
+                        if separator and key:
+                            result["env"][key] = env_value
                 elif line.startswith("// EXPECT_EXIT:"):
                     code = line[len("// EXPECT_EXIT:") :].strip()
                     try:
@@ -193,6 +201,7 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         is_check_only = directives["check_only"]
         is_run_as_test = directives["run_as_test"]
         program_args = directives["args"]
+        environment = directives["env"]
         expected_exit = directives["expect_exit"]
         expected_stdout_contains = directives["expect_stdout_contains"]
         expected_stderr_contains = directives["expect_stderr_contains"]
@@ -248,6 +257,7 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
 
         process_env = os.environ.copy()
         process_env["TARO_HOME"] = str(env.taro_home)
+        process_env.update(environment)
 
         # Run process
         result = subprocess.run(

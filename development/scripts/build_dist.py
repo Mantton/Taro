@@ -21,7 +21,9 @@ Output Structure:
       taro/
         runtime/
           libtaro_runtime.a (Host static runtime library)
+          libtaro_runtime.a.manifest.toml
           <target-triple>/libtaro_runtime.a (Cross-target runtime library)
+          <target-triple>/libtaro_runtime.a.manifest.toml
     std/                   (Standard library sources)
 """
 
@@ -174,6 +176,11 @@ def main():
     
     print(f"Copying {src_lib} -> {dst_lib}")
     shutil.copy2(src_lib, dst_lib)
+
+    manifest_command = [str(dst_bin), "runtime-manifest", str(dst_lib)]
+    if target:
+        manifest_command.extend(["--target", target])
+    run_command(manifest_command, cwd=repo_root)
     
     # std - symlink instead of copy for development
     std_dst = dist_dir / "std"

@@ -53,7 +53,7 @@ pub struct RtString {
 }
 
 impl RtString {
-    fn to_owned_lossy(self) -> String {
+    pub(crate) fn to_owned_lossy(self) -> String {
         if self.ptr.is_null() || self.len == 0 {
             return String::new();
         }
@@ -63,14 +63,23 @@ impl RtString {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TaskTraceFrame {
+    pub(crate) name: String,
+    pub(crate) file: String,
+    pub(crate) line: usize,
+    pub(crate) column: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PanicReport {
     pub(crate) message: String,
     pub(crate) backtrace: String,
     pub(crate) location: Option<String>,
     pub(crate) logical_stack: Vec<String>,
+    pub(crate) task_trace: Vec<TaskTraceFrame>,
 }
 
-const PANIC_PAYLOAD_MAGIC: &[u8; 8] = b"TAROPN\0\x01";
+const PANIC_PAYLOAD_MAGIC: &[u8; 8] = b"TAROPN\0\x02";
 
 fn append_payload_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
     let len = u64::try_from(bytes.len()).expect("panic payload field exceeds u64::MAX bytes");
@@ -106,6 +115,23 @@ pub(crate) fn serialize_panic_report(report: &PanicReport) -> Vec<u8> {
     output.extend_from_slice(&frame_count.to_le_bytes());
     for frame in &report.logical_stack {
         append_payload_bytes(&mut output, frame.as_bytes());
+    }
+    let task_frame_count =
+        u64::try_from(report.task_trace.len()).expect("panic task trace is too large");
+    output.extend_from_slice(&task_frame_count.to_le_bytes());
+    for frame in &report.task_trace {
+        append_payload_bytes(&mut output, frame.name.as_bytes());
+        append_payload_bytes(&mut output, frame.file.as_bytes());
+        output.extend_from_slice(
+            &u64::try_from(frame.line)
+                .expect("task trace line exceeds u64::MAX")
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(
+            &u64::try_from(frame.column)
+                .expect("task trace column exceeds u64::MAX")
+                .to_le_bytes(),
+        );
     }
     output
 }
@@ -143,6 +169,31 @@ pub(crate) fn deserialize_panic_report(payload: &[u8]) -> Option<PanicReport> {
         logical_stack
             .push(String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?);
     }
+    let task_count_end = cursor.checked_add(std::mem::size_of::<u64>())?;
+    let task_count_bytes: [u8; 8] = payload.get(cursor..task_count_end)?.try_into().ok()?;
+    cursor = task_count_end;
+    let task_frame_count = usize::try_from(u64::from_le_bytes(task_count_bytes)).ok()?;
+    let minimum_task_frame_size = 4 * std::mem::size_of::<u64>();
+    if task_frame_count > payload.len().saturating_sub(cursor) / minimum_task_frame_size {
+        return None;
+    }
+    let mut task_trace = Vec::with_capacity(task_frame_count);
+    for _ in 0..task_frame_count {
+        let name = String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?;
+        let file = String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?;
+        let line_end = cursor.checked_add(std::mem::size_of::<u64>())?;
+        let line_bytes: [u8; 8] = payload.get(cursor..line_end)?.try_into().ok()?;
+        cursor = line_end;
+        let column_end = cursor.checked_add(std::mem::size_of::<u64>())?;
+        let column_bytes: [u8; 8] = payload.get(cursor..column_end)?.try_into().ok()?;
+        cursor = column_end;
+        task_trace.push(TaskTraceFrame {
+            name,
+            file,
+            line: usize::try_from(u64::from_le_bytes(line_bytes)).ok()?,
+            column: usize::try_from(u64::from_le_bytes(column_bytes)).ok()?,
+        });
+    }
     if cursor != payload.len() {
         return None;
     }
@@ -151,6 +202,7 @@ pub(crate) fn deserialize_panic_report(payload: &[u8]) -> Option<PanicReport> {
         backtrace,
         location,
         logical_stack,
+        task_trace,
     })
 }
 
@@ -239,13 +291,10 @@ pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, PanicR
         prev
     });
 
-    // Suppress Rust's built-in panic output; the executor owns reporting.
-    let old_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    install_taro_panic_hook();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
 
-    std::panic::set_hook(old_hook);
     IN_EXECUTOR_CATCH.with(|flag| flag.set(previous));
 
     match result {
@@ -256,6 +305,7 @@ pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, PanicR
                 backtrace: String::new(),
                 location: None,
                 logical_stack: Vec::new(),
+                task_trace: Vec::new(),
             });
             Err(report)
         }
@@ -279,6 +329,7 @@ pub(crate) fn take_full_panic_report() -> Option<PanicReport> {
                 backtrace: String::new(),
                 location: None,
                 logical_stack: Vec::new(),
+                task_trace: Vec::new(),
             })
         });
     }
@@ -300,6 +351,7 @@ fn set_panic_report_with_location(message: String, location: Option<String>) {
             backtrace,
             location,
             logical_stack,
+            task_trace: Vec::new(),
         });
     });
 }
@@ -571,6 +623,37 @@ fn render_logical_stack(frames: &[String]) -> String {
     lines.join("\n")
 }
 
+fn render_task_trace(frames: &[TaskTraceFrame]) -> String {
+    if frames.is_empty() {
+        return String::new();
+    }
+    const MAX_TASK_FRAMES: usize = 32;
+    let mut lines = Vec::new();
+    for (idx, frame) in frames.iter().rev().take(MAX_TASK_FRAMES).enumerate() {
+        let file = if frame.file.is_empty() {
+            "<unknown>"
+        } else {
+            &frame.file
+        };
+        let location = match (frame.line, frame.column) {
+            (0, _) => file.to_string(),
+            (line, 0) => format!("{file}:{line}"),
+            (line, column) => format!("{file}:{line}:{column}"),
+        };
+        lines.push(format!(
+            "  {idx:>2}: spawned `{}` at {location}",
+            frame.name
+        ));
+    }
+    if frames.len() > MAX_TASK_FRAMES {
+        lines.push(format!(
+            "  ... {} older spawn(s) omitted",
+            frames.len() - MAX_TASK_FRAMES
+        ));
+    }
+    lines.join("\n")
+}
+
 fn write_captured_report(
     output: &mut impl Write,
     headline: &str,
@@ -593,6 +676,11 @@ fn write_captured_report(
     } else {
         let _ = writeln!(output, "stack backtrace:");
         let _ = writeln!(output, "{}", render_panic_backtrace(&report.backtrace));
+    }
+    let task_trace = render_task_trace(&report.task_trace);
+    if !task_trace.is_empty() {
+        let _ = writeln!(output, "async task trace:");
+        let _ = writeln!(output, "{task_trace}");
     }
 }
 
@@ -832,6 +920,19 @@ pub extern "C" fn __rt__panic_clear() {
 /// in test mode. Lets `catch_unwind` identify and intercept them.
 struct TaroPanicPayload;
 
+fn install_taro_panic_hook() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if info.payload().is::<TaroPanicPayload>() {
+                return;
+            }
+            previous(info);
+        }));
+    });
+}
+
 /// Call a `void()` Taro function and return whether it panicked.
 ///
 /// Sets `IN_TEST_HARNESS` for the duration of the call so that
@@ -842,17 +943,13 @@ struct TaroPanicPayload;
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
     set_test_harness_active(true);
-
-    // Suppress Rust's built-in panic output; Taro's test harness owns reporting.
-    let old_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    install_taro_panic_hook();
 
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         fn_ptr();
     }))
     .is_err();
 
-    std::panic::set_hook(old_hook);
     set_test_harness_active(false);
     panicked
 }
@@ -1048,9 +1145,10 @@ extern "C" fn forced_unwind_stop(
 mod tests {
     use super::{
         BacktracePolicy, FrameKind, PanicReport, TEST_PANIC_MESSAGE_MISMATCH, TEST_PANIC_MISSING,
-        TEST_PANIC_PASSED, TEST_PANIC_UNEXPECTED, classify_test_panic, deserialize_panic_report,
-        parse_backtrace_frames, parse_backtrace_policy, render_panic_backtrace_with_policy,
-        serialize_panic_report, serialized_panic_message, write_captured_report,
+        TEST_PANIC_PASSED, TEST_PANIC_UNEXPECTED, TaskTraceFrame, classify_test_panic,
+        deserialize_panic_report, parse_backtrace_frames, parse_backtrace_policy,
+        render_panic_backtrace_with_policy, serialize_panic_report, serialized_panic_message,
+        write_captured_report,
     };
 
     #[test]
@@ -1060,6 +1158,12 @@ mod tests {
             backtrace: "frame one\nframe two".into(),
             location: Some("src/main.tr:12:7".into()),
             logical_stack: vec!["app__bt_usr__main".into(), "std__bt_std__task".into()],
+            task_trace: vec![TaskTraceFrame {
+                name: "worker".into(),
+                file: "src/main.tr".into(),
+                line: 8,
+                column: 3,
+            }],
         };
 
         let encoded = serialize_panic_report(&report);
@@ -1077,6 +1181,7 @@ mod tests {
             backtrace: String::new(),
             location: None,
             logical_stack: Vec::new(),
+            task_trace: Vec::new(),
         };
         let mut encoded = serialize_panic_report(&report);
         encoded.push(0xff);
@@ -1096,6 +1201,12 @@ mod tests {
             backtrace: String::new(),
             location: Some("src/main.tr:4:5".into()),
             logical_stack: vec!["app__bt_usr__child".into()],
+            task_trace: vec![TaskTraceFrame {
+                name: "child".into(),
+                file: "src/main.tr".into(),
+                line: 3,
+                column: 9,
+            }],
         };
         let mut rendered = Vec::new();
         write_captured_report(
@@ -1108,6 +1219,8 @@ mod tests {
         assert!(rendered.starts_with("unobserved task panic: detached child failed\n"));
         assert!(rendered.contains("  at src/main.tr:4:5"));
         assert!(rendered.contains("taro stack:"));
+        assert!(rendered.contains("async task trace:"));
+        assert!(rendered.contains("spawned `child` at src/main.tr:3:9"));
     }
 
     #[test]

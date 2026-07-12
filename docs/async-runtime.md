@@ -42,8 +42,9 @@ prevents stale task handles from observing a reused slot.
 - `queued=true` means exactly one scheduler queue owns the task token.
 - `running=true` means exactly one worker is polling the task. A running task
   cannot also be queued; wakeups during polling set `wake_requested`.
-- Pending polls must either mark `current_task_blocked` by registering a
-  runtime wait, or the executor will requeue the task cooperatively.
+- Pending polls must register a typed wait reason, or the executor requeues the
+  task cooperatively. Reasons cover task/group joins, timers, I/O, channels,
+  mutexes, and rwlocks.
 - Completion, cancellation, and panic all pass through task finalization:
   I/O waits are cancelled, sync ownership/waiters are finalized, timers are
   cleared, GC roots are removed, and the async handle is destroyed.
@@ -66,6 +67,46 @@ prevents stale task handles from observing a reused slot.
   storage is reclaimed by the GC even when a payload is nested or discarded.
 - Reclaimed slots are put on `free_slots` and may be reused only after the
   generation is advanced.
+
+## Task Diagnostics
+
+Every spawned task retains a bounded causal chain containing its parent spawn
+sites. `std.task.dump()` writes a stable snapshot of live task states, source
+locations, wait reasons, and task-to-task dependencies to stderr. Captured task
+panics include the same causal chain after the synchronous Taro stack.
+
+Set `TARO_DEADLOCK_TIMEOUT_MS` to a positive millisecond value to enable the
+watchdog. After that interval without a task poll, the runtime prints one
+snapshot. A definitive internal wait cycle fails the async root with
+`executor deadlock detected`; timer, I/O, and unmatched channel waits are
+reported as external waits and continue running. The watchdog is disabled when
+the variable is absent or zero.
+
+### Runtime metrics and tracing
+
+`taro run --runtime-stats` writes a human-readable executor and GC summary to
+stderr when the executor session ends. It includes the effective worker count,
+task lifecycle and queue counters, steals and parks, timer and I/O wakes, live
+and peak task counts, allocation and heap totals, and percentiles over up to the
+newest 1,024 GC pause samples. A
+synchronous program that never starts the executor still prints a zero-task
+summary with its process GC totals.
+
+`taro run --runtime-trace` writes a timestamped event trace to stderr. Events
+cover task spawning, polling, completion, cancellation, panic, queue targets,
+steals, parks, timer registration and wakeup, I/O and synchronization waits,
+I/O wakeups, and GC pauses. The trace retains the newest 4,096 events by
+default. Set `TARO_RUNTIME_TRACE_CAPACITY` between 1 and 65,536 to change the
+bound; the trace heading reports how many older events were dropped.
+
+The CLI flags set `TARO_RUNTIME_STATS=1` and `TARO_RUNTIME_TRACE=1` for the
+child process. Those variables can also be set directly for an already-built
+program and accept `1`/`0`, `true`/`false`, or `yes`/`no`. Diagnostic output is
+intentionally line-oriented and grep-friendly. When tracing is disabled, event
+strings are not formatted or allocated.
+
+`TARO_WORKERS` must be a positive integer. Invalid worker or diagnostic values
+fail with a `runtime configuration error` instead of being silently ignored.
 
 ## Wake Contract
 
@@ -92,6 +133,25 @@ Timers are stored as heap entries plus a latest-registration table.
 - Completion, cancellation, panic, and teardown clear the task's latest timer
   entry so old heap entries cannot wake finalized tasks.
 
+## Selection And Deadlines
+
+`std.task.select(first, second)` runs heterogeneous async closures concurrently
+and returns `Result[SelectResult[A, B], TaskError>`. `std.task.race` applies the
+same behavior to two branches with one result type. The runtime selection future
+registers one parent as waiter on both owned tasks and checks the first branch
+before the second; if both are ready in the same observation, the first wins.
+
+`std.task.withTimeout(duration, operation)` returns `Result[T, TimeoutError>`.
+`TimeoutError.timedOut` is distinct from `TimeoutError.operation(TaskError)`.
+The task/deadline future yields once on initial registration, so immediately
+ready work wins a zero-duration tie, then observes task completion before the
+deadline on subsequent polls.
+
+All three APIs cancel and drain losing work before returning. Selection-handle
+destruction removes every child waiter, and deadline-handle destruction also
+invalidates its timer entry. A winner error has precedence; otherwise a panic
+raised while cancelling the losing operation is returned rather than hidden.
+
 ## I/O Waits
 
 The Unix reactor owns adopted file descriptors and maps readiness events back to
@@ -110,9 +170,22 @@ task tokens.
 
 Runtime sync primitives are task-token based rather than OS-thread based.
 
-- Channels track send and receive waiters separately.
+- `std.sync.bounded[T]` and `unbounded[T]` return separate `Sender[T]` and
+  `Receiver[T]` handles. Only senders can send or close, and only receivers can
+  receive. Both endpoints are cheap shared copies; closure is explicit rather
+  than inferred from the last sender.
+- Sending to a closed channel is an expected concurrency outcome represented by
+  `ChannelSendError.closed` or `ChannelTrySendError.closed`, not a panic.
+- Channels track send and receive waiters separately. Buffered values carry GC
+  roots until received or until the channel storage is reclaimed.
 - Mutexes and rwlocks track logical task ownership so finalization can release
   locks held by cancelled or panicked tasks.
+- Public sync handles are GC-managed. Once all endpoint or lock references are
+  unreachable, a post-sweep runtime finalizer reclaims the backing slot. Manual
+  `destroy` functions remain available only through the low-level `std.sys`
+  layer.
+- Direct guards use explicit `defer { guard.unlock() }`. `withLock`, `withRead`,
+  and `withWrite` install that deferred unlock internally.
 - Rwlocks prefer queued writers over new readers.
 - `task_finalized(task)` removes the task from all waiter queues, releases
   owned mutex/rwlock state, and wakes the next eligible waiters.
@@ -130,6 +203,32 @@ Executor threads participate in the stop-the-world collector.
 - Idle workers remain parked at a safepoint.
 - Rooted and spawned async frames are persistent roots while live. Finalization
   unlinks shadow frames before removing roots.
+- A foreign declaration using `extern "blocking"` is wrapped with
+  `__rt__gc_enter_blocking`/`__rt__gc_exit_blocking`. Its shadow roots remain
+  visible while the native call is parked, but collection does not wait for
+  that call to return. Blocking functions must not call back into Taro before
+  the annotated call returns.
+
+## Blocking Work
+
+`std.task.blocking(|| T)` moves a synchronous `Sendable` closure onto a bounded
+native pool and suspends only the calling task. Its `T` result must also be
+`Sendable`. The compiler-generated adapter frame roots closure captures while
+queued or running; completed output remains in a typed GC root until consumed.
+
+- `TARO_BLOCKING_THREADS` sets the positive worker count. The default is the
+  host's available parallelism, capped at 32.
+- `TARO_BLOCKING_QUEUE` sets the positive queued-job capacity. The default is
+  four jobs per blocking worker.
+- `TARO_BLOCKING_WARN_MS` emits a source-attributed warning when one async task
+  poll occupies an executor worker for at least the configured duration. It is
+  disabled when absent or zero.
+- A full queue suspends producers until a worker accepts another job.
+- Cancelling queued work prevents it from starting. Cancelling running work
+  abandons delivery but never attempts to terminate the native thread.
+- Scheduler shutdown detaches workers that are still inside native calls; they
+  hold only weak scheduler references and clean their rooted job state if they
+  eventually return.
 
 ## Mobility
 

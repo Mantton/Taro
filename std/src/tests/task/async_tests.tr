@@ -22,6 +22,7 @@ static var ASYNC_CANCEL_DEFER_TRACE: int32 = 0
 static var TASK_SCOPE_CLEANUP_COUNT: int32 = 0
 static var DETACHED_TASK_COMPLETED: int32 = 0
 static var DETACHED_FUNCTION_COMPLETED: int32 = 0
+static var SELECT_LOSER_CLEANUP_COUNT: int32 = 0
 
 func asyncDeferReturnProbe() async -> int32 {
     defer {
@@ -32,7 +33,7 @@ func asyncDeferReturnProbe() async -> int32 {
     return 77 as int32
 }
 
-func asyncCancellationCleanupProbe(_ ready: std.sync.Channel[int32]) async -> int32 {
+func asyncCancellationCleanupProbe(_ ready: std.sync.Sender[int32]) async -> int32 {
     defer {
         ASYNC_CANCEL_DEFER_TRACE = (ASYNC_CANCEL_DEFER_TRACE * 10_i32) + 1_i32
     }
@@ -52,7 +53,7 @@ func asyncCancellationCleanupProbe(_ ready: std.sync.Channel[int32]) async -> in
     return 99_i32
 }
 
-func asyncCancellationCleanupPanicProbe(_ ready: std.sync.Channel[int32]) async -> int32 {
+func asyncCancellationCleanupPanicProbe(_ ready: std.sync.Sender[int32]) async -> int32 {
     defer {
         std.panic.panic("panic from cancellation cleanup")
     }
@@ -65,7 +66,7 @@ func asyncCancellationCleanupPanicProbe(_ ready: std.sync.Channel[int32]) async 
     return 1_i32
 }
 
-func taskScopeCleanupProbe(_ ready: std.sync.Channel[int32]) async -> int32 {
+func taskScopeCleanupProbe(_ ready: std.sync.Sender[int32]) async -> int32 {
     defer {
         TASK_SCOPE_CLEANUP_COUNT = TASK_SCOPE_CLEANUP_COUNT + 1_i32
     }
@@ -76,6 +77,22 @@ func taskScopeCleanupProbe(_ ready: std.sync.Channel[int32]) async -> int32 {
     }
     await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
     return 1_i32
+}
+
+func selectLoserCleanupProbe() async -> int32 {
+    defer {
+        SELECT_LOSER_CLEANUP_COUNT = SELECT_LOSER_CLEANUP_COUNT + 1_i32
+    }
+    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    return 1_i32
+}
+
+func selectLoserCleanupPanicProbe() async -> string {
+    defer {
+        std.panic.panic("select loser cleanup panic")
+    }
+    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    return "late"
 }
 
 func returnedOwnedTask() -> std.task.Task[int32] {
@@ -619,16 +636,17 @@ func asyncDeferRunsOnNormalReturnAfterSuspension() async {
 @test
 func cancellingSuspendedTaskRunsNestedDefersInLifoOrder() async {
     ASYNC_CANCEL_DEFER_TRACE = 0_i32
-    let ready = match std.sync.bounded[int32](1) {
+    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("cancellation cleanup channel should be created")
     }
-    let childReady = ready
+    let childReady = readySender
     let task = std.task.spawn(|| async {
         return await asyncCancellationCleanupProbe(childReady)
     })
+    std.runtime.collect()
 
-    match await ready.recv() {
+    match await readyReceiver.recv() {
         case .some(_) => {}
         case .none => std.panic.panic("cancellation cleanup probe should become ready")
     }
@@ -645,21 +663,20 @@ func cancellingSuspendedTaskRunsNestedDefersInLifoOrder() async {
         21_i32,
         "cancellation should run active nested defers from inner to outer",
     )
-    std.testing.assertTrue(ready.destroy().isOk(), "cancellation cleanup channel should be destroyed")
 }
 
 @test
 func panicDuringCancellationCleanupBecomesTaskPanic() async {
-    let ready = match std.sync.bounded[int32](1) {
+    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("cancellation panic channel should be created")
     }
-    let childReady = ready
+    let childReady = readySender
     let task = std.task.spawn(|| async {
         return await asyncCancellationCleanupPanicProbe(childReady)
     })
 
-    match await ready.recv() {
+    match await readyReceiver.recv() {
         case .some(_) => {}
         case .none => std.panic.panic("cancellation panic probe should become ready")
     }
@@ -675,23 +692,22 @@ func panicDuringCancellationCleanupBecomesTaskPanic() async {
             )
         }
     }
-    std.testing.assertTrue(ready.destroy().isOk(), "cancellation panic channel should be destroyed")
 }
 
 @test
 func taskScopeExitCancelsAndReclaimsOwnedWork() async {
     TASK_SCOPE_CLEANUP_COUNT = 0_i32
-    let ready = match std.sync.bounded[int32](1) {
+    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("task scope channel should be created")
     }
 
     {
-        let childReady = ready
+        let childReady = readySender
         let task = std.task.spawn(|| async {
             return await taskScopeCleanupProbe(childReady)
         })
-        match await ready.recv() {
+        match await readyReceiver.recv() {
             case .some(_) => {}
             case .none => std.panic.panic("owned task should reach its suspension point")
         }
@@ -707,21 +723,20 @@ func taskScopeExitCancelsAndReclaimsOwnedWork() async {
         1_i32,
         "leaving a Task scope should cancel it and run cleanup",
     )
-    std.testing.assertTrue(ready.destroy().isOk(), "task scope channel should be destroyed")
 }
 
 @test
 func overwritingTaskCancelsAndReclaimsPreviousWork() async {
     TASK_SCOPE_CLEANUP_COUNT = 0_i32
-    let ready = match std.sync.bounded[int32](1) {
+    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("task overwrite channel should be created")
     }
-    let childReady = ready
+    let childReady = readySender
     var task = std.task.spawn(|| async {
         return await taskScopeCleanupProbe(childReady)
     })
-    match await ready.recv() {
+    match await readyReceiver.recv() {
         case .some(_) => {}
         case .none => std.panic.panic("overwritten task should reach its suspension point")
     }
@@ -742,7 +757,6 @@ func overwritingTaskCancelsAndReclaimsPreviousWork() async {
         1_i32,
         "overwriting a Task should cancel and reclaim the previous handle",
     )
-    std.testing.assertTrue(ready.destroy().isOk(), "task overwrite channel should be destroyed")
 }
 
 @test
@@ -767,15 +781,15 @@ func movingAndReturningTasksTransferScopeOwnership() async {
 @test
 func taskParameterOwnsAndReleasesMovedHandle() async {
     TASK_SCOPE_CLEANUP_COUNT = 0_i32
-    let ready = match std.sync.bounded[int32](1) {
+    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("task parameter channel should be created")
     }
-    let childReady = ready
+    let childReady = readySender
     let task = std.task.spawn(|| async {
         return await taskScopeCleanupProbe(childReady)
     })
-    match await ready.recv() {
+    match await readyReceiver.recv() {
         case .some(_) => {}
         case .none => std.panic.panic("task parameter probe should become ready")
     }
@@ -791,7 +805,6 @@ func taskParameterOwnsAndReleasesMovedHandle() async {
         1_i32,
         "a Task parameter should release an unconsumed handle on return",
     )
-    std.testing.assertTrue(ready.destroy().isOk(), "task parameter channel should be destroyed")
 }
 
 @test
@@ -897,6 +910,179 @@ func taskIsCancelledIsFalseForActiveTask() async {
 
     let result = (await task.result()).unwrap()
     std.testing.assertFalse(result, "isCancelled() should be false for active, non-cancelled tasks")
+}
+
+@test
+func selectReturnsTypedFirstAndSecondBranches() async {
+    let first = await std.task.select(
+        || async { return 7_i32 },
+        || async {
+            await std.task.sleep(std.time.Duration.fromMillis(50_u64))
+            return "late"
+        },
+    )
+    match first {
+        case .ok(.first(value)) => std.testing.assertEqual(value, 7_i32, "select should preserve the first value")
+        case .ok(.second(_)) => std.panic.panic("the delayed second branch should not win")
+        case .err(_) => std.panic.panic("successful selection should not return a task error")
+    }
+
+    let second = await std.task.select(
+        || async {
+            await std.task.sleep(std.time.Duration.fromMillis(50_u64))
+            return 1_i32
+        },
+        || async { return "ready" },
+    )
+    match second {
+        case .ok(.first(_)) => std.panic.panic("the delayed first branch should not win")
+        case .ok(.second(value)) => std.testing.assertTrue(value == "ready", "select should preserve the second value")
+        case .err(_) => std.panic.panic("successful selection should not return a task error")
+    }
+}
+
+@test
+func selectSurfacesLosingCancellationCleanupPanic() async {
+    match await std.task.select(
+        || async { return 5_i32 },
+        || async { return await selectLoserCleanupPanicProbe() },
+    ) {
+        case .ok(_) => std.panic.panic("losing cleanup panic should supersede successful selection")
+        case .err(.cancelled) => std.panic.panic("losing cleanup panic should supersede cancellation")
+        case .err(.panicked(payload)) => {
+            std.testing.assertTrue(
+                payload.message() == "select loser cleanup panic",
+                "selection should preserve losing cleanup panic payload",
+            )
+        }
+    }
+}
+
+@test
+func raceUsesStableFirstBranchTieBreak() async {
+    var attempt = 0_i32
+    while attempt < 32_i32 {
+        match await std.task.race(
+            || async { return 1_i32 },
+            || async { return 2_i32 },
+        ) {
+            case .ok(value) => std.testing.assertEqual(value, 1_i32, "simultaneously-ready race should prefer the first branch")
+            case .err(_) => std.panic.panic("ready race branches should not fail")
+        }
+        attempt = attempt + 1_i32
+    }
+}
+
+@test
+func withTimeoutDistinguishesCompletionAndExpiry() async {
+    match await std.task.withTimeout(
+        std.time.Duration.fromMillis(100_u64),
+        || async { return 42_i32 },
+    ) {
+        case .ok(value) => std.testing.assertEqual(value, 42_i32, "operation should complete before its deadline")
+        case .err(_) => std.panic.panic("ready operation should not time out")
+    }
+
+    // The task/deadline selector yields once before observing a zero deadline,
+    // allowing an immediately-ready operation to win deterministically.
+    match await std.task.withTimeout(
+        std.time.Duration.fromMillis(0_u64),
+        || async { return 9_i32 },
+    ) {
+        case .ok(value) => std.testing.assertEqual(value, 9_i32, "ready operation should beat a zero-duration timeout")
+        case .err(_) => std.panic.panic("zero-duration tie should prefer ready work")
+    }
+
+    SELECT_LOSER_CLEANUP_COUNT = 0_i32
+    match await std.task.withTimeout(
+        std.time.Duration.fromMillis(5_u64),
+        || async { return await selectLoserCleanupProbe() },
+    ) {
+        case .ok(_) => std.panic.panic("slow operation should time out")
+        case .err(.timedOut) => {}
+        case .err(.operation(_)) => std.panic.panic("ordinary timeout should not be an operation failure")
+    }
+    std.testing.assertEqual(
+        SELECT_LOSER_CLEANUP_COUNT,
+        1_i32,
+        "timed-out operation should run cancellation cleanup exactly once",
+    )
+}
+
+@test
+func withTimeoutReturnsOperationPanicAndSupportsNesting() async {
+    match await std.task.withTimeout(
+        std.time.Duration.fromMillis(100_u64),
+        || async -> int32 {
+            std.panic.panic("timeout operation panic")
+        },
+    ) {
+        case .ok(_) => std.panic.panic("panicking operation should not succeed")
+        case .err(.timedOut) => std.panic.panic("panicking operation should not look like timeout")
+        case .err(.operation(.cancelled)) => std.panic.panic("panicking operation should not look cancelled")
+        case .err(.operation(.panicked(payload))) => {
+            std.testing.assertTrue(payload.message() == "timeout operation panic", "timeout should preserve operation panic payload")
+        }
+    }
+
+    let nested = await std.task.withTimeout(
+        std.time.Duration.fromMillis(100_u64),
+        || async {
+            return await std.task.withTimeout(
+                std.time.Duration.fromMillis(5_u64),
+                || async {
+                    await std.task.sleep(std.time.Duration.fromMillis(100_u64))
+                    return 3_i32
+                },
+            )
+        },
+    )
+    match nested {
+        case .ok(.err(.timedOut)) => {}
+        case .ok(_) => std.panic.panic("inner timeout should remain distinct inside outer success")
+        case .err(_) => std.panic.panic("outer timeout should allow inner timeout to finish")
+    }
+}
+
+@test
+func selectSupportsChannelAndTaskGroupOperations() async {
+    let (sender, receiver) = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("select channel should be created")
+    }
+    match sender.trySend(17_i32) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("select channel should accept its ready value")
+    }
+    match await std.task.select(
+        || async { return await receiver.recv() },
+        || async {
+            await std.task.sleep(std.time.Duration.fromMillis(100_u64))
+            return false
+        },
+    ) {
+        case .ok(.first(.some(value))) => std.testing.assertEqual(value, 17_i32, "channel receive should participate in select")
+        case .ok(_) => std.panic.panic("ready channel receive should win selection")
+        case .err(_) => std.panic.panic("channel selection should not fail")
+    }
+    let groupValue: int32 = await std.task.withTaskGroup(|group: &mut std.task.TaskGroup[int32]| async {
+        group.spawn(|| async { return 23_i32 })
+        match await std.task.select(
+            move || async {
+                var groupRef = group
+                return await groupRef.next()
+            },
+            || async {
+                await std.task.sleep(std.time.Duration.fromMillis(100_u64))
+                return false
+            },
+        ) {
+            case .ok(.first(.some(value))) => return value
+            case .ok(_) => std.panic.panic("ready task-group result should win selection")
+            case .err(_) => std.panic.panic("task-group selection should not fail")
+        }
+    })
+    std.testing.assertEqual(groupValue, 23_i32, "task group next should participate in select")
 }
 
 @test
@@ -1232,4 +1418,77 @@ func panicPayloadRethrowReRaisesOriginalPanic() async {
             case .cancelled => std.panic.panic("panicking task should not report as cancelled")
         }
     }
+}
+
+@test
+func blockingMovesGcCapturesAndResultsAcrossThreads() async {
+    let captured = "blocking"
+    let result = await std.task.blocking(move || {
+        std.runtime.collect()
+        return captured + "-result"
+    })
+    std.runtime.collect()
+    std.testing.assertTrue(
+        result == "blocking-result",
+        "blocking should preserve GC-backed captures and results",
+    )
+}
+
+@test
+func blockingPanicIsDeliveredThroughTaskResult() async {
+    let task = std.task.spawn(|| async -> int32 {
+        return await std.task.blocking(|| -> int32 {
+            std.panic.panic("blocking closure panic")
+        })
+    })
+    match await task.result() {
+        case .ok(_) => std.panic.panic("panicking blocking work should not succeed")
+        case .err(.cancelled) => std.panic.panic("panicking blocking work should not look cancelled")
+        case .err(.panicked(payload)) => std.testing.assertTrue(
+            payload.message() == "blocking closure panic",
+            "blocking panic should retain its original message",
+        )
+    }
+}
+
+@cfg(family("unix"))
+@test
+func cancelledBlockingWorkAbandonsDeliveryWithoutStoppingThread() async {
+    var fds: [int32; 2] = [0_i32, 0_i32]
+    let fdsPtr = unsafe { (&mut fds as *mut [int32; 2]) as *mut int32 }
+    std.testing.assertEqual(std.libc.pipe(fdsPtr), 0_i32, "pipe should be created")
+    let readFd: int32 = *fds.at(0)
+    let writeFd: int32 = *fds.at(1)
+
+    let task = std.task.spawn(move || async -> uint8 {
+        return await std.task.blocking(move || -> uint8 {
+            var byte: uint8 = 0
+            let read = std.libc.read(readFd, unsafe { (&mut byte) as *mut uint8 }, 1)
+            if read != 1 {
+                std.panic.panic("blocking read should receive one byte")
+            }
+            return byte
+        })
+    })
+
+    await std.task.sleep(std.time.Duration.fromMillis(20_u64))
+    // A blocked native call is in a GC safepoint, so collection must not wait
+    // for the pipe to become readable.
+    std.runtime.collect()
+    task.cancel()
+    match await task.result() {
+        case .err(.cancelled) => {}
+        case .err(.panicked(_)) => std.panic.panic("cancelled blocking work should not panic")
+        case .ok(_) => std.panic.panic("cancelled blocking work should abandon its result")
+    }
+
+    var byte: uint8 = 37
+    std.testing.assertEqual(
+        std.libc.write(writeFd, unsafe { (&byte) as *const uint8 }, 1),
+        1,
+        "blocked worker should be released normally",
+    )
+    await std.task.sleep(std.time.Duration.fromMillis(20_u64))
+    let _ = std.libc.close(readFd)
+    let _ = std.libc.close(writeFd)
 }

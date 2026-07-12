@@ -1,0 +1,13 @@
+// ENV: TARO_RUNTIME_STATS=1 TARO_RUNTIME_TRACE=1 TARO_RUNTIME_TRACE_CAPACITY=8 TARO_WORKERS=2
+// EXPECT_STDERR_CONTAINS: runtime stats:
+// EXPECT_STDERR_CONTAINS: config workers=2
+// EXPECT_STDERR_CONTAINS: tasks created=1
+// EXPECT_STDERR_CONTAINS: runtime trace: workers=2
+// EXPECT_STDERR_CONTAINS: capacity=8
+// EXPECT_STDERR_CONTAINS: dropped=
+// EXPECT_STDERR_COUNT: 1 runtime stats:
+
+func main() async {
+    await std.testing.yieldNow()
+    std.print("PASS: Runtime observability\n")
+}

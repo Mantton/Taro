@@ -176,6 +176,21 @@ struct SpawnedTaskValueFrame {
 }
 
 #[repr(C)]
+struct TaskSelectionFrame {
+    first: u64,
+    second: u64,
+    waiter: Option<u64>,
+}
+
+#[repr(C)]
+struct TaskTimeoutFrame {
+    task: u64,
+    deadline: Instant,
+    waiter: Option<u64>,
+    armed: bool,
+}
+
+#[repr(C)]
 struct SleepFrame {
     deadline: Instant,
 }
@@ -192,8 +207,10 @@ struct IoWaitFrame {
 
 #[repr(C)]
 struct SyncWaitFrame {
+    handle: *mut u8,
     sync_id: usize,
     kind: u8,
+    error: i32,
     armed: bool,
 }
 
@@ -232,6 +249,109 @@ pub extern "C" fn __rt__async_from_spawned_checked(task_id: u64) -> *mut u8 {
         frame as *mut u8,
         spawned_task_result_poll as *const () as *const u8,
         spawned_task_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
+    )
+}
+
+unsafe extern "C-unwind" fn task_selection_poll(frame: *mut u8, _ctx: *mut u8, out: *mut u8) -> u8 {
+    if frame.is_null() {
+        return 1;
+    }
+
+    let selection = unsafe { &mut *(frame as *mut TaskSelectionFrame) };
+    let waiter = crate::executor::current_task_token()
+        .expect("task selection polled with no current executor task");
+    match selection.waiter {
+        Some(existing) => assert_eq!(
+            existing, waiter,
+            "task selection future moved between owning tasks"
+        ),
+        None => selection.waiter = Some(waiter),
+    }
+
+    let status = crate::executor::poll_task_selection(selection.first, selection.second, out);
+    if status != 0 {
+        crate::executor::unregister_task_selection(selection.first, selection.second, waiter);
+        selection.waiter = None;
+    }
+    status
+}
+
+unsafe extern "C" fn task_selection_drop(frame: *mut u8) {
+    if frame.is_null() {
+        return;
+    }
+    let selection = unsafe { Box::from_raw(frame as *mut TaskSelectionFrame) };
+    if let Some(waiter) = selection.waiter {
+        crate::executor::unregister_task_selection(selection.first, selection.second, waiter);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_select_tasks(first: u64, second: u64) -> *mut u8 {
+    let frame = Box::into_raw(Box::new(TaskSelectionFrame {
+        first,
+        second,
+        waiter: None,
+    }));
+    __rt__async_create(
+        frame as *mut u8,
+        task_selection_poll as *const () as *const u8,
+        task_selection_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
+    )
+}
+
+unsafe extern "C-unwind" fn task_timeout_poll(frame: *mut u8, _ctx: *mut u8, out: *mut u8) -> u8 {
+    if frame.is_null() {
+        return 1;
+    }
+
+    let timeout = unsafe { &mut *(frame as *mut TaskTimeoutFrame) };
+    let waiter = crate::executor::current_task_token()
+        .expect("task timeout polled with no current executor task");
+    match timeout.waiter {
+        Some(existing) => assert_eq!(existing, waiter, "task timeout moved between owning tasks"),
+        None => timeout.waiter = Some(waiter),
+    }
+
+    let initial_poll = !timeout.armed;
+    timeout.armed = true;
+    let status =
+        crate::executor::poll_task_timeout(timeout.task, timeout.deadline, initial_poll, out);
+    if status != 0 {
+        crate::executor::unregister_task_timeout(timeout.task, waiter);
+        timeout.waiter = None;
+    }
+    status
+}
+
+unsafe extern "C" fn task_timeout_drop(frame: *mut u8) {
+    if frame.is_null() {
+        return;
+    }
+    let timeout = unsafe { Box::from_raw(frame as *mut TaskTimeoutFrame) };
+    if let Some(waiter) = timeout.waiter {
+        crate::executor::unregister_task_timeout(timeout.task, waiter);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_task_timeout(task: u64, secs: u64, nanos: u32) -> *mut u8 {
+    let duration = StdDuration::new(secs, nanos);
+    let deadline = Instant::now()
+        .checked_add(duration)
+        .unwrap_or_else(|| panic!("timeout duration overflow"));
+    let frame = Box::into_raw(Box::new(TaskTimeoutFrame {
+        task,
+        deadline,
+        waiter: None,
+        armed: false,
+    }));
+    __rt__async_create(
+        frame as *mut u8,
+        task_timeout_poll as *const () as *const u8,
+        task_timeout_drop as *const () as *const u8,
         TaskMobility::Movable as u8,
     )
 }
@@ -311,6 +431,13 @@ unsafe extern "C-unwind" fn sync_wait_poll(frame: *mut u8, _ctx: *mut u8, out: *
 
     let wait = unsafe { &mut *(frame as *mut SyncWaitFrame) };
 
+    if wait.error != 0 {
+        if !out.is_null() {
+            unsafe { (out as *mut i32).write(wait.error) };
+        }
+        return 1;
+    }
+
     if wait.armed {
         wait.armed = false;
         if !out.is_null() {
@@ -347,7 +474,10 @@ unsafe extern "C" fn sync_wait_drop(frame: *mut u8) {
         return;
     }
 
-    let _ = unsafe { Box::from_raw(frame as *mut SyncWaitFrame) };
+    let frame = unsafe { Box::from_raw(frame as *mut SyncWaitFrame) };
+    if !frame.handle.is_null() {
+        with_gc(|gc| gc.remove_persistent_root(frame.handle));
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -406,10 +536,27 @@ pub extern "C" fn __rt__async_wait_writable(source_id: usize) -> *mut u8 {
     )
 }
 
-fn create_sync_wait(sync_id: usize, kind: u8) -> *mut u8 {
+fn create_sync_wait(handle: *mut u8, kind: u8) -> *mut u8 {
+    let wait_kind = match kind {
+        0 => WaitKind::ChannelSend,
+        1 => WaitKind::ChannelRecv,
+        2 => WaitKind::Mutex,
+        3 => WaitKind::RwRead,
+        4 => WaitKind::RwWrite,
+        _ => panic!("invalid sync wait kind"),
+    };
+    let (sync_id, error, rooted_handle) = match crate::sync::wait_handle_id(handle, wait_kind) {
+        Ok(id) => {
+            with_gc(|gc| gc.add_persistent_root(handle));
+            (id, 0, handle)
+        }
+        Err(error) => (0, error, std::ptr::null_mut()),
+    };
     let frame = Box::into_raw(Box::new(SyncWaitFrame {
+        handle: rooted_handle,
         sync_id,
         kind,
+        error,
         armed: false,
     }));
     __rt__async_create(
@@ -421,28 +568,28 @@ fn create_sync_wait(sync_id: usize, kind: u8) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__async_channel_wait_send(channel_id: usize) -> *mut u8 {
-    create_sync_wait(channel_id, 0)
+pub extern "C" fn __rt__async_channel_wait_send(handle: *mut u8) -> *mut u8 {
+    create_sync_wait(handle, 0)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__async_channel_wait_recv(channel_id: usize) -> *mut u8 {
-    create_sync_wait(channel_id, 1)
+pub extern "C" fn __rt__async_channel_wait_recv(handle: *mut u8) -> *mut u8 {
+    create_sync_wait(handle, 1)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__async_mutex_lock(mutex_id: usize) -> *mut u8 {
-    create_sync_wait(mutex_id, 2)
+pub extern "C" fn __rt__async_mutex_lock(handle: *mut u8) -> *mut u8 {
+    create_sync_wait(handle, 2)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__async_rwlock_read(lock_id: usize) -> *mut u8 {
-    create_sync_wait(lock_id, 3)
+pub extern "C" fn __rt__async_rwlock_read(handle: *mut u8) -> *mut u8 {
+    create_sync_wait(handle, 3)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__async_rwlock_write(lock_id: usize) -> *mut u8 {
-    create_sync_wait(lock_id, 4)
+pub extern "C" fn __rt__async_rwlock_write(handle: *mut u8) -> *mut u8 {
+    create_sync_wait(handle, 4)
 }
 
 // --- Task group poll ---

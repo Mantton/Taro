@@ -22,15 +22,15 @@ import std.sys.sync.windows.*
 export std.sys.sync.windows.*
 
 public struct RawChannel: Copy {
-    id: usize
+    handle: *mut uint8
 }
 
 public struct RawMutex: Copy {
-    id: usize
+    handle: *mut uint8
 }
 
 public struct RawRwLock: Copy {
-    id: usize
+    handle: *mut uint8
 }
 
 public enum ChannelTryRecvStatus {
@@ -40,21 +40,21 @@ public enum ChannelTryRecvStatus {
 }
 
 public func waitChannelSend(_ channel: &RawChannel) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_channel_wait_send(channel.id))
+    mapStatus(await __intrinsic_channel_wait_send(channel.handle))
 }
 
 public func waitChannelRecv(_ channel: &RawChannel) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_channel_wait_recv(channel.id))
+    mapStatus(await __intrinsic_channel_wait_recv(channel.handle))
 }
 
 public func waitMutexLock(_ mutex: &RawMutex) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_mutex_lock(mutex.id))
+    mapStatus(await __intrinsic_mutex_lock(mutex.handle))
 }
 
 public func waitRwLockRead(_ lock: &RawRwLock) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_rwlock_read(lock.id))
+    mapStatus(await __intrinsic_rwlock_read(lock.handle))
 }
 
 public func waitRwLockWrite(_ lock: &RawRwLock) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_rwlock_write(lock.id))
+    mapStatus(await __intrinsic_rwlock_write(lock.handle))
 }

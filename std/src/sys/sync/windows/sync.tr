@@ -1,4 +1,5 @@
 import std.io.Error
+import std.mem.GcDesc
 import std.result.Result
 import std.sys.sync.{RawChannel, RawMutex, RawRwLock, ChannelTryRecvStatus}
 
@@ -9,7 +10,12 @@ public func mapStatus(_ code: int32) -> Result[(), Error] {
     return .err(std.sys.io.windows.mapErrno(code))
 }
 
-public func channelCreate(_ elem_size: usize, _ capacity: usize, _ bounded: bool) -> Result[RawChannel, Error] {
+public func channelCreate(
+    _ elemSize: usize,
+    _ elemDesc: *const GcDesc,
+    _ capacity: usize,
+    _ bounded: bool,
+) -> Result[RawChannel, Error] {
     std.panic.todo("std.sys.sync.channelCreate not implemented on windows yet")
 }
 

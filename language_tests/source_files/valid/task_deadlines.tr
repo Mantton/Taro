@@ -1,0 +1,56 @@
+static var TIMEOUT_CLEANUPS: int32 = 0_i32
+
+func slowOperation() async -> int32 {
+    defer {
+        TIMEOUT_CLEANUPS = TIMEOUT_CLEANUPS + 1_i32
+    }
+    await std.task.sleep(std.time.Duration.fromSeconds(5_u64))
+    return 1_i32
+}
+
+func main() async {
+    match await std.task.select(
+        || async { return 11_i32 },
+        || async {
+            await std.task.sleep(std.time.Duration.fromMillis(50_u64))
+            return "late"
+        },
+    ) {
+        case .ok(.first(value)) => std.testing.assertEqual(value, 11_i32, "select should return its ready first branch")
+        case .ok(_) => std.panic.panic("delayed select branch should not win")
+        case .err(_) => std.panic.panic("ready select should not fail")
+    }
+
+    match await std.task.race(
+        || async { return 21_i32 },
+        || async { return 22_i32 },
+    ) {
+        case .ok(value) => std.testing.assertEqual(value, 21_i32, "race ties should prefer the first branch")
+        case .err(_) => std.panic.panic("ready race should not fail")
+    }
+
+    match await std.task.withTimeout(
+        std.time.Duration.fromMillis(5_u64),
+        || async { return await slowOperation() },
+    ) {
+        case .ok(_) => std.panic.panic("slow operation should time out")
+        case .err(.timedOut) => {}
+        case .err(.operation(_)) => std.panic.panic("ordinary timeout should remain distinct")
+    }
+    std.testing.assertEqual(TIMEOUT_CLEANUPS, 1_i32, "timeout should drain operation cancellation cleanup")
+
+    let nested = await std.task.withTimeout(
+        std.time.Duration.fromMillis(100_u64),
+        || async {
+            return await std.task.withTimeout(
+                std.time.Duration.fromMillis(0_u64),
+                || async { return 31_i32 },
+            )
+        },
+    )
+    match nested {
+        case .ok(.ok(value)) => std.testing.assertEqual(value, 31_i32, "ready work should beat a nested zero timeout")
+        case .ok(.err(_)) => std.panic.panic("ready nested work should not time out")
+        case .err(_) => std.panic.panic("outer deadline should not expire")
+    }
+}

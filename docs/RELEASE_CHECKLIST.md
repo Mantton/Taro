@@ -39,5 +39,7 @@ repository root.
       packaged toolchain layout and inferred `TARO_HOME`.
 - [ ] Confirm attached standard-library artifacts exist under
       `lib/taro/std/<target-triple>/` and were produced by the release compiler.
+- [ ] Confirm every `libtaro_runtime.a` has an adjacent `.manifest.toml` sidecar
+      and that host and cross-target smoke builds reject swapped archives.
 - [ ] Review version numbers, release notes, and known limitations before
       publishing artifacts.

@@ -1,6 +1,6 @@
 use super::{
     compile_paths::{profile_dir_name, script_target_dir},
-    incremental, std_attached,
+    incremental, runtime_artifact, std_attached,
 };
 use crate::{
     CommonCompileArgs, CompileModeOptions, TestArgs,
@@ -467,8 +467,7 @@ fn build_runtime(
     // 1. CLI Arg
     if let Some(path) = runtime_arg {
         if path.exists() {
-            ctx.store.add_link_input(path);
-            return Ok(());
+            return add_runtime_link_input(ctx, path);
         }
         ctx.dcx.emit_error(
             format!(
@@ -484,8 +483,7 @@ fn build_runtime(
     if let Ok(val) = std::env::var("TARO_RUNTIME_LIB") {
         let path = PathBuf::from(val);
         if path.exists() {
-            ctx.store.add_link_input(path);
-            return Ok(());
+            return add_runtime_link_input(ctx, path);
         }
         ctx.dcx.emit_error(
             format!(
@@ -501,8 +499,7 @@ fn build_runtime(
     if let Ok(home) = language_home() {
         let path = installed_runtime_path(&home, ctx.store.target_layout.requested_triple());
         if path.exists() {
-            ctx.store.add_link_input(path);
-            return Ok(());
+            return add_runtime_link_input(ctx, path);
         }
     }
 
@@ -512,8 +509,7 @@ fn build_runtime(
             if let Some(root) = bin_dir.parent() {
                 let path = installed_runtime_path(root, ctx.store.target_layout.requested_triple());
                 if path.exists() {
-                    ctx.store.add_link_input(path);
-                    return Ok(());
+                    return add_runtime_link_input(ctx, path);
                 }
             }
         }
@@ -589,9 +585,29 @@ fn build_runtime(
         return Err(ReportedError);
     }
 
+    if let Err(error) = runtime_artifact::write_manifest(&lib_path, requested_target) {
+        ctx.dcx.emit_error(error, None);
+        return Err(ReportedError);
+    }
+
     // Make the runtime archive available to the existing link step by treating it like another
     // "object file" input.
-    ctx.store.add_link_input(lib_path);
+    add_runtime_link_input(ctx, lib_path)
+}
+
+fn add_runtime_link_input(
+    ctx: &CompilerContext<'_>,
+    runtime: PathBuf,
+) -> Result<(), ReportedError> {
+    if let Err(error) = runtime_artifact::validate(
+        &runtime,
+        ctx.store.target_layout.requested_triple(),
+        &ctx.store.target_layout.triple_string(),
+    ) {
+        ctx.dcx.emit_error(error, None);
+        return Err(ReportedError);
+    }
+    ctx.store.add_link_input(runtime);
     Ok(())
 }
 

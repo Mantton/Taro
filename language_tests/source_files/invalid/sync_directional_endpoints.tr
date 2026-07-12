@@ -1,0 +1,7 @@
+// CHECK_ONLY
+func main() {
+    let (sender, receiver) = std.sync.unbounded[int32]()
+    let _ = sender.tryRecv()
+    let _ = receiver.trySend(1_i32)
+    let _ = receiver.close()
+}

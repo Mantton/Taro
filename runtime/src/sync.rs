@@ -1,4 +1,6 @@
+use crate::garbage_collector::{__gc__alloc, GcDesc, with_gc};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::mem::{align_of, size_of};
 use std::sync::{Mutex, OnceLock};
 
 type TaskToken = u64;
@@ -25,11 +27,17 @@ struct SyncState {
 
 struct ChannelState {
     elem_size: usize,
+    elem_desc: usize,
     capacity: Option<usize>,
     closed: bool,
-    queue: VecDeque<Vec<u8>>,
+    queue: VecDeque<QueuedValue>,
     send_waiters: VecDeque<TaskToken>,
     recv_waiters: VecDeque<TaskToken>,
+}
+
+struct QueuedValue {
+    bytes: Vec<u8>,
+    roots: Vec<usize>,
 }
 
 struct MutexState {
@@ -50,6 +58,104 @@ struct TaskOwnership {
     mutexes: HashSet<usize>,
     rw_read: HashMap<usize, usize>,
     rw_write: HashMap<usize, usize>,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncHandleKind {
+    Channel = 1,
+    Mutex = 2,
+    RwLock = 3,
+}
+
+#[repr(C)]
+struct SyncHandle {
+    id: usize,
+    kind: SyncHandleKind,
+}
+
+static SYNC_HANDLE_DESC: GcDesc = GcDesc {
+    size: size_of::<SyncHandle>(),
+    align: align_of::<SyncHandle>(),
+    ptr_offsets: std::ptr::null(),
+    ptr_count: 0,
+};
+
+fn handle_id(handle: *const u8, expected: SyncHandleKind) -> Result<usize, i32> {
+    let Some(handle) = (unsafe { (handle as *const SyncHandle).as_ref() }) else {
+        return Err(err_invalid());
+    };
+    if handle.kind != expected {
+        return Err(err_invalid());
+    }
+    Ok(handle.id)
+}
+
+fn allocate_handle(
+    id: usize,
+    kind: SyncHandleKind,
+    finalizer: crate::garbage_collector::GcFinalizerFn,
+) -> *mut u8 {
+    let ptr = __gc__alloc(size_of::<SyncHandle>(), &SYNC_HANDLE_DESC);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe { (ptr as *mut SyncHandle).write(SyncHandle { id, kind }) };
+    with_gc(|gc| gc.register_finalizer(ptr, finalizer, id));
+    ptr
+}
+
+fn unregister_handle_finalizer(handle: *const u8) {
+    with_gc(|gc| gc.unregister_finalizer(handle));
+}
+
+fn add_value_roots(roots: &[usize]) {
+    with_gc(|gc| {
+        for root in roots {
+            gc.add_persistent_root(*root as *const u8);
+        }
+    });
+}
+
+fn remove_value_roots(roots: &[usize]) {
+    with_gc(|gc| {
+        for root in roots {
+            gc.remove_persistent_root(*root as *const u8);
+        }
+    });
+}
+
+fn queued_value(
+    elem_size: usize,
+    elem_desc: *const GcDesc,
+    value_ptr: *const u8,
+) -> Result<QueuedValue, i32> {
+    if elem_size > 0 && value_ptr.is_null() {
+        return Err(libc::EINVAL);
+    }
+
+    let mut bytes = vec![0u8; elem_size];
+    if elem_size > 0 {
+        unsafe { std::ptr::copy_nonoverlapping(value_ptr, bytes.as_mut_ptr(), elem_size) };
+    }
+
+    let mut roots = Vec::new();
+    if let Some(desc) = unsafe { elem_desc.as_ref() } {
+        for index in 0..desc.ptr_count {
+            let offset = unsafe { *desc.ptr_offsets.add(index) };
+            if offset.saturating_add(size_of::<usize>()) <= elem_size {
+                let field = unsafe { value_ptr.add(offset) as *const *const u8 };
+                let root = unsafe { std::ptr::read_unaligned(field) };
+                if !root.is_null() {
+                    roots.push(root as usize);
+                }
+            }
+        }
+    }
+    roots.sort_unstable();
+    roots.dedup();
+    add_value_roots(&roots);
+    Ok(QueuedValue { bytes, roots })
 }
 
 impl TaskOwnership {
@@ -117,6 +223,15 @@ fn current_task_token() -> Result<TaskToken, i32> {
     crate::executor::current_task_token().ok_or_else(err_perm)
 }
 
+pub(crate) fn wait_handle_id(handle: *const u8, kind: WaitKind) -> Result<usize, i32> {
+    let expected = match kind {
+        WaitKind::ChannelSend | WaitKind::ChannelRecv => SyncHandleKind::Channel,
+        WaitKind::Mutex => SyncHandleKind::Mutex,
+        WaitKind::RwRead | WaitKind::RwWrite => SyncHandleKind::RwLock,
+    };
+    handle_id(handle, expected)
+}
+
 impl SyncState {
     fn alloc_slot<T>(slots: &mut Vec<Option<T>>, free: &mut Vec<usize>, value: T) -> usize {
         if let Some(id) = free.pop() {
@@ -133,8 +248,14 @@ impl SyncState {
         id
     }
 
-    fn channel_create(&mut self, elem_size: usize, capacity: usize, bounded: bool) -> usize {
-        if bounded && capacity == 0 {
+    fn channel_create(
+        &mut self,
+        elem_size: usize,
+        elem_desc: *const GcDesc,
+        capacity: usize,
+        bounded: bool,
+    ) -> usize {
+        if (bounded && capacity == 0) || elem_desc.is_null() {
             return 0;
         }
 
@@ -143,6 +264,7 @@ impl SyncState {
             &mut self.free_channels,
             ChannelState {
                 elem_size,
+                elem_desc: elem_desc as usize,
                 capacity: bounded.then_some(capacity),
                 closed: false,
                 queue: VecDeque::new(),
@@ -152,12 +274,12 @@ impl SyncState {
         )
     }
 
-    fn channel_destroy(&mut self, channel_id: usize) -> (i32, Vec<TaskToken>) {
+    fn channel_destroy(&mut self, channel_id: usize) -> (i32, Vec<TaskToken>, Vec<usize>) {
         let Some(slot) = self.channels.get_mut(channel_id) else {
-            return (err_invalid(), Vec::new());
+            return (err_invalid(), Vec::new(), Vec::new());
         };
         let Some(channel) = slot.take() else {
-            return (err_invalid(), Vec::new());
+            return (err_invalid(), Vec::new(), Vec::new());
         };
 
         self.free_channels.push(channel_id);
@@ -165,7 +287,12 @@ impl SyncState {
         let mut wake = Vec::new();
         extend_unique(&mut wake, channel.send_waiters);
         extend_unique(&mut wake, channel.recv_waiters);
-        (0, wake)
+        let roots = channel
+            .queue
+            .into_iter()
+            .flat_map(|value| value.roots)
+            .collect();
+        (0, wake, roots)
     }
 
     fn channel_close(&mut self, channel_id: usize) -> (i32, Vec<TaskToken>) {
@@ -184,65 +311,97 @@ impl SyncState {
         (0, wake)
     }
 
-    fn channel_try_send(
+    fn channel_send_status(&self, channel_id: usize) -> i32 {
+        let Some(channel) = self.channels.get(channel_id).and_then(Option::as_ref) else {
+            return err_invalid();
+        };
+        if channel.closed {
+            return err_closed();
+        }
+        if channel
+            .capacity
+            .is_some_and(|capacity| channel.queue.len() >= capacity)
+        {
+            return err_would_block();
+        }
+        0
+    }
+
+    fn channel_try_send_value(
         &mut self,
         channel_id: usize,
-        value_ptr: *const u8,
-    ) -> (i32, Vec<TaskToken>) {
+        value: QueuedValue,
+    ) -> (i32, Vec<TaskToken>, Option<QueuedValue>) {
         let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
-            return (err_invalid(), Vec::new());
+            return (err_invalid(), Vec::new(), Some(value));
         };
 
         if channel.closed {
-            return (err_closed(), Vec::new());
+            return (err_closed(), Vec::new(), Some(value));
         }
 
         if let Some(cap) = channel.capacity {
             if channel.queue.len() >= cap {
-                return (err_would_block(), Vec::new());
+                return (err_would_block(), Vec::new(), Some(value));
             }
         }
 
-        if channel.elem_size > 0 && value_ptr.is_null() {
-            return (libc::EINVAL, Vec::new());
-        }
-
-        let mut bytes = vec![0u8; channel.elem_size];
-        if channel.elem_size > 0 {
-            unsafe {
-                std::ptr::copy_nonoverlapping(value_ptr, bytes.as_mut_ptr(), channel.elem_size);
-            }
-        }
-
-        channel.queue.push_back(bytes);
+        channel.queue.push_back(value);
 
         let mut wake = Vec::new();
         if let Some(waiter) = pop_waiter(&mut channel.recv_waiters) {
             push_unique(&mut wake, waiter);
         }
 
-        (0, wake)
+        (0, wake, None)
     }
 
-    fn channel_try_recv(&mut self, channel_id: usize, out_ptr: *mut u8) -> (i32, Vec<TaskToken>) {
-        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
+    #[cfg(test)]
+    fn channel_try_send(
+        &mut self,
+        channel_id: usize,
+        value_ptr: *const u8,
+    ) -> (i32, Vec<TaskToken>) {
+        let Some(channel) = self.channels.get(channel_id).and_then(Option::as_ref) else {
             return (err_invalid(), Vec::new());
+        };
+        let value = QueuedValue {
+            bytes: if channel.elem_size == 0 {
+                Vec::new()
+            } else if value_ptr.is_null() {
+                return (libc::EINVAL, Vec::new());
+            } else {
+                unsafe { std::slice::from_raw_parts(value_ptr, channel.elem_size) }.to_vec()
+            },
+            roots: Vec::new(),
+        };
+        let (status, wake, _) = self.channel_try_send_value(channel_id, value);
+        (status, wake)
+    }
+
+    fn channel_try_recv(
+        &mut self,
+        channel_id: usize,
+        out_ptr: *mut u8,
+    ) -> (i32, Vec<TaskToken>, Vec<usize>) {
+        let Some(channel) = self.channels.get_mut(channel_id).and_then(Option::as_mut) else {
+            return (err_invalid(), Vec::new(), Vec::new());
         };
 
         if channel.elem_size > 0 && out_ptr.is_null() {
-            return (libc::EINVAL, Vec::new());
+            return (libc::EINVAL, Vec::new(), Vec::new());
         }
 
-        let Some(bytes) = channel.queue.pop_front() else {
+        let Some(value) = channel.queue.pop_front() else {
             if channel.closed {
-                return (err_closed(), Vec::new());
+                return (err_closed(), Vec::new(), Vec::new());
             }
-            return (err_would_block(), Vec::new());
+            return (err_would_block(), Vec::new(), Vec::new());
         };
 
         if channel.elem_size > 0 {
             unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr, channel.elem_size);
+                std::ptr::copy_nonoverlapping(value.bytes.as_ptr(), out_ptr, channel.elem_size);
             }
         }
 
@@ -253,7 +412,7 @@ impl SyncState {
             }
         }
 
-        (0, wake)
+        (0, wake, value.roots)
     }
 
     fn mutex_create(&mut self) -> usize {
@@ -728,6 +887,54 @@ pub(crate) fn register_wait(task_token: TaskToken, id: usize, kind: WaitKind) ->
     Ok(())
 }
 
+/// Return task-to-task dependencies for a blocked synchronization operation.
+/// External state (for example a future channel sender that does not exist yet)
+/// intentionally has no edge and therefore cannot be classified as a cycle.
+pub(crate) fn wait_dependencies(id: usize, kind: WaitKind) -> Vec<TaskToken> {
+    let state = state_cell().lock().unwrap();
+    let mut dependencies: Vec<TaskToken> = match kind {
+        WaitKind::ChannelSend => state
+            .channels
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|channel| channel.recv_waiters.iter().copied().collect())
+            .unwrap_or_default(),
+        WaitKind::ChannelRecv => state
+            .channels
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|channel| channel.send_waiters.iter().copied().collect())
+            .unwrap_or_default(),
+        WaitKind::Mutex => state
+            .mutexes
+            .get(id)
+            .and_then(Option::as_ref)
+            .and_then(|mutex| mutex.owner)
+            .into_iter()
+            .collect(),
+        WaitKind::RwRead => state
+            .rwlocks
+            .get(id)
+            .and_then(Option::as_ref)
+            .and_then(|lock| lock.writer)
+            .into_iter()
+            .collect(),
+        WaitKind::RwWrite => state
+            .rwlocks
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|lock| {
+                let mut owners: Vec<_> = lock.readers.keys().copied().collect();
+                owners.extend(lock.writer);
+                owners
+            })
+            .unwrap_or_default(),
+    };
+    dependencies.sort_unstable();
+    dependencies.dedup();
+    dependencies
+}
+
 pub(crate) fn task_finalized(task_token: TaskToken) {
     let mut state = state_cell().lock().unwrap();
     let wake = state.task_finalized(task_token);
@@ -738,33 +945,71 @@ pub(crate) fn task_finalized(task_token: TaskToken) {
     }
 }
 
+fn finish_channel_destroy(channel_id: usize) -> i32 {
+    let mut state = state_cell().lock().unwrap();
+    let (status, wake, roots) = state.channel_destroy(channel_id);
+    drop(state);
+
+    remove_value_roots(&roots);
+    if !wake.is_empty() {
+        crate::executor::wake_tasks(&wake);
+    }
+    status
+}
+
+fn finalize_channel(channel_id: usize) {
+    let _ = finish_channel_destroy(channel_id);
+}
+
+fn finalize_mutex(mutex_id: usize) {
+    let _ = state_cell().lock().unwrap().mutex_destroy(mutex_id);
+}
+
+fn finalize_rwlock(lock_id: usize) {
+    let _ = state_cell().lock().unwrap().rwlock_destroy(lock_id);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__sync_channel_create(
     elem_size: usize,
     capacity: usize,
     bounded: u8,
-) -> usize {
-    state_cell()
-        .lock()
-        .unwrap()
-        .channel_create(elem_size, capacity, bounded != 0)
+    elem_desc: *const GcDesc,
+) -> *mut u8 {
+    let id =
+        state_cell()
+            .lock()
+            .unwrap()
+            .channel_create(elem_size, elem_desc, capacity, bounded != 0);
+    if id == 0 {
+        return std::ptr::null_mut();
+    }
+    let handle = allocate_handle(id, SyncHandleKind::Channel, finalize_channel);
+    if handle.is_null() {
+        let _ = finish_channel_destroy(id);
+    }
+    handle
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_destroy(channel_id: usize) -> i32 {
-    let mut state = state_cell().lock().unwrap();
-    let (status, wake) = state.channel_destroy(channel_id);
-    drop(state);
-
-    if !wake.is_empty() {
-        crate::executor::wake_tasks(&wake);
+pub extern "C" fn __rt__sync_channel_destroy(handle: *mut u8) -> i32 {
+    let channel_id = match handle_id(handle, SyncHandleKind::Channel) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
+    let status = finish_channel_destroy(channel_id);
+    if status == 0 {
+        unregister_handle_finalizer(handle);
     }
-
     status
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_close(channel_id: usize) -> i32 {
+pub extern "C" fn __rt__sync_channel_close(handle: *mut u8) -> i32 {
+    let channel_id = match handle_id(handle, SyncHandleKind::Channel) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let mut state = state_cell().lock().unwrap();
     let (status, wake) = state.channel_close(channel_id);
     drop(state);
@@ -777,11 +1022,33 @@ pub extern "C" fn __rt__sync_channel_close(channel_id: usize) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_try_send(channel_id: usize, value_ptr: *const u8) -> i32 {
+pub extern "C" fn __rt__sync_channel_try_send(handle: *mut u8, value_ptr: *const u8) -> i32 {
+    let channel_id = match handle_id(handle, SyncHandleKind::Channel) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
+    let (elem_size, elem_desc) = {
+        let state = state_cell().lock().unwrap();
+        let status = state.channel_send_status(channel_id);
+        if status != 0 {
+            return status;
+        }
+        let channel = state.channels[channel_id]
+            .as_ref()
+            .expect("validated channel disappeared");
+        (channel.elem_size, channel.elem_desc as *const GcDesc)
+    };
+    let value = match queued_value(elem_size, elem_desc, value_ptr) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
     let mut state = state_cell().lock().unwrap();
-    let (status, wake) = state.channel_try_send(channel_id, value_ptr);
+    let (status, wake, rejected) = state.channel_try_send_value(channel_id, value);
     drop(state);
 
+    if let Some(value) = rejected {
+        remove_value_roots(&value.roots);
+    }
     if !wake.is_empty() {
         crate::executor::wake_tasks(&wake);
     }
@@ -790,11 +1057,16 @@ pub extern "C" fn __rt__sync_channel_try_send(channel_id: usize, value_ptr: *con
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_channel_try_recv(channel_id: usize, out_ptr: *mut u8) -> i32 {
+pub extern "C" fn __rt__sync_channel_try_recv(handle: *mut u8, out_ptr: *mut u8) -> i32 {
+    let channel_id = match handle_id(handle, SyncHandleKind::Channel) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let mut state = state_cell().lock().unwrap();
-    let (status, wake) = state.channel_try_recv(channel_id, out_ptr);
+    let (status, wake, roots) = state.channel_try_recv(channel_id, out_ptr);
     drop(state);
 
+    remove_value_roots(&roots);
     if !wake.is_empty() {
         crate::executor::wake_tasks(&wake);
     }
@@ -803,17 +1075,34 @@ pub extern "C" fn __rt__sync_channel_try_recv(channel_id: usize, out_ptr: *mut u
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_mutex_create() -> usize {
-    state_cell().lock().unwrap().mutex_create()
+pub extern "C" fn __rt__sync_mutex_create() -> *mut u8 {
+    let id = state_cell().lock().unwrap().mutex_create();
+    let handle = allocate_handle(id, SyncHandleKind::Mutex, finalize_mutex);
+    if handle.is_null() {
+        let _ = state_cell().lock().unwrap().mutex_destroy(id);
+    }
+    handle
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_mutex_destroy(mutex_id: usize) -> i32 {
-    state_cell().lock().unwrap().mutex_destroy(mutex_id)
+pub extern "C" fn __rt__sync_mutex_destroy(handle: *mut u8) -> i32 {
+    let mutex_id = match handle_id(handle, SyncHandleKind::Mutex) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
+    let status = state_cell().lock().unwrap().mutex_destroy(mutex_id);
+    if status == 0 {
+        unregister_handle_finalizer(handle);
+    }
+    status
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_mutex_try_lock(mutex_id: usize) -> i32 {
+pub extern "C" fn __rt__sync_mutex_try_lock(handle: *mut u8) -> i32 {
+    let mutex_id = match handle_id(handle, SyncHandleKind::Mutex) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let task_token = match current_task_token() {
         Ok(task) => task,
         Err(err) => return err,
@@ -826,7 +1115,11 @@ pub extern "C" fn __rt__sync_mutex_try_lock(mutex_id: usize) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_mutex_unlock(mutex_id: usize) -> i32 {
+pub extern "C" fn __rt__sync_mutex_unlock(handle: *mut u8) -> i32 {
+    let mutex_id = match handle_id(handle, SyncHandleKind::Mutex) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let task_token = match current_task_token() {
         Ok(task) => task,
         Err(err) => return err,
@@ -844,17 +1137,34 @@ pub extern "C" fn __rt__sync_mutex_unlock(mutex_id: usize) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_rwlock_create() -> usize {
-    state_cell().lock().unwrap().rwlock_create()
+pub extern "C" fn __rt__sync_rwlock_create() -> *mut u8 {
+    let id = state_cell().lock().unwrap().rwlock_create();
+    let handle = allocate_handle(id, SyncHandleKind::RwLock, finalize_rwlock);
+    if handle.is_null() {
+        let _ = state_cell().lock().unwrap().rwlock_destroy(id);
+    }
+    handle
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_rwlock_destroy(lock_id: usize) -> i32 {
-    state_cell().lock().unwrap().rwlock_destroy(lock_id)
+pub extern "C" fn __rt__sync_rwlock_destroy(handle: *mut u8) -> i32 {
+    let lock_id = match handle_id(handle, SyncHandleKind::RwLock) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
+    let status = state_cell().lock().unwrap().rwlock_destroy(lock_id);
+    if status == 0 {
+        unregister_handle_finalizer(handle);
+    }
+    status
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_rwlock_try_read(lock_id: usize) -> i32 {
+pub extern "C" fn __rt__sync_rwlock_try_read(handle: *mut u8) -> i32 {
+    let lock_id = match handle_id(handle, SyncHandleKind::RwLock) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let task_token = match current_task_token() {
         Ok(task) => task,
         Err(err) => return err,
@@ -867,7 +1177,11 @@ pub extern "C" fn __rt__sync_rwlock_try_read(lock_id: usize) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_rwlock_try_write(lock_id: usize) -> i32 {
+pub extern "C" fn __rt__sync_rwlock_try_write(handle: *mut u8) -> i32 {
+    let lock_id = match handle_id(handle, SyncHandleKind::RwLock) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let task_token = match current_task_token() {
         Ok(task) => task,
         Err(err) => return err,
@@ -880,7 +1194,11 @@ pub extern "C" fn __rt__sync_rwlock_try_write(lock_id: usize) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_rwlock_unlock_read(lock_id: usize) -> i32 {
+pub extern "C" fn __rt__sync_rwlock_unlock_read(handle: *mut u8) -> i32 {
+    let lock_id = match handle_id(handle, SyncHandleKind::RwLock) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let task_token = match current_task_token() {
         Ok(task) => task,
         Err(err) => return err,
@@ -898,7 +1216,11 @@ pub extern "C" fn __rt__sync_rwlock_unlock_read(lock_id: usize) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __rt__sync_rwlock_unlock_write(lock_id: usize) -> i32 {
+pub extern "C" fn __rt__sync_rwlock_unlock_write(handle: *mut u8) -> i32 {
+    let lock_id = match handle_id(handle, SyncHandleKind::RwLock) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let task_token = match current_task_token() {
         Ok(task) => task,
         Err(err) => return err,
@@ -919,10 +1241,21 @@ pub extern "C" fn __rt__sync_rwlock_unlock_write(lock_id: usize) -> i32 {
 mod tests {
     use super::*;
 
+    static U32_DESC: GcDesc = GcDesc {
+        size: size_of::<u32>(),
+        align: align_of::<u32>(),
+        ptr_offsets: std::ptr::null(),
+        ptr_count: 0,
+    };
+
+    fn create_u32_channel(state: &mut SyncState, capacity: usize) -> usize {
+        state.channel_create(size_of::<u32>(), &U32_DESC, capacity, true)
+    }
+
     #[test]
     fn bounded_channel_close_and_drain() {
         let mut state = SyncState::default();
-        let id = state.channel_create(4, 1, true);
+        let id = create_u32_channel(&mut state, 1);
         assert_ne!(id, 0);
 
         let value = 7u32.to_ne_bytes();
@@ -934,34 +1267,51 @@ mod tests {
         assert_eq!(blocked_status, err_would_block());
 
         let mut out = [0u8; 4];
-        let (recv_status, _) = state.channel_try_recv(id, out.as_mut_ptr());
+        let (recv_status, _, _) = state.channel_try_recv(id, out.as_mut_ptr());
         assert_eq!(recv_status, 0);
         assert_eq!(u32::from_ne_bytes(out), 7);
 
         let (close_status, _) = state.channel_close(id);
         assert_eq!(close_status, 0);
 
-        let (closed_recv, _) = state.channel_try_recv(id, out.as_mut_ptr());
+        let (closed_recv, _, _) = state.channel_try_recv(id, out.as_mut_ptr());
         assert_eq!(closed_recv, err_closed());
     }
 
     #[test]
     fn channel_try_recv_invalid_pointer_keeps_queued_value() {
         let mut state = SyncState::default();
-        let id = state.channel_create(4, 1, true);
+        let id = create_u32_channel(&mut state, 1);
         assert_ne!(id, 0);
 
         let value = 27u32.to_ne_bytes();
         let (send_status, _) = state.channel_try_send(id, value.as_ptr());
         assert_eq!(send_status, 0);
 
-        let (invalid_status, _) = state.channel_try_recv(id, std::ptr::null_mut());
+        let (invalid_status, _, _) = state.channel_try_recv(id, std::ptr::null_mut());
         assert_eq!(invalid_status, libc::EINVAL);
 
         let mut out = [0u8; 4];
-        let (recv_status, _) = state.channel_try_recv(id, out.as_mut_ptr());
+        let (recv_status, _, _) = state.channel_try_recv(id, out.as_mut_ptr());
         assert_eq!(recv_status, 0);
         assert_eq!(u32::from_ne_bytes(out), 27);
+    }
+
+    #[test]
+    fn destroyed_sync_slots_are_reused() {
+        let mut state = SyncState::default();
+
+        let channel_id = create_u32_channel(&mut state, 1);
+        assert_eq!(state.channel_destroy(channel_id).0, 0);
+        assert_eq!(create_u32_channel(&mut state, 1), channel_id);
+
+        let mutex_id = state.mutex_create();
+        assert_eq!(state.mutex_destroy(mutex_id), 0);
+        assert_eq!(state.mutex_create(), mutex_id);
+
+        let rwlock_id = state.rwlock_create();
+        assert_eq!(state.rwlock_destroy(rwlock_id), 0);
+        assert_eq!(state.rwlock_create(), rwlock_id);
     }
 
     #[test]
@@ -1024,7 +1374,7 @@ mod tests {
     fn task_finalization_removes_channel_waiters() {
         let mut state = SyncState::default();
 
-        let send_id = state.channel_create(4, 1, true);
+        let send_id = create_u32_channel(&mut state, 1);
         let value = 7u32.to_ne_bytes();
         let (send_status, _) = state.channel_try_send(send_id, value.as_ptr());
         assert_eq!(send_status, 0);
@@ -1035,7 +1385,7 @@ mod tests {
                 .is_empty()
         );
 
-        let recv_id = state.channel_create(4, 1, true);
+        let recv_id = create_u32_channel(&mut state, 1);
         assert!(
             state
                 .register_wait(44, recv_id, WaitKind::ChannelRecv)
@@ -1055,7 +1405,7 @@ mod tests {
     #[test]
     fn channel_close_wakes_unique_waiters() {
         let mut state = SyncState::default();
-        let id = state.channel_create(4, 1, true);
+        let id = create_u32_channel(&mut state, 1);
         {
             let channel = state.channels[id].as_mut().unwrap();
             queue_waiter(&mut channel.send_waiters, 7);

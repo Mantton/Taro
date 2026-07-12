@@ -1,0 +1,5 @@
+func main() async {
+    let _ = await std.task.blocking(|| -> *const int32 {
+        return unsafe { 0 as *const int32 }
+    })
+}

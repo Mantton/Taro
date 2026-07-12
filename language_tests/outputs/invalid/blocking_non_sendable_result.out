@@ -1,0 +1,7 @@
+error: std.task.blocking result must be Sendable
+ -> language_tests/source_files/invalid/blocking_non_sendable_result.tr:2:18
+    let _ = await std.task.blocking(|| -> *const int32 {
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        return unsafe { 0 as *const int32 }
+    })
+      ^

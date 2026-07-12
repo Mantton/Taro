@@ -108,6 +108,10 @@ extern "taro_intrinsic" {
     func __intrinsic_spawn_async[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) -> std.task.Task[T]
     func __intrinsic_cancel_task[T](_ task: &std.task.Task[T])
     func __intrinsic_detach_task[T](_ task: std.task.Task[T])
+    func __intrinsic_dump_tasks()
+    func __intrinsic_select_tasks[A, B](_ first: &std.task.Task[A], _ second: &std.task.Task[B]) async -> uint8
+    func __intrinsic_task_timeout[T](_ task: &std.task.Task[T], _ duration: std.time.Duration) async -> uint8
+    func __intrinsic_blocking[T: std.marker.Sendable, F: std.ops.FnOnce() -> T & std.marker.Sendable](_ thunk: F) async -> T
     func __intrinsic_is_task_cancelled() -> bool
     func __intrinsic_task_result[T](_ task: std.task.Task[T]) async -> std.result.Result[T, std.task.TaskError]
     func __intrinsic_task_group_create[T](_ cancel_on_panic: bool) -> usize
@@ -119,10 +123,10 @@ extern "taro_intrinsic" {
     func __intrinsic_task_group_destroy_and_rethrow(_ group: usize)
     func __intrinsic_wait_readable(_ source_id: usize) async -> int32
     func __intrinsic_wait_writable(_ source_id: usize) async -> int32
-    func __intrinsic_channel_wait_send(_ channel_id: usize) async -> int32
-    func __intrinsic_channel_wait_recv(_ channel_id: usize) async -> int32
-    func __intrinsic_mutex_lock(_ mutex_id: usize) async -> int32
-    func __intrinsic_rwlock_read(_ lock_id: usize) async -> int32
-    func __intrinsic_rwlock_write(_ lock_id: usize) async -> int32
+    func __intrinsic_channel_wait_send(_ handle: *mut uint8) async -> int32
+    func __intrinsic_channel_wait_recv(_ handle: *mut uint8) async -> int32
+    func __intrinsic_mutex_lock(_ handle: *mut uint8) async -> int32
+    func __intrinsic_rwlock_read(_ handle: *mut uint8) async -> int32
+    func __intrinsic_rwlock_write(_ handle: *mut uint8) async -> int32
     func __intrinsic_sleep(_ duration: std.time.Duration) async -> ()
 }

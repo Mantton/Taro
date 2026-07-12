@@ -1,0 +1,4 @@
+error: std.task.blocking closure captures must be Sendable
+ -> language_tests/source_files/invalid/blocking_non_sendable_capture.tr:4:36
+	    let _ = await std.task.blocking(move || -> int32 { return *borrowed })
+	                                    ^^^^

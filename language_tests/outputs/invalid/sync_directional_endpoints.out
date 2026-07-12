@@ -1,0 +1,13 @@
+Checking – sync_directional_endpoints
+error: no member named 'tryRecv' found on type Sender[int32]
+ -> language_tests/source_files/invalid/sync_directional_endpoints.tr:4:19
+	    let _ = sender.tryRecv()
+	                   ^^^^^^^
+error: no member named 'trySend' found on type Receiver[int32]
+ -> language_tests/source_files/invalid/sync_directional_endpoints.tr:5:21
+	    let _ = receiver.trySend(1_i32)
+	                     ^^^^^^^
+error: no member named 'close' found on type Receiver[int32]
+ -> language_tests/source_files/invalid/sync_directional_endpoints.tr:6:21
+	    let _ = receiver.close()
+	                     ^^^^^

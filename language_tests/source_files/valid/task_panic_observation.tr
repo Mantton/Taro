@@ -1,6 +1,8 @@
 // EXPECT_STDERR_NOT_CONTAINS: handled-observation-panic
 // EXPECT_STDERR_COUNT: 1 unobserved task panic: abandoned-observation-panic
 // EXPECT_STDERR_COUNT: 1 unobserved task panic: detached-observation-panic
+// EXPECT_STDERR_CONTAINS: async task trace:
+// EXPECT_STDERR_CONTAINS: task_panic_observation.tr
 
 func main() async {
     let handled = std.task.spawn(|| async {
@@ -26,12 +28,12 @@ func main() async {
     )
     std.print("handled task panic observed\n")
 
-    let ready = match std.sync.bounded[int32](1) {
+    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("observation channel should be created")
     }
     {
-        let childReady = ready
+        let childReady = readySender
         let abandoned = std.task.spawn(|| async {
             match await childReady.send(1_i32) {
                 case .ok(_) => {}
@@ -39,13 +41,11 @@ func main() async {
             }
             std.panic.panic("abandoned-observation-panic")
         })
-        match await ready.recv() {
+        match await readyReceiver.recv() {
             case .some(_) => {}
             case .none => std.panic.panic("observation signal should be received")
         }
     }
-    std.testing.assertTrue(ready.destroy().isOk(), "observation channel should be destroyed")
-
     std.task.detached(|| async {
         await std.testing.yieldNow()
         std.panic.panic("detached-observation-panic")

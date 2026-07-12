@@ -1,0 +1,10 @@
+// ENV: TARO_RUNTIME_STATS=1 TARO_RUNTIME_TRACE=1 TARO_RUNTIME_TRACE_CAPACITY=8 TARO_WORKERS=2
+// EXPECT_STDERR_CONTAINS: runtime stats:
+// EXPECT_STDERR_CONTAINS: config workers=2
+// EXPECT_STDERR_CONTAINS: tasks created=0
+// EXPECT_STDERR_CONTAINS: runtime trace: workers=2 events=0 capacity=8 dropped=0
+// EXPECT_STDERR_COUNT: 1 runtime stats:
+
+func main() {
+    std.print("PASS: Sync runtime observability\n")
+}

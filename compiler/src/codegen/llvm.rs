@@ -914,7 +914,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // and don't have MIR bodies.
             if matches!(
                 self.gcx.get_signature(def_id).abi,
-                Some(hir::Abi::Intrinsic | hir::Abi::C)
+                Some(hir::Abi::Intrinsic | hir::Abi::C | hir::Abi::Blocking)
             ) {
                 continue;
             }
@@ -4679,6 +4679,26 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         return Ok(());
                     }
                 }
+                if self.is_blocking_foreign_call(func) {
+                    let (callable, fn_abi) = self.lower_callable_with_abi(func);
+                    let lowered_args =
+                        self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
+                    self.emit_gc_blocking_transition(
+                        "__rt__gc_enter_blocking",
+                        "gc_blocking_enter",
+                    );
+                    let call_site = self.emit_direct_call_maybe_unwind(
+                        callable,
+                        &lowered_args,
+                        normal_bb,
+                        None,
+                        "blocking_call",
+                    )?;
+                    self.emit_gc_blocking_transition("__rt__gc_exit_blocking", "gc_blocking_exit");
+                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
+                    let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
+                    return Ok(());
+                }
                 let virtual_instance = self.virtual_instance_for_call(func);
                 if let Some(instance) = virtual_instance.as_ref() {
                     self.lower_virtual_call(
@@ -4739,6 +4759,25 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         }
         Ok(())
+    }
+
+    fn is_blocking_foreign_call(&self, func: &mir::Operand<'gcx>) -> bool {
+        let mir::Operand::Constant(constant) = func else {
+            return false;
+        };
+        let mir::ConstantKind::Function(def_id, _, _) = constant.value else {
+            return false;
+        };
+        self.gcx.get_signature(def_id).abi == Some(hir::Abi::Blocking)
+    }
+
+    fn emit_gc_blocking_transition(&self, symbol: &str, call_name: &str) {
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        let function = self.module.get_function(symbol).unwrap_or_else(|| {
+            self.module
+                .add_function(symbol, fn_ty, Some(Linkage::External))
+        });
+        let _ = self.builder.build_call(function, &[], call_name).unwrap();
     }
 
     fn try_lower_intrinsic_call(

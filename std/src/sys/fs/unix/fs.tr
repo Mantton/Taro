@@ -3,7 +3,7 @@ import std.io.Error
 import std.libc
 import std.result.Result
 
-extern "taro_rt" {
+extern "blocking" {
     func __rt__open2(_ path: *const uint8, _ oflags: int32) -> int32
     func __rt__open3(_ path: *const uint8, _ oflags: int32, _ mode: int32) -> int32
 }

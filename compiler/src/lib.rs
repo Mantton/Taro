@@ -18,6 +18,7 @@ pub mod metadata;
 pub mod mir;
 pub mod package;
 mod parse;
+pub mod runtime_abi;
 mod sema;
 pub mod span;
 pub mod specialize;

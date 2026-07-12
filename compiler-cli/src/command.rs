@@ -10,6 +10,7 @@ mod compile_paths;
 mod incremental;
 mod new;
 mod run;
+mod runtime_artifact;
 mod std_attached;
 mod test;
 
@@ -59,6 +60,16 @@ pub fn handle(arguments: Cli) -> CommandResult {
         CliCommand::Check(arguments) => check::run(arguments)?,
         CliCommand::New(arguments) => new::run(arguments)?,
         CliCommand::Run(arguments) => return run::run(arguments),
+        CliCommand::RuntimeManifest(arguments) => {
+            match runtime_artifact::write_manifest(&arguments.archive, arguments.target.as_deref())
+            {
+                Ok(path) => eprintln!("Generated runtime manifest – {}", path.display()),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return Err(ReportedError);
+                }
+            }
+        }
         CliCommand::Test(arguments) => return test::run(arguments),
     }
 

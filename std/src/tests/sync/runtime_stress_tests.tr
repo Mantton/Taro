@@ -125,12 +125,12 @@ func runtimeStressRwReader() async -> int32 {
 @test
 @tag("runtime")
 func runtimeStressBoundedChannelProducerConsumer() async {
-    let channel = match std.sync.bounded[int32](4 as usize) {
+    let (sender, receiver) = match std.sync.bounded[int32](4 as usize) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("bounded channel should be created")
     }
 
-    let producerChannel = channel
+    let producerChannel = sender
     let producer = std.task.spawn(|| async {
         var value = 1_i32
         while value <= 128_i32 {
@@ -144,7 +144,7 @@ func runtimeStressBoundedChannelProducerConsumer() async {
         return 128_i32
     })
 
-    let consumerChannel = channel
+    let consumerChannel = receiver
     let consumer = std.task.spawn(|| async {
         var count = 0_i32
         var sum = 0_i32
@@ -163,40 +163,39 @@ func runtimeStressBoundedChannelProducerConsumer() async {
     let consumed = (await consumer.result()).unwrap()
     std.testing.assertEqual(produced, 128_i32, "producer should send every message")
     std.testing.assertEqual(consumed, 8256_i32, "consumer should receive the sum of 1..128")
-    std.testing.assertTrue(channel.destroy().isOk(), "bounded channel destroy should succeed")
 }
 
 @cfg(family("unix"))
 @test
 @tag("runtime")
 func runtimeStressChannelCloseWakesManyReceivers() async {
-    let channel = match std.sync.bounded[int32](1 as usize) {
+    let (sender, receiver) = match std.sync.bounded[int32](1 as usize) {
         case .ok(value) => value
         case .err(_) => std.panic.panic("bounded channel should be created")
     }
 
-    let firstChannel = channel
+    let firstChannel = receiver
     let first = std.task.spawn(|| async {
         match await firstChannel.recv() {
             case .none => return 1_i32
             case .some(_) => return 0_i32
         }
     })
-    let secondChannel = channel
+    let secondChannel = receiver
     let second = std.task.spawn(|| async {
         match await secondChannel.recv() {
             case .none => return 1_i32
             case .some(_) => return 0_i32
         }
     })
-    let thirdChannel = channel
+    let thirdChannel = receiver
     let third = std.task.spawn(|| async {
         match await thirdChannel.recv() {
             case .none => return 1_i32
             case .some(_) => return 0_i32
         }
     })
-    let fourthChannel = channel
+    let fourthChannel = receiver
     let fourth = std.task.spawn(|| async {
         match await fourthChannel.recv() {
             case .none => return 1_i32
@@ -205,14 +204,13 @@ func runtimeStressChannelCloseWakesManyReceivers() async {
     })
 
     await std.testing.yieldNow()
-    std.testing.assertTrue(channel.close().isOk(), "channel close should wake receivers")
+    std.testing.assertTrue(sender.close().isOk(), "channel close should wake receivers")
 
     let total = (await first.result()).unwrap()
         + (await second.result()).unwrap()
         + (await third.result()).unwrap()
         + (await fourth.result()).unwrap()
     std.testing.assertEqual(total, 4_i32, "all blocked receivers should observe close")
-    std.testing.assertTrue(channel.destroy().isOk(), "channel destroy should succeed")
 }
 
 @cfg(family("unix"))

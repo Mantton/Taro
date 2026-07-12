@@ -335,7 +335,7 @@ impl<'state> Compiler<'state> {
 
             if matches!(
                 self.context.get_signature(def_id).abi,
-                Some(hir::Abi::Intrinsic | hir::Abi::C)
+                Some(hir::Abi::Intrinsic | hir::Abi::C | hir::Abi::Blocking)
             ) {
                 continue;
             }

@@ -126,7 +126,9 @@ impl Inline {
         // Check function signature for ABI restrictions
         let sig = gcx.get_signature(callee_id);
         match sig.abi {
-            Some(Abi::Intrinsic) | Some(Abi::C) | Some(Abi::Runtime) => return false,
+            Some(Abi::Intrinsic) | Some(Abi::C) | Some(Abi::Blocking) | Some(Abi::Runtime) => {
+                return false;
+            }
             None => {}
         }
 

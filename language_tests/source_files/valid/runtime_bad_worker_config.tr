@@ -1,0 +1,7 @@
+// ENV: TARO_RUNTIME_STATS=1 TARO_WORKERS=0
+// EXPECT_EXIT: 2
+// EXPECT_STDERR_CONTAINS: runtime configuration error: TARO_WORKERS must be a positive integer; got `0`
+
+func main() async {
+    std.print("UNREACHABLE\n")
+}

@@ -542,7 +542,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.witness_thunks.len(),
             self.gcx.definition_ident(impl_target_def_id).symbol,
         );
-        let thunk_fn = self.module.add_function(&thunk_name, thunk_fn_ty, None);
+        // Thunk names use a module-local numeric index, just like their
+        // internal witness tables. Keep the functions internal as well so a
+        // downstream package can materialize its own thunks without colliding
+        // with thunks already emitted into a dependency object.
+        let thunk_fn = self
+            .module
+            .add_function(&thunk_name, thunk_fn_ty, Some(Linkage::Internal));
 
         // Save current position and build thunk body
         let current_block = self.builder.get_insert_block();

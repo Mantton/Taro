@@ -3,6 +3,7 @@ pub mod existentials;
 pub mod garbage_collector;
 pub mod hash_seed;
 mod io_poller;
+mod observability;
 pub mod panic_unwind;
 mod sync;
 pub mod task;

@@ -759,7 +759,10 @@ fn should_retain_mir_root_for_metadata<'ctx>(
     // Keep concretely-small callees that the inliner can pick up heuristically.
     // ABI-restricted callees are never inlined and don't need MIR in metadata.
     let signature = gcx.get_signature(def_id);
-    if matches!(signature.abi, Some(Abi::Intrinsic | Abi::C | Abi::Runtime)) {
+    if matches!(
+        signature.abi,
+        Some(Abi::Intrinsic | Abi::C | Abi::Blocking | Abi::Runtime)
+    ) {
         return false;
     }
 

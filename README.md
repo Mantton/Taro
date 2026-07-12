@@ -235,7 +235,18 @@ TARO_HOME=$(pwd)/dist dist/bin/taro check examples/hello.tr --std-path std --bui
 
 `--target` controls LLVM object generation, attached std selection, runtime selection, and the final linker invocation. Target-specific runtime archives use:
 
+- `TARO_HOME/lib/taro/runtime/libtaro_runtime.a` for host builds
 - `TARO_HOME/lib/taro/runtime/<target-triple>/libtaro_runtime.a`
+
+Every runtime archive has an adjacent `.manifest.toml` sidecar. Before linking,
+the compiler verifies its runtime ABI revision and fingerprint, exact target,
+object architecture, and archive SHA-256. This validation also applies to
+`--runtime-path` and `TARO_RUNTIME_LIB`, so custom archives must include the
+sidecar produced alongside them by the toolchain.
+
+Distribution tooling generates sidecars automatically. For an advanced custom
+archive, use `taro runtime-manifest /path/to/libtaro_runtime.a`; add
+`--target <TRIPLE>` when the archive is not host-only.
 
 Same-OS Darwin cross-architecture builds use the host macOS SDK automatically. Linux cross-architecture builds require `--linker` or `--sysroot`; cross-OS Darwin/Linux builds require both. An explicit runtime can always be supplied with `--runtime-path`.
 
@@ -626,13 +637,19 @@ Taro includes a multithreaded async runtime:
 - Awaited task panics are silent and inspectable through `PanicPayload`; detached
   or abandoned task panics are reported once as `unobserved task panic`
 - `Task.cancel()` and `std.task.isCancelled()` provide cancellation controls
+- `std.task.dump()` prints live task spawn chains and typed wait reasons;
+  `TARO_DEADLOCK_TIMEOUT_MS` enables opt-in stuck-task and cycle diagnostics
 - An unconsumed `Task` is cancelled and reclaimed at scope exit. Use
   `Task.detach()` to transfer an existing handle, or `std.task.detached(...)`
   to launch explicit fire-and-forget work
 - `withTaskGroup` supports `.cancelOnPanic` and `.independent` policies
+- `std.task.select` races heterogeneous async operations while preserving the
+  winning branch; `std.task.race` provides the same operation for one result type
+- `std.task.withTimeout` returns a distinct `TimeoutError.timedOut` and drains
+  the cancelled operation before returning
 - `std.task.sleep` and `std.io.task.AsyncStream` provide timer and async I/O integration
 
-The executor uses worker threads with work stealing. Worker count defaults to logical CPU count and can be overridden with `TARO_WORKERS`.
+The executor uses worker threads with work stealing. Worker count defaults to logical CPU count and can be overridden with the positive integer `TARO_WORKERS`; invalid values fail with a runtime configuration error. Use `taro run --runtime-stats` for a scheduler/I/O/GC summary and `taro run --runtime-trace` for a bounded, human-readable event trace. `TARO_RUNTIME_TRACE_CAPACITY` changes the default 4,096-event bound, up to 65,536 events.
 The runtime invariants are documented in [`docs/async-runtime.md`](docs/async-runtime.md), and `make runtime-stress` runs the async stress subset across multiple worker counts.
 
 ### Memory Management
@@ -711,7 +728,11 @@ Prefer the distribution scripts while debugging local layout problems:
 python3 development/scripts/run_dist.py examples/hello.tr
 ```
 
-For host builds, verify that `TARO_HOME/lib/taro/runtime/libtaro_runtime.a` exists. For `--target <TRIPLE>`, verify `TARO_HOME/lib/taro/runtime/<TRIPLE>/libtaro_runtime.a`; alternatively pass `--runtime-path` explicitly. Cross-target linker setup can be supplied with `--linker` and `--sysroot`.
+For host builds, verify that `TARO_HOME/lib/taro/runtime/libtaro_runtime.a` and
+its `.manifest.toml` sidecar exist. For `--target <TRIPLE>`, verify both files
+under `TARO_HOME/lib/taro/runtime/<TRIPLE>/`; alternatively pass a manifested
+archive with `--runtime-path`. Cross-target linker setup can be supplied with
+`--linker` and `--sysroot`.
 
 **Unexpected cache or metadata behavior after compiler changes**
 

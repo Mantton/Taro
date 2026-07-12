@@ -399,6 +399,18 @@ extern "C" {
 }
 ```
 
+Use the `blocking` ABI for foreign calls that may park indefinitely. It uses
+the C calling convention and symbol name while publishing the current GC
+shadow roots for the duration of the call.
+
+```taro
+extern "blocking" {
+    func read(fd: int32, buffer: *mut uint8, count: usize) -> isize;
+}
+```
+
+Blocking foreign functions must not call back into Taro before returning.
+
 ---
 
 ## Import Declaration

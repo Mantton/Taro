@@ -71,6 +71,9 @@ fn workspace_root() -> PathBuf {
 
 fn distribution_is_available(dist: &Path) -> bool {
     dist.join("lib/taro/runtime/libtaro_runtime.a").is_file()
+        && dist
+            .join("lib/taro/runtime/libtaro_runtime.a.manifest.toml")
+            .is_file()
         && directory_contains(&dist.join("lib/taro/std"), "std.taro_meta")
 }
 

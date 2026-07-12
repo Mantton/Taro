@@ -1,0 +1,35 @@
+// EXPECT_STDERR_CONTAINS: task dump: 2 live task(s)
+// EXPECT_STDERR_CONTAINS: sleeping for another
+// EXPECT_STDERR_CONTAINS: causal parents:
+// EXPECT_STDERR_CONTAINS: task_diagnostics.tr
+// EXPECT_STDERR_NOT_CONTAINS: definitive deadlock cycle
+
+func main() async {
+    let (readySender, readyReceiver) = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("task diagnostic channel should be created")
+    }
+    let childReady = readySender
+    let task = std.task.spawn(|| async {
+        match await childReady.send(1_i32) {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("task diagnostic child should signal readiness")
+        }
+        await std.task.sleep(std.time.Duration.fromSeconds(30_u64))
+        return 1_i32
+    })
+    match await readyReceiver.recv() {
+        case .some(_) => {}
+        case .none => std.panic.panic("task diagnostic parent should receive readiness")
+    }
+
+    std.task.dump()
+    task.cancel()
+    match await task.result() {
+        case .ok(_) => std.panic.panic("cancelled diagnostic task should not complete")
+        case .err(error) => match error {
+            case .cancelled => {}
+            case .panicked(payload) => payload.rethrow()
+        }
+    }
+}

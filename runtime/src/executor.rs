@@ -1,17 +1,23 @@
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::fmt::Write as _;
+use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, Weak};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration as StdDuration, Instant};
 
-use crate::garbage_collector::{__gc__makebuf, GcDesc, with_gc};
+use crate::garbage_collector::{
+    __gc__alloc, __gc__makebuf, GcDesc, GcStatsSnapshot, stats_snapshot, with_gc,
+};
 use crate::io_poller::{self, Interest};
+use crate::observability::{RuntimeDiagnostics, RuntimeDiagnosticsConfig, quote_field};
 use crate::task::{
-    __rt__async_destroy, __rt__async_poll, TaskMobility, async_handle_frame, async_handle_mobility,
+    __rt__async_create, __rt__async_destroy, __rt__async_poll, TaskMobility, async_handle_frame,
+    async_handle_mobility,
 };
 
 type TaskIndex = usize;
@@ -23,12 +29,105 @@ const IDLE_YIELDS: usize = 8;
 const TASK_TOKEN_INDEX_BITS: u32 = 32;
 const TASK_TOKEN_INDEX_MASK: u64 = (1u64 << TASK_TOKEN_INDEX_BITS) - 1;
 const TASK_INITIAL_GENERATION: TaskGeneration = 1;
+const MAX_TASK_TRACE_FRAMES: usize = 32;
 static PANIC_PAYLOAD_BYTE_DESC: GcDesc = GcDesc {
     size: 1,
     align: 1,
     ptr_offsets: std::ptr::null(),
     ptr_count: 0,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WaitReason {
+    Task(TaskToken),
+    Tasks([TaskToken; 2]),
+    TaskTimeout {
+        task: TaskToken,
+        deadline: Instant,
+    },
+    TaskGroup(u64),
+    Sleep(Instant),
+    Io {
+        source_id: usize,
+        interest: Interest,
+    },
+    Sync {
+        sync_id: usize,
+        kind: crate::sync::WaitKind,
+    },
+    BlockingCapacity,
+    BlockingWork,
+}
+
+#[derive(Clone, Debug)]
+struct SpawnMetadata {
+    name: String,
+    file: String,
+    line: usize,
+    column: usize,
+}
+
+impl SpawnMetadata {
+    fn root() -> Self {
+        Self {
+            name: "<async root>".into(),
+            file: String::new(),
+            line: 0,
+            column: 0,
+        }
+    }
+
+    fn anonymous() -> Self {
+        Self {
+            name: "<runtime task>".into(),
+            file: String::new(),
+            line: 0,
+            column: 0,
+        }
+    }
+
+    fn from_runtime(
+        name: crate::panic_unwind::RtString,
+        file: crate::panic_unwind::RtString,
+        line: usize,
+        column: usize,
+    ) -> Self {
+        let name = name.to_owned_lossy();
+        Self {
+            name: if name.is_empty() {
+                "<runtime task>".into()
+            } else {
+                name
+            },
+            file: file.to_owned_lossy(),
+            line,
+            column,
+        }
+    }
+
+    fn into_trace_frame(self) -> crate::panic_unwind::TaskTraceFrame {
+        crate::panic_unwind::TaskTraceFrame {
+            name: self.name,
+            file: self.file,
+            line: self.line,
+            column: self.column,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TaskDiagnosticSnapshot {
+    token: TaskToken,
+    state: &'static str,
+    spawn_trace: Vec<crate::panic_unwind::TaskTraceFrame>,
+    wait_reason: Option<WaitReason>,
+}
+
+#[derive(Debug)]
+struct TaskDump {
+    text: String,
+    cycle: Option<Vec<TaskToken>>,
+}
 
 fn allocate_panic_payload(
     report: &crate::panic_unwind::PanicReport,
@@ -82,6 +181,10 @@ struct TaskSlotInner {
     cancelled: bool,
     detached: bool,
     polled: bool,
+    // An already-expired timeout gives its operation one poll before the
+    // deadline can win. The ordinary result waiter is woken after that poll
+    // if the operation remains pending.
+    wake_waiter_after_poll: bool,
     queued: bool,
     running: bool,
     wake_requested: bool,
@@ -92,6 +195,8 @@ struct TaskSlotInner {
     group_id: Option<u64>,
     is_spawned: bool,
     panic_info: Option<crate::panic_unwind::PanicReport>,
+    spawn_trace: Vec<crate::panic_unwind::TaskTraceFrame>,
+    wait_reason: Option<WaitReason>,
 }
 
 unsafe impl Send for TaskSlot {}
@@ -118,6 +223,7 @@ impl TaskSlot {
                 cancelled: false,
                 detached: false,
                 polled: false,
+                wake_waiter_after_poll: false,
                 queued: false,
                 running: false,
                 wake_requested: false,
@@ -128,6 +234,8 @@ impl TaskSlot {
                 group_id: None,
                 is_spawned: false,
                 panic_info: None,
+                spawn_trace: vec![SpawnMetadata::anonymous().into_trace_frame()],
+                wait_reason: None,
             }),
         }
     }
@@ -135,6 +243,15 @@ impl TaskSlot {
 
 #[derive(Default)]
 struct RuntimeStats {
+    tasks_created: AtomicU64,
+    task_polls: AtomicU64,
+    task_completions: AtomicU64,
+    task_cancellations: AtomicU64,
+    task_panics: AtomicU64,
+    peak_live_tasks: AtomicU64,
+    queue_enqueues: AtomicU64,
+    pinned_enqueues: AtomicU64,
+    worker_enqueues: AtomicU64,
     steals: AtomicU64,
     parks: AtomicU64,
     wakeups: AtomicU64,
@@ -142,11 +259,60 @@ struct RuntimeStats {
     worker_unparks: AtomicU64,
     global_unparks: AtomicU64,
     timer_wakeups: AtomicU64,
+    timer_registrations: AtomicU64,
     io_wakeups: AtomicU64,
 }
 
+#[derive(Debug, Default)]
+struct RuntimeStatsSnapshot {
+    tasks_created: u64,
+    task_polls: u64,
+    task_completions: u64,
+    task_cancellations: u64,
+    task_panics: u64,
+    peak_live_tasks: u64,
+    queue_enqueues: u64,
+    pinned_enqueues: u64,
+    worker_enqueues: u64,
+    steals: u64,
+    parks: u64,
+    wakeups: u64,
+    global_injects: u64,
+    worker_unparks: u64,
+    global_unparks: u64,
+    timer_wakeups: u64,
+    timer_registrations: u64,
+    io_wakeups: u64,
+}
+
+impl RuntimeStats {
+    fn snapshot(&self) -> RuntimeStatsSnapshot {
+        RuntimeStatsSnapshot {
+            tasks_created: self.tasks_created.load(Ordering::Relaxed),
+            task_polls: self.task_polls.load(Ordering::Relaxed),
+            task_completions: self.task_completions.load(Ordering::Relaxed),
+            task_cancellations: self.task_cancellations.load(Ordering::Relaxed),
+            task_panics: self.task_panics.load(Ordering::Relaxed),
+            peak_live_tasks: self.peak_live_tasks.load(Ordering::Relaxed),
+            queue_enqueues: self.queue_enqueues.load(Ordering::Relaxed),
+            pinned_enqueues: self.pinned_enqueues.load(Ordering::Relaxed),
+            worker_enqueues: self.worker_enqueues.load(Ordering::Relaxed),
+            steals: self.steals.load(Ordering::Relaxed),
+            parks: self.parks.load(Ordering::Relaxed),
+            wakeups: self.wakeups.load(Ordering::Relaxed),
+            global_injects: self.global_injects.load(Ordering::Relaxed),
+            worker_unparks: self.worker_unparks.load(Ordering::Relaxed),
+            global_unparks: self.global_unparks.load(Ordering::Relaxed),
+            timer_wakeups: self.timer_wakeups.load(Ordering::Relaxed),
+            timer_registrations: self.timer_registrations.load(Ordering::Relaxed),
+            io_wakeups: self.io_wakeups.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// Current runtime limitations:
-/// - Synchronous blocking syscalls still occupy an OS worker thread.
+/// - Unannotated synchronous blocking calls still occupy an async worker;
+///   callers must use `std.task.blocking` or the explicit blocking FFI ABI.
 /// - TLS-affine foreign code remains unsafe for movable tasks unless future
 ///   runtime pinning support is added.
 struct Scheduler {
@@ -164,6 +330,8 @@ struct Scheduler {
     worker_registered: Vec<AtomicBool>,
     worker_joins: Mutex<Vec<JoinHandle<()>>>,
     io_join: Mutex<Option<JoinHandle<()>>>,
+    watchdog_join: Mutex<Option<JoinHandle<()>>>,
+    blocking_pool: OnceLock<BlockingPool>,
     timers: Mutex<TimerState>,
     next_timer_sequence: AtomicU64,
     idle_workers: AtomicUsize,
@@ -171,8 +339,15 @@ struct Scheduler {
     shutdown: AtomicBool,
     started: AtomicBool,
     wake_cursor: AtomicUsize,
+    progress_epoch: AtomicU64,
     worker_panic: Mutex<Option<String>>,
+    fatal_runtime_error: Mutex<Option<String>>,
+    deadlock_timeout: Option<StdDuration>,
+    blocking_warn_threshold: Option<StdDuration>,
     stats: RuntimeStats,
+    diagnostics: RuntimeDiagnostics,
+    gc_stats_baseline: GcStatsSnapshot,
+    diagnostics_reported: AtomicBool,
     task_groups: Mutex<Vec<Option<TaskGroupState>>>,
     free_group_slots: Mutex<Vec<usize>>,
 }
@@ -186,11 +361,77 @@ struct TaskGroupState {
     cancelled: bool,
     cancel_on_panic: bool,
     ready_status: u8,
-    panic_message: Option<String>,
+    panic_report: Option<crate::panic_unwind::PanicReport>,
 }
 
 struct CompletedGroupTask {
     buf: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockingJobPhase {
+    New,
+    Queued,
+    Running,
+    Completed,
+    Panicked,
+}
+
+struct BlockingJobInner {
+    adapter: *mut u8,
+    output: *mut u8,
+    output_size: usize,
+    phase: BlockingJobPhase,
+    abandoned: bool,
+    waiter: Option<TaskToken>,
+    panic_report: Option<crate::panic_unwind::PanicReport>,
+}
+
+struct BlockingJob {
+    inner: Mutex<BlockingJobInner>,
+}
+
+// The compiler enforces Sendable on both the closure frame and result. Raw
+// pointers are only accessed under `inner`, and ownership moves exactly once
+// from the awaiting task to a blocking worker.
+unsafe impl Send for BlockingJob {}
+unsafe impl Sync for BlockingJob {}
+
+struct BlockingQueueState {
+    jobs: VecDeque<Arc<BlockingJob>>,
+    capacity_waiters: VecDeque<TaskToken>,
+}
+
+struct BlockingPoolState {
+    scheduler: Weak<Scheduler>,
+    queue_capacity: usize,
+    queue: Mutex<BlockingQueueState>,
+    available: Condvar,
+    shutdown: AtomicBool,
+    test_mode: bool,
+}
+
+struct BlockingPool {
+    state: Arc<BlockingPoolState>,
+    // Dropping a JoinHandle detaches the thread. Shutdown deliberately does
+    // not join workers because native work already in progress may never
+    // return; those workers retain only `BlockingPoolState` and a weak
+    // scheduler reference.
+    _joins: Mutex<Vec<JoinHandle<()>>>,
+}
+
+enum BlockingEnqueue {
+    Accepted,
+    Full,
+    Shutdown,
+}
+
+#[repr(C)]
+struct BlockingFutureFrame {
+    pool: Arc<BlockingPoolState>,
+    job: Arc<BlockingJob>,
+    waiter: Option<TaskToken>,
+    enqueued: bool,
 }
 
 thread_local! {
@@ -201,7 +442,7 @@ struct WorkerContext {
     scheduler: Arc<Scheduler>,
     worker_id: usize,
     current_task: Option<TaskToken>,
-    current_task_blocked: bool,
+    current_wait_reason: Option<WaitReason>,
 }
 
 struct WorkerContextGuard;
@@ -233,9 +474,399 @@ impl Drop for SessionGuard {
             self.scheduler.force_shutdown();
         }
         self.scheduler.join_background_threads();
+        self.scheduler.write_diagnostics_report();
         self.scheduler.teardown_remaining_tasks();
         clear_scheduler_if_current(&self.scheduler);
     }
+}
+
+impl BlockingJob {
+    fn new(adapter: *mut u8, output: *mut u8, output_size: usize) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(BlockingJobInner {
+                adapter,
+                output,
+                output_size,
+                phase: BlockingJobPhase::New,
+                abandoned: false,
+                waiter: None,
+                panic_report: None,
+            }),
+        })
+    }
+
+    fn abandon(&self) -> (*mut u8, *mut u8) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.abandoned = true;
+        match inner.phase {
+            BlockingJobPhase::New => {
+                let adapter = std::mem::replace(&mut inner.adapter, std::ptr::null_mut());
+                let output = std::mem::replace(&mut inner.output, std::ptr::null_mut());
+                (adapter, output)
+            }
+            BlockingJobPhase::Completed | BlockingJobPhase::Panicked => {
+                let output = std::mem::replace(&mut inner.output, std::ptr::null_mut());
+                inner.panic_report = None;
+                (std::ptr::null_mut(), output)
+            }
+            BlockingJobPhase::Queued | BlockingJobPhase::Running => {
+                (std::ptr::null_mut(), std::ptr::null_mut())
+            }
+        }
+    }
+}
+
+impl BlockingPoolState {
+    fn try_enqueue(&self, job: &Arc<BlockingJob>, waiter: TaskToken) -> BlockingEnqueue {
+        let mut queue = self.queue.lock().unwrap();
+        queue.capacity_waiters.retain(|token| *token != waiter);
+        if self.shutdown.load(Ordering::Acquire) {
+            return BlockingEnqueue::Shutdown;
+        }
+        if queue.jobs.len() >= self.queue_capacity {
+            queue.capacity_waiters.push_back(waiter);
+            return BlockingEnqueue::Full;
+        }
+        {
+            let mut inner = job.inner.lock().unwrap();
+            debug_assert_eq!(inner.phase, BlockingJobPhase::New);
+            inner.phase = BlockingJobPhase::Queued;
+            inner.waiter = Some(waiter);
+        }
+        queue.jobs.push_back(Arc::clone(job));
+        drop(queue);
+        self.available.notify_one();
+        BlockingEnqueue::Accepted
+    }
+
+    fn remove_capacity_waiter(&self, waiter: TaskToken) {
+        self.queue
+            .lock()
+            .unwrap()
+            .capacity_waiters
+            .retain(|token| *token != waiter);
+    }
+
+    fn pop_job(&self) -> Option<Arc<BlockingJob>> {
+        let (job, capacity_waiter) = {
+            let mut queue = self.queue.lock().unwrap();
+            loop {
+                if let Some(job) = queue.jobs.pop_front() {
+                    break (Some(job), queue.capacity_waiters.pop_front());
+                }
+                if self.shutdown.load(Ordering::Acquire) {
+                    break (None, None);
+                }
+                queue = self.available.wait(queue).unwrap();
+            }
+        };
+        if let Some(waiter) = capacity_waiter
+            && let Some(scheduler) = self.scheduler.upgrade()
+        {
+            scheduler.wake_tasks(&[waiter]);
+        }
+        job
+    }
+
+    fn shutdown(&self) {
+        if self.shutdown.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let queue = self.queue.lock().unwrap();
+        for job in &queue.jobs {
+            job.inner.lock().unwrap().abandoned = true;
+        }
+        drop(queue);
+        self.available.notify_all();
+    }
+}
+
+impl BlockingPool {
+    fn new(scheduler: &Arc<Scheduler>) -> Self {
+        let worker_count = configured_blocking_thread_count();
+        let state = Arc::new(BlockingPoolState {
+            scheduler: Arc::downgrade(scheduler),
+            queue_capacity: configured_blocking_queue_capacity(worker_count),
+            queue: Mutex::new(BlockingQueueState {
+                jobs: VecDeque::new(),
+                capacity_waiters: VecDeque::new(),
+            }),
+            available: Condvar::new(),
+            shutdown: AtomicBool::new(false),
+            test_mode: scheduler.test_mode,
+        });
+
+        let mut joins: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
+        for worker_id in 0..worker_count {
+            let worker_state = Arc::clone(&state);
+            let join = thread::Builder::new()
+                .name(format!("taro-blocking-{worker_id}"))
+                .spawn(move || {
+                    let scheduler = worker_state.scheduler.clone();
+                    if panic::catch_unwind(AssertUnwindSafe(|| blocking_worker_loop(worker_state)))
+                        .is_err()
+                        && let Some(scheduler) = scheduler.upgrade()
+                    {
+                        scheduler
+                            .record_fatal_runtime_error("blocking pool worker panicked".into());
+                    }
+                });
+            let join = match join {
+                Ok(join) => join,
+                Err(error) => {
+                    state.shutdown();
+                    for join in joins {
+                        let _ = join.join();
+                    }
+                    panic!("failed to spawn blocking worker thread: {error}");
+                }
+            };
+            joins.push(join);
+        }
+        Self {
+            state,
+            _joins: Mutex::new(joins),
+        }
+    }
+}
+
+fn remove_blocking_output_root(output: *mut u8) {
+    if !output.is_null() {
+        with_gc(|gc| gc.remove_persistent_root(output as *const u8));
+    }
+}
+
+fn destroy_abandoned_blocking_resources(adapter: *mut u8, output: *mut u8) {
+    if !adapter.is_null() {
+        __rt__async_destroy(adapter);
+    }
+    remove_blocking_output_root(output);
+}
+
+fn destroy_abandoned_blocking_resources_on_worker(adapter: *mut u8, output: *mut u8) {
+    if !adapter.is_null() {
+        crate::garbage_collector::leave_safepoint();
+        let result = crate::panic_unwind::catch_executor_panic(|| __rt__async_destroy(adapter));
+        crate::garbage_collector::enter_safepoint();
+        if let Err(report) = result {
+            crate::panic_unwind::write_unobserved_task_panic(&report);
+        }
+    }
+    remove_blocking_output_root(output);
+}
+
+fn blocking_worker_loop(state: Arc<BlockingPoolState>) {
+    crate::garbage_collector::__gc__thread_attach();
+    crate::panic_unwind::set_test_harness_active(state.test_mode);
+    let _runtime_guard = WorkerRuntimeGuard;
+
+    while let Some(job) = state.pop_job() {
+        let (adapter, output, should_run) = {
+            let mut inner = job.inner.lock().unwrap();
+            debug_assert_eq!(inner.phase, BlockingJobPhase::Queued);
+            inner.phase = BlockingJobPhase::Running;
+            (
+                inner.adapter,
+                inner.output,
+                !inner.abandoned && !state.shutdown.load(Ordering::Acquire),
+            )
+        };
+
+        if !should_run {
+            {
+                let mut inner = job.inner.lock().unwrap();
+                inner.adapter = std::ptr::null_mut();
+                inner.output = std::ptr::null_mut();
+                inner.phase = BlockingJobPhase::Completed;
+            }
+            destroy_abandoned_blocking_resources_on_worker(adapter, output);
+            continue;
+        }
+
+        crate::garbage_collector::leave_safepoint();
+        let poll_result =
+            crate::panic_unwind::catch_executor_panic(|| __rt__async_poll(adapter, output));
+        __rt__async_destroy(adapter);
+        crate::garbage_collector::enter_safepoint();
+
+        let mut wake = None;
+        let mut release_output = std::ptr::null_mut();
+        {
+            let mut inner = job.inner.lock().unwrap();
+            inner.adapter = std::ptr::null_mut();
+            match poll_result {
+                Ok(1) => inner.phase = BlockingJobPhase::Completed,
+                Ok(tag) => {
+                    inner.phase = BlockingJobPhase::Panicked;
+                    inner.panic_report = Some(crate::panic_unwind::PanicReport {
+                        message: format!(
+                            "blocking closure suspended unexpectedly (poll tag {tag}); blocking work must be synchronous"
+                        ),
+                        backtrace: String::new(),
+                        location: None,
+                        logical_stack: Vec::new(),
+                        task_trace: Vec::new(),
+                    });
+                }
+                Err(report) => {
+                    inner.phase = BlockingJobPhase::Panicked;
+                    inner.panic_report = Some(report);
+                }
+            }
+            if inner.abandoned {
+                release_output = std::mem::replace(&mut inner.output, std::ptr::null_mut());
+                inner.panic_report = None;
+            } else {
+                if inner.phase == BlockingJobPhase::Panicked {
+                    release_output = std::mem::replace(&mut inner.output, std::ptr::null_mut());
+                }
+                wake = inner.waiter;
+            }
+        }
+        remove_blocking_output_root(release_output);
+        if let Some(waiter) = wake
+            && let Some(scheduler) = state.scheduler.upgrade()
+        {
+            scheduler.wake_tasks(&[waiter]);
+        }
+    }
+}
+
+fn set_current_blocking_wait(reason: WaitReason) {
+    WORKER_CONTEXT.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let context = borrow
+            .as_mut()
+            .expect("blocking future polled outside executor worker");
+        context.current_wait_reason = Some(reason);
+    });
+}
+
+unsafe extern "C-unwind" fn blocking_future_poll(
+    frame: *mut u8,
+    _ctx: *mut u8,
+    out: *mut u8,
+) -> u8 {
+    if frame.is_null() {
+        return 1;
+    }
+    let frame = unsafe { &mut *(frame as *mut BlockingFutureFrame) };
+    let waiter = current_task_token().expect("blocking future polled with no current task");
+    match frame.waiter {
+        Some(existing) => assert_eq!(
+            existing, waiter,
+            "blocking future moved between owning tasks"
+        ),
+        None => frame.waiter = Some(waiter),
+    }
+
+    if frame.enqueued {
+        let mut inner = frame.job.inner.lock().unwrap();
+        match inner.phase {
+            BlockingJobPhase::Completed => {
+                let output = std::mem::replace(&mut inner.output, std::ptr::null_mut());
+                let output_size = inner.output_size;
+                drop(inner);
+                if !out.is_null() && !output.is_null() && output_size != 0 {
+                    unsafe { std::ptr::copy_nonoverlapping(output, out, output_size) };
+                }
+                remove_blocking_output_root(output);
+                return 1;
+            }
+            BlockingJobPhase::Panicked => {
+                let report =
+                    inner
+                        .panic_report
+                        .take()
+                        .unwrap_or_else(|| crate::panic_unwind::PanicReport {
+                            message: "blocking closure panicked".into(),
+                            backtrace: String::new(),
+                            location: None,
+                            logical_stack: Vec::new(),
+                            task_trace: Vec::new(),
+                        });
+                inner.abandoned = true;
+                drop(inner);
+                crate::panic_unwind::restore_panic_report(report);
+                crate::panic_unwind::rethrow_restored_panic();
+            }
+            BlockingJobPhase::Queued | BlockingJobPhase::Running => {
+                drop(inner);
+                set_current_blocking_wait(WaitReason::BlockingWork);
+                return 0;
+            }
+            BlockingJobPhase::New => {
+                panic!("ICE: enqueued blocking future still has a new job")
+            }
+        }
+    }
+
+    match frame.pool.try_enqueue(&frame.job, waiter) {
+        BlockingEnqueue::Accepted => {
+            frame.enqueued = true;
+            set_current_blocking_wait(WaitReason::BlockingWork);
+            0
+        }
+        BlockingEnqueue::Full => {
+            set_current_blocking_wait(WaitReason::BlockingCapacity);
+            0
+        }
+        BlockingEnqueue::Shutdown => {
+            set_current_blocking_wait(WaitReason::BlockingWork);
+            0
+        }
+    }
+}
+
+unsafe extern "C" fn blocking_future_drop(frame: *mut u8) {
+    if frame.is_null() {
+        return;
+    }
+    let frame = unsafe { Box::from_raw(frame as *mut BlockingFutureFrame) };
+    if let Some(waiter) = frame.waiter {
+        frame.pool.remove_capacity_waiter(waiter);
+    }
+    let (adapter, output) = frame.job.abandon();
+    destroy_abandoned_blocking_resources(adapter, output);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__async_blocking(
+    adapter: *mut u8,
+    output_size: usize,
+    output_desc: *const GcDesc,
+) -> *mut u8 {
+    let scheduler = current_worker_scheduler()
+        .expect("std.task.blocking must be constructed on an executor worker");
+    let pool = scheduler.blocking_pool_state();
+    let output = if output_size == 0 {
+        std::ptr::null_mut()
+    } else {
+        assert!(
+            !output_desc.is_null(),
+            "blocking result descriptor must not be null"
+        );
+        let output = __gc__alloc(output_size, output_desc);
+        assert!(
+            !output.is_null(),
+            "failed to allocate blocking result buffer"
+        );
+        with_gc(|gc| gc.add_persistent_root(output as *const u8));
+        output
+    };
+    let job = BlockingJob::new(adapter, output, output_size);
+    let frame = Box::into_raw(Box::new(BlockingFutureFrame {
+        pool,
+        job,
+        waiter: None,
+        enqueued: false,
+    }));
+    __rt__async_create(
+        frame as *mut u8,
+        blocking_future_poll as *const () as *const u8,
+        blocking_future_drop as *const () as *const u8,
+        TaskMobility::Movable as u8,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -287,13 +918,78 @@ fn unpack_task_token(token: TaskToken) -> (TaskIndex, TaskGeneration) {
     (index, generation)
 }
 
+fn format_task_token(token: TaskToken) -> String {
+    let (index, generation) = unpack_task_token(token);
+    format!("{index}@{generation}")
+}
+
+fn find_wait_cycle(graph: &HashMap<TaskToken, Vec<TaskToken>>) -> Option<Vec<TaskToken>> {
+    fn visit(
+        task: TaskToken,
+        graph: &HashMap<TaskToken, Vec<TaskToken>>,
+        states: &mut HashMap<TaskToken, u8>,
+        stack: &mut Vec<TaskToken>,
+    ) -> Option<Vec<TaskToken>> {
+        states.insert(task, 1);
+        stack.push(task);
+
+        let mut dependencies = graph.get(&task).cloned().unwrap_or_default();
+        dependencies.sort_unstable();
+        for dependency in dependencies {
+            if !graph.contains_key(&dependency) {
+                continue;
+            }
+            match states.get(&dependency).copied().unwrap_or(0) {
+                0 => {
+                    if let Some(cycle) = visit(dependency, graph, states, stack) {
+                        return Some(cycle);
+                    }
+                }
+                1 => {
+                    let start = stack.iter().position(|entry| *entry == dependency)?;
+                    let mut cycle = stack[start..].to_vec();
+                    cycle.push(dependency);
+                    return Some(cycle);
+                }
+                _ => {}
+            }
+        }
+
+        stack.pop();
+        states.insert(task, 2);
+        None
+    }
+
+    let mut tasks: Vec<_> = graph.keys().copied().collect();
+    tasks.sort_unstable();
+    let mut states = HashMap::new();
+    let mut stack = Vec::new();
+    for task in tasks {
+        if states.get(&task).copied().unwrap_or(0) == 0
+            && let Some(cycle) = visit(task, graph, &mut states, &mut stack)
+        {
+            return Some(cycle);
+        }
+    }
+    None
+}
+
 fn next_task_generation(generation: TaskGeneration) -> TaskGeneration {
     let next = generation.wrapping_add(1);
     if next == 0 { 1 } else { next }
 }
 
 impl Scheduler {
+    #[cfg(test)]
     fn new(rooted: bool, worker_count: usize) -> Arc<Self> {
+        Self::new_with_diagnostics(rooted, worker_count, RuntimeDiagnostics::disabled())
+    }
+
+    fn new_with_diagnostics(
+        rooted: bool,
+        worker_count: usize,
+        diagnostics: RuntimeDiagnostics,
+    ) -> Arc<Self> {
         let mut locals = Vec::with_capacity(worker_count);
         let mut stealers = Vec::with_capacity(worker_count);
         let mut pinned_queues = Vec::with_capacity(worker_count);
@@ -325,6 +1021,8 @@ impl Scheduler {
             worker_registered,
             worker_joins: Mutex::new(Vec::new()),
             io_join: Mutex::new(None),
+            watchdog_join: Mutex::new(None),
+            blocking_pool: OnceLock::new(),
             timers: Mutex::new(TimerState {
                 heap: BinaryHeap::new(),
                 latest: Vec::new(),
@@ -335,11 +1033,27 @@ impl Scheduler {
             shutdown: AtomicBool::new(false),
             started: AtomicBool::new(false),
             wake_cursor: AtomicUsize::new(0),
+            progress_epoch: AtomicU64::new(0),
             worker_panic: Mutex::new(None),
+            fatal_runtime_error: Mutex::new(None),
+            deadlock_timeout: configured_deadlock_timeout(),
+            blocking_warn_threshold: configured_blocking_warn_threshold(),
             stats: RuntimeStats::default(),
+            diagnostics,
+            gc_stats_baseline: stats_snapshot(),
+            diagnostics_reported: AtomicBool::new(false),
             task_groups: Mutex::new(Vec::new()),
             free_group_slots: Mutex::new(Vec::new()),
         })
+    }
+
+    fn blocking_pool_state(self: &Arc<Self>) -> Arc<BlockingPoolState> {
+        Arc::clone(
+            &self
+                .blocking_pool
+                .get_or_init(|| BlockingPool::new(self))
+                .state,
+        )
     }
 
     fn start(self: &Arc<Self>) -> Worker<TaskToken> {
@@ -355,6 +1069,15 @@ impl Scheduler {
             .spawn(move || io_scheduler.io_driver_loop())
             .expect("failed to spawn io driver thread");
         *self.io_join.lock().unwrap() = Some(io_join);
+
+        if let Some(timeout) = self.deadlock_timeout {
+            let watchdog_scheduler = Arc::clone(self);
+            let watchdog_join = thread::Builder::new()
+                .name("taro-deadlock-watchdog".into())
+                .spawn(move || watchdog_scheduler.deadlock_watchdog_loop(timeout))
+                .expect("failed to spawn deadlock watchdog thread");
+            *self.watchdog_join.lock().unwrap() = Some(watchdog_join);
+        }
 
         let mut joins = Vec::with_capacity(self.worker_count.saturating_sub(1));
         for worker_id in 1..self.worker_count {
@@ -393,7 +1116,7 @@ impl Scheduler {
                 scheduler: Arc::clone(&self),
                 worker_id,
                 current_task: None,
-                current_task_blocked: false,
+                current_wait_reason: None,
             });
         });
         let _guard = WorkerContextGuard;
@@ -434,6 +1157,7 @@ impl Scheduler {
             }
 
             self.stats.parks.fetch_add(1, Ordering::Relaxed);
+            self.record_trace("worker_park", || format!("worker={worker_id}"));
             self.idle_workers.fetch_add(1, Ordering::AcqRel);
             thread::park();
             self.idle_workers.fetch_sub(1, Ordering::AcqRel);
@@ -451,9 +1175,54 @@ impl Scheduler {
                 self.stats
                     .io_wakeups
                     .fetch_add(ready.len() as u64, Ordering::Relaxed);
+                for task_token in &ready {
+                    self.record_trace("io_wake", || format!("task={task_token}"));
+                }
                 self.wake_tasks(&ready);
             }
             self.wake_due_timers();
+        }
+    }
+
+    fn deadlock_watchdog_loop(self: Arc<Self>, timeout: StdDuration) {
+        let mut last_epoch = self.progress_epoch.load(Ordering::Acquire);
+        let mut reported_epoch = None;
+        while !self.shutdown.load(Ordering::Acquire) {
+            thread::park_timeout(timeout);
+            if self.shutdown.load(Ordering::Acquire) {
+                break;
+            }
+            if self.incomplete_tasks.load(Ordering::Acquire) == 0 {
+                reported_epoch = None;
+                last_epoch = self.progress_epoch.load(Ordering::Acquire);
+                continue;
+            }
+
+            let epoch = self.progress_epoch.load(Ordering::Acquire);
+            if epoch != last_epoch {
+                last_epoch = epoch;
+                reported_epoch = None;
+                continue;
+            }
+            if reported_epoch == Some(epoch) {
+                continue;
+            }
+
+            let heading = format!(
+                "stuck task diagnostic after {} ms without executor progress",
+                timeout.as_millis()
+            );
+            let dump = self.build_task_dump(&heading);
+            let mut stderr = std::io::stderr().lock();
+            let _ = stderr.write_all(dump.text.as_bytes());
+            let _ = stderr.flush();
+            drop(stderr);
+
+            if dump.cycle.is_some() {
+                self.record_fatal_runtime_error("executor deadlock detected".into());
+                break;
+            }
+            reported_epoch = Some(epoch);
         }
     }
 
@@ -486,6 +1255,9 @@ impl Scheduler {
             let victim = (worker_id + offset) % self.worker_count;
             if let Some(task_id) = self.steal_batch_and_pop(&self.stealers[victim], local) {
                 self.stats.steals.fetch_add(1, Ordering::Relaxed);
+                self.record_trace("task_steal", || {
+                    format!("worker={worker_id} victim={victim} task={task_id}")
+                });
                 return Some(task_id);
             }
         }
@@ -528,6 +1300,24 @@ impl Scheduler {
         self.worker_registered[worker_id].store(true, Ordering::Release);
     }
 
+    fn trace_for_spawn(&self, metadata: SpawnMetadata) -> Vec<crate::panic_unwind::TaskTraceFrame> {
+        let mut trace = current_task_token()
+            .and_then(|parent_token| {
+                let (parent_index, parent_generation) = unpack_task_token(parent_token);
+                let slot = self.lookup_task_slot(parent_index)?;
+                let inner = slot.inner.lock().ok()?;
+                (inner.occupied && inner.generation == parent_generation)
+                    .then(|| inner.spawn_trace.clone())
+            })
+            .unwrap_or_default();
+        trace.push(metadata.into_trace_frame());
+        if trace.len() > MAX_TASK_TRACE_FRAMES {
+            trace.drain(..trace.len() - MAX_TASK_TRACE_FRAMES);
+        }
+        trace
+    }
+
+    #[cfg(test)]
     fn add_task(
         &self,
         handle: *mut u8,
@@ -537,11 +1327,33 @@ impl Scheduler {
         preferred_worker: Option<usize>,
         is_spawned: bool,
     ) -> TaskToken {
+        self.add_task_with_metadata(
+            handle,
+            out_ptr,
+            out_buf,
+            owner_worker,
+            preferred_worker,
+            is_spawned,
+            SpawnMetadata::anonymous(),
+        )
+    }
+
+    fn add_task_with_metadata(
+        &self,
+        handle: *mut u8,
+        out_ptr: *mut u8,
+        out_buf: Option<Vec<u8>>,
+        owner_worker: usize,
+        preferred_worker: Option<usize>,
+        is_spawned: bool,
+        metadata: SpawnMetadata,
+    ) -> TaskToken {
         debug_assert!(owner_worker < self.worker_count);
         debug_assert!(preferred_worker.is_none_or(|worker| worker < self.worker_count));
 
         let frame = async_handle_frame(handle);
         let mobility = async_handle_mobility(handle);
+        let spawn_trace = self.trace_for_spawn(metadata);
 
         let (task_index, task_generation) =
             if let Some(task_index) = self.free_slots.lock().unwrap().pop() {
@@ -564,6 +1376,7 @@ impl Scheduler {
                 inner.cancelled = false;
                 inner.detached = false;
                 inner.polled = false;
+                inner.wake_waiter_after_poll = false;
                 inner.queued = false;
                 inner.running = false;
                 inner.wake_requested = false;
@@ -574,6 +1387,8 @@ impl Scheduler {
                 inner.group_id = None;
                 inner.is_spawned = is_spawned;
                 inner.panic_info = None;
+                inner.spawn_trace = spawn_trace.clone();
+                inner.wait_reason = None;
                 (task_index, generation)
             } else {
                 let task_generation = TASK_INITIAL_GENERATION;
@@ -585,7 +1400,11 @@ impl Scheduler {
                     owner_worker,
                     mobility,
                 ));
-                slot.inner.lock().unwrap().is_spawned = is_spawned;
+                {
+                    let mut inner = slot.inner.lock().unwrap();
+                    inner.is_spawned = is_spawned;
+                    inner.spawn_trace = spawn_trace;
+                }
                 let task_index = {
                     let mut tasks = self.tasks.write().unwrap();
                     let task_index = tasks.len();
@@ -606,7 +1425,31 @@ impl Scheduler {
         }
 
         let task_token = pack_task_token(task_index, task_generation);
-        self.incomplete_tasks.fetch_add(1, Ordering::AcqRel);
+        self.stats.tasks_created.fetch_add(1, Ordering::Relaxed);
+        let live_tasks = self.incomplete_tasks.fetch_add(1, Ordering::AcqRel) + 1;
+        self.stats
+            .peak_live_tasks
+            .fetch_max(live_tasks as u64, Ordering::Relaxed);
+        self.record_trace("task_spawn", || {
+            let Some(slot) = self.lookup_task_slot(task_index) else {
+                return format!("task={task_token}");
+            };
+            let inner = slot
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(site) = inner.spawn_trace.last() else {
+                return format!("task={task_token}");
+            };
+            format!(
+                "task={} name={} file={} line={} column={}",
+                task_token,
+                quote_field(&site.name),
+                quote_field(&site.file),
+                site.line,
+                site.column
+            )
+        });
         self.schedule_task(task_token, preferred_worker);
         task_token
     }
@@ -640,6 +1483,7 @@ impl Scheduler {
             }
             inner.queued = false;
             inner.running = true;
+            inner.wait_reason = None;
             let cancelled_before_first_poll = inner.cancelled && !inner.polled;
             inner.polled = true;
             inner.last_worker = worker_id;
@@ -665,22 +1509,44 @@ impl Scheduler {
             let mut borrow = cell.borrow_mut();
             let context = borrow.as_mut().expect("ICE: worker context missing");
             context.current_task = Some(task_token);
-            context.current_task_blocked = false;
+            context.current_wait_reason = None;
+        });
+        self.progress_epoch.fetch_add(1, Ordering::AcqRel);
+        self.stats.task_polls.fetch_add(1, Ordering::Relaxed);
+        self.record_trace("task_poll_start", || {
+            format!("worker={worker_id} task={task_token}")
         });
 
         crate::garbage_collector::leave_safepoint();
+        let poll_started = self.blocking_warn_threshold.map(|_| Instant::now());
         let poll_result = if group_id.is_some() || is_spawned {
             crate::panic_unwind::catch_executor_panic(|| __rt__async_poll(handle, out_ptr))
         } else {
             Ok(__rt__async_poll(handle, out_ptr))
         };
         crate::garbage_collector::enter_safepoint();
+        if let (Some(threshold), Some(started)) = (self.blocking_warn_threshold, poll_started) {
+            let elapsed = started.elapsed();
+            if elapsed >= threshold {
+                self.write_slow_poll_warning(task_token, elapsed);
+            }
+        }
 
-        let blocked = WORKER_CONTEXT.with(|cell| {
+        let wait_reason = WORKER_CONTEXT.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let context = borrow.as_mut().expect("ICE: worker context missing");
             context.current_task = None;
-            std::mem::take(&mut context.current_task_blocked)
+            context.current_wait_reason.take()
+        });
+
+        let poll_status = match &poll_result {
+            Err(_) => "panicked",
+            Ok(0) => "pending",
+            Ok(2) => "cancelled",
+            Ok(_) => "ready",
+        };
+        self.record_trace("task_poll_end", || {
+            format!("worker={worker_id} task={task_token} status={poll_status}")
         });
 
         let tag = match poll_result {
@@ -698,33 +1564,51 @@ impl Scheduler {
             // cancellation-aware poll instead of requeueing forever.
             self.complete_task_cancelled(task_token);
         } else if tag == 0 {
-            let requeue_target = {
+            let (requeue_target, timeout_waiter) = {
                 let mut inner = slot.inner.lock().unwrap();
                 inner.running = false;
+                let timeout_waiter = if inner.wake_waiter_after_poll {
+                    inner.wake_waiter_after_poll = false;
+                    inner.waiter
+                } else {
+                    None
+                };
                 // Pending polls must either have registered a runtime wait
                 // (`blocked`) or be cooperatively requeued here.
                 if !inner.occupied || inner.generation != task_generation || inner.completed {
-                    None
+                    (None, timeout_waiter)
                 } else if inner.wake_requested {
                     inner.wake_requested = false;
-                    Some(match inner.mobility {
-                        TaskMobility::Pinned => Some(inner.owner_worker),
-                        TaskMobility::Movable => Some(inner.last_worker),
-                    })
-                } else if blocked {
-                    None
+                    inner.wait_reason = None;
+                    (
+                        Some(match inner.mobility {
+                            TaskMobility::Pinned => Some(inner.owner_worker),
+                            TaskMobility::Movable => Some(inner.last_worker),
+                        }),
+                        timeout_waiter,
+                    )
+                } else if let Some(wait_reason) = wait_reason {
+                    inner.wait_reason = Some(wait_reason);
+                    (None, timeout_waiter)
                 } else {
-                    Some(match inner.mobility {
-                        TaskMobility::Pinned => Some(inner.owner_worker),
-                        // Let movable tasks re-enter through the injector so
-                        // idle workers can pick them up after cooperative
-                        // suspension.
-                        TaskMobility::Movable => None,
-                    })
+                    inner.wait_reason = None;
+                    (
+                        Some(match inner.mobility {
+                            TaskMobility::Pinned => Some(inner.owner_worker),
+                            // Let movable tasks re-enter through the injector so
+                            // idle workers can pick them up after cooperative
+                            // suspension.
+                            TaskMobility::Movable => None,
+                        }),
+                        timeout_waiter,
+                    )
                 }
             };
             if let Some(preferred_worker) = requeue_target {
                 self.schedule_task(task_token, preferred_worker);
+            }
+            if let Some(waiter) = timeout_waiter {
+                self.wake_tasks(&[waiter]);
             }
         } else if tag == 2 {
             self.complete_task_cancelled(task_token);
@@ -754,6 +1638,8 @@ impl Scheduler {
             inner.completed = true;
             inner.running = false;
             inner.queued = false;
+            inner.wake_waiter_after_poll = false;
+            inner.wait_reason = None;
             let frame = inner.frame;
             let handle = inner.handle;
             inner.frame = std::ptr::null_mut();
@@ -794,6 +1680,9 @@ impl Scheduler {
         if detached {
             self.reclaim_detached_task_slot(task_token);
         }
+
+        self.stats.task_completions.fetch_add(1, Ordering::Relaxed);
+        self.record_trace("task_complete", || format!("task={task_token}"));
 
         if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.force_shutdown();
@@ -894,6 +1783,8 @@ impl Scheduler {
             inner.cancelled = true;
             inner.running = false;
             inner.queued = false;
+            inner.wake_waiter_after_poll = false;
+            inner.wait_reason = None;
             let frame = inner.frame;
             let handle = inner.handle;
             inner.frame = std::ptr::null_mut();
@@ -929,6 +1820,11 @@ impl Scheduler {
             self.reclaim_detached_task_slot(task_token);
         }
 
+        self.stats
+            .task_cancellations
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_trace("task_cancel", || format!("task={task_token}"));
+
         if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.force_shutdown();
         }
@@ -937,7 +1833,7 @@ impl Scheduler {
     fn complete_task_panicked(
         &self,
         task_token: TaskToken,
-        report: crate::panic_unwind::PanicReport,
+        mut report: crate::panic_unwind::PanicReport,
     ) {
         let (task_index, task_generation) = unpack_task_token(task_token);
         let Some(slot) = self.lookup_task_slot(task_index) else {
@@ -959,10 +1855,13 @@ impl Scheduler {
             inner.completed = true;
             inner.running = false;
             inner.queued = false;
+            inner.wake_waiter_after_poll = false;
+            inner.wait_reason = None;
             let frame = inner.frame;
             let handle = inner.handle;
             inner.frame = std::ptr::null_mut();
             inner.handle = std::ptr::null_mut();
+            report.task_trace = inner.spawn_trace.clone();
             if inner.group_id.is_none() && !inner.detached {
                 // Store the report so the awaiter can retrieve it.
                 inner.panic_info = Some(report.clone());
@@ -982,7 +1881,7 @@ impl Scheduler {
         }
 
         if let Some(group_id) = group_id {
-            self.notify_group_task_panicked(group_id, task_token, report.message.clone());
+            self.notify_group_task_panicked(group_id, task_token, report.clone());
         }
 
         if let Some(waiter) = waiter {
@@ -993,6 +1892,9 @@ impl Scheduler {
             crate::panic_unwind::write_unobserved_task_panic(&report);
             self.reclaim_detached_task_slot(task_token);
         }
+
+        self.stats.task_panics.fetch_add(1, Ordering::Relaxed);
+        self.record_trace("task_panic", || format!("task={task_token}"));
 
         if self.incomplete_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.force_shutdown();
@@ -1013,10 +1915,12 @@ impl Scheduler {
         inner.cancelled = false;
         inner.detached = false;
         inner.polled = false;
+        inner.wake_waiter_after_poll = false;
         inner.waiter = None;
         inner.queued = false;
         inner.running = false;
         inner.wake_requested = false;
+        inner.wait_reason = None;
         inner.handle = std::ptr::null_mut();
         inner.frame = std::ptr::null_mut();
         inner.out_ptr = std::ptr::null_mut();
@@ -1073,15 +1977,20 @@ impl Scheduler {
         }
     }
 
-    fn notify_group_task_panicked(&self, group_id: u64, task_token: TaskToken, message: String) {
+    fn notify_group_task_panicked(
+        &self,
+        group_id: u64,
+        task_token: TaskToken,
+        report: crate::panic_unwind::PanicReport,
+    ) {
         let mut groups = self.task_groups.lock().unwrap();
         let group = match groups.get_mut(group_id as usize).and_then(|g| g.as_mut()) {
             Some(g) => g,
             None => return,
         };
         group.tasks.retain(|t| *t != task_token);
-        if group.panic_message.is_none() {
-            group.panic_message = Some(message);
+        if group.panic_report.is_none() {
+            group.panic_report = Some(report);
         }
         let waiter = group.waiter.take();
         if group.cancel_on_panic {
@@ -1100,7 +2009,7 @@ impl Scheduler {
         }
     }
 
-    fn destroy_task_group(&self, group_id: u64) -> Option<String> {
+    fn destroy_task_group(&self, group_id: u64) -> Option<crate::panic_unwind::PanicReport> {
         let mut groups = self.task_groups.lock().unwrap();
         let slot = groups.get_mut(group_id as usize)?;
         let state = slot.take()?;
@@ -1109,7 +2018,7 @@ impl Scheduler {
             .lock()
             .unwrap()
             .push(group_id as usize);
-        state.panic_message
+        state.panic_report
     }
 
     fn register_sleep(&self, task_token: TaskToken, deadline: Instant) {
@@ -1137,6 +2046,11 @@ impl Scheduler {
             timers.latest[task_index] = Some(TimerRegistration { deadline, sequence });
             previous.is_none_or(|earliest| deadline < earliest)
         };
+
+        self.stats
+            .timer_registrations
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_trace("timer_register", || format!("task={task_token}"));
 
         if should_notify && self.started.load(Ordering::Acquire) {
             io_poller::notify();
@@ -1188,6 +2102,9 @@ impl Scheduler {
             self.stats
                 .timer_wakeups
                 .fetch_add(due.len() as u64, Ordering::Relaxed);
+            for task_token in &due {
+                self.record_trace("timer_wake", || format!("task={task_token}"));
+            }
             self.wake_tasks(&due);
         }
     }
@@ -1213,6 +2130,349 @@ impl Scheduler {
 
     fn lookup_task_slot(&self, task_index: TaskIndex) -> Option<Arc<TaskSlot>> {
         self.tasks.read().unwrap().get(task_index).cloned()
+    }
+
+    fn task_completed_or_register_waiter(&self, task_token: TaskToken, waiter: TaskToken) -> bool {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let slot = self
+            .lookup_task_slot(task_index)
+            .unwrap_or_else(|| panic!("invalid task token {task_token}"));
+        let mut inner = slot.inner.lock().unwrap();
+        if !inner.occupied || inner.generation != task_generation {
+            panic!("stale task token {task_token}");
+        }
+        if inner.completed {
+            return true;
+        }
+        match inner.waiter {
+            Some(existing) if existing != waiter => {
+                panic!("task {task_token} already has an active waiter")
+            }
+            Some(_) => {}
+            None => inner.waiter = Some(waiter),
+        }
+        false
+    }
+
+    fn task_is_completed(&self, task_token: TaskToken) -> bool {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let slot = self
+            .lookup_task_slot(task_index)
+            .unwrap_or_else(|| panic!("invalid task token {task_token}"));
+        let inner = slot.inner.lock().unwrap();
+        if !inner.occupied || inner.generation != task_generation {
+            panic!("stale task token {task_token}");
+        }
+        inner.completed
+    }
+
+    /// Arm the operation's ordinary result waiter to be woken after the
+    /// operation finishes its current/first poll. Returns true when a prior
+    /// completed poll already satisfied the grace turn and the timeout task
+    /// should requeue itself immediately.
+    fn arm_timeout_poll_wake(&self, task_token: TaskToken, waiter: TaskToken) -> bool {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let slot = self
+            .lookup_task_slot(task_index)
+            .unwrap_or_else(|| panic!("invalid task token {task_token}"));
+        let mut inner = slot.inner.lock().unwrap();
+        if !inner.occupied || inner.generation != task_generation {
+            panic!("stale task token {task_token}");
+        }
+        if inner.completed || (inner.polled && !inner.running) {
+            return true;
+        }
+        assert_eq!(
+            inner.waiter,
+            Some(waiter),
+            "timeout grace poll requires the timeout task to own the result waiter"
+        );
+        inner.wake_waiter_after_poll = true;
+        false
+    }
+
+    fn clear_task_waiter(&self, task_token: TaskToken, waiter: TaskToken) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
+        let mut inner = slot.inner.lock().unwrap();
+        if inner.occupied && inner.generation == task_generation && inner.waiter == Some(waiter) {
+            inner.waiter = None;
+            inner.wake_waiter_after_poll = false;
+        }
+    }
+
+    fn write_slow_poll_warning(&self, task_token: TaskToken, elapsed: StdDuration) {
+        let (task_index, task_generation) = unpack_task_token(task_token);
+        let Some(slot) = self.lookup_task_slot(task_index) else {
+            return;
+        };
+        let inner = slot.inner.lock().unwrap();
+        if !inner.occupied || inner.generation != task_generation {
+            return;
+        }
+        let (name, location) = inner.spawn_trace.last().map_or_else(
+            || ("<unknown>".to_string(), String::new()),
+            |frame| {
+                let location = if frame.file.is_empty() {
+                    String::new()
+                } else {
+                    format!(" at {}:{}:{}", frame.file, frame.line, frame.column)
+                };
+                (frame.name.clone(), location)
+            },
+        );
+        drop(inner);
+
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(
+            stderr,
+            "warning: async task `{name}` blocked an executor worker for {} ms{location}; move synchronous blocking work into std.task.blocking",
+            elapsed.as_millis()
+        );
+        let _ = stderr.flush();
+    }
+
+    fn diagnostic_snapshots(&self) -> Vec<TaskDiagnosticSnapshot> {
+        let slots: Vec<_> = self.tasks.read().unwrap().iter().cloned().collect();
+        let mut snapshots = Vec::new();
+        for (task_index, slot) in slots.into_iter().enumerate() {
+            let inner = slot
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !inner.occupied {
+                continue;
+            }
+            let state = if inner.completed {
+                if inner.panic_info.is_some() {
+                    "panicked"
+                } else if inner.cancelled {
+                    "cancelled"
+                } else {
+                    "completed"
+                }
+            } else if inner.running {
+                "running"
+            } else if inner.queued {
+                "runnable"
+            } else if inner.wait_reason.is_some() {
+                "waiting"
+            } else {
+                "pending"
+            };
+            snapshots.push(TaskDiagnosticSnapshot {
+                token: pack_task_token(task_index, inner.generation),
+                state,
+                spawn_trace: inner.spawn_trace.clone(),
+                wait_reason: inner.wait_reason.clone(),
+            });
+        }
+        snapshots.sort_by_key(|snapshot| snapshot.token);
+        snapshots
+    }
+
+    fn wait_dependencies(&self, reason: &WaitReason) -> Vec<TaskToken> {
+        let mut dependencies = match reason {
+            WaitReason::Task(task) => vec![*task],
+            WaitReason::Tasks(tasks) => tasks.to_vec(),
+            WaitReason::TaskTimeout { task, .. } => vec![*task],
+            WaitReason::TaskGroup(group_id) => self
+                .task_groups
+                .lock()
+                .unwrap()
+                .get(*group_id as usize)
+                .and_then(Option::as_ref)
+                .map(|group| group.tasks.clone())
+                .unwrap_or_default(),
+            WaitReason::Sync { sync_id, kind } => crate::sync::wait_dependencies(*sync_id, *kind),
+            WaitReason::Sleep(_)
+            | WaitReason::Io { .. }
+            | WaitReason::BlockingCapacity
+            | WaitReason::BlockingWork => Vec::new(),
+        };
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        dependencies
+    }
+
+    fn format_wait_reason(
+        &self,
+        reason: &WaitReason,
+        dependencies: &[TaskToken],
+        now: Instant,
+    ) -> String {
+        let dependency_list = || {
+            dependencies
+                .iter()
+                .map(|token| format_task_token(*token))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match reason {
+            WaitReason::Task(task) => format!("waiting for task {}", format_task_token(*task)),
+            WaitReason::Tasks(tasks) => format!(
+                "waiting for first completion among tasks {} and {}",
+                format_task_token(tasks[0]),
+                format_task_token(tasks[1])
+            ),
+            WaitReason::TaskTimeout { task, deadline } => format!(
+                "waiting for task {} with {} ms remaining",
+                format_task_token(*task),
+                deadline.saturating_duration_since(now).as_millis()
+            ),
+            WaitReason::TaskGroup(group_id) => {
+                if dependencies.is_empty() {
+                    format!("waiting for task group {group_id}")
+                } else {
+                    format!(
+                        "waiting for task group {group_id} (live tasks: {})",
+                        dependency_list()
+                    )
+                }
+            }
+            WaitReason::Sleep(deadline) => format!(
+                "sleeping for another {} ms",
+                deadline.saturating_duration_since(now).as_millis()
+            ),
+            WaitReason::Io {
+                source_id,
+                interest,
+            } => format!(
+                "waiting for {} readiness on I/O source {source_id}",
+                match interest {
+                    Interest::Read => "read",
+                    Interest::Write => "write",
+                }
+            ),
+            WaitReason::Sync { sync_id, kind } => {
+                let resource = match kind {
+                    crate::sync::WaitKind::ChannelSend => "channel send",
+                    crate::sync::WaitKind::ChannelRecv => "channel receive",
+                    crate::sync::WaitKind::Mutex => "mutex",
+                    crate::sync::WaitKind::RwRead => "rwlock read",
+                    crate::sync::WaitKind::RwWrite => "rwlock write",
+                };
+                if dependencies.is_empty() {
+                    format!("waiting on {resource} {sync_id} (external or unmatched wait)")
+                } else {
+                    format!(
+                        "waiting on {resource} {sync_id} (depends on tasks: {})",
+                        dependency_list()
+                    )
+                }
+            }
+            WaitReason::BlockingCapacity => {
+                "waiting for capacity in the bounded blocking pool".into()
+            }
+            WaitReason::BlockingWork => "waiting for blocking work to finish".into(),
+        }
+    }
+
+    fn build_task_dump(&self, heading: &str) -> TaskDump {
+        let snapshots = self.diagnostic_snapshots();
+        let active: HashSet<_> = snapshots.iter().map(|snapshot| snapshot.token).collect();
+        let mut graph = HashMap::new();
+        let mut dependencies_by_task = HashMap::new();
+        for snapshot in &snapshots {
+            let dependencies = snapshot
+                .wait_reason
+                .as_ref()
+                .map(|reason| self.wait_dependencies(reason))
+                .unwrap_or_default();
+            let live_dependencies: Vec<_> = dependencies
+                .into_iter()
+                .filter(|dependency| active.contains(dependency))
+                .collect();
+            // A task timeout names a child dependency for diagnostics, but its
+            // timer can still resolve the wait. Do not treat that edge as a
+            // definitive internal deadlock dependency.
+            if snapshot
+                .wait_reason
+                .as_ref()
+                .is_some_and(|reason| !matches!(reason, WaitReason::TaskTimeout { .. }))
+            {
+                graph.insert(snapshot.token, live_dependencies.clone());
+            }
+            dependencies_by_task.insert(snapshot.token, live_dependencies);
+        }
+        let cycle = find_wait_cycle(&graph);
+        let now = Instant::now();
+        let mut text = String::new();
+        let _ = writeln!(text, "{heading}: {} live task(s)", snapshots.len());
+        for snapshot in &snapshots {
+            let name = snapshot
+                .spawn_trace
+                .last()
+                .map(|frame| frame.name.as_str())
+                .unwrap_or("<unknown>");
+            let _ = writeln!(
+                text,
+                "task {} `{name}` [{}]",
+                format_task_token(snapshot.token),
+                snapshot.state
+            );
+            if let Some(site) = snapshot.spawn_trace.last() {
+                let file = if site.file.is_empty() {
+                    "<unknown>"
+                } else {
+                    &site.file
+                };
+                let _ = writeln!(text, "  spawned at {file}:{}:{}", site.line, site.column);
+            }
+            if snapshot.spawn_trace.len() > 1 {
+                let _ = writeln!(text, "  causal parents:");
+                for parent in snapshot.spawn_trace[..snapshot.spawn_trace.len() - 1]
+                    .iter()
+                    .rev()
+                {
+                    let file = if parent.file.is_empty() {
+                        "<unknown>"
+                    } else {
+                        &parent.file
+                    };
+                    let _ = writeln!(
+                        text,
+                        "    `{}` at {file}:{}:{}",
+                        parent.name, parent.line, parent.column
+                    );
+                }
+            }
+            if let Some(reason) = snapshot.wait_reason.as_ref() {
+                let dependencies = dependencies_by_task
+                    .get(&snapshot.token)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    text,
+                    "  {}",
+                    self.format_wait_reason(reason, dependencies, now)
+                );
+            }
+        }
+        if let Some(cycle) = cycle.as_ref() {
+            let rendered = cycle
+                .iter()
+                .map(|token| format_task_token(*token))
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            let _ = writeln!(text, "definitive deadlock cycle: {rendered}");
+        } else {
+            let _ = writeln!(
+                text,
+                "no definitive internal cycle; unmatched waits may depend on timers, I/O, or external producers"
+            );
+        }
+        TaskDump { text, cycle }
+    }
+
+    fn write_task_dump(&self, heading: &str) -> Option<Vec<TaskToken>> {
+        let dump = self.build_task_dump(heading);
+        let mut stderr = std::io::stderr().lock();
+        let _ = stderr.write_all(dump.text.as_bytes());
+        let _ = stderr.flush();
+        dump.cycle
     }
 
     #[cfg(test)]
@@ -1262,8 +2522,13 @@ impl Scheduler {
         };
 
         self.stats.wakeups.fetch_add(1, Ordering::Relaxed);
+        self.stats.queue_enqueues.fetch_add(1, Ordering::Relaxed);
         match target {
             QueueTarget::PinnedWorker(worker_id) => {
+                self.stats.pinned_enqueues.fetch_add(1, Ordering::Relaxed);
+                self.record_trace("task_enqueue", || {
+                    format!("task={task_token} target=pinned worker={worker_id}")
+                });
                 self.pinned_queues[worker_id]
                     .lock()
                     .unwrap()
@@ -1271,6 +2536,10 @@ impl Scheduler {
                 batch.note_worker(worker_id);
             }
             QueueTarget::Worker(worker_id) => {
+                self.stats.worker_enqueues.fetch_add(1, Ordering::Relaxed);
+                self.record_trace("task_enqueue", || {
+                    format!("task={task_token} target=worker worker={worker_id}")
+                });
                 self.remote_queues[worker_id]
                     .lock()
                     .unwrap()
@@ -1279,6 +2548,9 @@ impl Scheduler {
             }
             QueueTarget::Global => {
                 self.stats.global_injects.fetch_add(1, Ordering::Relaxed);
+                self.record_trace("task_enqueue", || {
+                    format!("task={task_token} target=global")
+                });
                 self.injector.push(task_token);
                 batch.note_global();
             }
@@ -1361,6 +2633,9 @@ impl Scheduler {
         // wait_for_gc_resume since no collector will ever finish the GC and
         // clear GC_REQUESTED.
         crate::garbage_collector::cancel_pending_collection();
+        if let Some(pool) = self.blocking_pool.get() {
+            pool.state.shutdown();
+        }
         io_poller::notify();
         for worker_id in 0..self.worker_count {
             self.unpark_worker(worker_id);
@@ -1399,6 +2674,10 @@ impl Scheduler {
     }
 
     fn join_background_threads(&self) {
+        if let Some(join) = self.watchdog_join.lock().unwrap().take() {
+            join.thread().unpark();
+            let _ = join.join();
+        }
         if let Some(join) = self.io_join.lock().unwrap().take() {
             let _ = join.join();
         }
@@ -1406,6 +2685,65 @@ impl Scheduler {
         for join in joins.drain(..) {
             let _ = join.join();
         }
+    }
+
+    #[inline]
+    fn record_trace(&self, event: &'static str, fields: impl FnOnce() -> String) {
+        self.diagnostics.record(event, fields);
+    }
+
+    fn live_task_counts(&self) -> (usize, usize, usize, usize, usize) {
+        let tasks = self.tasks.read().unwrap();
+        let mut live = 0;
+        let mut queued = 0;
+        let mut running = 0;
+        let mut waiting = 0;
+        let mut completed = 0;
+        for slot in tasks.iter() {
+            let inner = slot
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !inner.occupied {
+                continue;
+            }
+            if inner.completed {
+                // The async root occupies a slot until session teardown but
+                // has no user-owned result handle. Only spawned/group results
+                // can represent retained application work.
+                if inner.is_spawned || inner.group_id.is_some() {
+                    completed += 1;
+                }
+                continue;
+            }
+            live += 1;
+            if inner.running {
+                running += 1;
+            } else if inner.queued {
+                queued += 1;
+            } else if inner.wait_reason.is_some() {
+                waiting += 1;
+            }
+        }
+        (live, queued, running, waiting, completed)
+    }
+
+    fn write_diagnostics_report(&self) {
+        if !self.diagnostics.is_enabled() || self.diagnostics_reported.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+
+        let output = format_diagnostics_report(
+            self.worker_count,
+            &self.diagnostics,
+            &self.stats.snapshot(),
+            &stats_snapshot(),
+            &self.gc_stats_baseline,
+            self.live_task_counts(),
+        );
+        write_diagnostics_report(&output);
+        diagnostics_report_pending().store(true, Ordering::Release);
     }
 
     fn record_worker_panic(&self) {
@@ -1422,6 +2760,19 @@ impl Scheduler {
 
     fn take_worker_panic(&self) -> Option<String> {
         self.worker_panic.lock().unwrap().take()
+    }
+
+    fn record_fatal_runtime_error(&self, message: String) {
+        let mut fatal = self.fatal_runtime_error.lock().unwrap();
+        if fatal.is_none() {
+            *fatal = Some(message);
+        }
+        drop(fatal);
+        self.force_shutdown();
+    }
+
+    fn take_fatal_runtime_error(&self) -> Option<String> {
+        self.fatal_runtime_error.lock().unwrap().take()
     }
 
     fn teardown_remaining_tasks(&self) {
@@ -1513,22 +2864,203 @@ fn clear_scheduler_if_current(scheduler: &Arc<Scheduler>) {
     }
 }
 
-fn configured_worker_count() -> usize {
-    if let Ok(raw) = std::env::var("TARO_WORKERS") {
-        if let Ok(count) = raw.parse::<usize>() {
-            if count > 0 {
-                return count;
-            }
-        }
+fn configured_worker_count() -> Result<usize, String> {
+    if let Some(raw) = std::env::var_os("TARO_WORKERS") {
+        let raw = raw
+            .into_string()
+            .map_err(|_| "TARO_WORKERS must contain valid Unicode".to_string())?;
+        return raw
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 0)
+            .ok_or_else(|| format!("TARO_WORKERS must be a positive integer; got `{raw}`"));
+    }
+    Ok(thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .max(1))
+}
+
+fn configured_blocking_thread_count() -> usize {
+    if let Ok(raw) = std::env::var("TARO_BLOCKING_THREADS")
+        && let Ok(count) = raw.parse::<usize>()
+        && count > 0
+    {
+        return count;
     }
     thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1)
-        .max(1)
+        .clamp(1, 32)
+}
+
+fn configured_blocking_queue_capacity(worker_count: usize) -> usize {
+    if let Ok(raw) = std::env::var("TARO_BLOCKING_QUEUE")
+        && let Ok(capacity) = raw.parse::<usize>()
+        && capacity > 0
+    {
+        return capacity;
+    }
+    worker_count.saturating_mul(4).max(1)
+}
+
+fn configured_deadlock_timeout() -> Option<StdDuration> {
+    let raw = std::env::var("TARO_DEADLOCK_TIMEOUT_MS").ok()?;
+    let millis = raw.parse::<u64>().ok()?;
+    (millis > 0).then(|| StdDuration::from_millis(millis))
+}
+
+fn configured_blocking_warn_threshold() -> Option<StdDuration> {
+    let raw = std::env::var("TARO_BLOCKING_WARN_MS").ok()?;
+    let millis = raw.parse::<u64>().ok()?;
+    (millis > 0).then(|| StdDuration::from_millis(millis))
+}
+
+fn runtime_configuration_error(message: String) -> ! {
+    eprintln!("runtime configuration error: {message}");
+    std::process::exit(2);
 }
 
 fn create_scheduler(rooted: bool) -> Arc<Scheduler> {
-    Scheduler::new(rooted, configured_worker_count())
+    let worker_count = match configured_worker_count() {
+        Ok(worker_count) => worker_count,
+        Err(error) => runtime_configuration_error(error),
+    };
+    let diagnostics = match RuntimeDiagnosticsConfig::from_env() {
+        Ok(config) => RuntimeDiagnostics::new(config),
+        Err(error) => runtime_configuration_error(error),
+    };
+    Scheduler::new_with_diagnostics(rooted, worker_count, diagnostics)
+}
+
+fn percentile(sorted_samples: &[u64], percentile: usize) -> u64 {
+    if sorted_samples.is_empty() {
+        return 0;
+    }
+    let rank = sorted_samples
+        .len()
+        .saturating_mul(percentile)
+        .saturating_add(99)
+        / 100;
+    sorted_samples[rank.saturating_sub(1).min(sorted_samples.len() - 1)]
+}
+
+fn format_diagnostics_report(
+    worker_count: usize,
+    diagnostics: &RuntimeDiagnostics,
+    stats: &RuntimeStatsSnapshot,
+    gc: &GcStatsSnapshot,
+    gc_baseline: &GcStatsSnapshot,
+    task_counts: (usize, usize, usize, usize, usize),
+) -> String {
+    let mut output = String::new();
+    if diagnostics.stats_enabled {
+        let (live, queued, running, waiting, completed) = task_counts;
+        let mut pauses = gc.pause_nanos_since(gc_baseline.collections);
+        pauses.sort_unstable();
+        let pause_p50 = percentile(&pauses, 50);
+        let pause_p95 = percentile(&pauses, 95);
+        let pause_p99 = percentile(&pauses, 99);
+        let pause_max = pauses.last().copied().unwrap_or(0);
+        let _ = writeln!(output, "runtime stats:");
+        let _ = writeln!(output, "  config workers={worker_count}");
+        let _ = writeln!(
+            output,
+            "  tasks created={} polls={} completed={} cancelled={} panicked={} live={} peak_live={} queued={} running={} waiting={} retained_completed={}",
+            stats.tasks_created,
+            stats.task_polls,
+            stats.task_completions,
+            stats.task_cancellations,
+            stats.task_panics,
+            live,
+            stats.peak_live_tasks,
+            queued,
+            running,
+            waiting,
+            completed,
+        );
+        let _ = writeln!(
+            output,
+            "  queues enqueues={} global={} worker={} pinned={} wakeups={} steals={} parks={} worker_unparks={} global_unparks={}",
+            stats.queue_enqueues,
+            stats.global_injects,
+            stats.worker_enqueues,
+            stats.pinned_enqueues,
+            stats.wakeups,
+            stats.steals,
+            stats.parks,
+            stats.worker_unparks,
+            stats.global_unparks,
+        );
+        let _ = writeln!(
+            output,
+            "  timers registrations={} wakes={} io_wakes={}",
+            stats.timer_registrations, stats.timer_wakeups, stats.io_wakeups,
+        );
+        let _ = writeln!(
+            output,
+            "  gc collections={} allocations={} frees={} allocated_bytes={} freed_bytes={} live_objects={} heap_live_bytes={} heap_reserved_bytes={} heap_free_page_bytes={}",
+            gc.collections.saturating_sub(gc_baseline.collections),
+            gc.total_allocations
+                .saturating_sub(gc_baseline.total_allocations),
+            gc.total_frees.saturating_sub(gc_baseline.total_frees),
+            gc.total_allocated_bytes
+                .saturating_sub(gc_baseline.total_allocated_bytes),
+            gc.total_freed_bytes
+                .saturating_sub(gc_baseline.total_freed_bytes),
+            gc.live_objects,
+            gc.live_bytes,
+            gc.segment_bytes,
+            gc.free_bytes,
+        );
+        let _ = writeln!(
+            output,
+            "  gc_pause_ns count={} p50={} p95={} p99={} max={}",
+            pauses.len(),
+            pause_p50,
+            pause_p95,
+            pause_p99,
+            pause_max,
+        );
+    }
+    if let Some(trace) = diagnostics.trace_report(worker_count) {
+        output.push_str(&trace);
+    }
+    output
+}
+
+fn write_diagnostics_report(output: &str) {
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(output.as_bytes());
+    let _ = stderr.flush();
+}
+
+fn write_idle_diagnostics_report() {
+    let diagnostics = match RuntimeDiagnosticsConfig::from_env() {
+        Ok(config) => RuntimeDiagnostics::new(config),
+        Err(error) => runtime_configuration_error(error),
+    };
+    if !diagnostics.is_enabled() {
+        return;
+    }
+    let worker_count = match configured_worker_count() {
+        Ok(worker_count) => worker_count,
+        Err(error) => runtime_configuration_error(error),
+    };
+    let output = format_diagnostics_report(
+        worker_count,
+        &diagnostics,
+        &RuntimeStatsSnapshot::default(),
+        &stats_snapshot(),
+        &GcStatsSnapshot::default(),
+        (0, 0, 0, 0, 0),
+    );
+    write_diagnostics_report(&output);
+}
+
+fn diagnostics_report_pending() -> &'static AtomicBool {
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    &PENDING
 }
 
 fn install_scheduler(rooted: bool) -> Arc<Scheduler> {
@@ -1576,6 +3108,125 @@ pub(crate) fn current_task_token() -> Option<TaskToken> {
     })
 }
 
+/// Poll two owned spawned tasks without consuming either result. The first
+/// task wins when both are complete in the same observation.
+pub(crate) fn poll_task_selection(first: TaskToken, second: TaskToken, out: *mut u8) -> u8 {
+    WORKER_CONTEXT.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let context = borrow
+            .as_mut()
+            .expect("task selection polled outside executor worker");
+        let waiter = context
+            .current_task
+            .expect("task selection polled with no current task");
+        let scheduler = Arc::clone(&context.scheduler);
+
+        let first_ready = scheduler.task_completed_or_register_waiter(first, waiter);
+        if first_ready {
+            scheduler.clear_task_waiter(first, waiter);
+            scheduler.clear_task_waiter(second, waiter);
+            if !out.is_null() {
+                unsafe { out.write(0) };
+            }
+            return 1;
+        }
+
+        let second_ready = scheduler.task_completed_or_register_waiter(second, waiter);
+        // Recheck both after registration closes the completion/register race.
+        // Checking the first branch first is the stable tie-break rule.
+        if scheduler.task_is_completed(first) {
+            scheduler.clear_task_waiter(first, waiter);
+            scheduler.clear_task_waiter(second, waiter);
+            if !out.is_null() {
+                unsafe { out.write(0) };
+            }
+            return 1;
+        }
+        if second_ready || scheduler.task_is_completed(second) {
+            scheduler.clear_task_waiter(first, waiter);
+            scheduler.clear_task_waiter(second, waiter);
+            if !out.is_null() {
+                unsafe { out.write(1) };
+            }
+            return 1;
+        }
+
+        context.current_wait_reason = Some(WaitReason::Tasks([first, second]));
+        0
+    })
+}
+
+/// Poll an owned task against a deadline. An already-expired initial deadline
+/// waits for the operation's first poll to finish before waking the timeout
+/// task, so immediately-ready work wins independently of queue priority.
+/// Subsequent observations check the task before the deadline.
+pub(crate) fn poll_task_timeout(
+    task: TaskToken,
+    deadline: Instant,
+    initial_poll: bool,
+    out: *mut u8,
+) -> u8 {
+    WORKER_CONTEXT.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let context = borrow
+            .as_mut()
+            .expect("task timeout polled outside executor worker");
+        let waiter = context
+            .current_task
+            .expect("task timeout polled with no current task");
+        let scheduler = Arc::clone(&context.scheduler);
+
+        let task_ready = scheduler.task_completed_or_register_waiter(task, waiter);
+        if task_ready || scheduler.task_is_completed(task) {
+            scheduler.clear_task_waiter(task, waiter);
+            scheduler.clear_task_timer(waiter);
+            if !out.is_null() {
+                unsafe { out.write(0) };
+            }
+            return 1;
+        }
+
+        if initial_poll && Instant::now() >= deadline {
+            if scheduler.arm_timeout_poll_wake(task, waiter) {
+                scheduler.wake_tasks(&[waiter]);
+            }
+            context.current_wait_reason = Some(WaitReason::TaskTimeout { task, deadline });
+            return 0;
+        }
+
+        scheduler.register_sleep(waiter, deadline);
+        if !initial_poll && Instant::now() >= deadline {
+            scheduler.clear_task_waiter(task, waiter);
+            scheduler.clear_task_timer(waiter);
+            if !out.is_null() {
+                unsafe { out.write(1) };
+            }
+            return 1;
+        }
+
+        context.current_wait_reason = Some(WaitReason::TaskTimeout { task, deadline });
+        0
+    })
+}
+
+/// Remove waiter reservations left by a cancelled selection future.
+pub(crate) fn unregister_task_selection(first: TaskToken, second: TaskToken, waiter: TaskToken) {
+    let scheduler = current_worker_scheduler().or_else(|| session_cell().lock().unwrap().clone());
+    if let Some(scheduler) = scheduler {
+        scheduler.clear_task_waiter(first, waiter);
+        scheduler.clear_task_waiter(second, waiter);
+    }
+}
+
+/// Remove the child waiter and timer reservation owned by a timeout future.
+pub(crate) fn unregister_task_timeout(task: TaskToken, waiter: TaskToken) {
+    let scheduler = current_worker_scheduler().or_else(|| session_cell().lock().unwrap().clone());
+    if let Some(scheduler) = scheduler {
+        scheduler.clear_task_waiter(task, waiter);
+        scheduler.clear_task_timer(waiter);
+    }
+}
+
 /// Entry point: run an async handle to completion using the multithreaded
 /// executor.
 pub fn run_root(handle: *mut u8, out: *mut u8) {
@@ -1587,9 +3238,12 @@ pub fn run_root(handle: *mut u8, out: *mut u8) {
         scheduler: Arc::clone(&scheduler),
     };
 
-    scheduler.add_task(handle, out, None, 0, Some(0), false);
+    scheduler.add_task_with_metadata(handle, out, None, 0, Some(0), false, SpawnMetadata::root());
     let local = scheduler.start();
     Arc::clone(&scheduler).worker_loop(0, local);
+    if let Some(message) = scheduler.take_fatal_runtime_error() {
+        crate::panic_unwind::rethrow_panic_message(message);
+    }
     if let Some(message) = scheduler.take_worker_panic() {
         crate::panic_unwind::resume_test_panic(message);
     }
@@ -1628,6 +3282,32 @@ pub extern "C-unwind" fn __rt__executor_is_current_task_cancelled() -> bool {
 /// later via `__rt__executor_poll_spawned_checked`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) -> u64 {
+    __rt__executor_spawn_with_metadata(
+        handle,
+        out_size,
+        crate::panic_unwind::RtString {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        crate::panic_unwind::RtString {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        0,
+        0,
+    )
+}
+
+/// Spawn a task and preserve its static source metadata for diagnostics.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__executor_spawn_with_metadata(
+    handle: *mut u8,
+    out_size: u64,
+    name: crate::panic_unwind::RtString,
+    file: crate::panic_unwind::RtString,
+    line: usize,
+    column: usize,
+) -> u64 {
     let scheduler = current_worker_scheduler().unwrap_or_else(ensure_rootless_scheduler);
     let owner_worker = current_worker_id().unwrap_or(0);
 
@@ -1637,13 +3317,14 @@ pub extern "C-unwind" fn __rt__executor_spawn(handle: *mut u8, out_size: u64) ->
     // preserve cache locality; movable tasks can still migrate after the first
     // pending poll via injector requeue.
     let preferred_worker = Some(owner_worker);
-    let task_token = scheduler.add_task(
+    let task_token = scheduler.add_task_with_metadata(
         handle,
         out_ptr,
         Some(out_buf),
         owner_worker,
         preferred_worker,
         true,
+        SpawnMetadata::from_runtime(name, file, line, column),
     );
     task_token
 }
@@ -1703,7 +3384,7 @@ pub extern "C-unwind" fn __rt__executor_poll_spawned_checked(task_token: u64, ou
                 Some(_) => {}
                 None => inner.waiter = Some(current),
             }
-            context.current_task_blocked = true;
+            context.current_wait_reason = Some(WaitReason::Task(task_token));
             0
         }
     })
@@ -1832,6 +3513,7 @@ pub extern "C-unwind" fn __rt__panic_payload_rethrow(payload: crate::panic_unwin
         backtrace: String::new(),
         location: None,
         logical_stack: Vec::new(),
+        task_trace: Vec::new(),
     });
     // Restore the original report so the unwind shows the original backtrace.
     crate::panic_unwind::restore_panic_report(report);
@@ -1868,6 +3550,19 @@ pub extern "C-unwind" fn __rt__executor_drop_task(task_token: u64) {
     scheduler.release_task(task_token, true);
 }
 
+/// Print a stable snapshot of live tasks, their spawn chains, and wait graph.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__executor_dump_tasks() {
+    let scheduler = current_worker_scheduler().or_else(|| session_cell().lock().unwrap().clone());
+    if let Some(scheduler) = scheduler {
+        let _ = scheduler.write_task_dump("task dump");
+    } else {
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr, "task dump: no active executor");
+        let _ = stderr.flush();
+    }
+}
+
 /// Create a new task group. Returns a group ID.
 /// `cancel_on_panic`: 1 = cancel siblings on panic, 0 = independent.
 #[unsafe(no_mangle)]
@@ -1884,7 +3579,7 @@ pub extern "C-unwind" fn __rt__task_group_create(result_size: u64, cancel_on_pan
         cancelled: false,
         cancel_on_panic: cancel_on_panic != 0,
         ready_status: 0,
-        panic_message: None,
+        panic_report: None,
     };
     let mut free = scheduler.free_group_slots.lock().unwrap();
     let mut groups = scheduler.task_groups.lock().unwrap();
@@ -1904,6 +3599,34 @@ pub extern "C-unwind" fn __rt__task_group_spawn(
     group_id: u64,
     handle: *mut u8,
     out_size: u64,
+) -> u64 {
+    __rt__task_group_spawn_with_metadata(
+        group_id,
+        handle,
+        out_size,
+        crate::panic_unwind::RtString {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        crate::panic_unwind::RtString {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        0,
+        0,
+    )
+}
+
+/// Spawn a task into a group with static source metadata.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn __rt__task_group_spawn_with_metadata(
+    group_id: u64,
+    handle: *mut u8,
+    out_size: u64,
+    name: crate::panic_unwind::RtString,
+    file: crate::panic_unwind::RtString,
+    line: usize,
+    column: usize,
 ) -> u64 {
     let scheduler = current_worker_scheduler()
         .or_else(|| session_cell().lock().unwrap().clone())
@@ -1933,13 +3656,14 @@ pub extern "C-unwind" fn __rt__task_group_spawn(
     let mut out_buf = vec![0u8; out_size as usize];
     let out_ptr = out_buf.as_mut_ptr();
     let preferred_worker = Some(owner_worker);
-    let task_token = scheduler.add_task(
+    let task_token = scheduler.add_task_with_metadata(
         handle,
         out_ptr,
         Some(out_buf),
         owner_worker,
         preferred_worker,
         false,
+        SpawnMetadata::from_runtime(name, file, line, column),
     );
 
     // Register group_id on the task slot
@@ -2018,8 +3742,9 @@ pub extern "C-unwind" fn __rt__task_group_destroy_and_rethrow_panic(group_id: u6
     let scheduler = current_worker_scheduler()
         .or_else(|| session_cell().lock().unwrap().clone())
         .expect("task_group_destroy_and_rethrow_panic called outside executor");
-    if let Some(message) = scheduler.destroy_task_group(group_id) {
-        crate::panic_unwind::rethrow_panic_message(message);
+    if let Some(report) = scheduler.destroy_task_group(group_id) {
+        crate::panic_unwind::restore_panic_report(report);
+        crate::panic_unwind::rethrow_restored_panic();
     }
 }
 
@@ -2069,7 +3794,7 @@ pub extern "C-unwind" fn __rt__task_group_poll_next(group_id: u64, out: *mut u8)
             None => group.waiter = Some(current),
         }
         group.ready_status = 0;
-        context.current_task_blocked = true;
+        context.current_wait_reason = Some(WaitReason::TaskGroup(group_id));
         0
     })
 }
@@ -2100,8 +3825,8 @@ pub(crate) fn register_sleep(deadline: Instant) {
         let task_token = context
             .current_task
             .expect("sleep polled with no current task");
-        context.current_task_blocked = true;
         context.scheduler.register_sleep(task_token, deadline);
+        context.current_wait_reason = Some(WaitReason::Sleep(deadline));
     });
 }
 
@@ -2114,7 +3839,19 @@ pub(crate) fn register_io_wait(source_id: usize, interest: Interest) -> Result<(
             .expect("async io polled with no current task");
 
         io_poller::register_wait(source_id, current, interest)?;
-        context.current_task_blocked = true;
+        context.scheduler.record_trace("io_wait", || {
+            format!(
+                "task={current} source={source_id} interest={}",
+                match interest {
+                    Interest::Read => "read",
+                    Interest::Write => "write",
+                }
+            )
+        });
+        context.current_wait_reason = Some(WaitReason::Io {
+            source_id,
+            interest,
+        });
         Ok(())
     })
 }
@@ -2128,7 +3865,10 @@ pub(crate) fn register_sync_wait(sync_id: usize, kind: crate::sync::WaitKind) ->
             .expect("sync wait polled with no current task");
 
         crate::sync::register_wait(current, sync_id, kind)?;
-        context.current_task_blocked = true;
+        context.scheduler.record_trace("sync_wait", || {
+            format!("task={current} resource={sync_id} kind={kind:?}")
+        });
+        context.current_wait_reason = Some(WaitReason::Sync { sync_id, kind });
         Ok(())
     })
 }
@@ -2148,13 +3888,27 @@ pub(crate) fn wake_tasks(task_tokens: &[TaskToken]) {
     }
 }
 
+pub(crate) fn record_gc_pause(pause: StdDuration) {
+    let scheduler = current_worker_scheduler().or_else(|| session_cell().lock().unwrap().clone());
+    if let Some(scheduler) = scheduler {
+        let nanos = pause.as_nanos().min(u64::MAX as u128) as u64;
+        scheduler.record_trace("gc_pause", || format!("duration_ns={nanos}"));
+    }
+}
+
 /// Finish any lazily-created rootless executor work after a synchronous root
-/// returns. This is a no-op when no rootless executor was created.
+/// returns. When diagnostics were requested without async work, emit a
+/// zero-task report so `taro run --runtime-stats` is never silently ignored.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn __rt__executor_finish_rootless() {
     let scheduler = {
         let session = session_cell().lock().unwrap();
         let Some(scheduler) = session.as_ref() else {
+            drop(session);
+            if diagnostics_report_pending().swap(false, Ordering::AcqRel) {
+                return;
+            }
+            write_idle_diagnostics_report();
             return;
         };
         assert!(
@@ -2181,6 +3935,9 @@ pub extern "C-unwind" fn __rt__executor_finish_rootless() {
         scheduler.start()
     };
     Arc::clone(&scheduler).worker_loop(0, local);
+    if let Some(message) = scheduler.take_fatal_runtime_error() {
+        crate::panic_unwind::rethrow_panic_message(message);
+    }
     if let Some(message) = scheduler.take_worker_panic() {
         crate::panic_unwind::resume_test_panic(message);
     }
@@ -2206,6 +3963,7 @@ pub extern "C" fn __rt__executor_abort_rootless() {
     // panicking sync test cannot leave rootless work alive for the next test.
     scheduler.force_shutdown();
     scheduler.join_background_threads();
+    scheduler.write_diagnostics_report();
     scheduler.teardown_remaining_tasks();
     clear_scheduler_if_current(&scheduler);
 }
@@ -2222,11 +3980,46 @@ mod tests {
     static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn blocking_pool_applies_queue_backpressure_and_releases_capacity() {
+        let scheduler = Scheduler::new(false, 1);
+        let state = Arc::new(BlockingPoolState {
+            scheduler: Arc::downgrade(&scheduler),
+            queue_capacity: 1,
+            queue: Mutex::new(BlockingQueueState {
+                jobs: VecDeque::new(),
+                capacity_waiters: VecDeque::new(),
+            }),
+            available: Condvar::new(),
+            shutdown: AtomicBool::new(false),
+            test_mode: true,
+        });
+        let first = BlockingJob::new(std::ptr::null_mut(), std::ptr::null_mut(), 0);
+        let second = BlockingJob::new(std::ptr::null_mut(), std::ptr::null_mut(), 0);
+
+        assert!(matches!(
+            state.try_enqueue(&first, 11),
+            BlockingEnqueue::Accepted
+        ));
+        assert!(matches!(
+            state.try_enqueue(&second, 12),
+            BlockingEnqueue::Full
+        ));
+        assert_eq!(state.queue.lock().unwrap().capacity_waiters.len(), 1);
+
+        assert!(Arc::ptr_eq(&state.pop_job().unwrap(), &first));
+        assert!(matches!(
+            state.try_enqueue(&second, 12),
+            BlockingEnqueue::Accepted
+        ));
+        state.shutdown();
+    }
+
+    #[test]
     fn worker_count_prefers_env_override() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let previous = std::env::var_os("TARO_WORKERS");
         unsafe { std::env::set_var("TARO_WORKERS", "2") };
-        assert_eq!(configured_worker_count(), 2);
+        assert_eq!(configured_worker_count(), Ok(2));
         if let Some(previous) = previous {
             unsafe { std::env::set_var("TARO_WORKERS", previous) };
         } else {
@@ -2243,10 +4036,72 @@ mod tests {
             .map(|count| count.get())
             .unwrap_or(1)
             .max(1);
-        assert_eq!(configured_worker_count(), expected);
+        assert_eq!(configured_worker_count(), Ok(expected));
         if let Some(previous) = previous {
             unsafe { std::env::set_var("TARO_WORKERS", previous) };
         }
+    }
+
+    #[test]
+    fn worker_count_rejects_invalid_values() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("TARO_WORKERS");
+
+        for invalid in ["", "0", "-1", "many"] {
+            unsafe { std::env::set_var("TARO_WORKERS", invalid) };
+            let error = configured_worker_count().unwrap_err();
+            assert!(error.contains("positive integer"));
+            assert!(error.contains(invalid));
+        }
+
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("TARO_WORKERS", previous) };
+        } else {
+            unsafe { std::env::remove_var("TARO_WORKERS") };
+        }
+    }
+
+    #[test]
+    fn runtime_report_is_stable_and_grep_friendly() {
+        let diagnostics = RuntimeDiagnostics::new(RuntimeDiagnosticsConfig {
+            stats: true,
+            trace: true,
+            trace_capacity: 4,
+        });
+        diagnostics.record("task_complete", || "task=7".into());
+        let stats = RuntimeStatsSnapshot {
+            tasks_created: 1,
+            task_polls: 2,
+            task_completions: 1,
+            peak_live_tasks: 1,
+            queue_enqueues: 2,
+            worker_enqueues: 2,
+            ..RuntimeStatsSnapshot::default()
+        };
+
+        let report = format_diagnostics_report(
+            3,
+            &diagnostics,
+            &stats,
+            &GcStatsSnapshot::default(),
+            &GcStatsSnapshot::default(),
+            (0, 0, 0, 0, 1),
+        );
+
+        assert!(report.starts_with("runtime stats:\n  config workers=3\n"));
+        assert!(report.contains("tasks created=1 polls=2 completed=1"));
+        assert!(report.contains("queues enqueues=2 global=0 worker=2"));
+        assert!(report.contains("gc_pause_ns count=0 p50=0 p95=0 p99=0 max=0"));
+        assert!(report.contains("runtime trace: workers=3 events=1 capacity=4 dropped=0"));
+        assert!(report.contains("event=task_complete task=7"));
+    }
+
+    #[test]
+    fn runtime_report_percentiles_use_nearest_rank() {
+        assert_eq!(percentile(&[], 50), 0);
+        assert_eq!(percentile(&[10], 99), 10);
+        assert_eq!(percentile(&[10, 20, 30, 40], 50), 20);
+        assert_eq!(percentile(&[10, 20, 30, 40], 95), 40);
     }
 
     #[test]
@@ -2347,6 +4202,362 @@ mod tests {
         let (index, generation) = unpack_task_token(token);
         assert_eq!(index, 17);
         assert_eq!(generation, 42);
+    }
+
+    #[test]
+    fn wait_cycle_detection_returns_a_closed_deterministic_path() {
+        let first = pack_task_token(1, 1);
+        let second = pack_task_token(2, 1);
+        let mut graph = HashMap::new();
+        graph.insert(first, vec![second]);
+        graph.insert(second, vec![first]);
+
+        assert_eq!(find_wait_cycle(&graph), Some(vec![first, second, first]));
+    }
+
+    #[test]
+    fn task_dump_includes_spawn_sites_wait_reasons_and_deadlock_cycle() {
+        let scheduler = Scheduler::new(false, 1);
+        let first = scheduler.add_task_with_metadata(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            None,
+            0,
+            None,
+            true,
+            SpawnMetadata {
+                name: "firstWorker".into(),
+                file: "src/work.tr".into(),
+                line: 10,
+                column: 5,
+            },
+        );
+        let second = scheduler.add_task_with_metadata(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            None,
+            0,
+            None,
+            true,
+            SpawnMetadata {
+                name: "secondWorker".into(),
+                file: "src/work.tr".into(),
+                line: 20,
+                column: 7,
+            },
+        );
+
+        for (token, dependency) in [(first, second), (second, first)] {
+            let (index, generation) = unpack_task_token(token);
+            let slot = scheduler.lookup_task_slot(index).unwrap();
+            let mut inner = slot.inner.lock().unwrap();
+            assert_eq!(inner.generation, generation);
+            inner.queued = false;
+            inner.wait_reason = Some(WaitReason::Task(dependency));
+        }
+
+        let dump = scheduler.build_task_dump("task dump");
+        assert_eq!(dump.cycle, Some(vec![first, second, first]));
+        assert!(dump.text.contains("`firstWorker` [waiting]"));
+        assert!(dump.text.contains("spawned at src/work.tr:10:5"));
+        assert!(
+            dump.text
+                .contains(&format!("waiting for task {}", format_task_token(second)))
+        );
+        assert!(dump.text.contains("definitive deadlock cycle:"));
+    }
+
+    #[test]
+    fn timeout_dependency_is_not_a_definitive_deadlock_edge() {
+        let scheduler = Scheduler::new(false, 1);
+        let parent = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), None, 0, None, true);
+        let child = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), None, 0, None, true);
+        for (token, reason) in [
+            (
+                parent,
+                WaitReason::TaskTimeout {
+                    task: child,
+                    deadline: Instant::now() + StdDuration::from_secs(1),
+                },
+            ),
+            (child, WaitReason::Task(parent)),
+        ] {
+            let (index, _) = unpack_task_token(token);
+            let slot = scheduler.lookup_task_slot(index).unwrap();
+            let mut inner = slot.inner.lock().unwrap();
+            inner.queued = false;
+            inner.wait_reason = Some(reason);
+        }
+
+        let dump = scheduler.build_task_dump("task dump");
+        assert_eq!(dump.cycle, None);
+        assert!(dump.text.contains(" ms remaining"));
+        assert!(dump.text.contains("no definitive internal cycle"));
+    }
+
+    #[test]
+    fn task_selection_prefers_first_ready_branch_and_clears_waiters() {
+        let scheduler = Scheduler::new(false, 1);
+        let first = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            true,
+        );
+        let second = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            true,
+        );
+        let waiter = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), None, 0, None, false);
+        for token in [first, second] {
+            let (index, _) = unpack_task_token(token);
+            scheduler
+                .lookup_task_slot(index)
+                .unwrap()
+                .inner
+                .lock()
+                .unwrap()
+                .completed = true;
+        }
+
+        WORKER_CONTEXT.with(|cell| {
+            *cell.borrow_mut() = Some(WorkerContext {
+                scheduler: Arc::clone(&scheduler),
+                worker_id: 0,
+                current_task: Some(waiter),
+                current_wait_reason: None,
+            });
+        });
+        let _guard = WorkerContextGuard;
+        let mut winner = u8::MAX;
+        assert_eq!(poll_task_selection(first, second, &mut winner), 1);
+        assert_eq!(winner, 0);
+        for token in [first, second] {
+            let (index, _) = unpack_task_token(token);
+            assert_eq!(
+                scheduler
+                    .lookup_task_slot(index)
+                    .unwrap()
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .waiter,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_task_selection_unregisters_both_waiters() {
+        let scheduler = Scheduler::new(false, 1);
+        let first = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            true,
+        );
+        let second = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            true,
+        );
+        let waiter = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), None, 0, None, false);
+
+        WORKER_CONTEXT.with(|cell| {
+            *cell.borrow_mut() = Some(WorkerContext {
+                scheduler: Arc::clone(&scheduler),
+                worker_id: 0,
+                current_task: Some(waiter),
+                current_wait_reason: None,
+            });
+        });
+        let _guard = WorkerContextGuard;
+        let mut winner = u8::MAX;
+        assert_eq!(poll_task_selection(first, second, &mut winner), 0);
+        unregister_task_selection(first, second, waiter);
+        for token in [first, second] {
+            let (index, _) = unpack_task_token(token);
+            assert_eq!(
+                scheduler
+                    .lookup_task_slot(index)
+                    .unwrap()
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .waiter,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn zero_duration_timeout_yields_once_then_expires_and_unregisters() {
+        let scheduler = Scheduler::new(false, 1);
+        let task = scheduler.add_task(
+            ptr::null_mut(),
+            ptr::null_mut(),
+            Some(Vec::new()),
+            0,
+            None,
+            true,
+        );
+        let waiter = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), None, 0, None, false);
+
+        WORKER_CONTEXT.with(|cell| {
+            *cell.borrow_mut() = Some(WorkerContext {
+                scheduler: Arc::clone(&scheduler),
+                worker_id: 0,
+                current_task: Some(waiter),
+                current_wait_reason: None,
+            });
+        });
+        let _guard = WorkerContextGuard;
+        let deadline = Instant::now();
+        let mut winner = u8::MAX;
+        assert_eq!(poll_task_timeout(task, deadline, true, &mut winner), 0);
+        assert_eq!(poll_task_timeout(task, deadline, false, &mut winner), 1);
+        assert_eq!(winner, 1);
+
+        let (task_index, _) = unpack_task_token(task);
+        assert_eq!(
+            scheduler
+                .lookup_task_slot(task_index)
+                .unwrap()
+                .inner
+                .lock()
+                .unwrap()
+                .waiter,
+            None
+        );
+        let (waiter_index, _) = unpack_task_token(waiter);
+        assert!(scheduler.timers.lock().unwrap().latest[waiter_index].is_none());
+    }
+
+    #[test]
+    fn zero_duration_timeout_waits_for_the_operation_first_poll() {
+        let scheduler = Scheduler::new(false, 1);
+        let polls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let frame = Box::new(PendingFrame {
+            polls: Arc::clone(&polls),
+            drops: Arc::clone(&drops),
+        });
+        let handle = __rt__async_create(
+            Box::into_raw(frame) as *mut u8,
+            pending_poll as *const () as *const u8,
+            pending_drop as *const () as *const u8,
+            TaskMobility::Movable as u8,
+        );
+        let task = scheduler.add_task(handle, ptr::null_mut(), Some(Vec::new()), 0, Some(0), true);
+        let waiter = scheduler.add_task(ptr::null_mut(), ptr::null_mut(), None, 0, None, false);
+        let (waiter_index, _) = unpack_task_token(waiter);
+        {
+            let waiter_slot = scheduler.lookup_task_slot(waiter_index).unwrap();
+            let mut inner = waiter_slot.inner.lock().unwrap();
+            inner.queued = false;
+            inner.running = true;
+        }
+
+        WORKER_CONTEXT.with(|cell| {
+            *cell.borrow_mut() = Some(WorkerContext {
+                scheduler: Arc::clone(&scheduler),
+                worker_id: 0,
+                current_task: Some(waiter),
+                current_wait_reason: None,
+            });
+        });
+        let _guard = WorkerContextGuard;
+        let mut winner = u8::MAX;
+        assert_eq!(
+            poll_task_timeout(task, Instant::now(), true, &mut winner),
+            0
+        );
+        let (task_index, _) = unpack_task_token(task);
+        assert!(
+            scheduler
+                .lookup_task_slot(task_index)
+                .unwrap()
+                .inner
+                .lock()
+                .unwrap()
+                .wake_waiter_after_poll
+        );
+
+        {
+            let waiter_slot = scheduler.lookup_task_slot(waiter_index).unwrap();
+            let mut inner = waiter_slot.inner.lock().unwrap();
+            inner.running = false;
+        }
+        scheduler.run_task(0, task);
+
+        assert_eq!(polls.load(Ordering::Acquire), 1);
+        assert!(
+            scheduler
+                .lookup_task_slot(waiter_index)
+                .unwrap()
+                .inner
+                .lock()
+                .unwrap()
+                .queued
+        );
+        scheduler.force_shutdown();
+        scheduler.teardown_remaining_tasks();
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn deadlock_timeout_is_opt_in_and_requires_positive_milliseconds() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("TARO_DEADLOCK_TIMEOUT_MS");
+
+        unsafe { std::env::remove_var("TARO_DEADLOCK_TIMEOUT_MS") };
+        assert_eq!(configured_deadlock_timeout(), None);
+        unsafe { std::env::set_var("TARO_DEADLOCK_TIMEOUT_MS", "0") };
+        assert_eq!(configured_deadlock_timeout(), None);
+        unsafe { std::env::set_var("TARO_DEADLOCK_TIMEOUT_MS", "25") };
+        assert_eq!(
+            configured_deadlock_timeout(),
+            Some(StdDuration::from_millis(25))
+        );
+
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("TARO_DEADLOCK_TIMEOUT_MS", previous) };
+        } else {
+            unsafe { std::env::remove_var("TARO_DEADLOCK_TIMEOUT_MS") };
+        }
+    }
+
+    #[test]
+    fn blocking_warning_is_opt_in_and_requires_positive_milliseconds() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os("TARO_BLOCKING_WARN_MS");
+
+        unsafe { std::env::remove_var("TARO_BLOCKING_WARN_MS") };
+        assert_eq!(configured_blocking_warn_threshold(), None);
+        unsafe { std::env::set_var("TARO_BLOCKING_WARN_MS", "0") };
+        assert_eq!(configured_blocking_warn_threshold(), None);
+        unsafe { std::env::set_var("TARO_BLOCKING_WARN_MS", "15") };
+        assert_eq!(
+            configured_blocking_warn_threshold(),
+            Some(StdDuration::from_millis(15))
+        );
+
+        if let Some(previous) = previous {
+            unsafe { std::env::set_var("TARO_BLOCKING_WARN_MS", previous) };
+        } else {
+            unsafe { std::env::remove_var("TARO_BLOCKING_WARN_MS") };
+        }
     }
 
     #[test]
@@ -3144,7 +5355,7 @@ mod tests {
     }
 
     struct TimerMutexChildFrame {
-        mutex_id: usize,
+        mutex_handle: *mut u8,
         armed: bool,
         ready: Arc<AtomicBool>,
         drops: Arc<AtomicUsize>,
@@ -3157,7 +5368,10 @@ mod tests {
     ) -> u8 {
         let frame = unsafe { &mut *(frame as *mut TimerMutexChildFrame) };
         if !frame.armed {
-            assert_eq!(crate::sync::__rt__sync_mutex_try_lock(frame.mutex_id), 0);
+            assert_eq!(
+                crate::sync::__rt__sync_mutex_try_lock(frame.mutex_handle),
+                0
+            );
             register_sleep(Instant::now() + StdDuration::from_secs(30));
             frame.armed = true;
             frame.ready.store(true, Ordering::Release);
@@ -3174,12 +5388,12 @@ mod tests {
     fn task_cancellation_cleans_timer_and_sync_state() {
         let _guard = TEST_ENV_LOCK.lock().unwrap();
         let scheduler = Scheduler::new(false, 1);
-        let mutex_id = crate::sync::__rt__sync_mutex_create();
+        let mutex_handle = crate::sync::__rt__sync_mutex_create();
         let child_ready = Arc::new(AtomicBool::new(false));
         let child_drops = Arc::new(AtomicUsize::new(0));
         let handle = __rt__async_create(
             Box::into_raw(Box::new(TimerMutexChildFrame {
-                mutex_id,
+                mutex_handle,
                 armed: false,
                 ready: Arc::clone(&child_ready),
                 drops: Arc::clone(&child_drops),
@@ -3222,7 +5436,7 @@ mod tests {
             "cancelled task timer should be cleared during finalization"
         );
         assert_eq!(
-            crate::sync::__rt__sync_mutex_destroy(mutex_id),
+            crate::sync::__rt__sync_mutex_destroy(mutex_handle),
             0,
             "cancelled task should release owned mutex"
         );

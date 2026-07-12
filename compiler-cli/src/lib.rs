@@ -27,6 +27,8 @@ pub enum CliCommand {
     Run(RunArgs),
     Test(TestArgs),
     New(NewArgs),
+    #[command(hide = true)]
+    RuntimeManifest(RuntimeManifestArgs),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -45,6 +47,12 @@ pub struct CheckArgs {
 pub struct RunArgs {
     #[command(flatten)]
     pub common: CommonCompileArgs,
+    /// Print a scheduler, I/O, and GC summary when the program exits.
+    #[arg(long = "runtime-stats")]
+    pub runtime_stats: bool,
+    /// Print a bounded scheduler, I/O, and GC event trace when the program exits.
+    #[arg(long = "runtime-trace")]
+    pub runtime_trace: bool,
     /// Program arguments forwarded to the compiled executable after `--`.
     #[arg(last = true)]
     pub program_args: Vec<String>,
@@ -67,6 +75,15 @@ pub struct NewArgs {
     pub package: String,
     #[arg(long = "kind", value_enum, default_value_t = NewProjectKind::Executable)]
     pub kind: NewProjectKind,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct RuntimeManifestArgs {
+    /// Static runtime archive to inspect and describe.
+    pub archive: PathBuf,
+    /// Target triple the archive was built for. Omit for a host-only archive.
+    #[arg(long = "target")]
+    pub target: Option<String>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -298,6 +315,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_runtime_diagnostic_flags_for_run() {
+        let run = Cli::parse_from([
+            "taro",
+            "run",
+            "main.tr",
+            "--runtime-stats",
+            "--runtime-trace",
+        ]);
+        match run.command {
+            CliCommand::Run(run) => {
+                assert!(run.runtime_stats);
+                assert!(run.runtime_trace);
+            }
+            other => panic!("expected run command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn normalized_filter_and_tags_trim_and_drop_empty() {
         let args = Cli::parse_from([
             "taro",
@@ -363,6 +398,28 @@ mod tests {
                 );
             }
             other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_internal_runtime_manifest_command() {
+        let args = Cli::parse_from([
+            "taro",
+            "runtime-manifest",
+            "libtaro_runtime.a",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+        ]);
+
+        match args.command {
+            CliCommand::RuntimeManifest(manifest) => {
+                assert_eq!(manifest.archive, std::path::Path::new("libtaro_runtime.a"));
+                assert_eq!(
+                    manifest.target.as_deref(),
+                    Some("aarch64-unknown-linux-gnu")
+                );
+            }
+            other => panic!("expected runtime-manifest command, got {other:?}"),
         }
     }
 

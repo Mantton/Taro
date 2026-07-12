@@ -42,10 +42,11 @@
 //!   pointer-free objects entirely.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 // === Public GC surface ===
 
@@ -81,6 +82,14 @@ pub struct GcShadowFrame {
     pub prev: *mut GcShadowFrame,
     pub slots: *mut *mut u8,
     pub count: usize,
+}
+
+pub(crate) type GcFinalizerFn = fn(usize);
+
+#[derive(Clone, Copy)]
+struct GcFinalizer {
+    callback: GcFinalizerFn,
+    data: usize,
 }
 
 // Thread-local shadow stack top. Each thread maintains its own shadow stack,
@@ -246,12 +255,36 @@ pub(crate) fn enter_safepoint() {
 }
 
 pub(crate) fn leave_safepoint() {
-    wait_for_gc_resume();
-    set_current_thread_safepoint(false);
+    loop {
+        // Publish that this thread intends to resume before checking the GC
+        // request. If a collection is already pending, immediately republish
+        // the stable shadow stack and wait. This ordering prevents a thread
+        // from changing roots after the collector has observed it parked.
+        set_current_thread_safepoint(false);
+        if !GC_REQUESTED.load(Ordering::Acquire) {
+            return;
+        }
+        set_current_thread_safepoint(true);
+        wait_for_gc_resume();
+    }
 }
 
 pub(crate) fn park_at_safepoint() {
     enter_safepoint();
+    leave_safepoint();
+}
+
+/// Mark the current thread's shadow stack stable before entering a foreign
+/// call that may block indefinitely.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__gc_enter_blocking() {
+    enter_safepoint();
+}
+
+/// Wait for any active collection and resume Taro execution after a blocking
+/// foreign call returns.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__gc_exit_blocking() {
     leave_safepoint();
 }
 
@@ -304,12 +337,18 @@ fn initiate_collection() {
         park_at_safepoint();
         return;
     }
+    let pause_started = Instant::now();
 
     let current_id = std::thread::current().id();
     let threads = threads_for_collection(current_id);
 
     // Now all other threads are parked. We can safely collect.
-    with_gc(|gc| gc.collect(&threads));
+    let finalizers = with_gc(|gc| gc.collect(&threads));
+    for finalizer in finalizers {
+        (finalizer.callback)(finalizer.data);
+    }
+    let pause = pause_started.elapsed();
+    with_gc(|gc| gc.record_pause(pause));
 
     // Wake up everyone. GC_REQUESTED must be cleared *while holding*
     // GC_RESUME_LOCK so no thread can slip between seeing GC_REQUESTED==true
@@ -321,6 +360,10 @@ fn initiate_collection() {
         GC_REQUESTED.store(false, Ordering::Release);
         GC_RESUME_COND.notify_all();
     }
+    // Trace recording may lock and allocate, so keep it outside the
+    // stop-the-world interval. The compact GC stats sample above is recorded
+    // before resuming to preserve its collection identifier.
+    crate::executor::record_gc_pause(pause);
 }
 
 #[unsafe(no_mangle)]
@@ -911,6 +954,33 @@ impl Span {
     }
 }
 
+const MAX_GC_PAUSE_SAMPLES: usize = 1024;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GcStatsSnapshot {
+    pub collections: usize,
+    pub total_allocations: usize,
+    pub total_frees: usize,
+    pub total_allocated_bytes: usize,
+    pub total_freed_bytes: usize,
+    pub live_objects: usize,
+    pub live_bytes: usize,
+    pub free_bytes: usize,
+    pub segment_bytes: usize,
+    pause_samples: Vec<(usize, u64)>,
+}
+
+impl GcStatsSnapshot {
+    pub(crate) fn pause_nanos_since(&self, collection: usize) -> Vec<u64> {
+        self.pause_samples
+            .iter()
+            .filter_map(|(sample_collection, nanos)| {
+                (*sample_collection > collection).then_some(*nanos)
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Default)]
 struct GcStats {
     collections: usize,
@@ -926,6 +996,7 @@ struct GcStats {
     last_freed_bytes: usize,
     last_segment_count: usize,
     last_segment_bytes: usize,
+    pause_samples: VecDeque<(usize, u64)>,
 }
 
 impl GcStats {
@@ -959,6 +1030,29 @@ impl GcStats {
         self.free_bytes = free_bytes;
         self.last_segment_count = segment_count;
         self.last_segment_bytes = segment_bytes;
+    }
+
+    fn record_pause(&mut self, pause: Duration) {
+        if self.pause_samples.len() == MAX_GC_PAUSE_SAMPLES {
+            let _ = self.pause_samples.pop_front();
+        }
+        let nanos = pause.as_nanos().min(u64::MAX as u128) as u64;
+        self.pause_samples.push_back((self.collections, nanos));
+    }
+
+    fn snapshot(&self) -> GcStatsSnapshot {
+        GcStatsSnapshot {
+            collections: self.collections,
+            total_allocations: self.total_allocations,
+            total_frees: self.total_frees,
+            total_allocated_bytes: self.total_allocated_bytes,
+            total_freed_bytes: self.total_freed_bytes,
+            live_objects: self.live_objects,
+            live_bytes: self.live_bytes,
+            free_bytes: self.free_bytes,
+            segment_bytes: self.last_segment_bytes,
+            pause_samples: self.pause_samples.iter().copied().collect(),
+        }
     }
 
     fn log(&self) {
@@ -1006,6 +1100,7 @@ pub(crate) struct Gc {
     static_roots: Vec<Range<*const u8>>,
     manual_roots: Vec<*const u8>,
     persistent_roots: HashMap<*const u8, usize>,
+    finalizers: HashMap<*const u8, GcFinalizer>,
     stats: GcStats,
     // Bytes allocated since the last collection (used to trigger GC).
     alloc_since_gc: usize,
@@ -1042,6 +1137,7 @@ impl Gc {
             static_roots: Vec::new(),
             manual_roots: Vec::new(),
             persistent_roots: HashMap::new(),
+            finalizers: HashMap::new(),
             stats: GcStats::default(),
             alloc_since_gc: 0,
             gc_threshold_bytes: GC_MIN_TRIGGER,
@@ -1302,6 +1398,25 @@ impl Gc {
         }
     }
 
+    pub(crate) fn register_finalizer(
+        &mut self,
+        ptr: *const u8,
+        callback: GcFinalizerFn,
+        data: usize,
+    ) {
+        if ptr.is_null() {
+            return;
+        }
+        let previous = self.finalizers.insert(ptr, GcFinalizer { callback, data });
+        debug_assert!(previous.is_none(), "GC object finalizer registered twice");
+    }
+
+    pub(crate) fn unregister_finalizer(&mut self, ptr: *const u8) {
+        if !ptr.is_null() {
+            self.finalizers.remove(&ptr);
+        }
+    }
+
     fn set_buffer_scan_size(&mut self, ptr: *mut u8, scan_size: usize) {
         let Some((span_id, object_index)) = self.find_object(ptr.cast_const()) else {
             return;
@@ -1320,14 +1435,14 @@ impl Gc {
         }
     }
 
-    fn collect(&mut self, threads: &[Arc<ThreadState>]) {
+    fn collect(&mut self, threads: &[Arc<ThreadState>]) -> Vec<GcFinalizer> {
         // Stop-the-world collection: gather roots, mark, then sweep.
         let mut manual_roots = std::mem::take(&mut self.manual_roots);
         let static_roots = std::mem::take(&mut self.static_roots);
         manual_roots.extend(self.persistent_roots.keys().copied());
         self.mark_roots(manual_roots.into_iter(), &static_roots, threads);
         self.static_roots = static_roots;
-        let freed = self.sweep();
+        let (freed, finalizers) = self.sweep();
         let (free_runs, free_pages) = self.free_page_stats();
         let segment_count = self.segments.len();
         self.stats.record_collection(
@@ -1341,6 +1456,11 @@ impl Gc {
         self.stats.log();
         self.alloc_since_gc = 0;
         self.gc_threshold_bytes = next_gc_threshold(self.stats.live_bytes);
+        finalizers
+    }
+
+    fn record_pause(&mut self, pause: Duration) {
+        self.stats.record_pause(pause);
     }
 
     fn mark_roots<I>(
@@ -1494,9 +1614,10 @@ impl Gc {
     }
 
     // Sweep spans: free unmarked slots, and return empty spans to the segment.
-    fn sweep(&mut self) -> SweepStats {
+    fn sweep(&mut self) -> (SweepStats, Vec<GcFinalizer>) {
         // Sweep spans: free unmarked slots, return empty spans to segments.
         let mut freed = SweepStats::default();
+        let mut finalizers = Vec::new();
         for span_id in 0..self.spans.len() {
             let Some(mut span) = self.spans[span_id].take() else {
                 continue;
@@ -1507,6 +1628,9 @@ impl Gc {
                 // If the lone object is unmarked, free the entire span.
                 if bitset_get(&span.alloc_map, 0) && !bitset_get(&span.mark_map, 0) {
                     let total_bytes = span.page_count.saturating_mul(PAGE_SIZE);
+                    if let Some(finalizer) = self.finalizers.remove(&(span.base as *const u8)) {
+                        finalizers.push(finalizer);
+                    }
                     bitset_set(&mut span.alloc_map, 0, false);
                     if span.has_pointers && !span.descs.is_empty() {
                         span.descs[0] = std::ptr::null();
@@ -1536,6 +1660,10 @@ impl Gc {
                     bitset_set(&mut span.mark_map, index, false);
                     continue;
                 }
+                let object = unsafe { span.base.add(index * span.object_size) } as *const u8;
+                if let Some(finalizer) = self.finalizers.remove(&object) {
+                    finalizers.push(finalizer);
+                }
                 span.free_small(index);
                 self.stats.record_free(span.object_size);
                 freed.objects += 1;
@@ -1560,7 +1688,7 @@ impl Gc {
 
             self.spans[span_id] = Some(span);
         }
-        freed
+        (freed, finalizers)
     }
 
     // Return an entire span's pages to its owning segment.
@@ -1620,6 +1748,16 @@ pub(crate) fn with_gc<R>(f: impl FnOnce(&mut Gc) -> R) -> R {
     let gc = INSTANCE.get_or_init(|| Mutex::new(Gc::new()));
     let mut guard = gc.lock().expect("gc mutex");
     f(&mut guard)
+}
+
+pub(crate) fn stats_snapshot() -> GcStatsSnapshot {
+    with_gc(|gc| {
+        let mut snapshot = gc.stats.snapshot();
+        let (_, free_pages) = gc.free_page_stats();
+        snapshot.free_bytes = free_pages.saturating_mul(PAGE_SIZE);
+        snapshot.segment_bytes = gc.segments.iter().map(|segment| segment.len).sum();
+        snapshot
+    })
 }
 
 // Simple power-of-two size classes up to a page.
@@ -1752,9 +1890,11 @@ fn register_segment_arenas(
 #[cfg(test)]
 mod tests {
     use super::{
-        __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach, Gc, GcDesc,
+        __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach,
+        __rt__gc_enter_blocking, __rt__gc_exit_blocking, Gc, GcDesc, GcStats, MAX_GC_PAUSE_SAMPLES,
         PAGE_SIZE, SEGMENT_SIZE, Segment, register_segment_arenas,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1776,6 +1916,11 @@ mod tests {
             ptr_offsets: POINTER_OFFSETS.as_ptr(),
             ptr_count: POINTER_OFFSETS.len(),
         }
+    }
+
+    fn count_finalization(data: usize) {
+        let count = unsafe { &*(data as *const AtomicUsize) };
+        count.fetch_add(1, Ordering::AcqRel);
     }
 
     #[test]
@@ -1830,6 +1975,65 @@ mod tests {
 
         gc.remove_persistent_root(ptr);
         assert!(!gc.persistent_roots.contains_key(&ptr));
+    }
+
+    #[test]
+    fn finalizers_are_returned_once_after_unreachable_objects_are_swept() {
+        let mut gc = Gc::new();
+        let desc = bytes_desc(8);
+        let count = AtomicUsize::new(0);
+        let ptr = gc.alloc(8, &desc, false);
+        gc.register_finalizer(
+            ptr,
+            count_finalization,
+            &count as *const AtomicUsize as usize,
+        );
+
+        gc.add_root(ptr);
+        assert!(gc.collect(&[]).is_empty());
+
+        let finalizers = gc.collect(&[]);
+        assert_eq!(finalizers.len(), 1);
+        assert_eq!(count.load(Ordering::Acquire), 0);
+        for finalizer in finalizers {
+            (finalizer.callback)(finalizer.data);
+        }
+        assert_eq!(count.load(Ordering::Acquire), 1);
+        assert!(gc.collect(&[]).is_empty());
+    }
+
+    #[test]
+    fn gc_pause_samples_are_bounded_and_filter_by_collection() {
+        let mut stats = GcStats::default();
+        for collection in 1..=MAX_GC_PAUSE_SAMPLES + 1 {
+            stats.collections = collection;
+            stats.record_pause(Duration::from_nanos(collection as u64));
+        }
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.pause_samples.len(), MAX_GC_PAUSE_SAMPLES);
+        assert_eq!(snapshot.pause_nanos_since(0).first(), Some(&2));
+        assert_eq!(
+            snapshot.pause_nanos_since(MAX_GC_PAUSE_SAMPLES),
+            vec![(MAX_GC_PAUSE_SAMPLES + 1) as u64]
+        );
+    }
+
+    #[test]
+    fn unregistering_a_finalizer_prevents_it_from_running() {
+        let mut gc = Gc::new();
+        let desc = bytes_desc(8);
+        let count = AtomicUsize::new(0);
+        let ptr = gc.alloc(8, &desc, false);
+        gc.register_finalizer(
+            ptr,
+            count_finalization,
+            &count as *const AtomicUsize as usize,
+        );
+        gc.unregister_finalizer(ptr);
+
+        assert!(gc.collect(&[]).is_empty());
+        assert_eq!(count.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -1894,6 +2098,25 @@ mod tests {
 
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
         __gc__collect();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn blocking_threads_keep_roots_visible_without_delaying_collection() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            __gc__thread_attach();
+            __rt__gc_exit_blocking();
+            __rt__gc_enter_blocking();
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            __gc__thread_detach();
+        });
+
+        ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        __gc__collect();
+        release_tx.send(()).unwrap();
         handle.join().unwrap();
     }
 }

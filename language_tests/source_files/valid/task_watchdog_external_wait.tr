@@ -1,0 +1,9 @@
+// ENV: TARO_DEADLOCK_TIMEOUT_MS=50
+// EXPECT_STDERR_CONTAINS: stuck task diagnostic after 50 ms without executor progress
+// EXPECT_STDERR_CONTAINS: sleeping for another
+// EXPECT_STDERR_CONTAINS: no definitive internal cycle
+// EXPECT_STDERR_NOT_CONTAINS: panic:
+
+func main() async {
+    await std.task.sleep(std.time.Duration.fromMillis(150_u64))
+}

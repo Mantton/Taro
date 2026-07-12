@@ -1,0 +1,75 @@
+// ENV: TARO_DEADLOCK_TIMEOUT_MS=100 TARO_WORKERS=2
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: stuck task diagnostic after 100 ms without executor progress
+// EXPECT_STDERR_CONTAINS: definitive deadlock cycle:
+// EXPECT_STDERR_CONTAINS: waiting on mutex
+// EXPECT_STDERR_CONTAINS: task_deadlock_diagnostics.tr
+// EXPECT_STDERR_CONTAINS: panic: executor deadlock detected
+
+func main() async {
+    let first = match std.sync.Mutex[int32].new(1_i32) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("first mutex should be created")
+    }
+    let second = match std.sync.Mutex[int32].new(2_i32) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("second mutex should be created")
+    }
+    let (firstReadySender, firstReadyReceiver) = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("first barrier should be created")
+    }
+    let (secondReadySender, secondReadyReceiver) = match std.sync.bounded[int32](1) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("second barrier should be created")
+    }
+    let firstForA = &first
+    let secondForA = &second
+    let firstForB = &first
+    let secondForB = &second
+
+    let taskA = std.task.spawn(|| async {
+        var firstGuard = match await firstForA.lock() {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("task A should lock the first mutex")
+        }
+        match await firstReadySender.send(1_i32) {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("task A should signal readiness")
+        }
+        match await secondReadyReceiver.recv() {
+            case .some(_) => {}
+            case .none => std.panic.panic("task A should receive task B readiness")
+        }
+        var secondGuard = match await secondForA.lock() {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("task A should wait on the second mutex")
+        }
+        return *firstGuard.value() + *secondGuard.value()
+    })
+
+    std.task.detached(|| async {
+        var secondGuard = match await secondForB.lock() {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("task B should lock the second mutex")
+        }
+        match await secondReadySender.send(1_i32) {
+            case .ok(_) => {}
+            case .err(_) => std.panic.panic("task B should signal readiness")
+        }
+        match await firstReadyReceiver.recv() {
+            case .some(_) => {}
+            case .none => std.panic.panic("task B should receive task A readiness")
+        }
+        var firstGuard = match await firstForB.lock() {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("task B should wait on the first mutex")
+        }
+        return *secondGuard.value() + *firstGuard.value()
+    })
+
+    match await taskA.result() {
+        case .ok(_) => std.panic.panic("deadlocked task A should not complete")
+        case .err(_) => std.panic.panic("deadlock watchdog should fail the root first")
+    }
+}
