@@ -15,6 +15,7 @@ use inkwell::{AddressSpace, OptimizationLevel, context::Context};
 pub struct TargetLayout {
     pub pointer_size: u64,
     pub pointer_align: u64,
+    requested_triple: Option<String>,
     target_machine: TargetMachine,
 }
 
@@ -93,6 +94,7 @@ impl TargetLayout {
         Ok(TargetLayout {
             pointer_size,
             pointer_align,
+            requested_triple: target_override.map(ToOwned::to_owned),
             target_machine,
         })
     }
@@ -112,6 +114,19 @@ impl TargetLayout {
     #[inline]
     pub fn triple(&self) -> TargetTriple {
         self.target_machine.get_triple()
+    }
+
+    /// Return the target triple explicitly requested by the driver, if any.
+    ///
+    /// This is kept separately from LLVM's effective triple because LLVM may
+    /// canonicalize host triples into a spelling that Cargo does not accept.
+    #[inline]
+    pub fn requested_triple(&self) -> Option<&str> {
+        self.requested_triple.as_deref()
+    }
+
+    pub fn triple_string(&self) -> String {
+        self.triple().as_str().to_string_lossy().into_owned()
     }
 
     /// Get the data layout string for LLVM modules.

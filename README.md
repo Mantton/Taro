@@ -51,7 +51,7 @@ Taro is experimental. Syntax, compiler metadata, standard library APIs, and pack
 
 ### Build Distribution
 
-To build the compiler, runtime, and standard library from source, use `build_dist.py`. This creates a distribution directory with a sysroot-like structure (`dist/` by default). For automation/bench workflows, `build_dist.py` also supports `--profile` and `--dist-dir`.
+To build the compiler, runtime, and standard library from source, use `build_dist.py`. This creates a distribution directory with a sysroot-like structure (`dist/` by default). For automation/bench workflows, `build_dist.py` also supports `--profile`, `--dist-dir`, and `--target`.
 
 ```bash
 python3 development/scripts/build_dist.py
@@ -107,6 +107,8 @@ Common flags:
 | `--build-std` | Rebuild and publish attached std artifacts into `TARO_HOME`. |
 | `--release` | Build with the release profile. |
 | `--target <TRIPLE>` | Compile for a target triple override. |
+| `--linker <PATH>` | Use a Clang-compatible linker driver for the selected target. |
+| `--sysroot <PATH>` | Use a target SDK/sysroot while linking. |
 | `--timings` | Print compiler phase timings. |
 | `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
 | `--no-incremental` | Disable dependency artifact reuse. |
@@ -226,6 +228,20 @@ Attached std is built in a canonical release-like configuration per target (shar
 
 ```bash
 TARO_HOME=$(pwd)/dist dist/bin/taro check examples/hello.tr --std-path std --build-std
+```
+
+### Unix Cross-Compilation
+
+`--target` controls LLVM object generation, attached std selection, runtime selection, and the final linker invocation. Target-specific runtime archives use:
+
+- `TARO_HOME/lib/taro/runtime/<target-triple>/libtaro_runtime.a`
+
+Same-OS Darwin cross-architecture builds use the host macOS SDK automatically. Linux cross-architecture builds require `--linker` or `--sysroot`; cross-OS Darwin/Linux builds require both. An explicit runtime can always be supplied with `--runtime-path`.
+
+Build a target-ready distribution with:
+
+```bash
+python3 development/scripts/build_dist.py --target x86_64-apple-darwin
 ```
 
 Metadata reuse is guarded by format/version/compiler stamp/target/options/fingerprint/checksum validation for normal dependency caches.
@@ -689,7 +705,7 @@ Prefer the distribution scripts while debugging local layout problems:
 python3 development/scripts/run_dist.py examples/hello.tr
 ```
 
-For manual CLI usage, verify that `TARO_HOME/lib/taro/runtime/libtaro_runtime.a` exists, or pass `--runtime-path` explicitly.
+For host builds, verify that `TARO_HOME/lib/taro/runtime/libtaro_runtime.a` exists. For `--target <TRIPLE>`, verify `TARO_HOME/lib/taro/runtime/<TRIPLE>/libtaro_runtime.a`; alternatively pass `--runtime-path` explicitly. Cross-target linker setup can be supplied with `--linker` and `--sysroot`.
 
 **Unexpected cache or metadata behavior after compiler changes**
 

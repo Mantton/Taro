@@ -88,6 +88,7 @@ fn run_single_file(
         arguments.target.clone(),
         compile_options.profile,
     )?;
+    store.configure_linker(arguments.linker.clone(), arguments.sysroot.clone());
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
@@ -226,6 +227,7 @@ fn run_package(
         arguments.target.clone(),
         compile_options.profile,
     )?;
+    store.configure_linker(arguments.linker.clone(), arguments.sysroot.clone());
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
@@ -452,7 +454,7 @@ fn run_package(
 /// This function attempts to find `libtaro_runtime.a` using the following priority:
 /// 1. `--runtime-path` CLI argument.
 /// 2. `TARO_RUNTIME_LIB` environment variable.
-/// 3. `TARO_HOME/lib` directory.
+/// 3. Target-specific `TARO_HOME/lib/taro/runtime` directory.
 /// 4. Relative to the executable (distribution layout).
 /// 5. Fallback to `cargo build` (dev mode only).
 fn build_runtime(
@@ -483,11 +485,19 @@ fn build_runtime(
             ctx.store.add_link_input(path);
             return Ok(());
         }
+        ctx.dcx.emit_error(
+            format!(
+                "runtime library from TARO_RUNTIME_LIB does not exist: {}",
+                path.display()
+            ),
+            None,
+        );
+        return Err(ReportedError);
     }
 
     // 3. TARO_HOME
     if let Ok(home) = language_home() {
-        let path = home.join("lib").join("libtaro_runtime.a");
+        let path = installed_runtime_path(&home, ctx.store.target_layout.requested_triple());
         if path.exists() {
             ctx.store.add_link_input(path);
             return Ok(());
@@ -498,12 +508,7 @@ fn build_runtime(
     if let Ok(exe) = std::env::current_exe() {
         if let Some(bin_dir) = exe.parent() {
             if let Some(root) = bin_dir.parent() {
-                // <root>/lib/taro/runtime/libtaro_runtime.a
-                let path = root
-                    .join("lib")
-                    .join("taro")
-                    .join("runtime")
-                    .join("libtaro_runtime.a");
+                let path = installed_runtime_path(root, ctx.store.target_layout.requested_triple());
                 if path.exists() {
                     ctx.store.add_link_input(path);
                     return Ok(());
@@ -532,7 +537,9 @@ fn build_runtime(
         return Err(ReportedError);
     }
 
-    let status = Command::new("cargo")
+    let requested_target = ctx.store.target_layout.requested_triple();
+    let mut command = Command::new("cargo");
+    command
         .arg("build")
         .arg("--release")
         .arg("--quiet")
@@ -541,23 +548,37 @@ fn build_runtime(
         .arg("--manifest-path")
         .arg(workspace_root.join("Cargo.toml"))
         .arg("--target-dir")
-        .arg(&target_dir)
-        .status()
-        .map_err(|e| {
-            ctx.dcx.emit_error(
-                format!("failed to invoke cargo to build runtime: {e}"),
-                None,
-            );
-            ReportedError
-        })?;
+        .arg(&target_dir);
+    if let Some(target) = requested_target {
+        command.arg("--target").arg(target);
+    }
+    let status = command.status().map_err(|e| {
+        ctx.dcx.emit_error(
+            format!("failed to invoke cargo to build runtime: {e}"),
+            None,
+        );
+        ReportedError
+    })?;
 
     if !status.success() {
-        ctx.dcx
-            .emit_error("failed to build runtime crate".into(), None);
+        let target = requested_target
+            .map(|target| format!(" for target `{target}`"))
+            .unwrap_or_default();
+        ctx.dcx.emit_error(
+            format!("failed to build runtime crate{target}; install the Rust target or pass --runtime-path"),
+            None,
+        );
         return Err(ReportedError);
     }
 
-    let lib_path = target_dir.join("release").join("libtaro_runtime.a");
+    let lib_path = if let Some(target) = requested_target {
+        target_dir
+            .join(target)
+            .join("release")
+            .join("libtaro_runtime.a")
+    } else {
+        target_dir.join("release").join("libtaro_runtime.a")
+    };
     if !lib_path.exists() {
         ctx.dcx.emit_error(
             format!("runtime archive not found at {}", lib_path.display()),
@@ -570,6 +591,14 @@ fn build_runtime(
     // "object file" input.
     ctx.store.add_link_input(lib_path);
     Ok(())
+}
+
+fn installed_runtime_path(toolchain_root: &std::path::Path, target: Option<&str>) -> PathBuf {
+    let runtime_root = toolchain_root.join("lib").join("taro").join("runtime");
+    match target {
+        Some(target) => runtime_root.join(target).join("libtaro_runtime.a"),
+        None => runtime_root.join("libtaro_runtime.a"),
+    }
 }
 
 fn compile_std<'a>(
@@ -663,6 +692,7 @@ fn run_single_file_test(
         arguments.target.clone(),
         compile_options.profile,
     )?;
+    store.configure_linker(arguments.linker.clone(), arguments.sysroot.clone());
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
@@ -809,6 +839,7 @@ fn run_package_test(
         arguments.target.clone(),
         compile_options.profile,
     )?;
+    store.configure_linker(arguments.linker.clone(), arguments.sysroot.clone());
     let icx = CompilerContext::new(dcx, store);
     let mut package_fingerprints = FxHashMap::default();
     let incremental_enabled = !arguments.no_incremental;
@@ -1067,4 +1098,26 @@ fn run_package_test(
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod target_runtime_tests {
+    use super::installed_runtime_path;
+    use std::path::Path;
+
+    #[test]
+    fn host_runtime_uses_legacy_toolchain_location() {
+        assert_eq!(
+            installed_runtime_path(Path::new("/toolchain"), None),
+            Path::new("/toolchain/lib/taro/runtime/libtaro_runtime.a")
+        );
+    }
+
+    #[test]
+    fn requested_target_runtime_is_triple_scoped() {
+        assert_eq!(
+            installed_runtime_path(Path::new("/toolchain"), Some("aarch64-unknown-linux-gnu")),
+            Path::new("/toolchain/lib/taro/runtime/aarch64-unknown-linux-gnu/libtaro_runtime.a")
+        );
+    }
 }

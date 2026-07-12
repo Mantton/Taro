@@ -20,7 +20,8 @@ Output Structure:
     lib/
       taro/
         runtime/
-          libtaro_runtime.a (Static runtime library)
+          libtaro_runtime.a (Host static runtime library)
+          <target-triple>/libtaro_runtime.a (Cross-target runtime library)
     std/                   (Standard library sources)
 """
 
@@ -44,6 +45,10 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
         type=Path,
         default=repo_root / "std",
         help="Path to std sources used for dist symlink and attached-std bootstrap.",
+    )
+    parser.add_argument(
+        "--target",
+        help="Build runtime and attached std artifacts for this target triple.",
     )
     return parser.parse_args()
 
@@ -85,6 +90,7 @@ def main():
     profile = args.profile
     dist_dir = args.dist_dir.resolve()
     std_src = args.std_path.resolve()
+    target = args.target
     validate_dist_dir(repo_root, dist_dir)
 
     if not std_src.exists():
@@ -94,6 +100,7 @@ def main():
     print(f"Distribution Dir: {dist_dir}")
     print(f"Profile: {profile}")
     print(f"Std Path: {std_src}")
+    print(f"Target: {target or 'host'}")
 
     # Clean dist dir
     if dist_dir.exists():
@@ -106,11 +113,16 @@ def main():
 
     # 1. Build Runtime
     print("\n--- Building Runtime ---")
-    run_command([
-        "cargo", "build", 
-        "-p", "taro-runtime", 
+    runtime_command = [
+        "cargo",
+        "build",
+        "-p",
+        "taro-runtime",
         *release_flag(profile),
-    ], cwd=repo_root)
+    ]
+    if target:
+        runtime_command.extend(["--target", target])
+    run_command(runtime_command, cwd=repo_root)
 
     # 2. Build Compiler CLI
     print("\n--- Building Compiler CLI ---")
@@ -148,11 +160,16 @@ def main():
     print(f"Copying {src_lsp} -> {dst_lsp}")
     shutil.copy2(src_lsp, dst_lsp)
 
-    # lib/taro/runtime/libtaro_runtime.a
+    # lib/taro/runtime[/<target-triple>]/libtaro_runtime.a
     lib_dir = dist_dir / "lib" / "taro" / "runtime"
+    if target:
+        lib_dir = lib_dir / target
     lib_dir.mkdir(parents=True, exist_ok=True)
-    
-    src_lib = repo_root / "target" / profile / "libtaro_runtime.a"
+
+    src_lib = repo_root / "target"
+    if target:
+        src_lib = src_lib / target
+    src_lib = src_lib / profile / "libtaro_runtime.a"
     dst_lib = lib_dir / "libtaro_runtime.a"
     
     print(f"Copying {src_lib} -> {dst_lib}")
@@ -175,15 +192,18 @@ def main():
         encoding="utf-8",
     )
     try:
+        bootstrap_command = [
+            str(dst_bin),
+            "check",
+            str(bootstrap_src),
+            "--std-path",
+            str(std_src),
+            "--build-std",
+        ]
+        if target:
+            bootstrap_command.extend(["--target", target])
         run_command(
-            [
-                str(dst_bin),
-                "check",
-                str(bootstrap_src),
-                "--std-path",
-                str(std_src),
-                "--build-std",
-            ],
+            bootstrap_command,
             cwd=repo_root,
             env=env,
         )

@@ -1688,6 +1688,10 @@ pub struct CompilerStore<'arena> {
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
     pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
     pub link_inputs: RefCell<Vec<PathBuf>>,
+    /// Optional Clang-compatible linker driver selected by the CLI.
+    pub linker: RefCell<Option<PathBuf>>,
+    /// Optional sysroot passed to the linker driver.
+    pub linker_sysroot: RefCell<Option<PathBuf>>,
     pub output_root: PathBuf,
     pub specialization_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
     /// Per-package set of instances emitted into that package object file.
@@ -1736,6 +1740,8 @@ impl<'arena> CompilerStore<'arena> {
             llvm_modules: Default::default(),
             object_files: Default::default(),
             link_inputs: Default::default(),
+            linker: Default::default(),
+            linker_sysroot: Default::default(),
             output_root,
             specialization_instances: Default::default(),
             emitted_instances: Default::default(),
@@ -1758,6 +1764,11 @@ impl<'arena> CompilerStore<'arena> {
 
     pub fn all_link_inputs(&self) -> Vec<PathBuf> {
         self.link_inputs.borrow().clone()
+    }
+
+    pub fn configure_linker(&self, linker: Option<PathBuf>, sysroot: Option<PathBuf>) {
+        *self.linker.borrow_mut() = linker;
+        *self.linker_sysroot.borrow_mut() = sysroot;
     }
 }
 

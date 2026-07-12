@@ -86,6 +86,12 @@ pub struct CommonCompileArgs {
     /// Target triple override (e.g., x86_64-unknown-linux-gnu)
     #[arg(long = "target")]
     pub target: Option<String>,
+    /// Clang-compatible linker driver used for the selected target.
+    #[arg(long = "linker")]
+    pub linker: Option<PathBuf>,
+    /// Target SDK/sysroot passed to the linker driver.
+    #[arg(long = "sysroot")]
+    pub sysroot: Option<PathBuf>,
     /// Build with release profile (default is debug).
     #[arg(long = "release")]
     pub release: bool,
@@ -295,6 +301,39 @@ mod tests {
             CliCommand::Build(build) => {
                 assert!(build.common.locked);
                 assert!(!build.common.update_lock);
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_target_linker_and_sysroot() {
+        let args = Cli::parse_from([
+            "taro",
+            "build",
+            "std",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+            "--linker",
+            "/opt/cross/bin/clang",
+            "--sysroot",
+            "/opt/cross/sysroot",
+        ]);
+
+        match args.command {
+            CliCommand::Build(build) => {
+                assert_eq!(
+                    build.common.target.as_deref(),
+                    Some("aarch64-unknown-linux-gnu")
+                );
+                assert_eq!(
+                    build.common.linker.as_deref(),
+                    Some(std::path::Path::new("/opt/cross/bin/clang"))
+                );
+                assert_eq!(
+                    build.common.sysroot.as_deref(),
+                    Some(std::path::Path::new("/opt/cross/sysroot"))
+                );
             }
             other => panic!("expected build command, got {other:?}"),
         }
