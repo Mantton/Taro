@@ -11,6 +11,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use unicode_width::UnicodeWidthChar;
 
 pub struct DiagCtx {
     cwd: PathBuf,
@@ -85,7 +86,8 @@ impl DiagCtx {
     fn dedup_key(diagnostic: &Diagnostic) -> String {
         if let Some(span) = diagnostic.span {
             format!(
-                "{}|{}|{}:{}|{}:{}",
+                "{:?}|{}|{}|{}:{}|{}:{}",
+                diagnostic.level,
                 diagnostic.message,
                 span.file.raw(),
                 span.start.line,
@@ -94,24 +96,26 @@ impl DiagCtx {
                 span.end.offset
             )
         } else {
-            format!("{}|<no-span>", diagnostic.message)
+            format!("{:?}|{}|<no-span>", diagnostic.level, diagnostic.message)
         }
     }
 
     pub fn emit(&self, diagnostic: Diagnostic) {
+        let key = Self::dedup_key(&diagnostic);
+        let mut inner = self.inner.borrow_mut();
+
+        // Avoid emitting the exact same diagnostic multiple times. Include the
+        // severity in the key so a warning upgraded to an error is retained.
+        if !inner.emitted_diagnostic_keys.insert(key) {
+            return;
+        }
+
         if matches!(diagnostic.level, DiagnosticLevel::Error) {
-            let key = Self::dedup_key(&diagnostic);
-            let mut inner = self.inner.borrow_mut();
-
-            // Avoid emitting the exact same error multiple times.
-            if !inner.emitted_error_keys.insert(key) {
-                return;
-            }
-
             inner.has_error.set(true);
             let count = inner.error_count.get();
             inner.error_count.set(count + 1);
         }
+        drop(inner);
 
         let recording = self.inner.borrow().recording;
         if recording {
@@ -167,10 +171,10 @@ impl DiagCtx {
                 return None;
             };
 
-            let aboslute_path = file.as_path();
-            let relative_path = aboslute_path
+            let absolute_path = file.as_path();
+            let relative_path = absolute_path
                 .strip_prefix(self.cwd.as_path())
-                .unwrap_or(aboslute_path)
+                .unwrap_or(absolute_path)
                 .to_string_lossy();
 
             let mut message = format!(
@@ -213,7 +217,7 @@ struct DiagCtxInner {
     error_count: Cell<usize>,
     file_mappings: IndexVec<FileID, PathBuf>,
     file_content_mappings: FxHashMap<FileID, EcoString>,
-    emitted_error_keys: FxHashSet<String>,
+    emitted_diagnostic_keys: FxHashSet<String>,
     content_overrides: FxHashMap<PathBuf, String>,
     recording: bool,
     recorded: Vec<DiagnosticRecord>,
@@ -325,16 +329,29 @@ impl DiagCtx {
 }
 
 pub fn print_span_error(content: &str, span: Span, level: DiagnosticLevel) -> String {
-    // Split content by lines
-    let lines: Vec<&str> = content.lines().collect();
+    // `split('\n')` preserves an empty final line, which lets EOF spans in a
+    // newline-terminated or empty file render without special casing.
+    let lines: Vec<&str> = content
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect();
 
-    if span.start.line > lines.len() || span.end.line > lines.len() {
-        println!("{:?} {:?}", lines.len(), span.end.line);
-        unreachable!("span lines are out of range for the given content");
+    if span.start.line >= lines.len()
+        || span.end.line >= lines.len()
+        || span.start.line > span.end.line
+        || (span.start.line == span.end.line && span.start.offset > span.end.offset)
+    {
+        return format!(
+            "\t<source unavailable for span {}:{} to {}:{}>",
+            span.start.line + 1,
+            span.start.offset + 1,
+            span.end.line + 1,
+            span.end.offset + 1,
+        );
     }
 
     let mut base: Vec<String> = vec![];
-    // Because lines are 1-indexed in `Span`, adjust for 0-indexed `lines` array
+    // Span line indices and the source line array are both 0-based.
     let start_line_index = span.start.line;
     let end_line_index = span.end.line;
     // If start and end are on the same line
@@ -342,16 +359,19 @@ pub fn print_span_error(content: &str, span: Span, level: DiagnosticLevel) -> St
         let line_text = lines[start_line_index];
         base.push(format!("\t{}", line_text));
 
-        // Clamp offsets if they're out of line range
-        let clamped_start_offset = span.start.offset.min(line_text.len());
-        let clamped_end_offset = span.end.offset.min(line_text.len());
+        // Span columns are character offsets, while `str::len` is bytes. Work
+        // in characters and convert to terminal display columns only when
+        // constructing the caret line.
+        let line_chars = line_text.chars().count();
+        let clamped_start_offset = span.start.offset.min(line_chars);
+        let clamped_end_offset = span.end.offset.min(line_chars);
 
         // Minimum highlight length is 1 caret
-        let highlight_len = (clamped_end_offset - clamped_start_offset).max(1);
+        let highlight_len =
+            display_width_between(line_text, clamped_start_offset, clamped_end_offset).max(1);
 
         // Build a caret line (spaces + ^^^^)
-        let mut caret_line = String::new();
-        caret_line.push_str(&" ".repeat(clamped_start_offset));
+        let mut caret_line = caret_prefix(line_text, clamped_start_offset);
         caret_line.push_str(&"^".repeat(highlight_len));
 
         // Print in red
@@ -366,11 +386,12 @@ pub fn print_span_error(content: &str, span: Span, level: DiagnosticLevel) -> St
         base.push(format!("{}", start_line_text));
 
         // Highlight from start.offset to the end of the start line
-        let mut caret_line = String::new();
-        let clamped_start_offset = span.start.offset.min(start_line_text.len());
-        let highlight_len = (start_line_text.len() - clamped_start_offset).max(1);
+        let start_line_chars = start_line_text.chars().count();
+        let clamped_start_offset = span.start.offset.min(start_line_chars);
+        let highlight_len =
+            display_width_between(start_line_text, clamped_start_offset, start_line_chars).max(1);
 
-        caret_line.push_str(&" ".repeat(clamped_start_offset));
+        let mut caret_line = caret_prefix(start_line_text, clamped_start_offset);
         caret_line.push_str(&"^".repeat(highlight_len));
         base.push(format!("{}", level.message(caret_line)));
 
@@ -380,22 +401,89 @@ pub fn print_span_error(content: &str, span: Span, level: DiagnosticLevel) -> St
         }
 
         // 3) Print the end line
-        let end_line_text = if lines.len() <= end_line_index {
-            lines.last().unwrap()
-        } else {
-            lines[end_line_index]
-        };
+        let end_line_text = lines[end_line_index];
 
         base.push(format!("{}", end_line_text));
 
         // Place a single caret at the end offset
-        let clamped_end_offset = span.end.offset.min(end_line_text.len());
+        let clamped_end_offset = span.end.offset.min(end_line_text.chars().count());
 
-        let mut end_caret_line = String::new();
-        end_caret_line.push_str(&" ".repeat(clamped_end_offset));
+        let mut end_caret_line = caret_prefix(end_line_text, clamped_end_offset);
         end_caret_line.push('^');
         base.push(format!("{}", level.message(end_caret_line)));
     }
 
     base.join("\n")
+}
+
+fn caret_prefix(line: &str, character_offset: usize) -> String {
+    let mut prefix = String::new();
+    for character in line.chars().take(character_offset) {
+        if character == '\t' {
+            // Retaining tabs lets the terminal apply the same tab stops as it
+            // did for the source line.
+            prefix.push('\t');
+        } else {
+            prefix.push_str(&" ".repeat(character.width().unwrap_or(1)));
+        }
+    }
+    prefix
+}
+
+fn display_width_between(line: &str, start: usize, end: usize) -> usize {
+    line.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .map(|character| character.width().unwrap_or(1))
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DiagnosticLevel, caret_prefix, display_width_between, print_span_error};
+    use crate::span::{FileID, Position, Span};
+
+    fn span(start: (usize, usize), end: (usize, usize)) -> Span {
+        Span {
+            start: Position {
+                line: start.0,
+                offset: start.1,
+            },
+            end: Position {
+                line: end.0,
+                offset: end.1,
+            },
+            file: FileID::from_raw(0),
+        }
+    }
+
+    #[test]
+    fn caret_columns_use_unicode_display_width() {
+        assert_eq!(caret_prefix("a猫b", 2), "   ");
+        assert_eq!(display_width_between("a猫b", 1, 2), 2);
+    }
+
+    #[test]
+    fn eof_span_in_empty_content_is_renderable() {
+        let rendered = print_span_error("", span((0, 0), (0, 0)), DiagnosticLevel::Error);
+        assert!(rendered.contains('^'), "{rendered}");
+    }
+
+    #[test]
+    fn stale_span_returns_fallback_instead_of_panicking() {
+        let rendered = print_span_error("one line", span((4, 0), (4, 1)), DiagnosticLevel::Error);
+        assert!(
+            rendered.contains("source unavailable for span"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn reversed_span_returns_fallback_instead_of_panicking() {
+        let rendered = print_span_error("text", span((0, 3), (0, 1)), DiagnosticLevel::Error);
+        assert!(
+            rendered.contains("source unavailable for span"),
+            "{rendered}"
+        );
+    }
 }

@@ -12,6 +12,7 @@ ecow = { version = "0.2.6", features = ["serde"] }
 index_vec = "0.1.4"
 rustc-hash = "2.1.1"
 colored = "3.0.0"
+unicode-width = "0.2.1"
 indexmap = "2.8.0"
 typed-arena = "2.0.2"
 ena = "0.14.3"

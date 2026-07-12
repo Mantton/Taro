@@ -137,15 +137,21 @@ fn parse_file(
 ) -> Result<(ast::File, Vec<ModuleDecl>), ReportedError> {
     let id = file.id;
     let parser = Parser::new(file, next.clone());
-    let (declarations, module_decls) = match parser.parse() {
+    let (declarations, module_decls, warnings) = match parser.parse() {
         Ok(items) => items,
-        Err(errors) => {
+        Err((errors, warnings)) => {
+            for warning in warnings {
+                dcx.emit_warning(warning.value.to_string(), Some(warning.span));
+            }
             for err in errors {
                 dcx.emit_error(err.value.to_string(), Some(err.span));
             }
             return Err(ReportedError);
         }
     };
+    for warning in warnings {
+        dcx.emit_warning(warning.value.to_string(), Some(warning.span));
+    }
 
     Ok((ast::File { id, declarations }, module_decls))
 }
@@ -159,6 +165,7 @@ struct Parser {
     pending_associated_declarations: VecDeque<AssociatedDeclaration>,
     next_index: NextNode,
     errors: Vec<Spanned<ParserError>>,
+    warnings: Vec<Spanned<ParserError>>,
 }
 
 impl Parser {
@@ -170,22 +177,28 @@ impl Parser {
             anchors: VecDeque::new(),
             pending_associated_declarations: VecDeque::new(),
             errors: vec![],
+            warnings: vec![],
             next_index: next,
         }
     }
 }
 
 impl Parser {
-    fn parse(mut self) -> Result<(Vec<Declaration>, Vec<ModuleDecl>), Vec<Spanned<ParserError>>> {
+    fn parse(
+        mut self,
+    ) -> Result<
+        (Vec<Declaration>, Vec<ModuleDecl>, Vec<Spanned<ParserError>>),
+        (Vec<Spanned<ParserError>>, Vec<Spanned<ParserError>>),
+    > {
         let result = self.parse_module_declarations();
         match result {
-            Ok(_) if !self.errors.is_empty() => return Err(self.errors),
-            Ok(items) => return Ok(items),
+            Ok(_) if !self.errors.is_empty() => Err((self.errors, self.warnings)),
+            Ok((declarations, module_decls)) => Ok((declarations, module_decls, self.warnings)),
             Err(error) => {
                 self.errors.push(error);
-                return Err(self.errors);
+                Err((self.errors, self.warnings))
             }
-        };
+        }
     }
 }
 
@@ -433,7 +446,9 @@ impl Parser {
 }
 
 impl Parser {
-    fn emit_warning(&mut self, _err: ParserError, _span: Span) {}
+    fn emit_warning(&mut self, err: ParserError, span: Span) {
+        self.warnings.push(Spanned::new(err, span));
+    }
     fn emit_error(&mut self, err: ParserError, span: Span) {
         self.errors.push(Spanned::new(err, span));
     }
@@ -4963,7 +4978,10 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let parser = Parser::new(file, next);
-        parser.parse().map(|(decls, _)| decls)
+        parser
+            .parse()
+            .map(|(decls, _, _)| decls)
+            .map_err(|(errors, _)| errors)
     }
 
     fn parse_decls_and_module_decls(
@@ -4975,7 +4993,10 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let parser = Parser::new(file, next);
-        parser.parse()
+        parser
+            .parse()
+            .map(|(decls, module_decls, _)| (decls, module_decls))
+            .map_err(|(errors, _)| errors)
     }
 
     /// Helper to parse a single declaration
@@ -4992,7 +5013,7 @@ mod tests {
         let file = lexer.tokenize().expect("Lexing failed");
         let next: NextNode = Default::default();
         let parser = Parser::new(file, next);
-        let (decls, _module_decls) = parser.parse().expect("Parse failed");
+        let (decls, _module_decls, _warnings) = parser.parse().expect("Parse failed");
         assert_eq!(decls.len(), 1, "Expected exactly one declaration");
         (decls.into_iter().next().unwrap(), Symbols)
     }
@@ -6465,6 +6486,21 @@ mod tests {
     fn test_labeled_while() {
         let decl = parse_one_decl("func foo() { outer: while true { break outer } }");
         assert!(matches!(decl.kind, DeclarationKind::Function(_)));
+    }
+
+    #[test]
+    fn test_label_on_non_loop_statement_is_preserved_as_warning() {
+        let dcx = DiagCtx::new(PathBuf::from("."));
+        let file_id = dcx.add_file_mapping(PathBuf::from("test.taro"));
+        let file = Lexer::new("func foo() { misplaced: let x = 1 }", file_id)
+            .tokenize()
+            .expect("Lexing failed");
+        let parser = Parser::new(file, Default::default());
+
+        let (_decls, _module_decls, warnings) = parser.parse().expect("Parse failed");
+
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(warnings[0].value, ParserError::DisallowedLabel));
     }
 
     #[test]

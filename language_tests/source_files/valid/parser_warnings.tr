@@ -1,0 +1,7 @@
+// CHECK_ONLY
+// EXPECT_STDERR_CONTAINS: warning: disallowed label
+
+func main() {
+    misplaced: let value = 1
+    let _ = value
+}
