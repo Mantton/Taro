@@ -140,6 +140,7 @@ Common flags:
 | `--linker <PATH>` | Use a Clang-compatible linker driver for the selected target. |
 | `--sysroot <PATH>` | Use a target SDK/sysroot while linking. |
 | `--timings` | Print compiler phase timings. |
+| `--optimization-remarks <PASS_REGEX>` | Print LLVM passed, missed, and analysis remarks for matching pass names. |
 | `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
 | `--debug-info <none\|line-tables>` | Select source debug metadata. Debug builds default to line tables; release builds default to none. |
 | `--no-incremental` | Disable dependency artifact reuse. |
@@ -147,8 +148,9 @@ Common flags:
 | `--update-lock` | Refresh lockfile entries from current dependency sources. |
 
 An explicit `-O` selects LLVM's maintained module pipeline for that level. If
-it is omitted, the compiler uses the currently certified profile baseline;
-`--release` continues to control language defaults such as overflow checks.
+it is omitted, debug builds retain the fast baseline pipeline and release
+builds use O2. `--release` also controls language defaults such as overflow
+checks; the profile and optimization level remain independently selectable.
 
 ### Create a New Package
 
@@ -234,6 +236,27 @@ the results measure cold compiler phases instead of cache reuse:
 python3 development/scripts/benchmark_timings.py examples/hello.tr
 python3 development/scripts/benchmark_timings.py examples/hello.tr --runs 10
 python3 development/scripts/benchmark_timings.py examples/hello.tr --command run --runs 5
+```
+
+`codegen_benchmarks.py` compares the retained release baseline against O2. It
+alternates variant order to avoid thermal/order bias, disables incremental
+reuse for compile samples, warms executable runs, verifies identical output,
+and reports median compile time, median runtime, and executable size:
+
+```bash
+make codegen-benchmark
+make codegen-benchmark RUNS=10
+python3 development/scripts/codegen_benchmarks.py path/to/workload.tr --runs 10
+```
+
+To inspect why LLVM applied or rejected a transformation, filter optimization
+remarks by LLVM pass name. Add line-table debug information when source
+locations are useful:
+
+```bash
+taro build examples/arithmetic.tr --release \
+  --optimization-remarks 'inline|loop-vectorize' \
+  --debug-info line-tables
 ```
 
 ### Incremental Compilation
@@ -332,6 +355,7 @@ make std-tests
 make runtime-stress
 make all-tests
 make benchmark PACKAGE=std
+make codegen-benchmark
 ```
 
 ### Panic Stack Traces
@@ -570,6 +594,7 @@ To verify the compiler implementation, use the command that matches the test sur
 - `make llvm-tests`: Focused tests for LLVM 22.1 discovery, validation, and build environment setup.
 - `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Bootstraps an isolated distribution via `build_dist.py` (release by default; pass `--debug` for debug bootstrap).
 - `make codegen-matrix`: Runs the high-risk LLVM codegen manifest with both debug and release generated-program profiles.
+- `make codegen-benchmark`: Compares the retained release baseline with O2 for cold compile time, warmed runtime, executable size, and output equivalence.
 - `make std-tests`: Runs std package tests only (`taro test std`) via the `test_all.py` std stage.
 - `python3 development/scripts/test_all.py`: Unified fail-fast pipeline (development-script tests, cargo tests, dist build, std compile smoke, std package tests, language tests).
 - `make all-tests`: Shorthand for the unified pipeline.
@@ -583,6 +608,7 @@ make language-tests            # JOBS auto-defaults to the language test runner 
 make language-tests JOBS=4     # optional override
 make language-tests FILTER=std_
 make codegen-matrix JOBS=4     # focused backend coverage in both codegen profiles
+make codegen-benchmark RUNS=10 # release baseline versus O2 measurements
 ```
 
 ### Language Test Directives

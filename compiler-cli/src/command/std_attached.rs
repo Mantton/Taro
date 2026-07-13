@@ -6,7 +6,10 @@ use compiler::{
     PackageIndex,
     compile::{
         Compiler,
-        config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+        config::{
+            BuildProfile, CodegenOptions, Config, DebugOptions, OptLevel, OptimizationMode,
+            PackageKind, StdMode,
+        },
         context::CompilerContext,
     },
     constants::STD_PREFIX,
@@ -58,10 +61,9 @@ pub fn compile_std<'a>(
         no_std_prelude: true,
         is_script: false,
         profile: std_profile,
-        // Keep the single attached std artifact on the certified baseline
-        // pipeline. A caller's package-local `-O` choice must not silently
-        // replace the shared artifact with an incompatible variant.
-        codegen: Default::default(),
+        // The one shared artifact follows Taro's canonical release policy. A
+        // caller's package-local `-O` override must not replace this artifact.
+        codegen: attached_std_codegen_options(),
         overflow_checks: std_overflow_checks,
         debug: DebugOptions {
             dump_mir: false,
@@ -195,6 +197,12 @@ pub fn compile_std<'a>(
     package_fingerprints.insert(config.identifier.to_string(), std_fingerprint);
 
     Ok(())
+}
+
+fn attached_std_codegen_options() -> CodegenOptions {
+    CodegenOptions {
+        optimization: OptimizationMode::Level(OptLevel::O2),
+    }
 }
 
 pub fn is_root_std_package(
@@ -427,4 +435,18 @@ fn atomic_copy_file(src: &Path, dst: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attached_std_codegen_options;
+    use compiler::compile::config::{OptLevel, OptimizationMode};
+
+    #[test]
+    fn attached_std_uses_canonical_o2_policy() {
+        assert_eq!(
+            attached_std_codegen_options().optimization,
+            OptimizationMode::Level(OptLevel::O2)
+        );
+    }
 }

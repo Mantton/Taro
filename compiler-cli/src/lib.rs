@@ -19,6 +19,13 @@ pub struct CompileModeOptions {
 #[derive(Parser, Clone, Debug)]
 #[command(name = "taro", bin_name = "taro")]
 pub struct Cli {
+    /// Print LLVM passed, missed, and analysis remarks matching a pass-name regex.
+    #[arg(
+        long = "optimization-remarks",
+        global = true,
+        value_name = "PASS_REGEX"
+    )]
+    pub optimization_remarks: Option<String>,
     #[command(subcommand)]
     pub command: CliCommand,
 }
@@ -161,6 +168,9 @@ pub enum DebugInfoLevel {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum OptimizationLevelArg {
+    /// Pre-O2-rollout pipeline retained for compiler regression comparisons.
+    #[value(name = "baseline", hide = true)]
+    Baseline,
     #[value(name = "0")]
     O0,
     #[value(name = "1")]
@@ -175,15 +185,16 @@ pub enum OptimizationLevelArg {
     Oz,
 }
 
-impl From<OptimizationLevelArg> for OptLevel {
-    fn from(value: OptimizationLevelArg) -> Self {
-        match value {
-            OptimizationLevelArg::O0 => OptLevel::O0,
-            OptimizationLevelArg::O1 => OptLevel::O1,
-            OptimizationLevelArg::O2 => OptLevel::O2,
-            OptimizationLevelArg::O3 => OptLevel::O3,
-            OptimizationLevelArg::Os => OptLevel::Os,
-            OptimizationLevelArg::Oz => OptLevel::Oz,
+impl OptimizationLevelArg {
+    fn optimization_mode(self) -> OptimizationMode {
+        match self {
+            OptimizationLevelArg::Baseline => OptimizationMode::Baseline,
+            OptimizationLevelArg::O0 => OptimizationMode::Level(OptLevel::O0),
+            OptimizationLevelArg::O1 => OptimizationMode::Level(OptLevel::O1),
+            OptimizationLevelArg::O2 => OptimizationMode::Level(OptLevel::O2),
+            OptimizationLevelArg::O3 => OptimizationMode::Level(OptLevel::O3),
+            OptimizationLevelArg::Os => OptimizationMode::Level(OptLevel::Os),
+            OptimizationLevelArg::Oz => OptimizationMode::Level(OptLevel::Oz),
         }
     }
 }
@@ -194,6 +205,13 @@ impl From<DebugInfoLevel> for DebugInfo {
             DebugInfoLevel::None => DebugInfo::None,
             DebugInfoLevel::LineTables => DebugInfo::LineTables,
         }
+    }
+}
+
+fn default_optimization_mode(profile: BuildProfile) -> OptimizationMode {
+    match profile {
+        BuildProfile::Debug => OptimizationMode::Baseline,
+        BuildProfile::Release => OptimizationMode::Level(OptLevel::O2),
     }
 }
 
@@ -226,17 +244,18 @@ impl CommonCompileArgs {
     }
 
     pub fn compile_mode_options(&self) -> CompileModeOptions {
+        let profile = self.build_profile();
         let optimization = self
             .opt_level
-            .map(|level| OptimizationMode::Level(level.into()))
-            .unwrap_or_default();
+            .map(OptimizationLevelArg::optimization_mode)
+            .unwrap_or_else(|| default_optimization_mode(profile));
         CompileModeOptions {
-            profile: self.build_profile(),
+            profile,
             codegen: CodegenOptions { optimization },
             overflow_checks: self.overflow_checks_enabled(),
             timings: self.timings,
             debug_info: self.debug_info.map(Into::into).unwrap_or_else(|| {
-                if matches!(self.build_profile(), BuildProfile::Debug) {
+                if matches!(profile, BuildProfile::Debug) {
                     DebugInfo::LineTables
                 } else {
                     DebugInfo::None
@@ -284,6 +303,12 @@ fn ci_env_is_strict() -> bool {
 
 pub fn run() {
     let arguments = Cli::parse();
+    if let Some(pass_filter) = arguments.optimization_remarks.as_deref()
+        && let Err(error) = compiler::codegen::configure_optimization_remarks(pass_filter)
+    {
+        eprintln!("error: {error}");
+        exit(2);
+    }
     let result = command::handle(arguments);
     let exit_code = match result {
         Ok(outcome) => outcome.process_exit_code(),
@@ -486,17 +511,34 @@ mod tests {
     }
 
     #[test]
-    fn parses_attached_optimization_levels_independently_of_profile() {
+    fn selects_profile_optimization_defaults_and_explicit_overrides() {
+        let debug = Cli::parse_from(["taro", "build", "examples/hello.tr"]);
+        let release = Cli::parse_from(["taro", "build", "examples/hello.tr", "--release"]);
         let optimized = Cli::parse_from(["taro", "build", "examples/hello.tr", "-O2"]);
         let size_optimized =
             Cli::parse_from(["taro", "build", "examples/hello.tr", "--release", "-Oz"]);
+        let retained_baseline = Cli::parse_from([
+            "taro",
+            "build",
+            "examples/hello.tr",
+            "--release",
+            "-Obaseline",
+        ]);
 
         let mode = |cli: Cli| match cli.command {
             CliCommand::Build(build) => build.common.compile_mode_options(),
             other => panic!("expected build command, got {other:?}"),
         };
+        let debug = mode(debug);
+        let release = mode(release);
         let optimized = mode(optimized);
         let size_optimized = mode(size_optimized);
+        let retained_baseline = mode(retained_baseline);
+        assert_eq!(debug.codegen.optimization, OptimizationMode::Baseline);
+        assert_eq!(
+            release.codegen.optimization,
+            OptimizationMode::Level(OptLevel::O2)
+        );
         assert_eq!(
             optimized.codegen.optimization,
             OptimizationMode::Level(OptLevel::O2)
@@ -507,6 +549,27 @@ mod tests {
         );
         assert_eq!(optimized.profile, BuildProfile::Debug);
         assert_eq!(size_optimized.profile, BuildProfile::Release);
+        assert_eq!(retained_baseline.profile, BuildProfile::Release);
+        assert_eq!(
+            retained_baseline.codegen.optimization,
+            OptimizationMode::Baseline
+        );
+    }
+
+    #[test]
+    fn parses_global_optimization_remark_filter() {
+        let arguments = Cli::parse_from([
+            "taro",
+            "build",
+            "examples/hello.tr",
+            "--optimization-remarks",
+            "inline|loop-vectorize",
+        ]);
+
+        assert_eq!(
+            arguments.optimization_remarks.as_deref(),
+            Some("inline|loop-vectorize")
+        );
     }
 
     #[test]

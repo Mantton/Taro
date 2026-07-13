@@ -1,0 +1,23 @@
+// Deterministic call/loop workload for comparing LLVM code-generation policies.
+// The runtime seed prevents whole-program constant folding, while printing the
+// result keeps the computation observable. O2 can inline `mix`; the retained
+// baseline intentionally does not run a module inliner.
+
+func mix(_ value: int64, _ index: int64) -> int64 {
+    return ((value ^ index) * 1664525) + 1013904223
+}
+
+func workload(_ iterations: int64, _ seed: int64) -> int64 {
+    var value = seed
+    var index: int64 = 0
+    while index < iterations {
+        value = mix(value, index)
+        index += 1
+    }
+    return value
+}
+
+func main() {
+    let seed = std.env.args().len() as int64
+    std.printf("%d\n", workload(100000000, seed))
+}

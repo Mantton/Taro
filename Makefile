@@ -9,6 +9,7 @@ RUN_DIST := $(ROOT)/development/scripts/run_dist.py
 LANGUAGE_TESTS := $(ROOT)/development/scripts/language_tests.py
 TEST_ALL := $(ROOT)/development/scripts/test_all.py
 BENCHMARK_TIMINGS := $(ROOT)/development/scripts/benchmark_timings.py
+CODEGEN_BENCHMARK := $(ROOT)/development/scripts/codegen_benchmarks.py
 RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
 LLVM_TOOLCHAIN := $(ROOT)/development/scripts/llvm_toolchain.py
 LLVM_TOOLCHAIN_TESTS := $(ROOT)/development/scripts/test_llvm_toolchain.py
@@ -18,7 +19,7 @@ DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests benchmark
+.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests benchmark codegen-benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -54,6 +55,8 @@ help:
 	@echo "Benchmarks:"
 	@echo "  make benchmark PACKAGE=std"
 	@echo "  make benchmark PACKAGE=std RUNS=10"
+	@echo "  make codegen-benchmark        Compare release baseline and O2 code generation"
+	@echo "  make codegen-benchmark RUNS=10"
 
 llvm-check:
 	$(PYTHON) $(LLVM_TOOLCHAIN)
@@ -122,3 +125,6 @@ benchmark:
 		exit 1; \
 	fi
 	$(PYTHON) $(BENCHMARK_TIMINGS) $(PACKAGE) $(if $(RUNS),--runs $(RUNS),)
+
+codegen-benchmark:
+	$(PYTHON) $(CODEGEN_BENCHMARK) $(if $(FILE),$(FILE),) $(if $(RUNS),--runs $(RUNS),)
