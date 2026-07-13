@@ -10,12 +10,13 @@ LANGUAGE_TESTS := $(ROOT)/development/scripts/language_tests.py
 TEST_ALL := $(ROOT)/development/scripts/test_all.py
 BENCHMARK_TIMINGS := $(ROOT)/development/scripts/benchmark_timings.py
 RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
+CODEGEN_MATRIX := $(ROOT)/language_tests/codegen_matrix.txt
 
 DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests std-tests runtime-stress all-tests benchmark
+.PHONY: help compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -38,6 +39,8 @@ help:
 	@echo "  make language-tests           Run language tests"
 	@echo "  make language-tests JOBS=4"
 	@echo "  make language-tests FILTER=optional"
+	@echo "  make codegen-matrix           Run high-risk codegen tests in debug and release"
+	@echo "  make codegen-matrix JOBS=4"
 	@echo "  make std-tests                Run std package test files"
 	@echo "  make runtime-stress           Run runtime-tagged std stress tests across worker counts"
 	@echo "  make all-tests                Run full test_all.py pipeline"
@@ -88,6 +91,9 @@ test: cargo-test
 
 language-tests:
 	$(PYTHON) $(LANGUAGE_TESTS) $(if $(FILTER),--filter $(FILTER),) $(if $(JOBS),--jobs $(JOBS),)
+
+codegen-matrix:
+	$(PYTHON) $(LANGUAGE_TESTS) --manifest $(CODEGEN_MATRIX) --codegen-profile both $(if $(JOBS),--jobs $(JOBS),)
 
 std-tests: dist
 	$(PYTHON) $(TEST_ALL) --skip-cargo-tests --skip-build-dist --skip-language-tests

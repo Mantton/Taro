@@ -178,7 +178,9 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
     return result
 
 
-def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
+def run_test(
+    file_path: Path, env: TestEnvironment, codegen_profile: str
+) -> TestRunResult:
     """Runs a single test file and compares output."""
     try:
         # Construct output file path
@@ -192,7 +194,9 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         output_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Output binary path within temp directory
-        output_bin = env.temp_dir / "bin" / relative_path.with_suffix("")
+        output_bin = (
+            env.temp_dir / "bin" / codegen_profile / relative_path.with_suffix("")
+        )
         output_bin.parent.mkdir(parents=True, exist_ok=True)
 
         # Parse test directives (TARGET, CHECK_ONLY, TEST, …)
@@ -212,7 +216,12 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         compile_input = file_path
         if package_fixture:
             fixture_source = PACKAGE_FIXTURES_DIR / package_fixture
-            fixture_copy = env.temp_dir / "package_fixtures" / relative_path.stem
+            fixture_copy = (
+                env.temp_dir
+                / "package_fixtures"
+                / codegen_profile
+                / relative_path.stem
+            )
             if not fixture_source.is_dir():
                 return False, "Unknown package fixture", {"fixture": str(fixture_source)}
             shutil.copytree(fixture_source, fixture_copy)
@@ -244,6 +253,9 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         # Add --target flag if specified in test file
         if target_triple:
             cmd.extend(["--target", target_triple])
+
+        if codegen_profile == "release":
+            cmd.append("--release")
 
         if program_args:
             if command != "run":
@@ -379,20 +391,56 @@ def run_test(file_path: Path, env: TestEnvironment) -> TestRunResult:
         return False, "Exception", {"error": str(e)}
 
 
-def discover_test_files(test_filter: str | None) -> tuple[list[Path], int]:
-    """Discover and deterministically order tests, applying filter after discovery."""
+def load_test_manifest(manifest_path: Path) -> set[Path]:
+    """Load checked source-file paths relative to language_tests/source_files."""
+    if not manifest_path.is_file():
+        raise ValueError(f"test manifest does not exist: {manifest_path}")
+
+    selected: set[Path] = set()
+    for line_number, raw_line in enumerate(
+        manifest_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        entry = raw_line.partition("#")[0].strip()
+        if not entry:
+            continue
+        relative_path = Path(entry)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ValueError(
+                f"{manifest_path}:{line_number}: path must stay under "
+                f"{SOURCE_FILES_DIR}: {entry}"
+            )
+        source_path = SOURCE_FILES_DIR / relative_path
+        if source_path.suffix != ".tr" or not source_path.is_file():
+            raise ValueError(
+                f"{manifest_path}:{line_number}: unknown Taro test source: {entry}"
+            )
+        selected.add(source_path)
+
+    if not selected:
+        raise ValueError(f"test manifest has no source entries: {manifest_path}")
+    return selected
+
+
+def discover_test_files(
+    test_filter: str | None, manifest_path: Path | None = None
+) -> tuple[list[Path], int]:
+    """Discover tests, then apply an optional manifest and substring filter."""
     all_tests = sorted(
         [path for path in SOURCE_FILES_DIR.rglob("*.tr") if path.is_file()],
         key=lambda path: str(path.relative_to(SOURCE_FILES_DIR)),
     )
-    if not test_filter:
-        return all_tests, 0
+    selected_set = set(all_tests)
+    if manifest_path is not None:
+        selected_set &= load_test_manifest(manifest_path)
 
-    selected = [
-        path
-        for path in all_tests
-        if test_filter in str(path.relative_to(SOURCE_FILES_DIR))
-    ]
+    if test_filter:
+        selected_set = {
+            path
+            for path in selected_set
+            if test_filter in str(path.relative_to(SOURCE_FILES_DIR))
+        }
+
+    selected = [path for path in all_tests if path in selected_set]
     skipped = len(all_tests) - len(selected)
     return selected, skipped
 
@@ -426,40 +474,42 @@ def format_elapsed(seconds: float) -> str:
 
 
 def run_tests_serial(
-    test_files: list[Path], env: TestEnvironment
+    test_files: list[Path], env: TestEnvironment, codegen_profile: str
 ) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
     passed = 0
     failures: list[tuple[Path, str, TestDetails | None]] = []
 
     for file_path in test_files:
         relative_path = file_path.relative_to(SOURCE_FILES_DIR)
-        print(f"Running {relative_path}...", end=" ", flush=True)
-        success, msg, details = run_test(file_path, env)
+        display_path = Path(codegen_profile) / relative_path
+        print(f"Running {display_path}...", end=" ", flush=True)
+        success, msg, details = run_test(file_path, env, codegen_profile)
 
         if success:
             print("OK")
             passed += 1
         else:
             print()
-            failures.append((relative_path, msg, details))
+            failures.append((display_path, msg, details))
 
     return passed, failures
 
 
 def run_tests_parallel(
-    test_files: list[Path], env: TestEnvironment, jobs: int
+    test_files: list[Path], env: TestEnvironment, jobs: int, codegen_profile: str
 ) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
     passed = 0
     failures: list[tuple[Path, str, TestDetails | None]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         future_to_path = {
-            executor.submit(run_test, file_path, env): file_path
+            executor.submit(run_test, file_path, env, codegen_profile): file_path
             for file_path in test_files
         }
         for future in concurrent.futures.as_completed(future_to_path):
             file_path = future_to_path[future]
             relative_path = file_path.relative_to(SOURCE_FILES_DIR)
+            display_path = Path(codegen_profile) / relative_path
             try:
                 success, msg, details = future.result()
             except (
@@ -470,11 +520,11 @@ def run_tests_parallel(
                 details = {"error": str(error)}
 
             if success:
-                print(f"Running {relative_path}... OK")
+                print(f"Running {display_path}... OK")
                 passed += 1
             else:
-                print(f"Running {relative_path}...")
-                failures.append((relative_path, msg, details))
+                print(f"Running {display_path}...")
+                failures.append((display_path, msg, details))
 
     return passed, failures
 
@@ -487,6 +537,20 @@ def main():
         "-f",
         type=str,
         help="Filter tests by name (substring match). E.g., --filter optional_chaining",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help=(
+            "Run only test paths listed in this manifest. Entries are relative to "
+            "language_tests/source_files; blank lines and # comments are ignored."
+        ),
+    )
+    parser.add_argument(
+        "--codegen-profile",
+        choices=["debug", "release", "both"],
+        default="debug",
+        help="Generated-program profile(s) to test (default: debug).",
     )
     parser.add_argument(
         "--jobs",
@@ -510,6 +574,17 @@ def main():
     )
     args = parser.parse_args()
 
+    try:
+        test_files, skipped = discover_test_files(args.filter, args.manifest)
+    except ValueError as error:
+        parser.error(str(error))
+
+    codegen_profiles = (
+        ["debug", "release"]
+        if args.codegen_profile == "both"
+        else [args.codegen_profile]
+    )
+
     # Setup: build compiler and create temp directories
     env = setup_test_environment(args.release)
 
@@ -517,16 +592,27 @@ def main():
         print(f"Running tests in {SOURCE_FILES_DIR}...")
         if args.filter:
             print(f"Filter: {args.filter}")
-        test_files, skipped = discover_test_files(args.filter)
-        total = len(test_files)
+        if args.manifest:
+            print(f"Manifest: {args.manifest.resolve()}")
+        print(f"Codegen profiles: {', '.join(codegen_profiles)}")
+        total = len(test_files) * len(codegen_profiles)
         jobs = resolve_jobs(args.jobs, total)
         if total > 0:
             print(f"Jobs: {jobs}")
 
-        if jobs == 1:
-            passed, failures = run_tests_serial(test_files, env)
-        else:
-            passed, failures = run_tests_parallel(test_files, env, jobs)
+        passed = 0
+        failures: list[tuple[Path, str, TestDetails | None]] = []
+        for codegen_profile in codegen_profiles:
+            if jobs == 1:
+                profile_passed, profile_failures = run_tests_serial(
+                    test_files, env, codegen_profile
+                )
+            else:
+                profile_passed, profile_failures = run_tests_parallel(
+                    test_files, env, jobs, codegen_profile
+                )
+            passed += profile_passed
+            failures.extend(profile_failures)
 
         print("-" * 40)
         elapsed = format_elapsed(time.perf_counter() - start_time)
