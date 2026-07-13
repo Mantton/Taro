@@ -112,6 +112,7 @@ extern "taro_intrinsic" {
     func __intrinsic_select_tasks[A, B](_ first: &std.task.Task[A], _ second: &std.task.Task[B]) async -> uint8
     func __intrinsic_task_timeout[T](_ task: &std.task.Task[T], _ duration: std.time.Duration) async -> uint8
     func __intrinsic_blocking[T: std.marker.Sendable, F: std.ops.FnOnce() -> T & std.marker.Sendable](_ thunk: F) async -> T
+    func __intrinsic_add_cleanup[T, State: std.marker.Sendable, F: std.ops.FnOnce(State) -> () & std.marker.Sendable](_ owner: &T, _ state: State, _ cleanup: F) -> usize
     func __intrinsic_is_task_cancelled() -> bool
     func __intrinsic_task_result[T](_ task: std.task.Task[T]) async -> std.result.Result[T, std.task.TaskError]
     func __intrinsic_task_group_create[T](_ cancel_on_panic: bool) -> usize

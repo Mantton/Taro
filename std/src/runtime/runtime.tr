@@ -1,11 +1,86 @@
 
+import std.intrinsic.__intrinsic_add_cleanup
+import std.result.Result
+
 extern "taro_rt" {
     func __gc__collect()
+    func __rt__cleanup_cancel(_ token: usize) -> bool
+    func __rt__keep_alive(_ value: *const uint8)
     func __rt__panic_unwind(_ message: string) -> !
     func __rt__panic_abort(_ message: string) -> !
     func __rt__panic_abort_unwind(_ exception: *mut uint8) -> !
     func __rt__hash_seed0() -> uint64
     func __rt__hash_seed1() -> uint64
+}
+
+/// A cancellable registration for work that runs after its owner becomes
+/// unreachable. The token does not keep the owner alive.
+public struct Cleanup {
+    token: usize
+}
+
+/// Registration failures reported by `addCleanup`.
+public enum CleanupError {
+    /// The owner is not stored in the garbage-collected heap.
+    case notManaged
+    /// The cleanup state or closure directly retains the owner.
+    case ownerRetained
+}
+
+impl Cleanup {
+    /// Cancel a pending cleanup. Returns false if it was already cancelled,
+    /// queued, running, or completed.
+    ///
+    /// Call `keepAlive(&owner)` after `cancel()` when cancellation must win a
+    /// race with collection of the owner.
+    public func cancel(&mut self) -> bool {
+        let token = self.token
+        if token < 2 {
+            return false
+        }
+        self.token = 0
+        return __rt__cleanup_cancel(token)
+    }
+}
+
+/// Arrange for synchronous cleanup work to run after `owner` becomes
+/// unreachable. Cleanup work runs on a dedicated runtime worker, outside the
+/// collector's stop-the-world pause. Multiple cleanups may be attached to one
+/// owner.
+///
+/// Neither `state` nor `cleanup` may directly retain `owner`; doing so is
+/// rejected with `.ownerRetained`. Indirect retention cycles cannot be
+/// detected safely at registration time and must also be avoided. Cleanup is
+/// a fallback for resources whose deterministic `close` path was missed; it
+/// is not guaranteed to run before process exit.
+public func addCleanup[
+    T,
+    State: std.marker.Sendable,
+    F: std.ops.FnOnce(State) -> () & std.marker.Sendable,
+](_ owner: &T, _ state: State, _ cleanup: F) -> Result[Cleanup, CleanupError] {
+    let token = __intrinsic_add_cleanup[T, State, F](owner, state, cleanup)
+    if token == 0 {
+        return .err(.notManaged)
+    }
+    if token == 1 {
+        return .err(.ownerRetained)
+    }
+    return .ok(Cleanup { token: token })
+}
+
+/// Keep `value` reachable until this call. This is useful after closing or
+/// cancelling a resource whose native operation only stores its address.
+public func keepAlive[T](_ value: &T) {
+    __rt__keep_alive(unsafe { value as *const uint8 })
+}
+
+/// Compiler adapter whose async frame owns cleanup state while the runtime is
+/// waiting for the owner to become unreachable.
+func __cleanupInvoke[
+    State: std.marker.Sendable,
+    F: std.ops.FnOnce(State) -> () & std.marker.Sendable,
+](_ state: State, _ cleanup: F) async {
+    cleanup(state)
 }
 
 public func collect() {

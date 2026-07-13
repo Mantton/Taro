@@ -1,0 +1,45 @@
+import std.marker.Copy
+import std.optional.Optional
+
+extern "taro_rt" {
+    func __rt__weak_create(_ target: *const uint8) -> *mut uint8
+    func __rt__weak_value(_ cell: *mut uint8) -> *mut uint8
+}
+
+/// A non-owning reference to a garbage-collected value.
+///
+/// `Weak` does not keep its target alive. Call `value()` to take a snapshot of
+/// the target: `.none` means it has already become unreachable, while `.some`
+/// contains a normal strong reference that keeps the value alive while used.
+/// Weak references to static storage remain available for the program's
+/// lifetime. References created from unsafe foreign storage remain the
+/// caller's lifetime responsibility.
+public struct Weak[Target]: Copy {
+    cell: *mut uint8
+}
+
+impl[Target] Weak[Target] {
+    /// Create a weak reference to `target`.
+    ///
+    /// A referenced local is promoted to managed storage when needed, so
+    /// `Weak(&local)` remains memory-safe after the creating scope returns.
+    public func new(_ target: &Target) -> Self {
+        return Weak[Target] {
+            cell: __rt__weak_create(unsafe { target as *const uint8 }),
+        }
+    }
+
+    /// Return a strong reference to the target when it is still reachable.
+    ///
+    /// The returned reference is a snapshot: a later call may return `.none`
+    /// after the last strong reference disappears and collection runs.
+    public func value(&self) -> Optional[&Target] {
+        let target = __rt__weak_value(self.cell)
+        if unsafe { target as usize } == 0 {
+            return .none
+        }
+        return .some(unsafe { target as &Target })
+    }
+}
+
+impl[Target] std.marker.Sendable for Weak[Target] where Target: std.marker.Sendable {}

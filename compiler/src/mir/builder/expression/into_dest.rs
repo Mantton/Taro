@@ -512,6 +512,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if self.is_hidden_blocking_intrinsic(callee) {
             return self.lower_blocking_call(destination, block, callee, args, span);
         }
+        if self.is_hidden_add_cleanup_intrinsic(callee) {
+            return self.lower_add_cleanup_call(destination, block, callee, args, span);
+        }
         if self.is_hidden_cancel_task_intrinsic(callee) {
             return self.lower_cancel_task_call(destination, block, args, span);
         }
@@ -2153,6 +2156,10 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         self.is_hidden_intrinsic_named(callee, "__intrinsic_blocking")
     }
 
+    fn is_hidden_add_cleanup_intrinsic(&self, callee: ExprId) -> bool {
+        self.is_hidden_intrinsic_named(callee, "__intrinsic_add_cleanup")
+    }
+
     fn lower_dump_tasks_call(
         &mut self,
         destination: Place<'ctx>,
@@ -2400,6 +2407,128 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     Operand::Copy(Place::from_local(adapter_local)),
                     Operand::Copy(Place::from_local(size_local)),
                     Operand::Copy(Place::from_local(desc_local)),
+                ],
+                devirt_hint: None,
+                destination,
+                target: next,
+                unwind: mir::CallUnwindAction::Terminate,
+            },
+        );
+        next.unit()
+    }
+
+    fn lower_add_cleanup_call(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> BlockAnd<()> {
+        let [owner, state, cleanup] = args else {
+            panic!("ICE: cleanup lowering expects owner, state, and callback arguments");
+        };
+        assert_eq!(
+            self.place_ty(&destination),
+            self.gcx.types.uint,
+            "ICE: cleanup intrinsic must lower into a usize token destination"
+        );
+
+        let state_ty = intrinsic_type_arg(self.thir, callee, 1);
+        let cleanup_ty = intrinsic_type_arg(self.thir, callee, 2);
+        if !self.type_is_sendable_in_current_definition(state_ty) {
+            self.gcx.dcx().emit_error(
+                "std.runtime.addCleanup state must be Sendable".into(),
+                Some(self.thir.exprs[*state].span),
+            );
+        }
+        if !self.type_is_sendable_in_current_definition(cleanup_ty) {
+            self.gcx.dcx().emit_error(
+                "std.runtime.addCleanup callback captures must be Sendable".into(),
+                Some(self.thir.exprs[*cleanup].span),
+            );
+        }
+
+        // Evaluate and preserve the owner address before moving state into the
+        // adapter frame. Registration itself does not retain this pointer.
+        let owner_operand = unpack!(block = self.as_operand(block, *owner));
+        let owner_ptr_ty = crate::sema::models::Ty::new(
+            TyKind::Pointer(self.gcx.types.uint8, crate::hir::Mutability::Immutable),
+            self.gcx,
+        );
+        let owner_ptr_local = self.new_temp_with_ty(owner_ptr_ty, span);
+        self.push_assign(
+            block,
+            Place::from_local(owner_ptr_local),
+            Rvalue::Cast {
+                operand: owner_operand,
+                ty: owner_ptr_ty,
+                kind: CastKind::Pointer,
+            },
+            span,
+        );
+
+        // The async frame gives the runtime one rooted, type-erased owner for
+        // both cleanup state and the callback until cancellation or execution.
+        let state_operand = unpack!(block = self.as_operand(block, *state));
+        let cleanup_operand = unpack!(block = self.as_operand(block, *cleanup));
+        let adapter_id = find_std_function(self.gcx, "runtime", "__cleanupInvoke", span)
+            .unwrap_or_else(|_| panic!("cleanup lowering requires std.runtime.__cleanupInvoke"));
+        let generic_args = self.gcx.store.interners.intern_generic_args(vec![
+            GenericArgument::Type(state_ty),
+            GenericArgument::Type(cleanup_ty),
+        ]);
+        let adapter_inputs = self
+            .gcx
+            .store
+            .interners
+            .intern_ty_list(vec![state_ty, cleanup_ty]);
+        let adapter_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
+            inputs: adapter_inputs,
+            output: self.gcx.async_handle_ty(),
+        });
+        let adapter_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
+        let after_adapter = self.new_block();
+        let adapter_unwind = self.call_unwind_action(span);
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: adapter_ty,
+                    value: mir::ConstantKind::Function(adapter_id, generic_args, adapter_ty),
+                }),
+                args: vec![state_operand, cleanup_operand],
+                devirt_hint: None,
+                destination: Place::from_local(adapter_local),
+                target: after_adapter,
+                unwind: adapter_unwind,
+            },
+        );
+        block = after_adapter;
+
+        let runtime_id = find_or_register_async_runtime_function(
+            self.gcx,
+            AsyncRuntimeFn::CleanupRegister,
+            span,
+        );
+        let runtime_ty = self.gcx.get_type(runtime_id);
+        let next = self.new_block();
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: Operand::Constant(Constant {
+                    ty: runtime_ty,
+                    value: mir::ConstantKind::Function(
+                        runtime_id,
+                        GenericArguments::empty(),
+                        runtime_ty,
+                    ),
+                }),
+                args: vec![
+                    Operand::Copy(Place::from_local(owner_ptr_local)),
+                    Operand::Copy(Place::from_local(adapter_local)),
                 ],
                 devirt_hint: None,
                 destination,

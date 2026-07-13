@@ -347,6 +347,7 @@ struct Scheduler {
     stats: RuntimeStats,
     diagnostics: RuntimeDiagnostics,
     gc_stats_baseline: GcStatsSnapshot,
+    cleanup_stats_baseline: crate::cleanup::CleanupStatsSnapshot,
     diagnostics_reported: AtomicBool,
     task_groups: Mutex<Vec<Option<TaskGroupState>>>,
     free_group_slots: Mutex<Vec<usize>>,
@@ -1041,6 +1042,7 @@ impl Scheduler {
             stats: RuntimeStats::default(),
             diagnostics,
             gc_stats_baseline: stats_snapshot(),
+            cleanup_stats_baseline: crate::cleanup::stats_snapshot(),
             diagnostics_reported: AtomicBool::new(false),
             task_groups: Mutex::new(Vec::new()),
             free_group_slots: Mutex::new(Vec::new()),
@@ -2740,6 +2742,8 @@ impl Scheduler {
             &self.stats.snapshot(),
             &stats_snapshot(),
             &self.gc_stats_baseline,
+            &crate::cleanup::stats_snapshot(),
+            &self.cleanup_stats_baseline,
             self.live_task_counts(),
         );
         write_diagnostics_report(&output);
@@ -2951,6 +2955,8 @@ fn format_diagnostics_report(
     stats: &RuntimeStatsSnapshot,
     gc: &GcStatsSnapshot,
     gc_baseline: &GcStatsSnapshot,
+    cleanups: &crate::cleanup::CleanupStatsSnapshot,
+    cleanup_baseline: &crate::cleanup::CleanupStatsSnapshot,
     task_counts: (usize, usize, usize, usize, usize),
 ) -> String {
     let mut output = String::new();
@@ -3022,6 +3028,18 @@ fn format_diagnostics_report(
             pause_p99,
             pause_max,
         );
+        let _ = writeln!(
+            output,
+            "  cleanups queued={} executed={} cancelled={} panicked={} pending={} peak_pending={}",
+            cleanups.queued.saturating_sub(cleanup_baseline.queued),
+            cleanups.executed.saturating_sub(cleanup_baseline.executed),
+            cleanups
+                .cancelled
+                .saturating_sub(cleanup_baseline.cancelled),
+            cleanups.panicked.saturating_sub(cleanup_baseline.panicked),
+            cleanups.pending,
+            cleanups.peak_pending,
+        );
     }
     if let Some(trace) = diagnostics.trace_report(worker_count) {
         output.push_str(&trace);
@@ -3053,6 +3071,8 @@ fn write_idle_diagnostics_report() {
         &RuntimeStatsSnapshot::default(),
         &stats_snapshot(),
         &GcStatsSnapshot::default(),
+        &crate::cleanup::stats_snapshot(),
+        &crate::cleanup::CleanupStatsSnapshot::default(),
         (0, 0, 0, 0, 0),
     );
     write_diagnostics_report(&output);
@@ -4085,6 +4105,8 @@ mod tests {
             &stats,
             &GcStatsSnapshot::default(),
             &GcStatsSnapshot::default(),
+            &crate::cleanup::CleanupStatsSnapshot::default(),
+            &crate::cleanup::CleanupStatsSnapshot::default(),
             (0, 0, 0, 0, 1),
         );
 
@@ -4092,6 +4114,7 @@ mod tests {
         assert!(report.contains("tasks created=1 polls=2 completed=1"));
         assert!(report.contains("queues enqueues=2 global=0 worker=2"));
         assert!(report.contains("gc_pause_ns count=0 p50=0 p95=0 p99=0 max=0"));
+        assert!(report.contains("cleanups queued=0 executed=0 cancelled=0 panicked=0"));
         assert!(report.contains("runtime trace: workers=3 events=1 capacity=4 dropped=0"));
         assert!(report.contains("event=task_complete task=7"));
     }

@@ -84,12 +84,40 @@ pub struct GcShadowFrame {
     pub count: usize,
 }
 
-pub(crate) type GcFinalizerFn = fn(usize);
+/// Runtime-only hook used to reclaim native state associated with a dead GC
+/// allocation. Reclaimers never receive the allocation itself and must not
+/// invoke language code.
+pub(crate) type GcReclaimerFn = fn(usize);
 
 #[derive(Clone, Copy)]
-struct GcFinalizer {
-    callback: GcFinalizerFn,
+struct GcReclaimer {
+    callback: GcReclaimerFn,
     data: usize,
+}
+
+#[derive(Clone, Copy)]
+struct GcCleanup {
+    owner: *const u8,
+    handle: usize,
+}
+
+pub(crate) enum CleanupRegistration {
+    Registered(usize),
+    NotManaged,
+    OwnerRetained,
+}
+
+#[derive(Default)]
+struct CollectionWork {
+    reclaimers: Vec<GcReclaimer>,
+    cleanup_handles: Vec<usize>,
+}
+
+impl CollectionWork {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.reclaimers.is_empty() && self.cleanup_handles.is_empty()
+    }
 }
 
 // Thread-local shadow stack top. Each thread maintains its own shadow stack,
@@ -342,11 +370,11 @@ fn initiate_collection() {
     let current_id = std::thread::current().id();
     let threads = threads_for_collection(current_id);
 
-    // Now all other threads are parked. We can safely collect.
-    let finalizers = with_gc(|gc| gc.collect(&threads));
-    for finalizer in finalizers {
-        (finalizer.callback)(finalizer.data);
-    }
+    // Now all other threads are parked. Discovery and heap reclamation happen
+    // during the pause, but native resource reclaimers must wait until the
+    // world is running again. Even runtime-only reclaimers may take subsystem
+    // locks or wake tasks.
+    let work = with_gc(|gc| gc.collect(&threads));
     let pause = pause_started.elapsed();
     with_gc(|gc| gc.record_pause(pause));
 
@@ -364,6 +392,12 @@ fn initiate_collection() {
     // stop-the-world interval. The compact GC stats sample above is recorded
     // before resuming to preserve its collection identifier.
     crate::executor::record_gc_pause(pause);
+
+    debug_assert!(!GC_REQUESTED.load(Ordering::Acquire));
+    for reclaimer in work.reclaimers {
+        (reclaimer.callback)(reclaimer.data);
+    }
+    crate::cleanup::enqueue(work.cleanup_handles);
 }
 
 #[unsafe(no_mangle)]
@@ -1100,7 +1134,13 @@ pub(crate) struct Gc {
     static_roots: Vec<Range<*const u8>>,
     manual_roots: Vec<*const u8>,
     persistent_roots: HashMap<*const u8, usize>,
-    finalizers: HashMap<*const u8, GcFinalizer>,
+    reclaimers: HashMap<*const u8, GcReclaimer>,
+    cleanups: HashMap<usize, GcCleanup>,
+    cleanup_tokens_by_owner: HashMap<*const u8, Vec<usize>>,
+    // Weak cells do not trace their targets. This side table lets the mark
+    // phase clear cells whose canonical owner is about to be reclaimed.
+    weak_cells_by_owner: HashMap<*const u8, Vec<usize>>,
+    next_cleanup_token: usize,
     stats: GcStats,
     // Bytes allocated since the last collection (used to trigger GC).
     alloc_since_gc: usize,
@@ -1137,7 +1177,11 @@ impl Gc {
             static_roots: Vec::new(),
             manual_roots: Vec::new(),
             persistent_roots: HashMap::new(),
-            finalizers: HashMap::new(),
+            reclaimers: HashMap::new(),
+            cleanups: HashMap::new(),
+            cleanup_tokens_by_owner: HashMap::new(),
+            weak_cells_by_owner: HashMap::new(),
+            next_cleanup_token: 2,
             stats: GcStats::default(),
             alloc_since_gc: 0,
             gc_threshold_bytes: GC_MIN_TRIGGER,
@@ -1272,6 +1316,23 @@ impl Gc {
         self.alloc_since_gc = self.alloc_since_gc.saturating_add(alloc_bytes);
     }
 
+    fn alloc_weak_cell(&mut self, target: *const u8) -> *mut u8 {
+        let desc = crate::weak::cell_desc();
+        let cell = self.alloc(desc.size, desc, false);
+        unsafe { crate::weak::initialize_cell(cell, target) };
+
+        // Interior pointers share the lifetime of their containing object, so
+        // index the cell by the canonical allocation base while preserving the
+        // original target address in the cell.
+        if let Some(owner) = self.object_base(target) {
+            self.weak_cells_by_owner
+                .entry(owner)
+                .or_default()
+                .push(cell as usize);
+        }
+        cell
+    }
+
     fn alloc_span_id(&mut self) -> usize {
         // Reuse freed span IDs to prevent unbounded growth of the spans vector.
         if let Some(id) = self.free_span_ids.pop() {
@@ -1398,23 +1459,114 @@ impl Gc {
         }
     }
 
-    pub(crate) fn register_finalizer(
+    pub(crate) fn register_reclaimer(
         &mut self,
         ptr: *const u8,
-        callback: GcFinalizerFn,
+        callback: GcReclaimerFn,
         data: usize,
     ) {
         if ptr.is_null() {
             return;
         }
-        let previous = self.finalizers.insert(ptr, GcFinalizer { callback, data });
-        debug_assert!(previous.is_none(), "GC object finalizer registered twice");
+        let previous = self.reclaimers.insert(ptr, GcReclaimer { callback, data });
+        debug_assert!(previous.is_none(), "GC object reclaimer registered twice");
     }
 
-    pub(crate) fn unregister_finalizer(&mut self, ptr: *const u8) {
+    pub(crate) fn unregister_reclaimer(&mut self, ptr: *const u8) {
         if !ptr.is_null() {
-            self.finalizers.remove(&ptr);
+            self.reclaimers.remove(&ptr);
         }
+    }
+
+    pub(crate) fn register_cleanup(
+        &mut self,
+        owner: *const u8,
+        frame: *const u8,
+        handle: *mut u8,
+    ) -> CleanupRegistration {
+        let Some(owner) = self.object_base(owner) else {
+            return CleanupRegistration::NotManaged;
+        };
+        if frame.is_null() || self.object_directly_references(frame, owner) {
+            return CleanupRegistration::OwnerRetained;
+        }
+
+        let token = self.next_cleanup_token();
+        self.cleanups.insert(
+            token,
+            GcCleanup {
+                owner,
+                handle: handle as usize,
+            },
+        );
+        self.cleanup_tokens_by_owner
+            .entry(owner)
+            .or_default()
+            .push(token);
+        CleanupRegistration::Registered(token)
+    }
+
+    pub(crate) fn cancel_cleanup(&mut self, token: usize) -> Option<usize> {
+        let cleanup = self.cleanups.remove(&token)?;
+        let mut remove_owner = false;
+        if let Some(tokens) = self.cleanup_tokens_by_owner.get_mut(&cleanup.owner) {
+            tokens.retain(|candidate| *candidate != token);
+            remove_owner = tokens.is_empty();
+        }
+        if remove_owner {
+            self.cleanup_tokens_by_owner.remove(&cleanup.owner);
+        }
+        Some(cleanup.handle)
+    }
+
+    fn next_cleanup_token(&mut self) -> usize {
+        loop {
+            let token = self.next_cleanup_token.max(2);
+            self.next_cleanup_token = token.checked_add(1).unwrap_or(2);
+            if !self.cleanups.contains_key(&token) {
+                return token;
+            }
+        }
+    }
+
+    fn take_cleanup_handles(&mut self, owner: *const u8, output: &mut Vec<usize>) {
+        let Some(tokens) = self.cleanup_tokens_by_owner.remove(&owner) else {
+            return;
+        };
+        for token in tokens {
+            if let Some(cleanup) = self.cleanups.remove(&token) {
+                output.push(cleanup.handle);
+            }
+        }
+    }
+
+    fn object_directly_references(&self, object: *const u8, target: *const u8) -> bool {
+        let Some((span_id, object_index)) = self.find_object(object) else {
+            return false;
+        };
+        let Some(span) = self.spans.get(span_id).and_then(Option::as_ref) else {
+            return false;
+        };
+        if !span.has_pointers || !bitset_get(&span.alloc_map, object_index) {
+            return false;
+        }
+        let Some(desc) = (unsafe { span.descs[object_index].as_ref() }) else {
+            return false;
+        };
+        let base = unsafe { span.base.add(object_index * span.object_size) };
+        let limit = span.scan_sizes[object_index].min(span.sizes[object_index]);
+        for index in 0..desc.ptr_count {
+            let offset = unsafe { *desc.ptr_offsets.add(index) };
+            if offset >= limit {
+                continue;
+            }
+            let candidate =
+                unsafe { std::ptr::read_unaligned(base.add(offset) as *const *const u8) };
+            if self.object_base(candidate) == Some(target) {
+                return true;
+            }
+        }
+        false
     }
 
     fn set_buffer_scan_size(&mut self, ptr: *mut u8, scan_size: usize) {
@@ -1435,14 +1587,15 @@ impl Gc {
         }
     }
 
-    fn collect(&mut self, threads: &[Arc<ThreadState>]) -> Vec<GcFinalizer> {
+    fn collect(&mut self, threads: &[Arc<ThreadState>]) -> CollectionWork {
         // Stop-the-world collection: gather roots, mark, then sweep.
         let mut manual_roots = std::mem::take(&mut self.manual_roots);
         let static_roots = std::mem::take(&mut self.static_roots);
         manual_roots.extend(self.persistent_roots.keys().copied());
         self.mark_roots(manual_roots.into_iter(), &static_roots, threads);
         self.static_roots = static_roots;
-        let (freed, finalizers) = self.sweep();
+        self.process_weak_cells();
+        let (freed, reclaimers, cleanup_handles) = self.sweep();
         let (free_runs, free_pages) = self.free_page_stats();
         let segment_count = self.segments.len();
         self.stats.record_collection(
@@ -1456,7 +1609,10 @@ impl Gc {
         self.stats.log();
         self.alloc_since_gc = 0;
         self.gc_threshold_bytes = next_gc_threshold(self.stats.live_bytes);
-        finalizers
+        CollectionWork {
+            reclaimers,
+            cleanup_handles,
+        }
     }
 
     fn record_pause(&mut self, pause: Duration) {
@@ -1491,6 +1647,31 @@ impl Gc {
 
         self.push_shadow_roots(&mut stack, threads);
         self.trace_stack(&mut stack);
+    }
+
+    fn process_weak_cells(&mut self) {
+        // Mark bits are still available here. Drop unreachable cells from the
+        // side table, retain live cells for live owners, and clear live cells
+        // for dead owners before sweep makes either address reusable.
+        let registrations = std::mem::take(&mut self.weak_cells_by_owner);
+        for (owner, cells) in registrations {
+            let owner_is_live = self.object_is_marked(owner);
+            let mut retained = Vec::new();
+            for cell in cells {
+                let cell = cell as *mut u8;
+                if !self.object_is_marked(cell.cast_const()) {
+                    continue;
+                }
+                if owner_is_live {
+                    retained.push(cell as usize);
+                } else {
+                    crate::weak::clear_cell(cell);
+                }
+            }
+            if !retained.is_empty() {
+                self.weak_cells_by_owner.insert(owner, retained);
+            }
+        }
     }
 
     fn trace_stack(&mut self, stack: &mut Vec<*const u8>) {
@@ -1614,10 +1795,11 @@ impl Gc {
     }
 
     // Sweep spans: free unmarked slots, and return empty spans to the segment.
-    fn sweep(&mut self) -> (SweepStats, Vec<GcFinalizer>) {
+    fn sweep(&mut self) -> (SweepStats, Vec<GcReclaimer>, Vec<usize>) {
         // Sweep spans: free unmarked slots, return empty spans to segments.
         let mut freed = SweepStats::default();
-        let mut finalizers = Vec::new();
+        let mut reclaimers = Vec::new();
+        let mut cleanup_handles = Vec::new();
         for span_id in 0..self.spans.len() {
             let Some(mut span) = self.spans[span_id].take() else {
                 continue;
@@ -1628,9 +1810,10 @@ impl Gc {
                 // If the lone object is unmarked, free the entire span.
                 if bitset_get(&span.alloc_map, 0) && !bitset_get(&span.mark_map, 0) {
                     let total_bytes = span.page_count.saturating_mul(PAGE_SIZE);
-                    if let Some(finalizer) = self.finalizers.remove(&(span.base as *const u8)) {
-                        finalizers.push(finalizer);
+                    if let Some(reclaimer) = self.reclaimers.remove(&(span.base as *const u8)) {
+                        reclaimers.push(reclaimer);
                     }
+                    self.take_cleanup_handles(span.base as *const u8, &mut cleanup_handles);
                     bitset_set(&mut span.alloc_map, 0, false);
                     if span.has_pointers && !span.descs.is_empty() {
                         span.descs[0] = std::ptr::null();
@@ -1661,9 +1844,10 @@ impl Gc {
                     continue;
                 }
                 let object = unsafe { span.base.add(index * span.object_size) } as *const u8;
-                if let Some(finalizer) = self.finalizers.remove(&object) {
-                    finalizers.push(finalizer);
+                if let Some(reclaimer) = self.reclaimers.remove(&object) {
+                    reclaimers.push(reclaimer);
                 }
+                self.take_cleanup_handles(object, &mut cleanup_handles);
                 span.free_small(index);
                 self.stats.record_free(span.object_size);
                 freed.objects += 1;
@@ -1688,7 +1872,7 @@ impl Gc {
 
             self.spans[span_id] = Some(span);
         }
-        (freed, finalizers)
+        (freed, reclaimers, cleanup_handles)
     }
 
     // Return an entire span's pages to its owning segment.
@@ -1726,6 +1910,23 @@ impl Gc {
         Some((span_id, object_index))
     }
 
+    fn object_base(&self, ptr: *const u8) -> Option<*const u8> {
+        let (span_id, object_index) = self.find_object(ptr)?;
+        let span = self.spans.get(span_id)?.as_ref()?;
+        bitset_get(&span.alloc_map, object_index)
+            .then(|| unsafe { span.base.add(object_index * span.object_size) as *const u8 })
+    }
+
+    fn object_is_marked(&self, ptr: *const u8) -> bool {
+        let Some((span_id, object_index)) = self.find_object(ptr) else {
+            return false;
+        };
+        let Some(span) = self.spans.get(span_id).and_then(Option::as_ref) else {
+            return false;
+        };
+        bitset_get(&span.alloc_map, object_index) && bitset_get(&span.mark_map, object_index)
+    }
+
     fn free_page_stats(&self) -> (usize, usize) {
         // Sum free pages/runs across all segments for logging.
         let mut runs: usize = 0;
@@ -1748,6 +1949,15 @@ pub(crate) fn with_gc<R>(f: impl FnOnce(&mut Gc) -> R) -> R {
     let gc = INSTANCE.get_or_init(|| Mutex::new(Gc::new()));
     let mut guard = gc.lock().expect("gc mutex");
     f(&mut guard)
+}
+
+pub(crate) fn create_weak_cell(target: *const u8) -> *mut u8 {
+    ensure_thread_registered();
+    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    if needs_gc {
+        initiate_collection();
+    }
+    with_gc(|gc| gc.alloc_weak_cell(target))
 }
 
 pub(crate) fn stats_snapshot() -> GcStatsSnapshot {
@@ -1891,8 +2101,8 @@ fn register_segment_arenas(
 mod tests {
     use super::{
         __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach,
-        __rt__gc_enter_blocking, __rt__gc_exit_blocking, Gc, GcDesc, GcStats, MAX_GC_PAUSE_SAMPLES,
-        PAGE_SIZE, SEGMENT_SIZE, Segment, register_segment_arenas,
+        __rt__gc_enter_blocking, __rt__gc_exit_blocking, CleanupRegistration, Gc, GcDesc, GcStats,
+        MAX_GC_PAUSE_SAMPLES, PAGE_SIZE, SEGMENT_SIZE, Segment, register_segment_arenas,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -1978,12 +2188,12 @@ mod tests {
     }
 
     #[test]
-    fn finalizers_are_returned_once_after_unreachable_objects_are_swept() {
+    fn reclaimers_are_deferred_and_returned_once_after_sweep() {
         let mut gc = Gc::new();
         let desc = bytes_desc(8);
         let count = AtomicUsize::new(0);
         let ptr = gc.alloc(8, &desc, false);
-        gc.register_finalizer(
+        gc.register_reclaimer(
             ptr,
             count_finalization,
             &count as *const AtomicUsize as usize,
@@ -1992,11 +2202,12 @@ mod tests {
         gc.add_root(ptr);
         assert!(gc.collect(&[]).is_empty());
 
-        let finalizers = gc.collect(&[]);
-        assert_eq!(finalizers.len(), 1);
+        let work = gc.collect(&[]);
+        assert_eq!(work.reclaimers.len(), 1);
+        assert!(work.cleanup_handles.is_empty());
         assert_eq!(count.load(Ordering::Acquire), 0);
-        for finalizer in finalizers {
-            (finalizer.callback)(finalizer.data);
+        for reclaimer in work.reclaimers {
+            (reclaimer.callback)(reclaimer.data);
         }
         assert_eq!(count.load(Ordering::Acquire), 1);
         assert!(gc.collect(&[]).is_empty());
@@ -2020,20 +2231,150 @@ mod tests {
     }
 
     #[test]
-    fn unregistering_a_finalizer_prevents_it_from_running() {
+    fn unregistering_a_reclaimer_prevents_it_from_running() {
         let mut gc = Gc::new();
         let desc = bytes_desc(8);
         let count = AtomicUsize::new(0);
         let ptr = gc.alloc(8, &desc, false);
-        gc.register_finalizer(
+        gc.register_reclaimer(
             ptr,
             count_finalization,
             &count as *const AtomicUsize as usize,
         );
-        gc.unregister_finalizer(ptr);
+        gc.unregister_reclaimer(ptr);
 
         assert!(gc.collect(&[]).is_empty());
         assert_eq!(count.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn cleanup_handles_are_returned_once_after_the_owner_dies() {
+        let mut gc = Gc::new();
+        let desc = bytes_desc(8);
+        let owner = gc.alloc(8, &desc, false);
+        let frame = gc.alloc(8, &desc, false);
+        let handle = 0x1234usize as *mut u8;
+
+        let registration = gc.register_cleanup(owner, frame, handle);
+        assert!(matches!(
+            registration,
+            CleanupRegistration::Registered(token) if token >= 2
+        ));
+
+        gc.add_root(owner);
+        gc.add_root(frame);
+        assert!(gc.collect(&[]).is_empty());
+
+        // The async frame is independently rooted by its handle in production.
+        // Once the owner dies, collection only transfers ownership of that handle.
+        gc.add_root(frame);
+        let work = gc.collect(&[]);
+        assert!(work.reclaimers.is_empty());
+        assert_eq!(work.cleanup_handles, vec![handle as usize]);
+
+        gc.add_root(frame);
+        assert!(gc.collect(&[]).is_empty());
+    }
+
+    #[test]
+    fn cancelling_a_cleanup_prevents_it_from_being_queued() {
+        let mut gc = Gc::new();
+        let desc = bytes_desc(8);
+        let owner = gc.alloc(8, &desc, false);
+        let frame = gc.alloc(8, &desc, false);
+        let handle = 0x5678usize as *mut u8;
+
+        let CleanupRegistration::Registered(token) = gc.register_cleanup(owner, frame, handle)
+        else {
+            panic!("cleanup should register");
+        };
+        assert_eq!(gc.cancel_cleanup(token), Some(handle as usize));
+        assert_eq!(gc.cancel_cleanup(token), None);
+
+        gc.add_root(frame);
+        assert!(gc.collect(&[]).is_empty());
+    }
+
+    #[test]
+    fn cleanup_rejects_a_frame_that_directly_retains_its_owner() {
+        let mut gc = Gc::new();
+        let owner_desc = bytes_desc(8);
+        let frame_desc = pointer_desc();
+        let owner = gc.alloc(8, &owner_desc, false);
+        let frame = gc.alloc(std::mem::size_of::<*mut u8>(), &frame_desc, false);
+        unsafe { frame.cast::<*mut u8>().write(owner) };
+
+        assert!(matches!(
+            gc.register_cleanup(owner, frame, 0x9abcusize as *mut u8),
+            CleanupRegistration::OwnerRetained
+        ));
+    }
+
+    #[test]
+    fn cleanup_rejects_an_owner_outside_the_managed_heap() {
+        let mut gc = Gc::new();
+        let desc = bytes_desc(8);
+        let frame = gc.alloc(8, &desc, false);
+
+        assert!(matches!(
+            gc.register_cleanup(0x1234usize as *const u8, frame, 0x9abcusize as *mut u8),
+            CleanupRegistration::NotManaged
+        ));
+    }
+
+    #[test]
+    fn weak_cell_clears_before_its_managed_target_is_swept() {
+        let mut gc = Gc::new();
+        let desc = bytes_desc(16);
+        let owner = gc.alloc(16, &desc, false);
+        let target = unsafe { owner.add(4) };
+        let cell = gc.alloc_weak_cell(target);
+
+        gc.add_root(owner);
+        gc.add_root(cell);
+        gc.collect(&[]);
+        assert_eq!(crate::weak::load_cell(cell), target);
+        assert_eq!(
+            gc.weak_cells_by_owner
+                .get(&(owner as *const u8))
+                .map(Vec::len),
+            Some(1)
+        );
+
+        gc.add_root(cell);
+        gc.collect(&[]);
+        assert!(crate::weak::load_cell(cell).is_null());
+        assert!(gc.find_object(owner).is_none());
+        assert!(gc.find_object(cell).is_some());
+        assert!(gc.weak_cells_by_owner.is_empty());
+    }
+
+    #[test]
+    fn unreachable_weak_cells_are_removed_from_the_side_table() {
+        let mut gc = Gc::new();
+        let desc = bytes_desc(8);
+        let owner = gc.alloc(8, &desc, false);
+        let cell = gc.alloc_weak_cell(owner);
+
+        gc.add_root(owner);
+        gc.collect(&[]);
+
+        assert!(gc.find_object(owner).is_some());
+        assert!(gc.object_base(cell).is_none());
+        assert!(gc.weak_cells_by_owner.is_empty());
+    }
+
+    #[test]
+    fn weak_cells_leave_unmanaged_targets_unchanged() {
+        let mut gc = Gc::new();
+        let target = 0x1234usize as *const u8;
+        let cell = gc.alloc_weak_cell(target);
+
+        assert!(gc.weak_cells_by_owner.is_empty());
+        gc.add_root(cell);
+        gc.collect(&[]);
+
+        assert_eq!(crate::weak::load_cell(cell), target.cast_mut());
     }
 
     #[test]

@@ -1,0 +1,150 @@
+static let STATIC_WEAK_OWNER: int32 = 91
+static var CLEANUP_SAW_CLEARED_WEAK: bool = false
+
+struct WeakOwner {
+    value: int32
+}
+
+struct WeakPair {
+    first: int32
+    second: int32
+}
+
+func weakFromExpiredLocal() -> std.weak.Weak[WeakOwner] {
+    let owner = WeakOwner { value: 42 }
+    return std.weak.Weak(&owner)
+}
+
+func weakInteriorFromExpiredLocal() -> std.weak.Weak[int32] {
+    let owner = WeakPair { first: 1, second: 2 }
+    return std.weak.Weak(&owner.second)
+}
+
+func registerWeakCleanup() {
+    let owner = WeakOwner { value: 7 }
+    let weak = std.weak.Weak(&owner)
+    match std.runtime.addCleanup(
+        &owner,
+        weak,
+        |state: std.weak.Weak[WeakOwner]| {
+            CLEANUP_SAW_CLEARED_WEAK = state.value().isNone()
+        },
+    ) {
+        case .ok(_) => {}
+        case .err(_) => std.testing.fail("weak cleanup should register")
+    }
+}
+
+func assertSnapshotKeepsTargetAlive(_ weak: std.weak.Weak[WeakOwner]) {
+    let strong = match weak.value() {
+        case .some(value) => value
+        case .none => {
+            std.panic.panic("new weak reference should still have a target")
+        }
+    }
+
+    std.runtime.collect()
+    std.testing.assertEqual(
+        strong.value,
+        42_i32,
+        "value() should return a strong reference that survives collection",
+    )
+    std.testing.assertTrue(
+        weak.value().isSome(),
+        "a live snapshot should keep the weak target available",
+    )
+    std.runtime.keepAlive(strong)
+}
+
+@test
+func testWeakTracksLiveManagedObject() {
+    let owner = make(WeakOwner { value: 17 })
+    let weak = std.weak.Weak(owner)
+
+    std.runtime.collect()
+    let value = match weak.value() {
+        case .some(value) => value.value
+        case .none => 0_i32
+    }
+    std.testing.assertEqual(value, 17_i32, "live managed target should remain available")
+    std.runtime.keepAlive(owner)
+}
+
+@test
+func testWeakClearsAfterPromotedLocalExpires() {
+    let weak = weakFromExpiredLocal()
+
+    std.runtime.collect()
+    std.testing.assertTrue(
+        weak.value().isNone(),
+        "weak reference should clear after its promoted local becomes unreachable",
+    )
+}
+
+@test
+func testCopiedWeakReferencesShareClearingState() {
+    let weak = weakFromExpiredLocal()
+    let copy = weak
+
+    std.runtime.collect()
+    std.testing.assertTrue(weak.value().isNone(), "original weak reference should clear")
+    std.testing.assertTrue(copy.value().isNone(), "copied weak reference should clear")
+}
+
+@test
+func testWeakSupportsInteriorReferences() {
+    let owner = make(WeakPair { first: 3, second: 5 })
+    let live = std.weak.Weak(&(*owner).second)
+
+    std.runtime.collect()
+    std.testing.assertEqual(
+        *live.value().expect("live interior target should be available"),
+        5_i32,
+        "interior weak reference should preserve its original address",
+    )
+    std.runtime.keepAlive(owner)
+
+    let expired = weakInteriorFromExpiredLocal()
+    std.runtime.collect()
+    std.testing.assertTrue(
+        expired.value().isNone(),
+        "interior weak reference should clear with its containing allocation",
+    )
+}
+
+@test
+func testWeakLeavesStaticTargetsAvailable() {
+    let weak = std.weak.Weak(&STATIC_WEAK_OWNER)
+
+    std.runtime.collect()
+    std.testing.assertEqual(
+        *weak.value().expect("static target should remain available"),
+        91_i32,
+        "static weak target should remain available",
+    )
+}
+
+@test
+func testWeakValueReturnsStrongSnapshot() {
+    let weak = weakFromExpiredLocal()
+    assertSnapshotKeepsTargetAlive(weak)
+
+    std.runtime.collect()
+    std.testing.assertTrue(
+        weak.value().isNone(),
+        "target should clear after the strong snapshot leaves scope",
+    )
+}
+
+@test
+func testWeakClearsBeforeCleanupRuns() {
+    CLEANUP_SAW_CLEARED_WEAK = false
+    registerWeakCleanup()
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertTrue(
+        CLEANUP_SAW_CLEARED_WEAK,
+        "weak reference should be cleared before owner cleanup is invoked",
+    )
+}

@@ -16,7 +16,7 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::hir::{DefinitionID, Mutability};
 use crate::mir::{
-    BasicBlockData, BasicBlockId, Body, CallUnwindAction, ConstantKind, CopyModifiers,
+    BasicBlockData, BasicBlockId, Body, CallUnwindAction, CastKind, ConstantKind, CopyModifiers,
     EscapeSummary, LocalDecl, LocalId, LocalKind, Operand, ParamEscapeInfo, Place, PlaceElem,
     Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
 };
@@ -71,7 +71,7 @@ pub fn compute_escape_summaries<'ctx>(
 /// Analyze a function body to produce its escape summary.
 /// This tracks how parameters flow to returns or leak to the heap.
 fn analyze_function_for_summary<'ctx>(
-    _gcx: Gcx<'ctx>,
+    gcx: Gcx<'ctx>,
     body: &Body<'ctx>,
     current_summaries: &FxHashMap<DefinitionID, EscapeSummary>,
 ) -> EscapeSummary {
@@ -138,8 +138,18 @@ fn analyze_function_for_summary<'ctx>(
                         }
                     }
                 }
-                // Reference copy/move
-                StatementKind::Assign(dest, Rvalue::Use(op)) => {
+                // Reference copy/move, including a reference-to-pointer cast.
+                // Runtime APIs commonly erase a managed reference to `*u8`;
+                // that cast must not sever its escape provenance.
+                StatementKind::Assign(dest, Rvalue::Use(op))
+                | StatementKind::Assign(
+                    dest,
+                    Rvalue::Cast {
+                        operand: op,
+                        kind: CastKind::Pointer | CastKind::Numeric,
+                        ..
+                    },
+                ) => {
                     if let Some(src_local) = ref_local_operand(body, op) {
                         let param_sources =
                             get_param_sources(src_local, &local_to_param, &ref_param_sources);
@@ -173,9 +183,11 @@ fn analyze_function_for_summary<'ctx>(
             if let TerminatorKind::Call { func, args, .. } = &term.kind {
                 // Try to get callee info
                 if let Some((callee_id, _)) = extract_callee(func) {
-                    let callee_summary = current_summaries.get(&callee_id).or_else(|| {
-                        // For external functions, use conservative default
-                        None
+                    let callee_summary = current_summaries.get(&callee_id).cloned().or_else(|| {
+                        gcx.get_signature(callee_id)
+                            .abi
+                            .is_some()
+                            .then(|| get_external_summary(gcx, callee_id))
                     });
 
                     for (arg_idx, arg) in args.iter().enumerate() {
@@ -185,6 +197,7 @@ fn analyze_function_for_summary<'ctx>(
 
                             // Check if this argument escapes according to callee's summary
                             let arg_leaks = callee_summary
+                                .as_ref()
                                 .and_then(|s| s.params.get(arg_idx))
                                 .map(|p| p.leaks_to_heap)
                                 .unwrap_or(true); // Conservative default
@@ -252,12 +265,19 @@ fn extract_callee<'ctx>(func: &Operand<'ctx>) -> Option<(DefinitionID, GenericAr
 /// Conservative: all reference parameters are assumed to escape.
 fn get_external_summary<'ctx>(gcx: Gcx<'ctx>, def_id: DefinitionID) -> EscapeSummary {
     let sig = gcx.get_signature(def_id);
+    // `keepAlive` is a compiler-visible liveness barrier. The runtime observes
+    // the address for the duration of the call but never stores or returns it,
+    // so treating it like ordinary FFI would cause needless heap promotion.
+    let noescape = gcx.symbol_eq(
+        gcx.definition_symbol_or_fallback(def_id),
+        "__rt__keep_alive",
+    );
     EscapeSummary {
         params: sig
             .inputs
             .iter()
             .map(|p| {
-                let is_ref = is_address_like_ty(p.ty);
+                let is_ref = is_address_like_ty(p.ty) && !noescape;
                 ParamEscapeInfo {
                     leaks_to_heap: is_ref,
                     flows_to_return: is_ref,
@@ -874,4 +894,72 @@ fn rewrite_place<'ctx>(
         return;
     }
     place.projection.insert(0, PlaceElem::Deref);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::analyze_function_for_summary;
+    use crate::{
+        hir::Mutability,
+        mir::{
+            CastKind, LocalDecl, LocalKind, Operand, Place, Rvalue, Statement, StatementKind,
+            test_support::{minimal_body, push_temp, with_test_gcx},
+        },
+        sema::models::{Ty, TyKind},
+    };
+    use rustc_hash::FxHashMap;
+
+    #[test]
+    fn pointer_cast_kinds_preserve_parameter_escape_provenance() {
+        with_test_gcx(|gcx| {
+            for kind in [CastKind::Pointer, CastKind::Numeric] {
+                let mut body = minimal_body(gcx);
+                let span = body.locals[body.return_local].span;
+                let reference_ty = Ty::new(
+                    TyKind::Reference(gcx.types.uint8, Mutability::Immutable),
+                    gcx,
+                );
+                let pointer_ty =
+                    Ty::new(TyKind::Pointer(gcx.types.uint8, Mutability::Immutable), gcx);
+                body.locals[body.return_local].ty = pointer_ty;
+
+                let parameter = body.locals.push(LocalDecl {
+                    ty: reference_ty,
+                    kind: LocalKind::Param,
+                    mutable: false,
+                    name: None,
+                    span,
+                });
+                body.escape_locals.push(false);
+                let erased = push_temp(&mut body, pointer_ty);
+                body.basic_blocks[body.start_block].statements.extend([
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(erased),
+                            Rvalue::Cast {
+                                operand: Operand::Copy(Place::from_local(parameter)),
+                                ty: pointer_ty,
+                                kind,
+                            },
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(body.return_local),
+                            Rvalue::Use(Operand::Copy(Place::from_local(erased))),
+                        ),
+                        span,
+                    },
+                ]);
+
+                let summary = analyze_function_for_summary(gcx, &body, &FxHashMap::default());
+                assert_eq!(summary.params.len(), 1);
+                assert!(
+                    summary.params[0].flows_to_return,
+                    "{kind:?} cast should preserve reference provenance"
+                );
+            }
+        });
+    }
 }

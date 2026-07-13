@@ -660,6 +660,25 @@ Taro uses a custom **non-moving, mark-and-sweep garbage collector** inspired by 
 - **Concurrency**: Stop-the-world collection coordinates with runtime worker safepoints, with future plans for concurrent marking.
 - **Safety**: The compiler emits shadow stack frames and root slots to precisely identify stack roots.
 
+`std.weak.Weak(object)` creates a typed, non-owning reference. `weak.value()`
+returns `Optional[&T]`: a live result is an ordinary strong reference snapshot,
+while `.none` means collection has cleared the target. Interior references are
+supported, and referenced locals are promoted to managed storage when needed.
+Weak references are cleared before cleanup callbacks for the same owner run.
+
+Resources should still expose and prefer a deterministic `close` operation.
+`std.runtime.addCleanup(&owner, state, callback)` provides a fallback when an
+owner is abandoned: the synchronous, `Sendable` callback runs on a dedicated
+worker after the collector has resumed the world. Registration returns
+`Result[Cleanup, CleanupError]`; `cleanup.cancel()` prevents pending work and
+`std.runtime.keepAlive(&owner)` can make cancellation win a collection race.
+The cleanup state and callback must not retain the owner. Direct retention is
+reported as `.ownerRetained`, while indirect cycles remain the caller's
+responsibility. `collect()` queues eligible callbacks but does not wait for
+them; tests may use `std.testing.waitForCleanups()` when deterministic
+observation is required. Cleanup execution is not guaranteed before process
+exit.
+
 ### Key Features
 
 - **Enums**: Tagged unions (sum types) allow for expressive invalid state modeling.

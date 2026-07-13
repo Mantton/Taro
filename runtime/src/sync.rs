@@ -94,19 +94,19 @@ fn handle_id(handle: *const u8, expected: SyncHandleKind) -> Result<usize, i32> 
 fn allocate_handle(
     id: usize,
     kind: SyncHandleKind,
-    finalizer: crate::garbage_collector::GcFinalizerFn,
+    reclaimer: crate::garbage_collector::GcReclaimerFn,
 ) -> *mut u8 {
     let ptr = __gc__alloc(size_of::<SyncHandle>(), &SYNC_HANDLE_DESC);
     if ptr.is_null() {
         return ptr;
     }
     unsafe { (ptr as *mut SyncHandle).write(SyncHandle { id, kind }) };
-    with_gc(|gc| gc.register_finalizer(ptr, finalizer, id));
+    with_gc(|gc| gc.register_reclaimer(ptr, reclaimer, id));
     ptr
 }
 
-fn unregister_handle_finalizer(handle: *const u8) {
-    with_gc(|gc| gc.unregister_finalizer(handle));
+fn unregister_handle_reclaimer(handle: *const u8) {
+    with_gc(|gc| gc.unregister_reclaimer(handle));
 }
 
 fn add_value_roots(roots: &[usize]) {
@@ -999,7 +999,7 @@ pub extern "C" fn __rt__sync_channel_destroy(handle: *mut u8) -> i32 {
     };
     let status = finish_channel_destroy(channel_id);
     if status == 0 {
-        unregister_handle_finalizer(handle);
+        unregister_handle_reclaimer(handle);
     }
     status
 }
@@ -1092,7 +1092,7 @@ pub extern "C" fn __rt__sync_mutex_destroy(handle: *mut u8) -> i32 {
     };
     let status = state_cell().lock().unwrap().mutex_destroy(mutex_id);
     if status == 0 {
-        unregister_handle_finalizer(handle);
+        unregister_handle_reclaimer(handle);
     }
     status
 }
@@ -1154,7 +1154,7 @@ pub extern "C" fn __rt__sync_rwlock_destroy(handle: *mut u8) -> i32 {
     };
     let status = state_cell().lock().unwrap().rwlock_destroy(lock_id);
     if status == 0 {
-        unregister_handle_finalizer(handle);
+        unregister_handle_reclaimer(handle);
     }
     status
 }

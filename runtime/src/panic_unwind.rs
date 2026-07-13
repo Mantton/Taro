@@ -695,6 +695,23 @@ pub(crate) fn write_unobserved_task_panic(report: &PanicReport) {
     let _ = stderr.flush();
 }
 
+pub(crate) fn write_unobserved_cleanup_panic(report: &PanicReport) {
+    let mut stderr = std::io::stderr().lock();
+    write_captured_report(
+        &mut stderr,
+        "unobserved cleanup panic",
+        report,
+        backtrace_policy(),
+    );
+    let _ = stderr.flush();
+}
+
+pub(crate) fn write_cleanup_warning(message: &str) {
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(stderr, "runtime cleanup warning: {message}");
+    let _ = stderr.flush();
+}
+
 pub(crate) fn write_report(default_message: &str) {
     let mut stderr = std::io::stderr().lock();
     let policy = backtrace_policy();

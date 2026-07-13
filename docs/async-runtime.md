@@ -181,7 +181,7 @@ Runtime sync primitives are task-token based rather than OS-thread based.
 - Mutexes and rwlocks track logical task ownership so finalization can release
   locks held by cancelled or panicked tasks.
 - Public sync handles are GC-managed. Once all endpoint or lock references are
-  unreachable, a post-sweep runtime finalizer reclaims the backing slot. Manual
+  unreachable, a post-sweep runtime reclaimer releases the backing slot. Manual
   `destroy` functions remain available only through the low-level `std.sys`
   layer.
 - Direct guards use explicit `defer { guard.unlock() }`. `withLock`, `withRead`,

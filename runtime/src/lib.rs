@@ -1,3 +1,4 @@
+mod cleanup;
 pub mod executor;
 pub mod existentials;
 pub mod garbage_collector;
@@ -9,6 +10,7 @@ mod sync;
 pub mod task;
 #[cfg(unix)]
 mod unix;
+mod weak;
 
 pub use existentials::*;
 pub use garbage_collector::*;

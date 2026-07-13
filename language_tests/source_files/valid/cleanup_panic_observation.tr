@@ -1,0 +1,48 @@
+// EXPECT_STDERR_COUNT: 1 unobserved cleanup panic
+// EXPECT_STDERR_COUNT: 1 cleanup-observation-panic
+
+static var CLEANUP_FOLLOWUP_RAN: bool = false
+
+struct CleanupPanicOwner {
+    value: int32
+}
+
+func registerCleanupPanicAndFollowup() {
+    let panickingOwner = CleanupPanicOwner { value: 1 }
+    match std.runtime.addCleanup(&panickingOwner, (), |unit: ()| {
+        let _ = unit
+        std.panic.panic("cleanup-observation-panic")
+    }) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("panicking cleanup should register")
+    }
+
+    let followupOwner = CleanupPanicOwner { value: 2 }
+    match std.runtime.addCleanup(&followupOwner, (), |unit: ()| {
+        let _ = unit
+        // Cleanup callbacks are ordinary attached mutators once the world has
+        // resumed, so allocation and even an explicit collection remain safe.
+        var values: std.collections.List[int32] = std.collections.List()
+        values.append(9_i32)
+        std.runtime.collect()
+        std.testing.assertEqual(
+            *values.at(0),
+            9_i32,
+            "cleanup callback root should survive nested collection",
+        )
+        CLEANUP_FOLLOWUP_RAN = true
+    }) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("follow-up cleanup should register")
+    }
+}
+
+func main() {
+    registerCleanupPanicAndFollowup()
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertTrue(
+        CLEANUP_FOLLOWUP_RAN,
+        "a cleanup panic must not terminate the cleanup worker",
+    )
+}

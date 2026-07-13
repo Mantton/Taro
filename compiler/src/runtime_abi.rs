@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 1;
+pub const RUNTIME_ABI_REVISION: u32 = 3;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +76,7 @@ pub enum RuntimeAbiFunction {
     SelectTasks,
     TaskTimeout,
     Blocking,
+    CleanupRegister,
     TaskCompletionStatus,
     ReclaimSpawned,
     CancelTask,
@@ -119,6 +120,7 @@ impl RuntimeAbiFunction {
         Self::SelectTasks,
         Self::TaskTimeout,
         Self::Blocking,
+        Self::CleanupRegister,
         Self::TaskCompletionStatus,
         Self::ReclaimSpawned,
         Self::CancelTask,
@@ -194,6 +196,11 @@ impl RuntimeAbiFunction {
                 "__rt__async_blocking",
                 &[T::AsyncHandle, T::Usize, T::GcDescPtr],
                 T::AsyncHandle,
+            ),
+            Self::CleanupRegister => spec(
+                "__rt__cleanup_register",
+                &[T::ConstU8Ptr, T::AsyncHandle],
+                T::Usize,
             ),
             Self::TaskCompletionStatus => {
                 spec("__rt__executor_task_completion_status", &[T::Usize], T::U8)
@@ -326,6 +333,8 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__gc__poll", "()->void"),
     additional("__gc__register_static", "(*const u8,usize)->void"),
     additional("__gc__set_buf_len", "(*mut u8,*const gc_desc,usize)->void"),
+    additional("__rt__cleanup_cancel", "(usize)->bool"),
+    additional("__rt__cleanup_wait", "()->void"),
     additional("__rt__async_io_adopt_fd", "(i32)->usize"),
     additional("__rt__async_io_close_source", "(usize)->i32"),
     additional("__rt__async_io_dup", "(i32)->i32"),
@@ -347,6 +356,7 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__gc_push_frame", "(*mut gc_shadow_frame)->void"),
     additional("__rt__hash_seed0", "()->u64"),
     additional("__rt__hash_seed1", "()->u64"),
+    additional("__rt__keep_alive", "(*const u8)->void"),
     additional("__rt__logical_stack_pop", "()->void"),
     additional("__rt__logical_stack_push", "(string)->void"),
     additional_unix("__rt__open2", "(*const u8,i32)->i32"),
@@ -379,6 +389,8 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__test_call_fn", "(fn()->void)->bool"),
     additional("__rt__test_panic_finish", "(bool,*const u8,usize)->void"),
     additional("__rt__test_panic_status", "(bool,*const u8,usize)->u8"),
+    additional("__rt__weak_create", "(*const u8)->*mut u8"),
+    additional("__rt__weak_value", "(*mut u8)->*mut u8"),
 ];
 
 const fn additional(symbol: &'static str, signature: &'static str) -> AdditionalRuntimeSymbol {

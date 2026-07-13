@@ -1,0 +1,145 @@
+static var CLEANUP_EXECUTED_TOTAL: int32 = 0
+static var CLEANUP_CANCELLED_TOTAL: int32 = 0
+static var CLEANUP_MULTIPLE_TOTAL: int32 = 0
+static let CLEANUP_STATIC_OWNER: int32 = 0
+
+struct CleanupOwner {
+    value: int32
+}
+
+struct RetainingCleanupState {
+    owner: *const CleanupOwner
+}
+
+// Explicit conformance models an FFI-style state wrapper whose author has
+// asserted cross-thread safety. Registration must still reject its GC cycle.
+impl std.marker.Sendable for RetainingCleanupState {}
+
+func registerCleanupThatBecomesUnreachable() {
+    let owner = CleanupOwner { value: 1 }
+    match std.runtime.addCleanup(&owner, 7_i32, |value: int32| {
+        CLEANUP_EXECUTED_TOTAL += value
+    }) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("managed cleanup owner should register")
+    }
+}
+
+func registerMultipleCleanupsThatBecomeUnreachable() {
+    let owner = CleanupOwner { value: 2 }
+    match std.runtime.addCleanup(&owner, 3_i32, |value: int32| {
+        CLEANUP_MULTIPLE_TOTAL += value
+    }) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("first cleanup should register")
+    }
+    match std.runtime.addCleanup(&owner, 5_i32, |value: int32| {
+        CLEANUP_MULTIPLE_TOTAL += value
+    }) {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("second cleanup should register")
+    }
+}
+
+func registerAndCancelCleanup() -> (bool, bool) {
+    let owner = CleanupOwner { value: 3 }
+    var cleanup = match std.runtime.addCleanup(&owner, 11_i32, |value: int32| {
+        CLEANUP_CANCELLED_TOTAL += value
+    }) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("cleanup to cancel should register")
+    }
+
+    let cancelled = cleanup.cancel()
+    let cancelledAgain = cleanup.cancel()
+    // Keep the owner alive through cancellation so collection cannot queue the
+    // callback first on another thread.
+    std.runtime.keepAlive(&owner)
+    return (cancelled, cancelledAgain)
+}
+
+@test
+func testCleanupRunsAfterOwnerBecomesUnreachable() {
+    CLEANUP_EXECUTED_TOTAL = 0
+    registerCleanupThatBecomesUnreachable()
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertEqual(
+        CLEANUP_EXECUTED_TOTAL,
+        7_i32,
+        "cleanup should run exactly once after its owner dies",
+    )
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertEqual(
+        CLEANUP_EXECUTED_TOTAL,
+        7_i32,
+        "a completed cleanup must not run again",
+    )
+}
+
+@test
+func testMultipleCleanupsMayShareOneOwner() {
+    CLEANUP_MULTIPLE_TOTAL = 0
+    registerMultipleCleanupsThatBecomeUnreachable()
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertEqual(
+        CLEANUP_MULTIPLE_TOTAL,
+        8_i32,
+        "all cleanups attached to an owner should run",
+    )
+}
+
+@test
+func testCleanupCancellationIsIdempotent() {
+    CLEANUP_CANCELLED_TOTAL = 0
+    let cancelled = registerAndCancelCleanup()
+    std.testing.assertTrue(
+        cancelled.0,
+        "first cancellation should remove a pending cleanup",
+    )
+    std.testing.assertFalse(
+        cancelled.1,
+        "cancelling the same cleanup twice should return false",
+    )
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertEqual(
+        CLEANUP_CANCELLED_TOTAL,
+        0_i32,
+        "a cancelled cleanup must not run",
+    )
+}
+
+@test
+func testCleanupRejectsStateThatDirectlyRetainsOwner() {
+    let owner = CleanupOwner { value: 4 }
+    let ownerPointer = unsafe { &owner as *const CleanupOwner }
+    let state = RetainingCleanupState { owner: ownerPointer }
+    let result = std.runtime.addCleanup(&owner, state, |retained: RetainingCleanupState| {
+        let _ = retained.owner
+    })
+
+    match result {
+        case .err(.ownerRetained) => {}
+        case .err(.notManaged) => std.testing.fail("local owner should be managed")
+        case .ok(_) => std.testing.fail("cleanup state must not retain its owner")
+    }
+}
+
+@test
+func testCleanupRejectsOwnerOutsideManagedHeap() {
+    let result = std.runtime.addCleanup(&CLEANUP_STATIC_OWNER, (), |ignored: ()| {
+        let _ = ignored
+    })
+    match result {
+        case .err(.notManaged) => {}
+        case .err(.ownerRetained) => std.testing.fail("static owner is not retained")
+        case .ok(_) => std.testing.fail("static owner should not register a GC cleanup")
+    }
+}
