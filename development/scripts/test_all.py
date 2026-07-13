@@ -50,6 +50,8 @@ def main() -> int:
     repo_root = script_dir.parent.parent
     build_script = repo_root / "development" / "scripts" / "build_dist.py"
     language_tests_script = repo_root / "development" / "scripts" / "language_tests.py"
+    llvm_toolchain_script = repo_root / "development" / "scripts" / "llvm_toolchain.py"
+    llvm_toolchain_tests = repo_root / "development" / "scripts" / "test_llvm_toolchain.py"
     dist_dir = repo_root / "dist"
     taro_bin = dist_dir / "bin" / "taro"
     std_path = repo_root / "std"
@@ -59,12 +61,24 @@ def main() -> int:
     current_stage = "startup"
 
     try:
+        current_stage = "LLVM toolchain tests"
+        print_stage(1, stage_count, "LLVM toolchain and Cargo tests")
+        run_command([sys.executable, str(llvm_toolchain_tests)], cwd=repo_root)
+
         current_stage = "cargo tests"
-        print_stage(1, stage_count, "Cargo tests")
         if args.skip_cargo_tests:
             print("SKIPPED: disabled via --skip-cargo-tests")
         else:
-            run_command(["cargo", "test", "--workspace"], cwd=repo_root)
+            run_command(
+                [
+                    sys.executable,
+                    str(llvm_toolchain_script),
+                    "cargo",
+                    "test",
+                    "--workspace",
+                ],
+                cwd=repo_root,
+            )
 
         current_stage = "build dist"
         print_stage(2, stage_count, "Build dist")

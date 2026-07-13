@@ -5,7 +5,36 @@ Taro is an experimental programming language that draws inspiration from Rust, S
 ## Prerequisites
 
 - **Rust**: Latest stable version
-- **LLVM**: Version 16
+- **LLVM**: Version 22.1.x (22.1.8 is the certified development version)
+
+### LLVM Setup
+
+Repository scripts and Make targets resolve LLVM 22.1 automatically. They honor
+`LLVM_SYS_221_PREFIX` first, then check versioned `llvm-config` binaries,
+Homebrew, and common Unix installation prefixes. Confirm the selected toolchain
+before building:
+
+```bash
+make llvm-check
+```
+
+On macOS with Homebrew:
+
+```bash
+brew install llvm@22
+export LLVM_SYS_221_PREFIX="$(brew --prefix llvm@22)"
+```
+
+On Linux, point the same variable at the installation prefix containing
+`bin/llvm-config`; a common packaged layout is:
+
+```bash
+export LLVM_SYS_221_PREFIX=/usr/lib/llvm-22
+```
+
+The export is optional for repository scripts when discovery succeeds, but is
+recommended when invoking `cargo` directly or when multiple LLVM releases are
+installed.
 
 ## Quick Start
 
@@ -39,7 +68,7 @@ Taro is an experimental programming language that draws inspiration from Rust, S
 
 Taro is experimental. Syntax, compiler metadata, standard library APIs, and package tooling can change between commits.
 
-- Most repository workflows assume a Unix-like shell with LLVM 16 available.
+- Repository workflows currently support Unix-like hosts with LLVM 22.1.x; Windows remains out of scope.
 - The standard library is an attached toolchain artifact. Rebuild `dist/` after compiler metadata changes or when attached std artifacts are missing.
 - Package management supports manifests, lockfiles, Git dependencies, and root-local path dependencies, but there is no public registry yet.
 - Incremental compilation reuses unchanged semantic and codegen artifacts for dependencies, root packages, and single-file commands. Executables are relinked for the current output path and linker inputs.
@@ -531,7 +560,9 @@ The standard library provides assertion helpers in `std/testing`:
 To verify the compiler implementation, use the command that matches the test surface you want:
 
 - `cargo test --workspace`: Rust unit/integration/doctests for workspace crates.
+- `make llvm-tests`: Focused tests for LLVM 22.1 discovery, validation, and build environment setup.
 - `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Bootstraps an isolated distribution via `build_dist.py` (release by default; pass `--debug` for debug bootstrap).
+- `make codegen-matrix`: Runs the high-risk LLVM codegen manifest with both debug and release generated-program profiles.
 - `make std-tests`: Runs std package tests only (`taro test std`) via the `test_all.py` std stage.
 - `python3 development/scripts/test_all.py`: Unified fail-fast pipeline (cargo tests, dist build, std compile smoke, std package tests, language tests).
 - `make all-tests`: Shorthand for the unified pipeline.
@@ -544,6 +575,7 @@ If you only want language tests with simple flags:
 make language-tests            # JOBS auto-defaults to the language test runner default
 make language-tests JOBS=4     # optional override
 make language-tests FILTER=std_
+make codegen-matrix JOBS=4     # focused backend coverage in both codegen profiles
 ```
 
 ### Language Test Directives

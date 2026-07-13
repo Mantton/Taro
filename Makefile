@@ -10,18 +10,21 @@ LANGUAGE_TESTS := $(ROOT)/development/scripts/language_tests.py
 TEST_ALL := $(ROOT)/development/scripts/test_all.py
 BENCHMARK_TIMINGS := $(ROOT)/development/scripts/benchmark_timings.py
 RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
+LLVM_TOOLCHAIN := $(ROOT)/development/scripts/llvm_toolchain.py
+LLVM_TOOLCHAIN_TESTS := $(ROOT)/development/scripts/test_llvm_toolchain.py
 CODEGEN_MATRIX := $(ROOT)/language_tests/codegen_matrix.txt
 
 DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests benchmark
+.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests benchmark
 
 help:
 	@echo "Taro development shortcuts"
 	@echo ""
 	@echo "Build:"
+	@echo "  make llvm-check               Show the LLVM 22.1 toolchain used by Taro"
 	@echo "  make compiler                 Build taro-bin (debug)"
 	@echo "  make compiler-release         Build taro-bin (release)"
 	@echo "  make lsp                      Build dist/ and taro-lsp (debug)"
@@ -35,6 +38,7 @@ help:
 	@echo "  make check FILE=examples/hello.tr"
 	@echo ""
 	@echo "Tests:"
+	@echo "  make llvm-tests               Run LLVM toolchain resolver tests"
 	@echo "  make test                     Run cargo workspace tests"
 	@echo "  make language-tests           Run language tests"
 	@echo "  make language-tests JOBS=4"
@@ -49,11 +53,18 @@ help:
 	@echo "Benchmarks:"
 	@echo "  make benchmark PACKAGE=std"
 	@echo "  make benchmark PACKAGE=std RUNS=10"
+
+llvm-check:
+	$(PYTHON) $(LLVM_TOOLCHAIN)
+
+llvm-tests:
+	$(PYTHON) $(LLVM_TOOLCHAIN_TESTS)
+
 compiler:
-	$(CARGO) build -p taro-bin
+	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-bin
 
 compiler-release:
-	$(CARGO) build -p taro-bin --release
+	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-bin --release
 
 lsp:
 	$(PYTHON) $(BUILD_DIST) --profile debug
@@ -62,10 +73,10 @@ lsp-release:
 	$(PYTHON) $(BUILD_DIST) --profile release
 
 lsp-bin:
-	$(CARGO) build -p taro-lsp
+	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-lsp
 
 lsp-release-bin:
-	$(CARGO) build -p taro-lsp --release
+	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-lsp --release
 
 dist:
 	$(PYTHON) $(BUILD_DIST)
@@ -85,7 +96,7 @@ check: dist
 	TARO_HOME=$(DIST_DIR) $(TARO) check $(FILE) --std-path $(STD_PATH)
 
 cargo-test:
-	$(CARGO) test --workspace
+	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) test --workspace
 
 test: cargo-test
 
