@@ -27,6 +27,8 @@ public enum ErrorKind: Copy, PartialEq {
     case networkUnreachable
     /// No route to the destination host is available.
     case hostUnreachable
+    /// The requested operation used an explicitly closed resource.
+    case closed
     /// A pipe or socket endpoint has been closed.
     case brokenPipe
     /// An entity already exists.
@@ -195,6 +197,7 @@ impl Display for ErrorKind {
             case .addressNotAvailable => into.writeString("address not available")
             case .networkUnreachable => into.writeString("network unreachable")
             case .hostUnreachable => into.writeString("host unreachable")
+            case .closed => into.writeString("resource closed")
             case .brokenPipe => into.writeString("broken pipe")
             case .alreadyExists => into.writeString("already exists")
             case .wouldBlock => into.writeString("would block")

@@ -1,0 +1,44 @@
+func spawnBorrowedList() -> std.task.Task[int32] {
+    var values = std.collections.List[int32]()
+    values.append(10_i32)
+    values.append(20_i32)
+
+    // The closure borrows a heap-promoted local. The AsyncFnOnce adapter must
+    // own and trace that closure after this function's frame has returned.
+    return std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return values.len() as int32
+    })
+}
+
+func invokePairOnce[F: std.ops.AsyncFnOnce(int32, int32) -> int32](_ operation: F) async -> int32 {
+    return await operation(19_i32, 23_i32)
+}
+
+func spawnGeneric[T](_ value: T) -> std.task.Task[T] {
+    return std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return value
+    })
+}
+
+func main() async {
+    let borrowedTask = spawnBorrowedList()
+    std.runtime.collect()
+    let borrowedCount = (await borrowedTask.result()).unwrap()
+    assert(borrowedCount == 2_i32, "spawned closure should outlive its creator")
+
+    let pairResult = await invokePairOnce(|left: int32, right: int32| async {
+        await std.testing.yieldNow()
+        return left + right
+    })
+    assert(pairResult == 42_i32, "AsyncFnOnce should pack multiple arguments")
+
+    var values = std.collections.List[int32]()
+    values.append(7_i32)
+    let genericTask = spawnGeneric(values)
+    let returnedValues = (await genericTask.result()).unwrap()
+    assert(returnedValues.len() == 1 as usize, "generic closure adapter should preserve captured types")
+
+    std.print("PASS: owned AsyncFnOnce adapters\n")
+}

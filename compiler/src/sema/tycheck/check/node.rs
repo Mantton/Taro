@@ -14,10 +14,10 @@ use crate::{
             lower::lowerer::TypeLowerer,
             solve::{
                 Adjustment, ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
-                BindOverloadGoalData, ConstraintSystem, DerefGoalData, DisjunctionBranch, Goal,
-                InferredStaticMemberGoalData, MemberGoalData, MethodCallData, StructLiteralField,
-                StructLiteralGoalData, TupleAccessGoalData, UnOpGoalData,
-                match_arguments_to_parameters, validate_arity,
+                BindOverloadGoalData, CompilerCallContext, ConstraintSystem, DerefGoalData,
+                DisjunctionBranch, Goal, InferredStaticMemberGoalData, MemberGoalData,
+                MethodCallData, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
+                UnOpGoalData, match_arguments_to_parameters, validate_arity,
             },
             utils::{
                 const_eval::eval_const_expression_with_type_results,

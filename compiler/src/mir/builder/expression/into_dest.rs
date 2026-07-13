@@ -11,8 +11,9 @@ use crate::{
         },
     },
     sema::{
-        models::{GenericArgument, GenericArguments, TyKind},
+        models::{GenericArgument, GenericArguments, Ty, TyKind},
         resolve::models::DefinitionKind,
+        tycheck::utils::instantiate::instantiate_signature_with_args,
     },
     span::Span,
     thir::{self, ExprId, ExprKind, FieldIndex},
@@ -571,6 +572,30 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         };
 
         let callee_ty = callee_expr.ty;
+        let callable_trait_target =
+            if matches!(callee_ty.kind(), crate::sema::models::TyKind::Parameter(_)) {
+                self.get_callable_trait_ref(callee_ty)
+                    .and_then(|interface| {
+                        let method_id = self.get_callable_trait_method_id(callee_ty)?;
+                        let signature = instantiate_signature_with_args(
+                            self.gcx,
+                            self.gcx.get_signature(method_id),
+                            interface.arguments,
+                        );
+                        let mut method_ty = Ty::from_labeled_signature(self.gcx, &signature);
+                        if self.gcx.definition_is_async(method_id)
+                            && let TyKind::FnPointer { inputs, .. } = method_ty.kind()
+                        {
+                            method_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
+                                inputs,
+                                output: self.gcx.async_handle_ty(),
+                            });
+                        }
+                        Some((method_id, interface.arguments, method_ty))
+                    })
+            } else {
+                None
+            };
         let closure_self_param_ty =
             if let crate::sema::models::TyKind::Closure { closure_def_id, .. } = callee_ty.kind() {
                 self.gcx
@@ -589,7 +614,12 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             None
         };
 
-        let function = if let Some(place) = callable_self_place.clone() {
+        let function = if let Some((method_id, generic_args, method_ty)) = callable_trait_target {
+            Operand::Constant(Constant {
+                ty: method_ty,
+                value: mir::ConstantKind::Function(method_id, generic_args, method_ty),
+            })
+        } else if let Some(place) = callable_self_place.clone() {
             Operand::Copy(place)
         } else if is_async {
             unpack!(block = self.async_callable_operand(block, callee, callee_ty))
@@ -788,7 +818,35 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if let Some(self_arg) = closure_self_arg {
             final_args.push(self_arg);
         }
-        final_args.extend(fixed_args);
+        if callable_trait_target.is_some() {
+            let args_ty =
+                fn_trait_args_ty.expect("callable type parameter must carry its argument type");
+            let packed_args = if matches!(args_ty.kind(), TyKind::Tuple(_)) {
+                let tuple_local = self.new_temp_with_ty(args_ty, span);
+                self.push_assign(
+                    block,
+                    Place::from_local(tuple_local),
+                    Rvalue::Aggregate {
+                        kind: AggregateKind::Tuple,
+                        fields: IndexVec::from_vec(fixed_args),
+                    },
+                    span,
+                );
+                if self.is_type_copyable(args_ty) {
+                    Operand::Copy(Place::from_local(tuple_local))
+                } else {
+                    Operand::Move(Place::from_local(tuple_local))
+                }
+            } else {
+                let [argument] = fixed_args.as_slice() else {
+                    panic!("ICE: single-argument callable bound received the wrong arity")
+                };
+                argument.clone()
+            };
+            final_args.push(packed_args);
+        } else {
+            final_args.extend(fixed_args);
+        }
         if let Some(list) = variadic_list_operand {
             final_args.push(list);
         }
@@ -908,12 +966,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     ) -> (BasicBlockId, LocalId) {
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
         block = self
-            .lower_call_into_dest(
+            .lower_async_fn_once_into_dest(
                 Place::from_local(handle_local),
                 block,
                 thunk,
-                &[],
-                true,
+                task_output_ty,
                 span,
             )
             .into_block();
@@ -954,6 +1011,86 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             },
         );
         (after_spawn, task_token_local)
+    }
+
+    /// Invoke a spawned operation through `AsyncFnOnce.callOnce` even when its
+    /// concrete closure kind is the reusable `AsyncFn` or `AsyncFnMut`.
+    ///
+    /// Public task APIs are lowered directly at their call site, bypassing the
+    /// generic body in `std.task.spawn`. Calling the concrete closure body here
+    /// would therefore borrow its environment and let the returned child
+    /// future outlive that environment. The interface adapter owns the closure
+    /// in its own async frame and borrows it only for the lifetime of that frame.
+    fn lower_async_fn_once_into_dest(
+        &mut self,
+        destination: Place<'ctx>,
+        mut block: BasicBlockId,
+        thunk: ExprId,
+        output_ty: Ty<'ctx>,
+        span: Span,
+    ) -> BlockAnd<()> {
+        let thunk_ty = self.thir.exprs[thunk].ty;
+        let interface_id = self
+            .gcx
+            .std_item_def(StdItem::AsyncFnOnce)
+            .expect("AsyncFnOnce std item must be available for task lowering");
+        let method_id = self
+            .gcx
+            .get_interface_requirements(interface_id)
+            .and_then(|requirements| {
+                requirements
+                    .methods
+                    .iter()
+                    .find(|method| self.gcx.symbol_eq(method.name, "callOnce"))
+                    .map(|method| method.id)
+            })
+            .expect("AsyncFnOnce.callOnce requirement must be available for task lowering");
+
+        let empty_inputs = self.gcx.store.interners.intern_ty_list(vec![]);
+        let args_ty = self
+            .gcx
+            .store
+            .interners
+            .intern_ty(TyKind::Tuple(empty_inputs));
+        let generic_args = self.gcx.store.interners.intern_generic_args(vec![
+            GenericArgument::Type(thunk_ty),
+            GenericArgument::Type(args_ty),
+            GenericArgument::Type(output_ty),
+        ]);
+        let callable_inputs = self
+            .gcx
+            .store
+            .interners
+            .intern_ty_list(vec![thunk_ty, args_ty]);
+        let callable_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
+            inputs: callable_inputs,
+            output: self.gcx.async_handle_ty(),
+        });
+
+        let thunk_operand = unpack!(block = self.as_operand(block, thunk));
+        let unit_operand = Operand::Constant(Constant {
+            ty: args_ty,
+            value: mir::ConstantKind::Unit,
+        });
+        let next = self.new_block();
+        let function = Operand::Constant(Constant {
+            ty: callable_ty,
+            value: mir::ConstantKind::Function(method_id, generic_args, callable_ty),
+        });
+        let unwind = self.call_unwind_for_callee(&function, span);
+        self.terminate(
+            block,
+            span,
+            TerminatorKind::Call {
+                func: function,
+                args: vec![thunk_operand, unit_operand],
+                devirt_hint: None,
+                destination,
+                target: next,
+                unwind,
+            },
+        );
+        next.unit()
     }
 
     fn spawn_metadata_operands(&self, span: Span) -> [Operand<'ctx>; 4] {
@@ -1529,12 +1666,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let group_operand = unpack!(block = self.as_operand(block, *group_id));
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
         block = self
-            .lower_call_into_dest(
+            .lower_async_fn_once_into_dest(
                 Place::from_local(handle_local),
                 block,
                 *thunk,
-                &[],
-                true,
+                result_ty,
                 span,
             )
             .into_block();
@@ -1604,12 +1740,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let handle_local = self.new_temp_with_ty(self.gcx.async_handle_ty(), span);
         block = self
-            .lower_call_into_dest(
+            .lower_async_fn_once_into_dest(
                 Place::from_local(handle_local),
                 block,
                 *thunk,
-                &[],
-                true,
+                result_ty,
                 span,
             )
             .into_block();

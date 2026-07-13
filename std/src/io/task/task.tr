@@ -40,18 +40,81 @@ func writeSourceLoop(_ source_id: usize, _ buf: *const uint8, _ len: usize) asyn
     }
 }
 
-public struct AsyncStream {
+struct AsyncStreamCloseState {
     inner: std.sys.io.RawAsyncStream
+    cleanup: std.runtime.Cleanup?
 }
 
-public func fromRaw(_ inner: std.sys.io.RawAsyncStream) -> AsyncStream {
-    AsyncStream { inner }
+func snapshotRawAsyncStream(_ stream: &std.sys.io.RawAsyncStream) -> std.sys.io.RawAsyncStream {
+    let ptr = unsafe { stream as *const std.sys.io.RawAsyncStream }
+    return unsafe { ptr.read() }
+}
+
+func takeRawAsyncStream(_ state: &AsyncStreamCloseState) -> std.sys.io.RawAsyncStream {
+    let ptr = unsafe {
+        (&state.inner as *const std.sys.io.RawAsyncStream) as *mut std.sys.io.RawAsyncStream
+    }
+    return std.sys.io.take(unsafe { ptr as &mut std.sys.io.RawAsyncStream })
+}
+
+func closedStreamError(_ operation: string) -> Error {
+    Error(.closed).withOperation(operation)
+}
+
+func streamSourceId(_ state: &AsyncStreamCloseState, _ operation: string) -> Result[usize, Error] {
+    let sourceId = std.sys.io.sourceId(&state.inner)
+    std.runtime.keepAlive(state)
+    if sourceId == 0 {
+        return .err(closedStreamError(operation))
+    }
+    return .ok(sourceId)
+}
+
+public struct AsyncStream {
+    state: &AsyncStreamCloseState
+}
+
+impl std.marker.Sendable for AsyncStream {}
+
+/// Adopt a raw async stream and register its abandoned-resource cleanup.
+/// Registration failure closes `inner` before returning the error.
+public func fromRaw(_ inner: std.sys.io.RawAsyncStream) -> Result[AsyncStream, Error] {
+    if std.sys.io.sourceId(&inner) == 0 {
+        return .err(closedStreamError("adopt async stream"))
+    }
+
+    let state = make(AsyncStreamCloseState {
+        inner,
+        cleanup: .none,
+    })
+    let cleanupState = snapshotRawAsyncStream(&state.inner)
+    let cleanupRes = std.runtime.addCleanup(
+        state,
+        cleanupState,
+        |raw: std.sys.io.RawAsyncStream| {
+            let _ = std.sys.io.close(raw)
+        },
+    )
+
+    match cleanupRes {
+        case .ok(cleanup) => {
+            state.cleanup = .some(cleanup)
+            std.runtime.keepAlive(state)
+            return .ok(AsyncStream { state })
+        }
+        case .err(_) => {
+            let raw = takeRawAsyncStream(state)
+            let _ = std.sys.io.close(raw)
+            std.runtime.keepAlive(state)
+            return .err(Error(.unexpected).withOperation("register resource cleanup"))
+        }
+    }
 }
 
 public func stdin() -> Result[AsyncStream, Error] {
     let res = std.sys.io.stdin()
     match res {
-        case .ok(inner) => return .ok(AsyncStream { inner })
+        case .ok(inner) => return fromRaw(inner)
         case .err(err) => return .err(err)
     }
 }
@@ -59,7 +122,7 @@ public func stdin() -> Result[AsyncStream, Error] {
 public func stdout() -> Result[AsyncStream, Error] {
     let res = std.sys.io.stdout()
     match res {
-        case .ok(inner) => return .ok(AsyncStream { inner })
+        case .ok(inner) => return fromRaw(inner)
         case .err(err) => return .err(err)
     }
 }
@@ -67,7 +130,7 @@ public func stdout() -> Result[AsyncStream, Error] {
 public func stderr() -> Result[AsyncStream, Error] {
     let res = std.sys.io.stderr()
     match res {
-        case .ok(inner) => return .ok(AsyncStream { inner })
+        case .ok(inner) => return fromRaw(inner)
         case .err(err) => return .err(err)
     }
 }
@@ -76,7 +139,20 @@ public func pipe() -> Result[(AsyncStream, AsyncStream), Error] {
     let res = std.sys.io.pipe()
     match res {
         case .ok((readEnd, writeEnd)) => {
-            return .ok((AsyncStream { inner: readEnd }, AsyncStream { inner: writeEnd }))
+            let readStream = match fromRaw(readEnd) {
+                case .ok(value) => value
+                case .err(err) => {
+                    let _ = std.sys.io.close(writeEnd)
+                    return .err(err)
+                }
+            }
+            match fromRaw(writeEnd) {
+                case .ok(writeStream) => return .ok((readStream, writeStream))
+                case .err(err) => {
+                    let _ = readStream.close()
+                    return .err(err)
+                }
+            }
         }
         case .err(err) => return .err(err)
     }
@@ -228,101 +304,182 @@ public func readToString[R: AsyncReader](_ reader: &R) async -> Result[string, E
 
 impl AsyncStream {
     public func sourceId(&self) -> usize {
-        std.sys.io.sourceId(&self.inner)
+        let sourceId = std.sys.io.sourceId(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        return sourceId
     }
 
     public func waitReadable(&self) async -> Result[(), Error] {
-        await std.sys.io.waitReadable(&self.inner)
+        let sourceId = match streamSourceId(self.state, "wait readable") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let result = await std.sys.io.waitReadableSourceId(sourceId)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func waitWritable(&self) async -> Result[(), Error] {
-        await std.sys.io.waitWritable(&self.inner)
+        let sourceId = match streamSourceId(self.state, "wait writable") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let result = await std.sys.io.waitWritableSourceId(sourceId)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
-    public func close(self) -> Result[(), Error] {
-        let stream = self.inner
-        std.sys.io.close(stream)
+    public func close(&self) -> Result[(), Error] {
+        let cancelled = match &self.state.cleanup {
+            case .some(cleanup) => cleanup.cancel()
+            case .none => false
+        }
+        if !cancelled {
+            std.runtime.keepAlive(self.state)
+            return .err(closedStreamError("close"))
+        }
+
+        let stream = takeRawAsyncStream(self.state)
+        let result = std.sys.io.close(stream)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+        let sourceId = match streamSourceId(self.state, "read") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
         let len = buf.len()
         if len == 0 {
+            std.runtime.keepAlive(self.state)
             return .ok(0)
         }
 
-        let sourceId = std.sys.io.sourceId(&self.inner)
         var writable = buf
         let ptr = unsafe { writable.at(0) as *mut uint8 }
-        await readSourceLoop(sourceId, ptr, len)
+        let result = await readSourceLoop(sourceId, ptr, len)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
+        let sourceId = match streamSourceId(self.state, "write") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
         let len = buf.len()
         if len == 0 {
+            std.runtime.keepAlive(self.state)
             return .ok(0)
         }
 
-        let sourceId = std.sys.io.sourceId(&self.inner)
         let ptr = unsafe { buf.at(0) as *const uint8 }
-        await writeSourceLoop(sourceId, ptr, len)
+        let result = await writeSourceLoop(sourceId, ptr, len)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func flush(&self) async -> Result[(), Error] {
+        match streamSourceId(self.state, "flush") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         return .ok(())
     }
 
     public func writeAll(&self, _ buf: Span[uint8]) async -> Result[(), Error] {
+        match streamSourceId(self.state, "write all") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         await std.io.task.writeAll(self, buf)
     }
 
     public func writeString(&self, _ s: string) async -> Result[(), Error] {
+        match streamSourceId(self.state, "write all") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         await std.io.task.writeString(self, s)
     }
 
     public func readExact(&self, _ buf: MutableSpan[uint8]) async -> Result[(), Error] {
+        match streamSourceId(self.state, "read exact") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         await std.io.task.readExact(self, buf)
     }
 
     public func readAtLeast(&self, _ min: usize, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+        match streamSourceId(self.state, "read at least") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         await std.io.task.readAtLeast(self, min, buf)
     }
 
     public func readAll(&self) async -> Result[std.collections.List[uint8], Error] {
+        match streamSourceId(self.state, "read") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         await std.io.task.readAll(self)
     }
 
     public func readToString(&self) async -> Result[string, Error] {
+        match streamSourceId(self.state, "read") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         await std.io.task.readToString(self)
     }
 }
 
 impl AsyncReader for AsyncStream {
     public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
+        let sourceId = match streamSourceId(self.state, "read") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
         let len = buf.len()
         if len == 0 {
+            std.runtime.keepAlive(self.state)
             return .ok(0)
         }
 
-        let sourceId = std.sys.io.sourceId(&self.inner)
         var writable = buf
         let ptr = unsafe { writable.at(0) as *mut uint8 }
-        await readSourceLoop(sourceId, ptr, len)
+        let result = await readSourceLoop(sourceId, ptr, len)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 }
 
 impl AsyncWriter for AsyncStream {
     public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
+        let sourceId = match streamSourceId(self.state, "write") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
         let len = buf.len()
         if len == 0 {
+            std.runtime.keepAlive(self.state)
             return .ok(0)
         }
 
-        let sourceId = std.sys.io.sourceId(&self.inner)
         let ptr = unsafe { buf.at(0) as *const uint8 }
-        await writeSourceLoop(sourceId, ptr, len)
+        let result = await writeSourceLoop(sourceId, ptr, len)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func flush(&self) async -> Result[(), Error] {
+        match streamSourceId(self.state, "flush") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         return .ok(())
     }
 }

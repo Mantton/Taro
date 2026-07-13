@@ -1,0 +1,13 @@
+import dep.{makeCounter, readThroughInterface}
+
+func main() async {
+    let counter = makeCounter(40_i32)
+    let inherent = await counter.read()
+    assert(inherent == 41_i32, "inherent async method should retain its own symbol")
+    let viaInterface = await readThroughInterface(&counter)
+    assert(
+        viaInterface == 42_i32,
+        "interface async method should retain its own symbol",
+    )
+    std.print("PASS: cross-package impl method mangling\n")
+}

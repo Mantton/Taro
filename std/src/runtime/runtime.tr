@@ -33,13 +33,11 @@ impl Cleanup {
     ///
     /// Call `keepAlive(&owner)` after `cancel()` when cancellation must win a
     /// race with collection of the owner.
-    public func cancel(&mut self) -> bool {
-        let token = self.token
-        if token < 2 {
+    public func cancel(&self) -> bool {
+        if self.token < 2 {
             return false
         }
-        self.token = 0
-        return __rt__cleanup_cancel(token)
+        return __rt__cleanup_cancel(self.token)
     }
 }
 

@@ -549,6 +549,8 @@ fn build_closure_witness<'ctx>(
     let mut witness = ConformanceWitness::default();
     for method in &requirements.methods {
         let args_template = GenericsBuilder::identity_for_item(gcx, method.id);
+        let existing = gcx.find_synthetic_method(TypeHead::Closure(closure_def_id), method.id);
+        let syn_id = existing.and_then(|info| info.syn_id);
         let info = crate::sema::tycheck::derive::SyntheticMethodInfo {
             kind,
             self_ty: goal.self_ty,
@@ -557,18 +559,20 @@ fn build_closure_witness<'ctx>(
             interface_bindings: goal.bindings,
             method_id: method.id,
             method_name: method.name,
-            syn_id: None,
+            syn_id,
         };
-        gcx.register_synthetic_method(
-            TypeHead::Closure(closure_def_id),
-            method.id,
-            method.name,
-            info,
-        );
+        if existing.is_none() {
+            gcx.register_synthetic_method(
+                TypeHead::Closure(closure_def_id),
+                method.id,
+                method.name,
+                info,
+            );
+        }
         witness.method_witnesses.insert(
             method.id,
             MethodWitness {
-                implementation: MethodImplementation::Synthetic(kind, None),
+                implementation: MethodImplementation::Synthetic(kind, syn_id),
                 args_template,
             },
         );

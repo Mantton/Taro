@@ -1,0 +1,22 @@
+// Regression coverage for deferred callable conformance and synthetic Fn adapters.
+// The closure owns a non-Copy aggregate but only copies one field from it, so
+// it remains reusable and must be callable through a generic Fn bound.
+
+struct Holder {
+    value: int32
+    marker: string
+}
+
+func callTwice[F: Fn() -> int32](_ operation: F) -> int32 {
+    operation() + operation()
+}
+
+func main() {
+    let holder = Holder {
+        value: 21_i32,
+        marker: "owned",
+    }
+    let result = callTwice(|| -> int32 { holder.value })
+    assert(result == 42_i32, "generic Fn adapter should preserve reusable owned captures")
+    print("PASS: generic Fn closure adapter\n")
+}

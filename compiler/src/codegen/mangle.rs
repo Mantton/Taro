@@ -428,8 +428,13 @@ pub fn mangle(gcx: GlobalContext<'_>, id: hir::DefinitionID) -> String {
             .map(|input| ty_key(gcx, input.ty))
             .collect::<Vec<_>>()
             .join(",");
+        // A signature alone is not a unique callable identity. Distinct legal
+        // declarations can share one, notably an inherent method and an
+        // interface implementation. Include the metadata-stable definition
+        // identity so LLVM never has to append order-dependent suffixes.
         let sig_key = format!(
-            "signature<inputs[{}]=({input_keys});output={}>",
+            "definition={};signature<inputs[{}]=({input_keys});output={}>",
+            definition_key(id),
             sig.inputs.len(),
             ty_key(gcx, sig.output)
         );

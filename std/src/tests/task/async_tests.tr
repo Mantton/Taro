@@ -165,6 +165,15 @@ func pipeWriterBody() async -> int32 {
     return written as int32
 }
 
+@cfg(family("unix"))
+func pipeReaderWithAbandonedWriter() -> std.io.task.AsyncStream {
+    let pair = match std.io.task.pipe() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+    }
+    return pair.0
+}
+
 func asyncValue() async -> int32 {
     return 7
 }
@@ -253,6 +262,19 @@ func gcSuspendedTaskValue(_ captured: int32) async -> int32 {
     return captured
 }
 
+struct GcSuspendedTaskOwner {
+    value: int32
+}
+
+struct GcSuspendedTaskWrapper {
+    owner: &GcSuspendedTaskOwner
+}
+
+func gcSuspendedManagedTaskValue(_ captured: &GcSuspendedTaskOwner) async -> int32 {
+    await std.task.sleep(std.time.Duration.fromMillis(10_u64))
+    return captured.value
+}
+
 @test
 func suspendedSpawnedTasksSurviveManualGc() async {
     let taskCount = 17_i32
@@ -281,6 +303,41 @@ func suspendedSpawnedTasksSurviveManualGc() async {
     }
 
     std.testing.assertEqual(sum, 153_i32, "manual GC should preserve suspended spawned task frames")
+}
+
+@test
+func suspendedSpawnedTaskManagedReferencesSurviveManualGc() async {
+    let owner = make(GcSuspendedTaskOwner { value: 91_i32 })
+    let wrapper = GcSuspendedTaskWrapper { owner }
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        return await gcSuspendedManagedTaskValue(wrapper.owner)
+    })
+
+    std.runtime.collect()
+
+    let value = (await task.result()).unwrap()
+    std.testing.assertEqual(value, 91_i32, "manual GC should trace managed references in spawned task frames")
+}
+
+@test
+func spawnedTaskCanCancelCleanupForCapturedOwnerAfterManualGc() async {
+    let owner = make(GcSuspendedTaskOwner { value: 37_i32 })
+    let cleanup = match std.runtime.addCleanup(owner, (), |ignored: ()| {}) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("captured owner cleanup should register")
+    }
+    let task = std.task.spawn(|| async {
+        await std.testing.yieldNow()
+        let cancelled = cleanup.cancel()
+        std.runtime.keepAlive(owner)
+        return cancelled
+    })
+
+    std.runtime.collect()
+
+    let cancelled = (await task.result()).unwrap()
+    std.testing.assertTrue(cancelled, "captured task owner should remain live until cleanup cancellation")
 }
 
 struct AsyncPoint {
@@ -1269,6 +1326,111 @@ func asyncStreamPipeRoundTrip() async {
     match closeRes {
         case .ok(_) => {}
         case .err(err) => std.panic.panic("pipe reader close should succeed")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func asyncStreamCleanupClosesAbandonedPipeWriter() async {
+    let reader = pipeReaderWithAbandonedWriter()
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+
+    var byte: uint8 = 0
+    let readRes = await reader.read(
+        std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1),
+    )
+    match readRes {
+        case .ok(count) => std.testing.assertEqual(count, 0 as usize, "abandoned writer cleanup should produce EOF")
+        case .err(_) => std.testing.fail("reader should observe EOF after abandoned writer cleanup")
+    }
+    std.testing.assertTrue(reader.close().isOk(), "pipe reader close should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func copiedAsyncStreamsShareExactlyOnceCloseState() async {
+    let pair = match std.io.task.pipe() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("pipe() should succeed on unix")
+    }
+    let reader = pair.0
+    SHARED_PIPE_WRITE_STREAM = .some(pair.1)
+
+    let first = match SHARED_PIPE_WRITE_STREAM {
+        case .some(value) => value
+        case .none => std.panic.panic("first copied stream should exist")
+    }
+    let second = match SHARED_PIPE_WRITE_STREAM {
+        case .some(value) => value
+        case .none => std.panic.panic("second copied stream should exist")
+    }
+
+    std.runtime.collect()
+    std.testing.assertTrue(first.close().isOk(), "first copied stream close should win")
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+
+    match second.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "second copied stream close should return closed")
+        case .ok(_) => std.testing.fail("second copied stream close should fail")
+    }
+
+    var byte: uint8 = 0
+    let readRes = await reader.read(
+        std.mem.MutableSpan[uint8].from(unsafe { (&mut byte) as *mut uint8 }, 1),
+    )
+    match readRes {
+        case .ok(count) => std.testing.assertEqual(count, 0 as usize, "exactly one writer close should produce EOF")
+        case .err(_) => std.testing.fail("reader should observe EOF after copied writer closes")
+    }
+
+    SHARED_PIPE_WRITE_STREAM = .none
+    std.testing.assertTrue(reader.close().isOk(), "copied stream test reader should close")
+}
+
+@cfg(family("unix"))
+@test
+func localAsyncStreamSurvivesManualGc() async {
+    let pair = match std.io.task.pipe() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("local-root pipe should open")
+    }
+    let reader = pair.0
+    let writer = pair.1
+
+    std.runtime.collect()
+    std.testing.assertTrue(writer.close().isOk(), "live local stream should survive collection")
+    std.testing.assertTrue(reader.close().isOk(), "local-root pipe reader should close")
+}
+
+@cfg(family("unix"))
+@test
+func explicitAsyncStreamCloseWinsCollectionRace() async {
+    var iteration: int32 = 0
+    while iteration < 16_i32 {
+        let pair = match std.io.task.pipe() {
+            case .ok(value) => value
+            case .err(_) => std.panic.panic("race pipe should open")
+        }
+        let reader = pair.0
+        let writer = pair.1
+        let closeTask = std.task.spawn(|| async {
+            await std.testing.yieldNow()
+            return writer.close().isOk()
+        })
+
+        // Collect while the resource is live only in another task's frame.
+        // keepAlive in close must keep cancellation ahead of finalization.
+        std.runtime.collect()
+        let closeWon = (await closeTask.result()).unwrap()
+        std.testing.assertTrue(closeWon, "explicit close should cancel cleanup during collection")
+
+        std.runtime.collect()
+        std.testing.waitForCleanups()
+        std.testing.assertTrue(reader.close().isOk(), "race pipe reader should close")
+        iteration += 1_i32
     }
 }
 

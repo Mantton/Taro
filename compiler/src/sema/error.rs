@@ -81,6 +81,7 @@ pub enum TypeError<'ctx> {
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
     },
+    TargetedConformance(&'static str),
 
     ArgCountMismatch(usize, usize),
     ArgMismatch(ExpectedFound<GenericArgument<'ctx>>),
@@ -231,6 +232,7 @@ impl<'ctx> TypeError<'ctx> {
                     interface.format(gcx)
                 )
             }
+            TypeError::TargetedConformance(message) => message.into(),
 
             TypeError::ArgCountMismatch(expected, found) => {
                 format!("expected {} generic arguments, found {}", expected, found)

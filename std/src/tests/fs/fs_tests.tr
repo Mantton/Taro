@@ -1,5 +1,14 @@
 import std.io.{Reader, Seeker, SeekFrom, Writer}
 
+@cfg(family("unix"))
+func closeFileBeforeDescriptorReuse(_ path: string) {
+    var file = match std.fs.File.create(path) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("original descriptor should open")
+    }
+    std.testing.assertTrue(file.close().isOk(), "original descriptor should close")
+}
+
 @test
 func testFileLifecycle() {
     let testPath = "taro_test_fs_lifecycle.txt"
@@ -51,6 +60,50 @@ func testFileLifecycle() {
 
     let removeRes = std.fs.removeFile(testPath)
     std.assert(removeRes.isOk(), "failed to remove test file")
+}
+
+@cfg(family("unix"))
+@test
+func testExplicitFileCloseCancelsCleanupBeforeDescriptorReuse() {
+    let originalPath = "taro_fs_cleanup_reuse_original.txt"
+    let replacementPath = "taro_fs_cleanup_reuse_replacement.txt"
+    let _ = std.fs.removeFile(originalPath)
+    let _ = std.fs.removeFile(replacementPath)
+
+    // POSIX open reuses the lowest available descriptor. If explicit close
+    // left a live cleanup behind, collecting the old state can therefore
+    // close this replacement file instead.
+    closeFileBeforeDescriptorReuse(originalPath)
+    var replacement = match std.fs.File.create(replacementPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("replacement descriptor should open")
+    }
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertTrue(
+        std.io.writeString(&mut replacement, "replacement remains open").isOk(),
+        "cancelled cleanup must not close a reused descriptor",
+    )
+    std.testing.assertTrue(replacement.close().isOk(), "replacement close should succeed once")
+
+    match replacement.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "second file close should return closed")
+        case .ok(_) => std.testing.fail("second file close should fail")
+    }
+
+    let empty = std.mem.Span[uint8].from(std.string.stringData(""), 0)
+    match replacement.write(empty) {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "write after file close should return closed")
+        case .ok(_) => std.testing.fail("write after file close should fail")
+    }
+    match replacement.flush() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "flush after file close should return closed")
+        case .ok(_) => std.testing.fail("flush after file close should fail")
+    }
+
+    std.testing.assertTrue(std.fs.removeFile(originalPath).isOk(), "original test file should be removed")
+    std.testing.assertTrue(std.fs.removeFile(replacementPath).isOk(), "replacement test file should be removed")
 }
 
 @test
@@ -387,5 +440,9 @@ func testAsyncFileRoundTrip() async {
     std.assert(std.string.stringEq(content, payload), "async file contents should round-trip")
 
     std.assert(reader.close().isOk(), "async reader close should succeed")
+    match reader.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "second async file close should return closed")
+        case .ok(_) => std.testing.fail("second async file close should fail")
+    }
     std.assert(std.fs.removeFile(path).isOk(), "async file cleanup should succeed")
 }

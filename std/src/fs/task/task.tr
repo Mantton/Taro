@@ -9,6 +9,17 @@ func withAsyncFileContext[T](_ result: Result[T, Error], _ operation: string, _ 
     }
 }
 
+func asyncFileFromRaw(
+    _ stream: std.sys.io.RawAsyncStream,
+    _ path: string,
+    _ operation: string,
+) -> Result[AsyncFile, Error] {
+    match std.io.task.fromRaw(stream) {
+        case .ok(inner) => return .ok(AsyncFile { inner, path })
+        case .err(err) => return .err(err.withOperation(operation).withPath(path))
+    }
+}
+
 public struct OpenOptions {
     readFlag: bool
     writeFlag: bool
@@ -76,10 +87,7 @@ impl OpenOptions {
             }
         }
 
-        return .ok(AsyncFile {
-            inner: std.io.task.fromRaw(stream),
-            path,
-        })
+        return asyncFileFromRaw(stream, path, "open")
     }
 }
 
@@ -87,6 +95,8 @@ public struct AsyncFile {
     inner: std.io.task.AsyncStream
     path: string
 }
+
+impl std.marker.Sendable for AsyncFile {}
 
 impl AsyncFile {
     public func open(_ path: string) -> Result[AsyncFile, Error] {
@@ -98,12 +108,7 @@ impl AsyncFile {
 
         let streamRes = std.sys.fs.intoAsyncStream(&mut file)
         match streamRes {
-            case .ok(stream) => {
-                return .ok(AsyncFile {
-                    inner: std.io.task.fromRaw(stream),
-                    path,
-                })
-            }
+            case .ok(stream) => return asyncFileFromRaw(stream, path, "open")
             case .err(err) => {
                 let _ = std.sys.fs.close(&mut file)
                 return .err(err.withOperation("open").withPath(path))
@@ -120,12 +125,7 @@ impl AsyncFile {
 
         let streamRes = std.sys.fs.intoAsyncStream(&mut file)
         match streamRes {
-            case .ok(stream) => {
-                return .ok(AsyncFile {
-                    inner: std.io.task.fromRaw(stream),
-                    path,
-                })
-            }
+            case .ok(stream) => return asyncFileFromRaw(stream, path, "create")
             case .err(err) => {
                 let _ = std.sys.fs.close(&mut file)
                 return .err(err.withOperation("create").withPath(path))
@@ -133,7 +133,7 @@ impl AsyncFile {
         }
     }
 
-    public func close(self) -> Result[(), Error] {
+    public func close(&self) -> Result[(), Error] {
         withAsyncFileContext(self.inner.close(), "close", self.path)
     }
 

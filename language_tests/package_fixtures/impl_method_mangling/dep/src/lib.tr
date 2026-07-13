@@ -1,0 +1,28 @@
+public interface AsyncValue {
+    func read(&self) async -> int32
+}
+
+public struct RemoteCounter {
+    value: int32
+}
+
+impl RemoteCounter {
+    public func read(&self) async -> int32 {
+        self.value + 1_i32
+    }
+}
+
+impl AsyncValue for RemoteCounter {
+    public func read(&self) async -> int32 {
+        let value = self.value
+        return value + 2_i32
+    }
+}
+
+public func makeCounter(_ value: int32) -> RemoteCounter {
+    RemoteCounter { value }
+}
+
+public func readThroughInterface[T: AsyncValue](_ value: &T) async -> int32 {
+    await value.read()
+}

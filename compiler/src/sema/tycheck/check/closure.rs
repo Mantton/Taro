@@ -159,6 +159,7 @@ impl<'ctx> Checker<'ctx> {
         // Resolve what we can so we don't cache infer vars in closure signatures.
         cs.solve_intermediate();
         let adjustments = cs.resolved_adjustments();
+        let expr_tys = cs.resolved_expr_types();
         let return_ty = cs.infer_cx.resolve_vars_if_possible(return_ty);
         let param_tys: Vec<_> = param_tys
             .into_iter()
@@ -173,6 +174,7 @@ impl<'ctx> Checker<'ctx> {
             info: rustc_hash::FxHashMap::default(),
             checker: self,
             adjustments: &adjustments,
+            expr_tys: &expr_tys,
         };
         collector.collect_expr(&closure.body, UseContext::Value);
 
@@ -221,6 +223,23 @@ impl<'ctx> Checker<'ctx> {
         // Create the closure type (with user-visible parameter types only)
         let inputs = gcx.store.interners.intern_ty_list(param_tys.clone());
         let captured_generics = GenericsBuilder::identity_for_item(gcx, self.current_def);
+
+        // A closure has no generic parameters of its own, but its body and any
+        // synthesized callable adapters inherit every generic parameter from
+        // the enclosing definition. Record that parent relationship so those
+        // adapters can be monomorphized with the closure's captured arguments.
+        let owner_generics = gcx.generics_of(self.current_def);
+        if !owner_generics.is_empty() {
+            gcx.cache_generics(
+                closure.def_id,
+                crate::sema::models::Generics {
+                    parameters: vec![],
+                    has_self: owner_generics.has_self,
+                    parent: Some(self.current_def),
+                    parent_count: owner_generics.parent_count + owner_generics.total_count(),
+                },
+            );
+        }
 
         // Create the closure type first (we need it for the body function signature)
         let closure_ty = Ty::new(
@@ -393,10 +412,15 @@ struct CaptureInfo {
     usage: CaptureUsage,
 }
 
+#[derive(Clone, Copy)]
 enum UseContext {
     Value,
+    /// Read a captured place without moving the complete base value.
+    Read,
     Place,
-    Borrow { mutable: bool },
+    Borrow {
+        mutable: bool,
+    },
 }
 
 fn closure_body_has_explicit_return(expr: &hir::Expression) -> bool {
@@ -437,6 +461,9 @@ struct CaptureCollector<'a, 'ctx> {
     checker: &'a Checker<'ctx>,
     /// Adjustments recorded during type checking
     adjustments: &'a rustc_hash::FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
+    /// Fully resolved expression types used to distinguish copying a projected
+    /// field from moving it out of the captured aggregate.
+    expr_tys: &'a rustc_hash::FxHashMap<NodeID, Ty<'ctx>>,
 }
 
 impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
@@ -482,6 +509,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
         local_ty: Ty<'ctx>,
     ) -> CaptureUsage {
         match ctx {
+            UseContext::Read => CaptureUsage::default(),
             UseContext::Borrow { mutable } => CaptureUsage {
                 access_kind: if mutable {
                     crate::sema::models::CaptureAccessKind::Mutate
@@ -665,7 +693,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 self.maybe_capture(expr, path, ctx);
             }
             hir::ExpressionKind::Member { target, .. } => {
-                self.collect_expr(target, ctx);
+                self.collect_expr(target, self.projection_base_context(expr, ctx));
             }
             hir::ExpressionKind::InferredMember { .. } => {}
             hir::ExpressionKind::Array(items) | hir::ExpressionKind::Tuple(items) => {
@@ -745,7 +773,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 self.collect_expr(value, UseContext::Value);
             }
             hir::ExpressionKind::TupleAccess(value, _) => {
-                self.collect_expr(value, ctx);
+                self.collect_expr(value, self.projection_base_context(expr, ctx));
             }
             hir::ExpressionKind::Assign(lhs, rhs) => {
                 self.collect_expr(lhs, UseContext::Place);
@@ -765,6 +793,24 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::ExpressionKind::Await(value) => {
                 self.collect_expr(value, UseContext::Value);
             }
+        }
+    }
+
+    fn projection_base_context(&self, expr: &hir::Expression, ctx: UseContext) -> UseContext {
+        match ctx {
+            // Once an outer projection is known to copy its result, every base
+            // projection is only read to reach that value.
+            UseContext::Read => UseContext::Read,
+            UseContext::Value
+                if self.expr_tys.get(&expr.id).is_some_and(|ty| {
+                    self.checker
+                        .gcx()
+                        .is_type_copyable_in_def(*ty, self.checker.current_def)
+                }) =>
+            {
+                UseContext::Read
+            }
+            other => other,
         }
     }
 

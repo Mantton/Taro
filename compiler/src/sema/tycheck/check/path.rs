@@ -749,7 +749,7 @@ impl<'ctx> Checker<'ctx> {
             if !generics.is_empty() {
                 if let Some(args) = instantiation_args {
                     cs.record_instantiation(node_id, args);
-                    cs.add_constraints_for_def(def_id, Some(args), span);
+                    cs.add_constraints_for_def_at_call(def_id, Some(args), span, node_id);
                     if ty.needs_instantiation() {
                         return instantiate_ty_with_args(self.gcx(), ty, args);
                     }
@@ -760,7 +760,7 @@ impl<'ctx> Checker<'ctx> {
                     let args = cs.infer_cx.fresh_args_for_def(def_id, span);
                     let instantiated = instantiate_ty_with_args(self.gcx(), ty, args);
                     cs.record_instantiation(node_id, args);
-                    cs.add_constraints_for_def(def_id, Some(args), span);
+                    cs.add_constraints_for_def_at_call(def_id, Some(args), span, node_id);
                     return instantiated;
                 }
             }

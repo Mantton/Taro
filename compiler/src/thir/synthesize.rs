@@ -106,12 +106,10 @@ fn register_definition<'ctx>(
                 abi: None,
             };
 
-            let generics = crate::sema::models::Generics {
-                parameters: vec![],
-                has_self: false,
-                parent: None,
-                parent_count: 0,
+            let TyKind::Closure { closure_def_id, .. } = info.self_ty.kind() else {
+                return;
             };
+            let generics = gcx.generics_of(closure_def_id).clone();
             (generics, signature, is_async.then_some(output))
         }
         SyntheticMethodKind::CopyClone | SyntheticMethodKind::MemberwiseClone => {

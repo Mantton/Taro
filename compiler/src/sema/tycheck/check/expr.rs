@@ -1334,6 +1334,12 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let prefer_async_call = self.direct_await_operand.get() == Some(expression.id);
 
+        // Register targeted Sendable diagnostics before resolving the callee:
+        // path and closure inference can both run intermediate solver passes.
+        if let Some(context) = self.compiler_call_context(expression, callee, arguments) {
+            cs.record_compiler_call_context(callee.id, context);
+        }
+
         // Builtin `make`: returns a pointer to the argument type.
         if let hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) = &callee.kind
             && matches!(
@@ -1486,6 +1492,79 @@ impl<'ctx> Checker<'ctx> {
         }
 
         self.finish_async_call_surface_check(expression.id, expression.span, result_ty)
+    }
+
+    fn compiler_call_context(
+        &self,
+        expression: &hir::Expression,
+        callee: &hir::Expression,
+        arguments: &[hir::ExpressionArgument],
+    ) -> Option<CompilerCallContext> {
+        let hir::ExpressionKind::Path(path) = &callee.kind else {
+            return None;
+        };
+        let resolution = match path {
+            hir::ResolvedPath::Resolved(path) => &path.resolution,
+            hir::ResolvedPath::Relative(_, segment) => &segment.resolution,
+        };
+        let candidates: &[DefinitionID] = match resolution {
+            hir::Resolution::FunctionSet(candidates) => candidates,
+            hir::Resolution::Definition(id, DefinitionKind::Function) => std::slice::from_ref(id),
+            _ => return None,
+        };
+        for &candidate in candidates {
+            let name = self.gcx().definition_symbol_or_fallback(candidate);
+            if self.gcx().symbol_eq(name, "blocking")
+                && self.definition_is_in_std_module(candidate, "task")
+                && let Some(closure) = arguments.first()
+            {
+                return Some(CompilerCallContext::Blocking {
+                    callee: candidate,
+                    closure_span: closure.expression.span,
+                    call_span: expression.span,
+                });
+            }
+            if self.gcx().symbol_eq(name, "addCleanup")
+                && self.definition_is_in_std_module(candidate, "runtime")
+                && let (Some(state), Some(callback)) = (arguments.get(1), arguments.get(2))
+            {
+                return Some(CompilerCallContext::AddCleanup {
+                    callee: candidate,
+                    state_span: state.expression.span,
+                    callback_span: callback.expression.span,
+                });
+            }
+        }
+        None
+    }
+
+    fn definition_is_in_std_module(&self, id: DefinitionID, module: &str) -> bool {
+        let Some(std_package) = self.gcx().std_package_index() else {
+            return false;
+        };
+        if id.package() != std_package {
+            return false;
+        }
+
+        let output = self.gcx().resolution_output(std_package);
+        let mut current = id;
+        while let Some(parent) = output.definition_to_parent.get(&current).copied() {
+            if parent == current {
+                break;
+            }
+            current = parent;
+            if matches!(
+                output.definition_to_kind.get(&current),
+                Some(DefinitionKind::Module)
+            ) && output
+                .definition_to_ident
+                .get(&current)
+                .is_some_and(|ident| self.gcx().symbol_eq(ident.symbol, module))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub(super) fn argument_expectations_for_call(

@@ -306,18 +306,12 @@ fn async_local_can_reside_in_frame<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
     if gcx.is_type_copyable(ty) {
         return true;
     }
-    let TyKind::Closure { closure_def_id, .. } = ty.kind() else {
-        return false;
-    };
-    gcx.get_closure_captures(closure_def_id)
-        .is_some_and(|captures| {
-            captures.captures.iter().all(|capture| {
-                matches!(
-                    capture.capture_kind,
-                    crate::sema::models::CaptureKind::ByCopy
-                )
-            })
-        })
+    // An AsyncFnOnce adapter owns its closure but may invoke an AsyncFn or
+    // AsyncFnMut implementation whose child future borrows that environment.
+    // Keep every concrete closure environment at a stable frame address until
+    // the adapter completes; restoring it to a poll-stack local would leave
+    // the suspended child future with a dangling pointer.
+    matches!(ty.kind(), TyKind::Closure { .. })
 }
 
 /// Keep addressable Copy state in the heap frame for the entire lifetime of

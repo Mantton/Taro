@@ -42,6 +42,11 @@ pub enum Goal<'ctx> {
         ty: Ty<'ctx>,
         interface: InterfaceReference<'ctx>,
     },
+    ConformsWithDiagnostic {
+        ty: Ty<'ctx>,
+        interface: InterfaceReference<'ctx>,
+        diagnostic: ConformanceDiagnostic,
+    },
     Apply(ApplyGoalData<'ctx>),
     BindOverload(BindOverloadGoalData<'ctx>),
     BindInterfaceMethod(BindInterfaceMethodGoalData<'ctx>),
@@ -70,6 +75,70 @@ pub enum Goal<'ctx> {
     TupleAccess(TupleAccessGoalData<'ctx>),
     Deref(DerefGoalData<'ctx>),
     DefaultFallback(DefaultFallbackGoalData<'ctx>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConformanceDiagnostic {
+    pub message: &'static str,
+    pub span: Span,
+}
+
+/// Context for compiler-lowered APIs whose Sendable requirements deserve a
+/// more actionable diagnostic than a generic conformance failure.
+#[derive(Debug, Clone, Copy)]
+pub enum CompilerCallContext {
+    Blocking {
+        callee: DefinitionID,
+        closure_span: Span,
+        call_span: Span,
+    },
+    AddCleanup {
+        callee: DefinitionID,
+        state_span: Span,
+        callback_span: Span,
+    },
+}
+
+impl CompilerCallContext {
+    pub fn diagnostic_for(
+        self,
+        callee_id: DefinitionID,
+        parameter_index: usize,
+    ) -> Option<ConformanceDiagnostic> {
+        match self {
+            CompilerCallContext::Blocking {
+                callee,
+                closure_span,
+                call_span,
+            } if callee == callee_id => match parameter_index {
+                0 => Some(ConformanceDiagnostic {
+                    message: "std.task.blocking result must be Sendable",
+                    span: call_span,
+                }),
+                1 => Some(ConformanceDiagnostic {
+                    message: "std.task.blocking closure captures must be Sendable",
+                    span: closure_span,
+                }),
+                _ => None,
+            },
+            CompilerCallContext::AddCleanup {
+                callee,
+                state_span,
+                callback_span,
+            } if callee == callee_id => match parameter_index {
+                1 => Some(ConformanceDiagnostic {
+                    message: "std.runtime.addCleanup state must be Sendable",
+                    span: state_span,
+                }),
+                2 => Some(ConformanceDiagnostic {
+                    message: "std.runtime.addCleanup callback captures must be Sendable",
+                    span: callback_span,
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

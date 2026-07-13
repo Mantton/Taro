@@ -9,6 +9,54 @@ func withFileContext[T](_ result: Result[T, Error], _ operation: string, _ path:
     }
 }
 
+struct FileCloseState {
+    inner: std.sys.fs.RawFile
+    cleanup: std.runtime.Cleanup?
+}
+
+// A cleanup needs its own handle bits because it must not retain its owner.
+// Cancellation is the arbiter that decides whether cleanup or explicit close
+// owns those bits; only the winner may close the underlying descriptor.
+func snapshotRawFile(_ file: &std.sys.fs.RawFile) -> std.sys.fs.RawFile {
+    let ptr = unsafe { file as *const std.sys.fs.RawFile }
+    return unsafe { ptr.read() }
+}
+
+func takeRawFile(_ state: &FileCloseState) -> std.sys.fs.RawFile {
+    let ptr = unsafe { (&state.inner as *const std.sys.fs.RawFile) as *mut std.sys.fs.RawFile }
+    return std.sys.fs.take(unsafe { ptr as &mut std.sys.fs.RawFile })
+}
+
+func fileFromRaw(_ inner: std.sys.fs.RawFile, _ path: string) -> Result[File, Error] {
+    let state = make(FileCloseState {
+        inner,
+        cleanup: .none,
+    })
+    let cleanupState = snapshotRawFile(&state.inner)
+    let cleanupRes = std.runtime.addCleanup(state, cleanupState, |raw: std.sys.fs.RawFile| {
+        var owned = raw
+        let _ = std.sys.fs.close(&mut owned)
+    })
+
+    match cleanupRes {
+        case .ok(cleanup) => {
+            state.cleanup = .some(cleanup)
+            std.runtime.keepAlive(state)
+            return .ok(File { state, path })
+        }
+        case .err(_) => {
+            var owned = takeRawFile(state)
+            let _ = std.sys.fs.close(&mut owned)
+            std.runtime.keepAlive(state)
+            return .err(Error(.unexpected).withOperation("register resource cleanup").withPath(path))
+        }
+    }
+}
+
+func closedFileError(_ operation: string, _ path: string) -> Error {
+    Error(.closed).withOperation(operation).withPath(path)
+}
+
 public struct OpenOptions {
     readFlag: bool
     writeFlag: bool
@@ -63,22 +111,24 @@ impl OpenOptions {
             self.truncateFlag,
         )
         match res {
-            case .ok(sysFile) => return .ok(File { inner: sysFile, path })
+            case .ok(sysFile) => return fileFromRaw(sysFile, path)
             case .err(err) => return .err(err.withOperation("open").withPath(path))
         }
     }
 }
 
 public struct File {
-    inner: std.sys.fs.RawFile
+    state: &FileCloseState
     path: string
 }
+
+impl std.marker.Sendable for File {}
 
 impl File {
     public func open(_ path: string) -> Result[File, Error] {
         let res = std.sys.fs.openReadOnly(path)
         match res {
-            case .ok(sysFile) => return .ok(File { inner: sysFile, path })
+            case .ok(sysFile) => return fileFromRaw(sysFile, path)
             case .err(err) => return .err(err.withOperation("open").withPath(path))
         }
     }
@@ -86,52 +136,82 @@ impl File {
     public func create(_ path: string) -> Result[File, Error] {
         let res = std.sys.fs.createWrite(path)
         match res {
-            case .ok(sysFile) => return .ok(File { inner: sysFile, path })
+            case .ok(sysFile) => return fileFromRaw(sysFile, path)
             case .err(err) => return .err(err.withOperation("create").withPath(path))
         }
     }
 
     public func close(&mut self) -> Result[(), Error] {
-        let res = std.sys.fs.close(&mut self.inner)
-        match res {
-            case .ok(_) => {}
-            case .err(err) => return .err(err.withOperation("close").withPath(self.path))
+        let cancelled = match &self.state.cleanup {
+            case .some(cleanup) => cleanup.cancel()
+            case .none => false
         }
-        return .ok(())
+        if !cancelled {
+            std.runtime.keepAlive(self.state)
+            return .err(closedFileError("close", self.path))
+        }
+
+        var inner = takeRawFile(self.state)
+        let result = std.sys.fs.close(&mut inner)
+        std.runtime.keepAlive(self.state)
+        return withFileContext(result, "close", self.path)
     }
 }
 
 impl Reader for File {
     public func read(&mut self, _ buf: MutableSpan[uint8]) -> Result[usize, Error] {
+        if !std.sys.fs.isValid(&self.state.inner) {
+            return .err(closedFileError("read", self.path))
+        }
+
         let len = buf.len()
         if len == 0 {
+            std.runtime.keepAlive(self.state)
             return .ok(0)
         }
 
         var writable = buf
         let ptr = unsafe { writable.at(0) as *mut uint8 }
-        return withFileContext(std.sys.fs.read(&self.inner, ptr, len), "read", self.path)
+        let result = std.sys.fs.read(&self.state.inner, ptr, len)
+        std.runtime.keepAlive(self.state)
+        return withFileContext(result, "read", self.path)
     }
 }
 
 impl Writer for File {
     public func write(&mut self, _ buf: Span[uint8]) -> Result[usize, Error] {
+        if !std.sys.fs.isValid(&self.state.inner) {
+            return .err(closedFileError("write", self.path))
+        }
+
         let len = buf.len()
         if len == 0 {
+            std.runtime.keepAlive(self.state)
             return .ok(0)
         }
 
         let ptr = unsafe { buf.at(0) as *const uint8 }
-        return withFileContext(std.sys.fs.write(&self.inner, ptr, len), "write", self.path)
+        let result = std.sys.fs.write(&self.state.inner, ptr, len)
+        std.runtime.keepAlive(self.state)
+        return withFileContext(result, "write", self.path)
     }
 
     public func flush(&mut self) -> Result[(), Error] {
+        if !std.sys.fs.isValid(&self.state.inner) {
+            return .err(closedFileError("flush", self.path))
+        }
+
+        std.runtime.keepAlive(self.state)
         return .ok(())
     }
 }
 
 impl Seeker for File {
     public func seek(&mut self, _ pos: SeekFrom) -> Result[isize, Error] {
+        if !std.sys.fs.isValid(&self.state.inner) {
+            return .err(closedFileError("seek", self.path))
+        }
+
         var offset: isize = 0
         var whence: int32 = 0
 
@@ -150,6 +230,8 @@ impl Seeker for File {
             }
         }
 
-        return withFileContext(std.sys.fs.seek(&self.inner, offset, whence), "seek", self.path)
+        let result = std.sys.fs.seek(&self.state.inner, offset, whence)
+        std.runtime.keepAlive(self.state)
+        return withFileContext(result, "seek", self.path)
     }
 }

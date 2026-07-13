@@ -974,6 +974,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Ty::new(TyKind::Tuple(closure_inputs), gcx)
         };
 
+        self.register_closure_callable_adapter(
+            ty,
+            interface.id,
+            closure_args_ty,
+            closure_output,
+            interface.bindings,
+        );
+
         // Create obligations to match Args and Output
         let mut obligations = vec![];
 
@@ -1093,6 +1101,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 Ty::new(TyKind::Tuple(closure_inputs), gcx)
             };
 
+            self.register_closure_callable_adapter(
+                from,
+                bound.id,
+                closure_args_ty,
+                closure_output,
+                bound.bindings,
+            );
+
             // Create obligations to bind the target inference variable to this
             // concrete closure type, then validate the callable signature.
             let mut obligations = vec![];
@@ -1118,6 +1134,39 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         None
+    }
+
+    /// Register the concrete closure adapter while type checking still has a
+    /// chance to synthesize and serialize its THIR/MIR. Generic callable calls
+    /// are specialized later, after THIR construction, which is too late to
+    /// create a missing `call`/`callMut`/`callOnce` body on demand.
+    fn register_closure_callable_adapter(
+        &self,
+        closure_ty: Ty<'ctx>,
+        interface_id: crate::hir::DefinitionID,
+        args_ty: Ty<'ctx>,
+        output_ty: Ty<'ctx>,
+        bindings: &'ctx [crate::sema::models::AssociatedTypeBinding<'ctx>],
+    ) {
+        let gcx = self.gcx();
+        let arguments = gcx.store.interners.intern_generic_args(vec![
+            GenericArgument::Type(closure_ty),
+            GenericArgument::Type(args_ty),
+            GenericArgument::Type(output_ty),
+        ]);
+        let interface = InterfaceReference {
+            id: interface_id,
+            arguments,
+            bindings,
+        };
+        let Some(goal) = interface.to_goal(gcx, &[]) else {
+            return;
+        };
+
+        // This closure/interface pair has already passed the callable-kind
+        // check above. Building its witness records the demanded synthetic
+        // adapter; signature equality remains represented by solver goals.
+        let _ = gcx.build_conformance_witness(goal, SelectionMode::Typecheck);
     }
 }
 

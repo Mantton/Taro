@@ -116,6 +116,17 @@ public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
     return .ok(())
 }
 
+public func isValid(_ file: &PlatformFile) -> bool {
+    file.fd >= 0
+}
+
+/// Move the descriptor out of `file`, leaving it permanently invalid.
+public func take(_ file: &mut PlatformFile) -> PlatformFile {
+    let fd = file.fd
+    file.fd = -1
+    return PlatformFile { fd }
+}
+
 public func read(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.read(file.fd, buf, len)
     if res < 0 {

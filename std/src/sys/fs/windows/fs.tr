@@ -32,6 +32,16 @@ public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
     std.panic.todo("std.sys.fs.close not implemented on windows yet")
 }
 
+public func isValid(_ file: &PlatformFile) -> bool {
+    file.raw >= 0
+}
+
+public func take(_ file: &mut PlatformFile) -> PlatformFile {
+    let raw = file.raw
+    file.raw = -1
+    return PlatformFile { raw }
+}
+
 public func read(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
     std.panic.todo("std.sys.fs.read not implemented on windows yet")
 }

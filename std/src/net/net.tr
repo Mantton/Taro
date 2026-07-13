@@ -7,17 +7,112 @@ public type SocketAddress = std.sys.net.SocketAddress
 
 const DEFAULT_TCP_BACKLOG: int32 = 128
 
-public struct TcpListener {
+struct SocketCloseState {
     inner: std.sys.net.task.RawAsyncSocket
+    cleanup: std.runtime.Cleanup?
+}
+
+func snapshotRawSocket(
+    _ socket: &std.sys.net.task.RawAsyncSocket,
+) -> std.sys.net.task.RawAsyncSocket {
+    let ptr = unsafe { socket as *const std.sys.net.task.RawAsyncSocket }
+    return unsafe { ptr.read() }
+}
+
+func takeRawSocket(_ state: &SocketCloseState) -> std.sys.net.task.RawAsyncSocket {
+    let ptr = unsafe {
+        (&state.inner as *const std.sys.net.task.RawAsyncSocket) as *mut std.sys.net.task.RawAsyncSocket
+    }
+    return std.sys.net.task.take(unsafe { ptr as &mut std.sys.net.task.RawAsyncSocket })
+}
+
+func closedSocketError(_ operation: string) -> Error {
+    Error(.closed).withOperation(operation)
+}
+
+func ensureSocketOpen(_ state: &SocketCloseState, _ operation: string) -> Result[(), Error] {
+    let valid = std.sys.net.task.isValid(&state.inner)
+    std.runtime.keepAlive(state)
+    if !valid {
+        return .err(closedSocketError(operation))
+    }
+    return .ok(())
+}
+
+func socketCloseState(
+    _ inner: std.sys.net.task.RawAsyncSocket,
+) -> Result[&SocketCloseState, Error] {
+    let state = make(SocketCloseState {
+        inner,
+        cleanup: .none,
+    })
+    let cleanupState = snapshotRawSocket(&state.inner)
+    let cleanupRes = std.runtime.addCleanup(
+        state,
+        cleanupState,
+        |raw: std.sys.net.task.RawAsyncSocket| {
+            let _ = std.sys.net.task.close(raw)
+        },
+    )
+
+    match cleanupRes {
+        case .ok(cleanup) => {
+            state.cleanup = .some(cleanup)
+            std.runtime.keepAlive(state)
+            return .ok(state)
+        }
+        case .err(_) => {
+            let raw = takeRawSocket(state)
+            let _ = std.sys.net.task.close(raw)
+            std.runtime.keepAlive(state)
+            return .err(Error(.unexpected).withOperation("register resource cleanup"))
+        }
+    }
+}
+
+func claimRawSocket(
+    _ state: &SocketCloseState,
+    _ operation: string,
+) -> Result[std.sys.net.task.RawAsyncSocket, Error] {
+    let cancelled = match &state.cleanup {
+        case .some(cleanup) => cleanup.cancel()
+        case .none => false
+    }
+    if !cancelled {
+        std.runtime.keepAlive(state)
+        return .err(closedSocketError(operation))
+    }
+
+    let raw = takeRawSocket(state)
+    std.runtime.keepAlive(state)
+    return .ok(raw)
+}
+
+func closeSocketState(_ state: &SocketCloseState) -> Result[(), Error] {
+    let raw = match claimRawSocket(state, "close") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    let result = std.sys.net.task.close(raw)
+    std.runtime.keepAlive(state)
+    return result
+}
+
+public struct TcpListener {
+    state: &SocketCloseState
 }
 
 public struct TcpStream {
-    inner: std.sys.net.task.RawAsyncSocket
+    state: &SocketCloseState
 }
 
 public struct UdpSocket {
-    inner: std.sys.net.task.RawAsyncSocket
+    state: &SocketCloseState
 }
+
+impl std.marker.Sendable for TcpListener {}
+impl std.marker.Sendable for TcpStream {}
+impl std.marker.Sendable for UdpSocket {}
 
 impl TcpListener {
     public func bind(_ address: SocketAddress) -> Result[TcpListener, Error] {
@@ -26,103 +121,173 @@ impl TcpListener {
 
     public func bindWithBacklog(_ address: SocketAddress, _ backlog: int32) -> Result[TcpListener, Error] {
         let socketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(address), .stream)
-        var socket = match socketRes {
+        let socket = match socketRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let state = match socketCloseState(socket) {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
-        let reuseRes = std.sys.net.task.setReuseAddr(&socket, true)
+        let reuseRes = std.sys.net.task.setReuseAddr(&state.inner, true)
+        std.runtime.keepAlive(state)
         match reuseRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = std.sys.net.task.close(socket)
+                let _ = closeSocketState(state)
                 return .err(err)
             }
         }
 
-        let bindRes = std.sys.net.task.bind(&socket, address)
+        let bindRes = std.sys.net.task.bind(&state.inner, address)
+        std.runtime.keepAlive(state)
         match bindRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = std.sys.net.task.close(socket)
+                let _ = closeSocketState(state)
                 return .err(err)
             }
         }
 
-        let listenRes = std.sys.net.task.listen(&socket, backlog)
+        let listenRes = std.sys.net.task.listen(&state.inner, backlog)
+        std.runtime.keepAlive(state)
         match listenRes {
-            case .ok(_) => return .ok(TcpListener { inner: socket })
+            case .ok(_) => return .ok(TcpListener { state })
             case .err(err) => {
-                let _ = std.sys.net.task.close(socket)
+                let _ = closeSocketState(state)
                 return .err(err)
             }
         }
     }
 
     public func accept(&self) async -> Result[(TcpStream, SocketAddress), Error] {
-        let acceptRes = await std.sys.net.task.accept(&self.inner)
+        match ensureSocketOpen(self.state, "accept") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let acceptRes = await std.sys.net.task.accept(&self.state.inner)
+        std.runtime.keepAlive(self.state)
         let socketPair = match acceptRes {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
+        let state = match socketCloseState(socketPair.0) {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
 
-        return .ok((TcpStream { inner: socketPair.0 }, socketPair.1))
+        return .ok((TcpStream { state }, socketPair.1))
     }
 
     public func localAddress(&self) -> Result[SocketAddress, Error] {
-        std.sys.net.task.localAddress(&self.inner)
+        match ensureSocketOpen(self.state, "get local address") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = std.sys.net.task.localAddress(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
-    public func close(self) -> Result[(), Error] {
-        std.sys.net.task.close(self.inner)
+    public func close(&self) -> Result[(), Error] {
+        closeSocketState(self.state)
     }
 }
 
 impl TcpStream {
     public func connect(_ address: SocketAddress) async -> Result[TcpStream, Error] {
         let socketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(address), .stream)
-        var socket = match socketRes {
+        let socket = match socketRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let state = match socketCloseState(socket) {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
-        let connectRes = await std.sys.net.task.connect(&socket, address)
+        let connectRes = await std.sys.net.task.connect(&state.inner, address)
+        std.runtime.keepAlive(state)
         match connectRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = std.sys.net.task.close(socket)
+                let _ = closeSocketState(state)
                 return .err(err)
             }
         }
 
-        return .ok(TcpStream { inner: socket })
+        return .ok(TcpStream { state })
     }
 
     public func localAddress(&self) -> Result[SocketAddress, Error] {
-        std.sys.net.task.localAddress(&self.inner)
+        match ensureSocketOpen(self.state, "get local address") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = std.sys.net.task.localAddress(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func peerAddress(&self) -> Result[SocketAddress, Error] {
-        std.sys.net.task.peerAddress(&self.inner)
+        match ensureSocketOpen(self.state, "get peer address") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = std.sys.net.task.peerAddress(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
-    public func close(self) -> Result[(), Error] {
-        std.sys.net.task.close(self.inner)
+    public func close(&self) -> Result[(), Error] {
+        closeSocketState(self.state)
     }
 
     public func intoStream(&mut self) -> Result[std.io.task.AsyncStream, Error] {
-        std.sys.net.task.intoStream(&mut self.inner)
+        var raw = match claimRawSocket(self.state, "convert socket to stream") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let result = std.sys.net.task.intoStream(&mut raw)
+        match result {
+            case .ok(stream) => {
+                std.runtime.keepAlive(self.state)
+                return .ok(stream)
+            }
+            case .err(err) => {
+                let _ = std.sys.net.task.close(raw)
+                std.runtime.keepAlive(self.state)
+                return .err(err)
+            }
+        }
     }
 
     public func read(&self, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
-        await std.sys.net.task.read(&self.inner, buf)
+        match ensureSocketOpen(self.state, "read") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = await std.sys.net.task.read(&self.state.inner, buf)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func write(&self, _ buf: Span[uint8]) async -> Result[usize, Error] {
-        await std.sys.net.task.write(&self.inner, buf)
+        match ensureSocketOpen(self.state, "write") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = await std.sys.net.task.write(&self.state.inner, buf)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func writeAll(&self, _ buf: Span[uint8]) async -> Result[(), Error] {
+        match ensureSocketOpen(self.state, "write all") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         let len = buf.len()
         if len == 0 {
             return .ok(())
@@ -147,6 +312,10 @@ impl TcpStream {
     }
 
     public func write(&self, _ s: string) async -> Result[(), Error] {
+        match ensureSocketOpen(self.state, "write all") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         let len = std.string.stringLen(s)
         if len == 0 {
             return .ok(())
@@ -158,6 +327,10 @@ impl TcpStream {
     }
 
     public func readExact(&self, _ buf: MutableSpan[uint8]) async -> Result[(), Error] {
+        match ensureSocketOpen(self.state, "read exact") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
         let len = buf.len()
         if len == 0 {
             return .ok(())
@@ -187,36 +360,59 @@ impl TcpStream {
 impl UdpSocket {
     public func bind(_ address: SocketAddress) -> Result[UdpSocket, Error] {
         let socketRes = std.sys.net.task.socket(std.sys.net.domainForAddress(address), .datagram)
-        var socket = match socketRes {
+        let socket = match socketRes {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let state = match socketCloseState(socket) {
             case .ok(value) => value
             case .err(err) => return .err(err)
         }
 
-        let bindRes = std.sys.net.task.bind(&socket, address)
+        let bindRes = std.sys.net.task.bind(&state.inner, address)
+        std.runtime.keepAlive(state)
         match bindRes {
             case .ok(_) => {}
             case .err(err) => {
-                let _ = std.sys.net.task.close(socket)
+                let _ = closeSocketState(state)
                 return .err(err)
             }
         }
 
-        return .ok(UdpSocket { inner: socket })
+        return .ok(UdpSocket { state })
     }
 
     public func localAddress(&self) -> Result[SocketAddress, Error] {
-        std.sys.net.task.localAddress(&self.inner)
+        match ensureSocketOpen(self.state, "get local address") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = std.sys.net.task.localAddress(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func sendTo(&self, _ buf: Span[uint8], _ address: SocketAddress) async -> Result[usize, Error] {
-        await std.sys.net.task.sendTo(&self.inner, buf, address)
+        match ensureSocketOpen(self.state, "send datagram") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = await std.sys.net.task.sendTo(&self.state.inner, buf, address)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
     public func recvFrom(&self, _ buf: MutableSpan[uint8]) async -> Result[(usize, SocketAddress), Error] {
-        await std.sys.net.task.recvFrom(&self.inner, buf)
+        match ensureSocketOpen(self.state, "receive datagram") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        let result = await std.sys.net.task.recvFrom(&self.state.inner, buf)
+        std.runtime.keepAlive(self.state)
+        return result
     }
 
-    public func close(self) -> Result[(), Error] {
-        std.sys.net.task.close(self.inner)
+    public func close(&self) -> Result[(), Error] {
+        closeSocketState(self.state)
     }
 }

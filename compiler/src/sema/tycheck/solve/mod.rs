@@ -2,7 +2,7 @@ use crate::{
     compile::context::Gcx,
     hir::{NodeID, Resolution},
     sema::{
-        error::SpannedErrorList,
+        error::{SpannedErrorList, TypeError},
         models::{
             AliasKind, ConstKind, Constraint, GenericArgument, GenericArguments,
             GenericParameterDefinition, GenericParameterDefinitionKind, InterfaceReference, Ty,
@@ -57,6 +57,7 @@ pub struct ConstraintSystem<'ctx> {
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
+    compiler_call_contexts: FxHashMap<NodeID, CompilerCallContext>,
     current_def: crate::sema::resolve::models::DefinitionID,
     env: ParamEnv<'ctx>,
     /// Traits (interfaces) visible in the current scope (for trait method lookup)
@@ -65,6 +66,7 @@ pub struct ConstraintSystem<'ctx> {
 }
 
 struct SolverOutputs<'ctx> {
+    obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     field_indices: FxHashMap<NodeID, usize>,
@@ -110,6 +112,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             overload_sources: Default::default(),
             value_resolutions: Default::default(),
             instantiation_args: Default::default(),
+            compiler_call_contexts: Default::default(),
             current_def,
             env: Self::build_param_env(context, current_def),
             visible_traits,
@@ -179,28 +182,55 @@ impl<'ctx> ConstraintSystem<'ctx> {
         args: Option<GenericArguments<'ctx>>,
         location: Span,
     ) {
+        self.add_constraints_for_def_with_call(def_id, args, location, None);
+    }
+
+    pub fn add_constraints_for_def_at_call(
+        &mut self,
+        def_id: crate::sema::resolve::models::DefinitionID,
+        args: Option<GenericArguments<'ctx>>,
+        location: Span,
+        call_node_id: NodeID,
+    ) {
+        self.add_constraints_for_def_with_call(def_id, args, location, Some(call_node_id));
+    }
+
+    fn add_constraints_for_def_with_call(
+        &mut self,
+        def_id: crate::sema::resolve::models::DefinitionID,
+        args: Option<GenericArguments<'ctx>>,
+        location: Span,
+        call_node_id: Option<NodeID>,
+    ) {
         let gcx = self.infer_cx.gcx;
         let constraints = canonical_constraints_of(gcx, def_id);
         for constraint in constraints {
+            let targeted_diagnostic = targeted_conformance_diagnostic(
+                gcx,
+                &self.compiler_call_contexts,
+                def_id,
+                call_node_id,
+                constraint.value,
+            );
             let constraint = match args {
                 Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
                 None => constraint.value,
             };
-            self.add_constraint(constraint, location);
-        }
-    }
-
-    fn add_constraint(&mut self, constraint: Constraint<'ctx>, location: Span) {
-        if let Constraint::Bound { .. } = constraint {
-            self.env.add_constraint(constraint);
-        }
-        match constraint {
-            Constraint::TypeEquality(lhs, rhs) => {
-                self.add_goal(Goal::ConstraintEqual(lhs, rhs), location);
+            if let Constraint::Bound { .. } = constraint {
+                self.env.add_constraint(constraint);
             }
-            Constraint::Bound { ty, interface } => {
-                self.add_goal(Goal::Conforms { ty, interface }, location);
-            }
+            let goal = match constraint {
+                Constraint::TypeEquality(lhs, rhs) => Goal::ConstraintEqual(lhs, rhs),
+                Constraint::Bound { ty, interface } => match targeted_diagnostic {
+                    Some(diagnostic) => Goal::ConformsWithDiagnostic {
+                        ty,
+                        interface,
+                        diagnostic,
+                    },
+                    None => Goal::Conforms { ty, interface },
+                },
+            };
+            self.add_goal(goal, location);
         }
     }
 
@@ -300,6 +330,10 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.instantiation_args.insert(node_id, args);
     }
 
+    pub fn record_compiler_call_context(&mut self, node_id: NodeID, context: CompilerCallContext) {
+        self.compiler_call_contexts.insert(node_id, context);
+    }
+
     pub fn instantiation(&self, node_id: NodeID) -> Option<GenericArguments<'ctx>> {
         self.instantiation_args.get(&node_id).copied()
     }
@@ -347,6 +381,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.overload_sources.extend(other.overload_sources);
         self.value_resolutions.extend(other.value_resolutions);
         self.instantiation_args.extend(other.instantiation_args);
+        self.compiler_call_contexts
+            .extend(other.compiler_call_contexts);
         self.env.extend_from(&other.env);
     }
 }
@@ -375,6 +411,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             overload_sources: std::mem::take(&mut self.overload_sources),
             value_resolutions: std::mem::take(&mut self.value_resolutions),
             instantiation_args: std::mem::take(&mut self.instantiation_args),
+            compiler_call_contexts: self.compiler_call_contexts.clone(),
             current_def: self.current_def,
             param_env: self.env.clone(),
             visible_traits: self.visible_traits.clone(),
@@ -385,6 +422,13 @@ impl<'ctx> ConstraintSystem<'ctx> {
 
         // Pull collected outputs back out of the solver/driver.
         let outputs = driver.into_parts();
+        if result.is_ok() && !check_unresolved {
+            // Intermediate solving is allowed to stop with inference-dependent
+            // obligations. Preserve them so a later pass can retry after new
+            // constraints bind their variables instead of silently accepting
+            // an unproven conformance or projection.
+            self.obligations = outputs.obligations;
+        }
         self.adjustments = outputs.adjustments;
         self.interface_calls = outputs.interface_calls;
         self.field_indices = outputs.field_indices;
@@ -519,6 +563,7 @@ struct ConstraintSolver<'ctx> {
     overload_sources: FxHashMap<NodeID, crate::sema::resolve::models::DefinitionID>,
     value_resolutions: FxHashMap<NodeID, Resolution>,
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
+    compiler_call_contexts: FxHashMap<NodeID, CompilerCallContext>,
     current_def: crate::sema::resolve::models::DefinitionID,
     param_env: ParamEnv<'ctx>,
     visible_traits: Rc<FxHashSet<DefinitionID>>,
@@ -569,11 +614,28 @@ impl<'ctx> ConstraintSolver<'ctx> {
         args: Option<GenericArguments<'ctx>>,
         location: Span,
     ) -> Vec<Obligation<'ctx>> {
+        self.constraints_for_def_at_call(def_id, args, location, None)
+    }
+
+    fn constraints_for_def_at_call(
+        &mut self,
+        def_id: crate::sema::resolve::models::DefinitionID,
+        args: Option<GenericArguments<'ctx>>,
+        location: Span,
+        call_node_id: Option<NodeID>,
+    ) -> Vec<Obligation<'ctx>> {
         let gcx = self.gcx();
         let constraints = canonical_constraints_of(gcx, def_id);
         constraints
             .into_iter()
             .map(|constraint| {
+                let targeted_diagnostic = targeted_conformance_diagnostic(
+                    gcx,
+                    &self.compiler_call_contexts,
+                    def_id,
+                    call_node_id,
+                    constraint.value,
+                );
                 let constraint = match args {
                     Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
                     None => constraint.value,
@@ -583,7 +645,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
                 let goal = match constraint {
                     Constraint::TypeEquality(lhs, rhs) => Goal::ConstraintEqual(lhs, rhs),
-                    Constraint::Bound { ty, interface } => Goal::Conforms { ty, interface },
+                    Constraint::Bound { ty, interface } => match targeted_diagnostic {
+                        Some(diagnostic) => Goal::ConformsWithDiagnostic {
+                            ty,
+                            interface,
+                            diagnostic,
+                        },
+                        None => Goal::Conforms { ty, interface },
+                    },
                 };
                 Obligation { location, goal }
             })
@@ -813,6 +882,23 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::Equal(lhs, rhs) => self.solve_equality(location, *lhs, *rhs),
             Goal::ConstraintEqual(lhs, rhs) => self.solve_constraint_equality(location, *lhs, *rhs),
             Goal::Conforms { ty, interface } => self.solve_conforms(location, *ty, *interface),
+            Goal::ConformsWithDiagnostic {
+                ty,
+                interface,
+                diagnostic,
+            } => match self.solve_conforms(diagnostic.span, *ty, *interface) {
+                SolverResult::Error(errors)
+                    if errors
+                        .iter()
+                        .all(|error| matches!(error.value, TypeError::NonConformance { .. })) =>
+                {
+                    SolverResult::Error(vec![Spanned::new(
+                        TypeError::TargetedConformance(diagnostic.message),
+                        diagnostic.span,
+                    )])
+                }
+                result => result,
+            },
             Goal::Apply(data) => self.solve_apply(data.clone()),
             Goal::BindOverload(data) => self.solve_bind_overload(location, data.clone()),
             Goal::BindInterfaceMethod(data) => {
@@ -893,11 +979,32 @@ impl<'ctx> ConstraintSolver<'ctx> {
             overload_sources: FxHashMap::default(),
             value_resolutions: FxHashMap::default(),
             instantiation_args: FxHashMap::default(),
+            compiler_call_contexts: self.compiler_call_contexts.clone(),
             current_def: self.current_def,
             param_env: self.param_env.clone(),
             visible_traits: self.visible_traits.clone(),
         }
     }
+}
+
+fn targeted_conformance_diagnostic<'ctx>(
+    gcx: Gcx<'ctx>,
+    contexts: &FxHashMap<NodeID, CompilerCallContext>,
+    def_id: DefinitionID,
+    call_node_id: Option<NodeID>,
+    constraint: Constraint<'ctx>,
+) -> Option<ConformanceDiagnostic> {
+    let Constraint::Bound { ty, interface } = constraint else {
+        return None;
+    };
+    if gcx.std_item_def(crate::hir::StdItem::Sendable) != Some(interface.id) {
+        return None;
+    }
+    let TyKind::Parameter(parameter) = ty.kind() else {
+        return None;
+    };
+    let context = contexts.get(&call_node_id?).copied()?;
+    context.diagnostic_for(def_id, parameter.index)
 }
 
 #[derive(Clone)]
@@ -974,8 +1081,11 @@ impl<'ctx> SolverDriver<'ctx> {
         }
     }
 
-    fn into_parts(self) -> SolverOutputs<'ctx> {
+    fn into_parts(mut self) -> SolverOutputs<'ctx> {
+        let mut obligations = std::mem::take(&mut self.solver.obligations);
+        obligations.append(&mut self.deferred);
         SolverOutputs {
+            obligations,
             adjustments: self.solver.adjustments,
             interface_calls: self.solver.interface_calls,
             field_indices: self.solver.field_indices,

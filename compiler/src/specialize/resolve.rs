@@ -120,22 +120,34 @@ fn resolve_interface_method_for_concrete<'ctx>(
             }
 
             // Synthetic impls are generated as associated functions on the concrete type.
-            // Their generic layout is `[self type generics..., method generics...]`, while
-            // call_args are `[Self, ...interface/method generics...]`. Build the synthetic
-            // instance args directly from the concrete Self type plus call-site generics.
-            if matches!(
-                method.implementation,
-                crate::sema::models::MethodImplementation::Synthetic(..)
-            ) {
+            // Closure adapters inherit the closure owner's captured generics; other
+            // synthetic methods use the concrete self type plus call-site generics.
+            if let crate::sema::models::MethodImplementation::Synthetic(kind, _) =
+                method.implementation
+            {
                 let impl_func_id = method.implementation.impl_id().or_else(|| {
-                    gcx.get_synthetic_method(type_head, method_id)
+                    gcx.find_synthetic_method(type_head, method_id)
                         .and_then(|info| info.syn_id)
                 })?;
-                let mut final_args = Vec::new();
-                if let TyKind::Adt(_, adt_args) = self_ty.kind() {
-                    final_args.extend(adt_args.iter().cloned());
-                }
-                if call_args.len() > 1 {
+                let mut final_args = match (kind, self_ty.kind()) {
+                    (
+                        crate::sema::models::SyntheticMethodKind::ClosureCall
+                        | crate::sema::models::SyntheticMethodKind::ClosureCallMut
+                        | crate::sema::models::SyntheticMethodKind::ClosureCallOnce,
+                        TyKind::Closure {
+                            captured_generics, ..
+                        },
+                    ) => captured_generics.to_vec(),
+                    (_, TyKind::Adt(_, adt_args)) => adt_args.to_vec(),
+                    _ => Vec::new(),
+                };
+                if !matches!(
+                    kind,
+                    crate::sema::models::SyntheticMethodKind::ClosureCall
+                        | crate::sema::models::SyntheticMethodKind::ClosureCallMut
+                        | crate::sema::models::SyntheticMethodKind::ClosureCallOnce
+                ) && call_args.len() > 1
+                {
                     final_args.extend_from_slice(&call_args[1..]);
                 }
                 let final_args = gcx.store.interners.intern_generic_args(final_args);

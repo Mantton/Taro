@@ -8,6 +8,29 @@ use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine, TargetTriple,
 };
 use inkwell::{AddressSpace, OptimizationLevel, context::Context};
+use std::{ffi::CString, sync::Once};
+
+static CONFIGURE_LLVM_CODEGEN: Once = Once::new();
+
+fn configure_llvm_codegen() {
+    CONFIGURE_LLVM_CODEGEN.call_once(|| {
+        // LLVM 16 enables GlobalISel automatically for AArch64 at O0. Its
+        // incomplete legalization and PHI lowering can abort or segfault on
+        // valid Taro modules, while SelectionDAG supports the same IR. Make
+        // the stable selector explicit for every target and build profile.
+        let program = CString::new("taro-llvm").expect("static string has no NUL");
+        let option = CString::new("--global-isel=0").expect("static string has no NUL");
+        let overview = CString::new("Taro LLVM options").expect("static string has no NUL");
+        let arguments = [program.as_ptr(), option.as_ptr()];
+        unsafe {
+            inkwell::llvm_sys::support::LLVMParseCommandLineOptions(
+                arguments.len() as i32,
+                arguments.as_ptr(),
+                overview.as_ptr(),
+            );
+        }
+    });
+}
 
 /// Wrapper around LLVM target information for layout computation.
 ///
@@ -26,6 +49,8 @@ impl TargetLayout {
         target_override: Option<&str>,
         profile: BuildProfile,
     ) -> CompileResult<Self> {
+        configure_llvm_codegen();
+
         // Initialize all targets if cross-compiling, otherwise just native
         if target_override.is_some() {
             Target::initialize_all(&InitializationConfig::default());

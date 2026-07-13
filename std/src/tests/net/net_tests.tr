@@ -87,6 +87,35 @@ func expectUnexpectedCode(_ err: std.io.Error, _ code: int32, _ message: string)
 }
 
 @cfg(family("unix"))
+func abandonedUdpAddress() -> std.net.SocketAddress {
+    let socket = match std.net.UdpSocket.bind(std.net.SocketAddress.localhost(0_u16)) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("abandoned UDP socket should bind")
+    }
+    return match socket.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("abandoned UDP socket should expose its address")
+    }
+}
+
+@cfg(family("unix"))
+func connectTransferredStream(_ address: std.net.SocketAddress) async -> std.io.task.AsyncStream {
+    var client = match await std.net.TcpStream.connect(address) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("transfer client should connect")
+    }
+    let stream = match client.intoStream() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("TCP stream should transfer into AsyncStream")
+    }
+    match client.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "transferred TCP wrapper should be closed")
+        case .ok(_) => std.testing.fail("transferred TCP wrapper must not close the new owner")
+    }
+    return stream
+}
+
+@cfg(family("unix"))
 func acceptEchoByte(_ listener: &std.net.TcpListener, _ expected: uint8) async {
     let acceptRes = await listener.accept()
     let accepted = match acceptRes {
@@ -684,4 +713,68 @@ func asyncUdpLoopbackRoundTrip() async {
         case .ok(_) => {}
         case .err(_) => std.panic.panic("async udp server close should succeed")
     }
+}
+
+@cfg(family("unix"))
+@test
+func udpCleanupReleasesAbandonedSocket() {
+    let address = abandonedUdpAddress()
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+
+    let replacement = match std.net.UdpSocket.bind(address) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("cleanup should release abandoned UDP address")
+    }
+    std.testing.assertTrue(replacement.close().isOk(), "replacement UDP socket should close once")
+    match replacement.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "second UDP close should return closed")
+        case .ok(_) => std.testing.fail("second UDP close should fail")
+    }
+    match replacement.localAddress() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "UDP use after close should return closed")
+        case .ok(_) => std.testing.fail("closed UDP socket should not expose an address")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func tcpIntoStreamTransfersCleanupResponsibility() async {
+    let listener = match std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16)) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("transfer listener should bind")
+    }
+    let address = match listener.localAddress() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("transfer listener should expose its address")
+    }
+
+    let client = await connectTransferredStream(address)
+    let accepted = match await listener.accept() {
+        case .ok(value) => value.0
+        case .err(_) => std.panic.panic("transfer listener should accept")
+    }
+
+    // The original TcpStream wrapper is now unreachable. Its cancelled
+    // cleanup must not close the descriptor now owned by `client`.
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+
+    var outbound: uint8 = 117_u8
+    match await client.write(byteSpan(&outbound)) {
+        case .ok(count) => std.testing.assertEqual(count, 1 as usize, "transferred stream should write")
+        case .err(_) => std.testing.fail("old cleanup must not close transferred stream")
+    }
+
+    var received: uint8 = 0
+    match await accepted.read(byteMutSpan(&mut received)) {
+        case .ok(count) => std.testing.assertEqual(count, 1 as usize, "server should read transferred byte")
+        case .err(_) => std.testing.fail("server should read from transferred stream")
+    }
+    std.testing.assertEqual(received, outbound, "transferred stream should preserve data")
+
+    std.testing.assertTrue(client.close().isOk(), "transferred AsyncStream should close")
+    std.testing.assertTrue(accepted.close().isOk(), "accepted TCP stream should close")
+    std.testing.assertTrue(listener.close().isOk(), "transfer listener should close")
 }

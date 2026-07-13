@@ -7,6 +7,20 @@ public struct RawAsyncSocket {
     stream: std.sys.io.RawAsyncStream
 }
 
+public func isValid(_ socket: &RawAsyncSocket) -> bool {
+    std.sys.io.sourceId(&socket.stream) != 0
+}
+
+/// Move both views of the descriptor out, leaving `socket` invalid.
+public func take(_ socket: &mut RawAsyncSocket) -> RawAsyncSocket {
+    let stream = std.sys.io.take(&mut socket.stream)
+    let fd = std.sys.net.takeFd(&mut socket.inner)
+    return RawAsyncSocket {
+        inner: std.sys.net.fromFd(fd),
+        stream,
+    }
+}
+
 @cfg(family("unix"))
 public func socket(
     _ domain: std.sys.net.SocketDomain,
@@ -299,7 +313,7 @@ public func intoStream(_ socket: &mut RawAsyncSocket) -> Result[std.io.task.Asyn
 
     let stream = std.sys.io.take(&mut socket.stream)
     let _ = std.sys.net.takeFd(&mut socket.inner)
-    return .ok(std.io.task.fromRaw(stream))
+    return std.io.task.fromRaw(stream)
 }
 
 @cfg(family("windows"))

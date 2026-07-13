@@ -16,6 +16,7 @@ func mapCommonErrno(_ code: int32) -> Error {
         case 1 => .permissionDenied
         case 2 => .notFound
         case 4 => .interrupted
+        case 9 => .closed
         case 12 => .resourceExhausted
         case 13 => .permissionDenied
         case 16 => .resourceBusy

@@ -115,7 +115,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Ok(_) => {
                 self.record_overload_source(node_id, source);
                 self.icx.bind_overload(var_ty, source);
-                let obligations = self.constraints_for_def(source, instantiation_args, location);
+                let obligations = self.constraints_for_def_at_call(
+                    source,
+                    instantiation_args,
+                    location,
+                    Some(node_id),
+                );
                 SolverResult::Solved(obligations)
             }
             Err(e) => {

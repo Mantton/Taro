@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/impl-method-mangling-app"
+kind = "executable"
+
+[require]
+"github.com/example/impl-method-mangling-dep" = { path = "../dep", alias = "dep" }
