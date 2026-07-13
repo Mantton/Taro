@@ -28,7 +28,7 @@ use inkwell::{
     context::Context,
     intrinsics::Intrinsic,
     module::{Linkage, Module},
-    passes::PassManager,
+    passes::PassBuilderOptions,
     targets::{FileType, TargetData},
     types::{
         BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType,
@@ -58,6 +58,20 @@ const DEFAULT_INDIRECT_ARG_THRESHOLD_BYTES: u64 = 2048;
 const LARGE_AGGREGATE_MOVE_MEMMOVE_THRESHOLD_BYTES: u64 = 1024;
 const ENV_ARGC_GLOBAL_NAME: &str = "__taro_env_argc";
 const ENV_ARGV_GLOBAL_NAME: &str = "__taro_env_argv";
+
+fn llvm_function_pass_pipeline(profile: BuildProfile) -> &'static str {
+    match profile {
+        // Every MIR local is lowered as an alloca. Promote those allocas in
+        // every profile so the generated IR has the same baseline shape as it
+        // did under LLVM's legacy function pass manager.
+        BuildProfile::Debug => "mem2reg",
+        BuildProfile::Release => "mem2reg,instcombine,reassociate,gvn,simplifycfg",
+    }
+}
+
+fn has_llvm_function_body(function: FunctionValue<'_>) -> bool {
+    function.count_basic_blocks() != 0
+}
 
 fn target_is_aarch64(triple: &str) -> bool {
     matches!(
@@ -149,8 +163,16 @@ pub fn emit_package_with_timings<'gcx>(
     timings.verify = phase_started_at.elapsed();
 
     let phase_started_at = Instant::now();
-    emitter.run_function_passes();
+    emitter.run_function_passes()?;
     timings.function_passes = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
+    if let Err(e) = emitter.module.verify() {
+        let msg = format!("LLVM passes produced an invalid module: {}", e.to_string());
+        gcx.dcx().emit_error(msg, None);
+        return Err(crate::error::ReportedError);
+    }
+    timings.verify += phase_started_at.elapsed();
 
     // Dump LLVM IR if requested
     if gcx.config.debug.dump_llvm {
@@ -223,8 +245,16 @@ pub fn emit_test_package_with_timings<'gcx>(
     timings.verify = phase_started_at.elapsed();
 
     let phase_started_at = Instant::now();
-    emitter.run_function_passes();
+    emitter.run_function_passes()?;
     timings.function_passes = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
+    if let Err(e) = emitter.module.verify() {
+        let msg = format!("LLVM passes produced an invalid module: {}", e.to_string());
+        gcx.dcx().emit_error(msg, None);
+        return Err(crate::error::ReportedError);
+    }
+    timings.verify += phase_started_at.elapsed();
 
     if gcx.config.debug.dump_llvm {
         eprintln!("\n=== LLVM IR for {} ===", gcx.config.name);
@@ -2129,22 +2159,34 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(true)
     }
 
-    fn run_function_passes(&self) {
-        let fpm = PassManager::create(&self.module);
-        // Every MIR local is lowered as an alloca, so the scalar passes only
-        // become effective after mem2reg promotes those allocas to SSA values.
-        fpm.add_promote_memory_to_register_pass();
-        if matches!(self.gcx.config.profile, BuildProfile::Release) {
-            fpm.add_instruction_combining_pass();
-            fpm.add_reassociate_pass();
-            fpm.add_gvn_pass();
-            fpm.add_cfg_simplification_pass();
-        }
-        fpm.initialize();
+    fn run_function_passes(&self) -> CompileResult<()> {
+        let pipeline = llvm_function_pass_pipeline(self.gcx.config.profile);
+        let target_machine = self.gcx.store.target_layout.target_machine();
 
-        for func in self.module.get_functions() {
-            let _ = fpm.run_on(&func);
+        // Run the new-pass-manager pipeline on each function, matching the
+        // scope and ordering of the legacy function pass manager exactly.
+        for function in self.module.get_functions() {
+            // LLVMRunPassesOnFunction expects a definition. Modules also
+            // contain extern and intrinsic declarations, which have no IR for
+            // a function pass pipeline to transform.
+            if !has_llvm_function_body(function) {
+                continue;
+            }
+            let name = function.get_name().to_string_lossy();
+            if let Err(error) =
+                function.run_passes(pipeline, target_machine, PassBuilderOptions::create())
+            {
+                self.gcx.dcx().emit_error(
+                    format!(
+                        "LLVM function pass pipeline `{pipeline}` failed for `{name}`: {error}"
+                    ),
+                    None,
+                );
+                return Err(crate::error::ReportedError);
+            }
         }
+
+        Ok(())
     }
 
     fn emit_object_file(&mut self) -> CompileResult<PathBuf> {
@@ -2976,12 +3018,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             .unwrap()
                             .into_pointer_value();
                     }
-                    let offset_const = self.usize_ty.const_int(def.offset, false);
-                    let field_ptr = unsafe {
-                        self.builder
-                            .build_gep(self.context.i8_type(), base, &[offset_const], "gc_root_ptr")
-                            .unwrap()
-                    };
+                    let field_ptr = build_byte_offset_ptr(
+                        self.context,
+                        &self.builder,
+                        self.usize_ty,
+                        base,
+                        def.offset,
+                        "gc_root_ptr",
+                    );
                     self.builder
                         .build_load(ptr_ty, field_ptr, "gc_root_load")
                         .unwrap()
@@ -7109,18 +7153,43 @@ fn concrete_array_len_for_gc_offsets(len: ConstKind) -> u64 {
     }
 }
 
+fn build_byte_offset_ptr<'llvm>(
+    context: &'llvm Context,
+    builder: &Builder<'llvm>,
+    usize_ty: IntType<'llvm>,
+    base: PointerValue<'llvm>,
+    offset: u64,
+    name: &str,
+) -> PointerValue<'llvm> {
+    // A zero-offset GEP is semantically just its base pointer. Emitting the
+    // redundant instruction also prevents mem2reg from recognizing an alloca
+    // as promotable before InstCombine canonicalizes the GEP.
+    if offset == 0 {
+        return base;
+    }
+
+    let offset = usize_ty.const_int(offset, false);
+    unsafe {
+        builder
+            .build_gep(context.i8_type(), base, &[offset], name)
+            .unwrap()
+    }
+}
+
 #[cfg(test)]
 mod struct_layout_tests {
     use super::{
         AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
-        concrete_array_len_for_gc_offsets, indirect_return_threshold_for_triple,
-        logical_to_physical_map, packed_field_order, static_initializer_value_for_codegen,
-        target_is_aarch64,
+        build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_function_body,
+        indirect_return_threshold_for_triple, llvm_function_pass_pipeline, logical_to_physical_map,
+        packed_field_order, static_initializer_value_for_codegen, target_is_aarch64,
     };
     use crate::{
+        compile::config::BuildProfile,
         sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
         span::Symbol,
     };
+    use inkwell::{AddressSpace, context::Context};
 
     #[test]
     fn packed_field_order_sorts_by_align_then_size_then_source_index() {
@@ -7163,6 +7232,68 @@ mod struct_layout_tests {
             indirect_return_threshold_for_triple("x86_64-unknown-linux-gnu"),
             NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
         );
+    }
+
+    #[test]
+    fn llvm_pass_pipeline_preserves_profile_policy() {
+        assert_eq!(llvm_function_pass_pipeline(BuildProfile::Debug), "mem2reg");
+        assert_eq!(
+            llvm_function_pass_pipeline(BuildProfile::Release),
+            "mem2reg,instcombine,reassociate,gvn,simplifycfg"
+        );
+    }
+
+    #[test]
+    fn zero_byte_offset_reuses_the_base_pointer() {
+        let context = Context::create();
+        let module = context.create_module("zero-offset-pointer");
+        let builder = context.create_builder();
+        let pointer_ty = context.ptr_type(AddressSpace::default());
+        let function = module.add_function(
+            "test",
+            context.void_type().fn_type(&[pointer_ty.into()], false),
+            None,
+        );
+        let block = context.append_basic_block(function, "entry");
+        builder.position_at_end(block);
+        let base = function
+            .get_first_param()
+            .expect("pointer parameter")
+            .into_pointer_value();
+
+        let result = build_byte_offset_ptr(
+            &context,
+            &builder,
+            context.i64_type(),
+            base,
+            0,
+            "zero_offset",
+        );
+        builder.build_return(None).unwrap();
+
+        assert_eq!(result, base);
+        assert!(
+            !module
+                .print_to_string()
+                .to_string()
+                .contains("getelementptr")
+        );
+    }
+
+    #[test]
+    fn llvm_function_passes_skip_declarations() {
+        let context = Context::create();
+        let module = context.create_module("function-pass-candidates");
+        let function_ty = context.void_type().fn_type(&[], false);
+        let declaration = module.add_function("external", function_ty, None);
+        let definition = module.add_function("defined", function_ty, None);
+        let block = context.append_basic_block(definition, "entry");
+        let builder = context.create_builder();
+        builder.position_at_end(block);
+        builder.build_return(None).unwrap();
+
+        assert!(!has_llvm_function_body(declaration));
+        assert!(has_llvm_function_body(definition));
     }
 
     #[test]
