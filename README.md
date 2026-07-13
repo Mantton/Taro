@@ -135,6 +135,7 @@ Common flags:
 | `--std-path <PATH>` | Point the compiler at std sources when using repo-local layouts. |
 | `--build-std` | Rebuild and publish attached std artifacts into `TARO_HOME`. |
 | `--release` | Build with the release profile. |
+| `-O<0\|1\|2\|3\|s\|z>` | Select LLVM's optimization pipeline independently of the build profile. |
 | `--target <TRIPLE>` | Compile for a target triple override. |
 | `--linker <PATH>` | Use a Clang-compatible linker driver for the selected target. |
 | `--sysroot <PATH>` | Use a target SDK/sysroot while linking. |
@@ -144,6 +145,10 @@ Common flags:
 | `--no-incremental` | Disable dependency artifact reuse. |
 | `--locked` | Require `package.lock` to match dependency resolution exactly; use cached locked Git revisions without fetching when available. |
 | `--update-lock` | Refresh lockfile entries from current dependency sources. |
+
+An explicit `-O` selects LLVM's maintained module pipeline for that level. If
+it is omitted, the compiler uses the currently certified profile baseline;
+`--release` continues to control language defaults such as overflow checks.
 
 ### Create a New Package
 

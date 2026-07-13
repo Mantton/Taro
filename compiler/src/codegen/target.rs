@@ -3,14 +3,36 @@
 //! This module wraps LLVM's target data and exposes it for use in MIR
 //! layout computation and codegen.
 
-use crate::{compile::config::BuildProfile, diagnostics::DiagCtx, error::CompileResult};
+use crate::{
+    compile::config::{BuildProfile, OptLevel, OptimizationMode},
+    diagnostics::DiagCtx,
+    error::CompileResult,
+};
 use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine, TargetTriple,
 };
-use inkwell::{AddressSpace, OptimizationLevel, context::Context};
+use inkwell::{AddressSpace, OptimizationLevel as LlvmOptimizationLevel, context::Context};
 use std::{ffi::CString, sync::Once};
 
 static CONFIGURE_LLVM_CODEGEN: Once = Once::new();
+
+fn backend_optimization_level(
+    profile: BuildProfile,
+    optimization: OptimizationMode,
+) -> LlvmOptimizationLevel {
+    match optimization {
+        OptimizationMode::Baseline => match profile {
+            BuildProfile::Debug => LlvmOptimizationLevel::None,
+            BuildProfile::Release => LlvmOptimizationLevel::Default,
+        },
+        OptimizationMode::Level(OptLevel::O0) => LlvmOptimizationLevel::None,
+        OptimizationMode::Level(OptLevel::O1) => LlvmOptimizationLevel::Less,
+        OptimizationMode::Level(OptLevel::O2 | OptLevel::Os | OptLevel::Oz) => {
+            LlvmOptimizationLevel::Default
+        }
+        OptimizationMode::Level(OptLevel::O3) => LlvmOptimizationLevel::Aggressive,
+    }
+}
 
 fn configure_llvm_codegen() {
     CONFIGURE_LLVM_CODEGEN.call_once(|| {
@@ -92,10 +114,7 @@ impl TargetLayout {
         };
 
         // Debug builds prioritize compile speed; release builds keep the default LLVM level.
-        let optimization = match profile {
-            BuildProfile::Debug => OptimizationLevel::None,
-            BuildProfile::Release => OptimizationLevel::Default,
-        };
+        let optimization = backend_optimization_level(profile, OptimizationMode::Baseline);
 
         let target_machine = target
             .create_target_machine(
@@ -181,6 +200,43 @@ impl TargetLayout {
     pub fn target_machine(&self) -> &TargetMachine {
         &self.target_machine
     }
+
+    /// Create a target machine for one package's optimization policy.
+    ///
+    /// Layout remains shared across the compilation, but backend optimization
+    /// must follow the package policy: attached std and user packages can use
+    /// different profiles, and an explicit `-O` overrides either profile.
+    pub fn create_target_machine(
+        &self,
+        dcx: &DiagCtx,
+        profile: BuildProfile,
+        optimization: OptimizationMode,
+    ) -> CompileResult<TargetMachine> {
+        let triple = self.triple();
+        let target = Target::from_triple(&triple).map_err(|error| {
+            dcx.emit_error(
+                format!("failed to get target from triple '{}': {error}", triple),
+                None,
+            );
+            crate::error::ReportedError
+        })?;
+        target
+            .create_target_machine(
+                &triple,
+                &self.cpu,
+                &self.features,
+                backend_optimization_level(profile, optimization),
+                RelocMode::Default,
+                CodeModel::Default,
+            )
+            .ok_or_else(|| {
+                dcx.emit_error(
+                    format!("failed to create target machine for triple '{}'", triple),
+                    None,
+                );
+                crate::error::ReportedError
+            })
+    }
 }
 
 fn pointer_abi_alignment(target_data: &TargetData) -> u64 {
@@ -191,9 +247,13 @@ fn pointer_abi_alignment(target_data: &TargetData) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{TargetLayout, pointer_abi_alignment};
-    use crate::{compile::config::BuildProfile, diagnostics::DiagCtx};
+    use super::{TargetLayout, backend_optimization_level, pointer_abi_alignment};
+    use crate::{
+        compile::config::{BuildProfile, OptLevel, OptimizationMode},
+        diagnostics::DiagCtx,
+    };
     use inkwell::{
+        OptimizationLevel as LlvmOptimizationLevel,
         context::Context,
         targets::{FileType, TargetData},
     };
@@ -250,6 +310,25 @@ mod tests {
 
         assert_eq!(pointer_size, 8);
         assert_eq!(pointer_align, 8);
+    }
+
+    #[test]
+    fn explicit_optimization_overrides_profile_backend_policy() {
+        assert_eq!(
+            backend_optimization_level(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O2),),
+            LlvmOptimizationLevel::Default
+        );
+        assert_eq!(
+            backend_optimization_level(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::O0),
+            ),
+            LlvmOptimizationLevel::None
+        );
+        assert_eq!(
+            backend_optimization_level(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O3),),
+            LlvmOptimizationLevel::Aggressive
+        );
     }
 
     #[test]

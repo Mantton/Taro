@@ -179,7 +179,10 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
 
 
 def run_test(
-    file_path: Path, env: TestEnvironment, codegen_profile: str
+    file_path: Path,
+    env: TestEnvironment,
+    codegen_profile: str,
+    opt_level: str | None,
 ) -> TestRunResult:
     """Runs a single test file and compares output."""
     try:
@@ -194,9 +197,10 @@ def run_test(
         output_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Output binary path within temp directory
-        output_bin = (
-            env.temp_dir / "bin" / codegen_profile / relative_path.with_suffix("")
-        )
+        codegen_variant = codegen_profile
+        if opt_level is not None:
+            codegen_variant = f"{codegen_profile}-O{opt_level}"
+        output_bin = env.temp_dir / "bin" / codegen_variant / relative_path.with_suffix("")
         output_bin.parent.mkdir(parents=True, exist_ok=True)
 
         # Parse test directives (TARGET, CHECK_ONLY, TEST, …)
@@ -219,7 +223,7 @@ def run_test(
             fixture_copy = (
                 env.temp_dir
                 / "package_fixtures"
-                / codegen_profile
+                / codegen_variant
                 / relative_path.stem
             )
             if not fixture_source.is_dir():
@@ -256,6 +260,8 @@ def run_test(
 
         if codegen_profile == "release":
             cmd.append("--release")
+        if opt_level is not None:
+            cmd.append(f"-O{opt_level}")
 
         if program_args:
             if command != "run":
@@ -474,16 +480,22 @@ def format_elapsed(seconds: float) -> str:
 
 
 def run_tests_serial(
-    test_files: list[Path], env: TestEnvironment, codegen_profile: str
+    test_files: list[Path],
+    env: TestEnvironment,
+    codegen_profile: str,
+    opt_level: str | None,
 ) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
     passed = 0
     failures: list[tuple[Path, str, TestDetails | None]] = []
 
     for file_path in test_files:
         relative_path = file_path.relative_to(SOURCE_FILES_DIR)
-        display_path = Path(codegen_profile) / relative_path
+        codegen_variant = (
+            codegen_profile if opt_level is None else f"{codegen_profile}-O{opt_level}"
+        )
+        display_path = Path(codegen_variant) / relative_path
         print(f"Running {display_path}...", end=" ", flush=True)
-        success, msg, details = run_test(file_path, env, codegen_profile)
+        success, msg, details = run_test(file_path, env, codegen_profile, opt_level)
 
         if success:
             print("OK")
@@ -496,20 +508,31 @@ def run_tests_serial(
 
 
 def run_tests_parallel(
-    test_files: list[Path], env: TestEnvironment, jobs: int, codegen_profile: str
+    test_files: list[Path],
+    env: TestEnvironment,
+    jobs: int,
+    codegen_profile: str,
+    opt_level: str | None,
 ) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
     passed = 0
     failures: list[tuple[Path, str, TestDetails | None]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         future_to_path = {
-            executor.submit(run_test, file_path, env, codegen_profile): file_path
+            executor.submit(
+                run_test, file_path, env, codegen_profile, opt_level
+            ): file_path
             for file_path in test_files
         }
         for future in concurrent.futures.as_completed(future_to_path):
             file_path = future_to_path[future]
             relative_path = file_path.relative_to(SOURCE_FILES_DIR)
-            display_path = Path(codegen_profile) / relative_path
+            codegen_variant = (
+                codegen_profile
+                if opt_level is None
+                else f"{codegen_profile}-O{opt_level}"
+            )
+            display_path = Path(codegen_variant) / relative_path
             try:
                 success, msg, details = future.result()
             except (
@@ -551,6 +574,11 @@ def main():
         choices=["debug", "release", "both"],
         default="debug",
         help="Generated-program profile(s) to test (default: debug).",
+    )
+    parser.add_argument(
+        "--opt-level",
+        choices=["0", "1", "2", "3", "s", "z"],
+        help="Pass an explicit LLVM optimization level to every generated program.",
     )
     parser.add_argument(
         "--jobs",
@@ -595,6 +623,8 @@ def main():
         if args.manifest:
             print(f"Manifest: {args.manifest.resolve()}")
         print(f"Codegen profiles: {', '.join(codegen_profiles)}")
+        if args.opt_level is not None:
+            print(f"Optimization level: O{args.opt_level}")
         total = len(test_files) * len(codegen_profiles)
         jobs = resolve_jobs(args.jobs, total)
         if total > 0:
@@ -605,11 +635,11 @@ def main():
         for codegen_profile in codegen_profiles:
             if jobs == 1:
                 profile_passed, profile_failures = run_tests_serial(
-                    test_files, env, codegen_profile
+                    test_files, env, codegen_profile, args.opt_level
                 )
             else:
                 profile_passed, profile_failures = run_tests_parallel(
-                    test_files, env, jobs, codegen_profile
+                    test_files, env, jobs, codegen_profile, args.opt_level
                 )
             passed += profile_passed
             failures.extend(profile_failures)

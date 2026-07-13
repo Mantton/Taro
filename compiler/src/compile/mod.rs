@@ -128,10 +128,7 @@ impl<'state> Compiler<'state> {
                 codegen_timings.emit_entry_or_harness,
             );
             timings.push_duration("codegen.llvm.verify", codegen_timings.verify);
-            timings.push_duration(
-                "codegen.llvm.function_passes",
-                codegen_timings.function_passes,
-            );
+            timings.push_duration("codegen.llvm.optimize_ir", codegen_timings.optimize_ir);
             timings.push_duration("codegen.llvm.emit_object", codegen_timings.emit_object);
 
             let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
@@ -212,10 +209,7 @@ impl<'state> Compiler<'state> {
                 codegen_timings.emit_entry_or_harness,
             );
             timings.push_duration("codegen.llvm_test.verify", codegen_timings.verify);
-            timings.push_duration(
-                "codegen.llvm_test.function_passes",
-                codegen_timings.function_passes,
-            );
+            timings.push_duration("codegen.llvm_test.optimize_ir", codegen_timings.optimize_ir);
             timings.push_duration("codegen.llvm_test.emit_object", codegen_timings.emit_object);
 
             let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();

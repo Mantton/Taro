@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use compiler::compile::config::{BuildProfile, CodegenOptions, DebugInfo};
+use compiler::compile::config::{
+    BuildProfile, CodegenOptions, DebugInfo, OptLevel, OptimizationMode,
+};
 use std::{path::PathBuf, process::exit};
 
 mod command;
@@ -117,6 +119,9 @@ pub struct CommonCompileArgs {
     /// Build with release profile (default is debug).
     #[arg(long = "release")]
     pub release: bool,
+    /// Select the LLVM optimization level independently of the build profile.
+    #[arg(short = 'O', value_enum, value_name = "LEVEL")]
+    pub opt_level: Option<OptimizationLevelArg>,
     /// Force integer overflow checks on.
     #[arg(long = "overflow-checks", conflicts_with = "no_overflow_checks")]
     pub overflow_checks: bool,
@@ -152,6 +157,35 @@ pub enum NewProjectKind {
 pub enum DebugInfoLevel {
     None,
     LineTables,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum OptimizationLevelArg {
+    #[value(name = "0")]
+    O0,
+    #[value(name = "1")]
+    O1,
+    #[value(name = "2")]
+    O2,
+    #[value(name = "3")]
+    O3,
+    #[value(name = "s")]
+    Os,
+    #[value(name = "z")]
+    Oz,
+}
+
+impl From<OptimizationLevelArg> for OptLevel {
+    fn from(value: OptimizationLevelArg) -> Self {
+        match value {
+            OptimizationLevelArg::O0 => OptLevel::O0,
+            OptimizationLevelArg::O1 => OptLevel::O1,
+            OptimizationLevelArg::O2 => OptLevel::O2,
+            OptimizationLevelArg::O3 => OptLevel::O3,
+            OptimizationLevelArg::Os => OptLevel::Os,
+            OptimizationLevelArg::Oz => OptLevel::Oz,
+        }
+    }
 }
 
 impl From<DebugInfoLevel> for DebugInfo {
@@ -192,9 +226,13 @@ impl CommonCompileArgs {
     }
 
     pub fn compile_mode_options(&self) -> CompileModeOptions {
+        let optimization = self
+            .opt_level
+            .map(|level| OptimizationMode::Level(level.into()))
+            .unwrap_or_default();
         CompileModeOptions {
             profile: self.build_profile(),
-            codegen: CodegenOptions::default(),
+            codegen: CodegenOptions { optimization },
             overflow_checks: self.overflow_checks_enabled(),
             timings: self.timings,
             debug_info: self.debug_info.map(Into::into).unwrap_or_else(|| {
@@ -258,7 +296,7 @@ pub fn run() {
 mod tests {
     use super::{Cli, CliCommand, NewProjectKind};
     use clap::Parser;
-    use compiler::compile::config::DebugInfo;
+    use compiler::compile::config::{BuildProfile, DebugInfo, OptLevel, OptimizationMode};
 
     #[test]
     fn parses_new_command() {
@@ -445,6 +483,30 @@ mod tests {
         assert_eq!(mode(debug), DebugInfo::LineTables);
         assert_eq!(mode(release), DebugInfo::None);
         assert_eq!(mode(overridden), DebugInfo::LineTables);
+    }
+
+    #[test]
+    fn parses_attached_optimization_levels_independently_of_profile() {
+        let optimized = Cli::parse_from(["taro", "build", "examples/hello.tr", "-O2"]);
+        let size_optimized =
+            Cli::parse_from(["taro", "build", "examples/hello.tr", "--release", "-Oz"]);
+
+        let mode = |cli: Cli| match cli.command {
+            CliCommand::Build(build) => build.common.compile_mode_options(),
+            other => panic!("expected build command, got {other:?}"),
+        };
+        let optimized = mode(optimized);
+        let size_optimized = mode(size_optimized);
+        assert_eq!(
+            optimized.codegen.optimization,
+            OptimizationMode::Level(OptLevel::O2)
+        );
+        assert_eq!(
+            size_optimized.codegen.optimization,
+            OptimizationMode::Level(OptLevel::Oz)
+        );
+        assert_eq!(optimized.profile, BuildProfile::Debug);
+        assert_eq!(size_optimized.profile, BuildProfile::Release);
     }
 
     #[test]

@@ -45,6 +45,7 @@ help:
 	@echo "  make language-tests FILTER=optional"
 	@echo "  make codegen-matrix           Run high-risk codegen tests in debug and release"
 	@echo "  make codegen-matrix JOBS=4"
+	@echo "  make codegen-matrix OPT_LEVEL=2"
 	@echo "  make std-tests                Run std package test files"
 	@echo "  make runtime-stress           Run runtime-tagged std stress tests across worker counts"
 	@echo "  make all-tests                Run full test_all.py pipeline"
@@ -104,7 +105,7 @@ language-tests:
 	$(PYTHON) $(LANGUAGE_TESTS) $(if $(FILTER),--filter $(FILTER),) $(if $(JOBS),--jobs $(JOBS),)
 
 codegen-matrix:
-	$(PYTHON) $(LANGUAGE_TESTS) --manifest $(CODEGEN_MATRIX) --codegen-profile both $(if $(JOBS),--jobs $(JOBS),)
+	$(PYTHON) $(LANGUAGE_TESTS) --manifest $(CODEGEN_MATRIX) --codegen-profile both $(if $(OPT_LEVEL),--opt-level $(OPT_LEVEL),) $(if $(JOBS),--jobs $(JOBS),)
 
 std-tests: dist
 	$(PYTHON) $(TEST_ALL) --skip-cargo-tests --skip-build-dist --skip-language-tests

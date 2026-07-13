@@ -58,7 +58,10 @@ pub fn compile_std<'a>(
         no_std_prelude: true,
         is_script: false,
         profile: std_profile,
-        codegen: compile_options.codegen,
+        // Keep the single attached std artifact on the certified baseline
+        // pipeline. A caller's package-local `-O` choice must not silently
+        // replace the shared artifact with an incompatible variant.
+        codegen: Default::default(),
         overflow_checks: std_overflow_checks,
         debug: DebugOptions {
             dump_mir: false,

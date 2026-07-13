@@ -4,7 +4,7 @@ use crate::{
         mangle::{mangle, mangle_instance},
     },
     compile::{
-        config::{BuildProfile, DebugInfo},
+        config::{BuildProfile, DebugInfo, OptLevel, OptimizationMode},
         context::{Gcx, GlobalContext},
     },
     error::CompileResult,
@@ -30,7 +30,7 @@ use inkwell::{
     intrinsics::Intrinsic,
     module::{Linkage, Module},
     passes::PassBuilderOptions,
-    targets::{FileType, TargetData},
+    targets::{FileType, TargetData, TargetMachine},
     types::{
         BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType,
         StructType,
@@ -60,13 +60,33 @@ const LARGE_AGGREGATE_MOVE_MEMMOVE_THRESHOLD_BYTES: u64 = 1024;
 const ENV_ARGC_GLOBAL_NAME: &str = "__taro_env_argc";
 const ENV_ARGV_GLOBAL_NAME: &str = "__taro_env_argv";
 
-fn llvm_function_pass_pipeline(profile: BuildProfile) -> &'static str {
-    match profile {
-        // Every MIR local is lowered as an alloca. Promote those allocas in
-        // every profile so the generated IR has the same baseline shape as it
-        // did under LLVM's legacy function pass manager.
-        BuildProfile::Debug => "mem2reg",
-        BuildProfile::Release => "mem2reg,instcombine,reassociate,gvn,simplifycfg",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LlvmOptimizationPipeline {
+    Function(&'static str),
+    Module(&'static str),
+}
+
+fn llvm_optimization_pipeline(
+    profile: BuildProfile,
+    optimization: OptimizationMode,
+) -> LlvmOptimizationPipeline {
+    match optimization {
+        // Keep the certified pre-rollout pipelines available as a comparison
+        // baseline until Story 4 promotes release builds to LLVM O2.
+        OptimizationMode::Baseline => match profile {
+            BuildProfile::Debug => LlvmOptimizationPipeline::Function("mem2reg"),
+            BuildProfile::Release => LlvmOptimizationPipeline::Function(
+                "mem2reg,instcombine,reassociate,gvn,simplifycfg",
+            ),
+        },
+        // Every MIR local begins as an alloca. Even at O0, retain mem2reg so
+        // explicit `-O0` has the same usable baseline IR shape as debug builds.
+        OptimizationMode::Level(OptLevel::O0) => LlvmOptimizationPipeline::Function("mem2reg"),
+        OptimizationMode::Level(OptLevel::O1) => LlvmOptimizationPipeline::Module("default<O1>"),
+        OptimizationMode::Level(OptLevel::O2) => LlvmOptimizationPipeline::Module("default<O2>"),
+        OptimizationMode::Level(OptLevel::O3) => LlvmOptimizationPipeline::Module("default<O3>"),
+        OptimizationMode::Level(OptLevel::Os) => LlvmOptimizationPipeline::Module("default<Os>"),
+        OptimizationMode::Level(OptLevel::Oz) => LlvmOptimizationPipeline::Module("default<Oz>"),
     }
 }
 
@@ -145,7 +165,7 @@ pub struct CodegenPhaseTimings {
     pub lower_instances: Duration,
     pub emit_entry_or_harness: Duration,
     pub verify: Duration,
-    pub function_passes: Duration,
+    pub optimize_ir: Duration,
     pub emit_object: Duration,
 }
 
@@ -168,7 +188,7 @@ pub fn emit_package_with_timings<'gcx>(
     module.set_triple(&target_layout.triple());
     timings.module_setup = phase_started_at.elapsed();
 
-    let mut emitter = Emitter::new(&context, module, builder, gcx);
+    let mut emitter = Emitter::new(&context, module, builder, gcx)?;
     let phase_started_at = Instant::now();
     emitter.declare_instances();
     timings.declare_instances = phase_started_at.elapsed();
@@ -194,8 +214,8 @@ pub fn emit_package_with_timings<'gcx>(
     timings.verify = phase_started_at.elapsed();
 
     let phase_started_at = Instant::now();
-    emitter.run_function_passes()?;
-    timings.function_passes = phase_started_at.elapsed();
+    emitter.run_optimization_passes()?;
+    timings.optimize_ir = phase_started_at.elapsed();
 
     let phase_started_at = Instant::now();
     if let Err(e) = emitter.module.verify() {
@@ -250,7 +270,7 @@ pub fn emit_test_package_with_timings<'gcx>(
     module.set_triple(&target_layout.triple());
     timings.module_setup = phase_started_at.elapsed();
 
-    let mut emitter = Emitter::new(&context, module, builder, gcx);
+    let mut emitter = Emitter::new(&context, module, builder, gcx)?;
     let phase_started_at = Instant::now();
     emitter.declare_instances();
     timings.declare_instances = phase_started_at.elapsed();
@@ -276,8 +296,8 @@ pub fn emit_test_package_with_timings<'gcx>(
     timings.verify = phase_started_at.elapsed();
 
     let phase_started_at = Instant::now();
-    emitter.run_function_passes()?;
-    timings.function_passes = phase_started_at.elapsed();
+    emitter.run_optimization_passes()?;
+    timings.optimize_ir = phase_started_at.elapsed();
 
     let phase_started_at = Instant::now();
     if let Err(e) = emitter.module.verify() {
@@ -313,6 +333,7 @@ struct Emitter<'llvm, 'gcx> {
     globals: FxHashMap<hir::DefinitionID, PointerValue<'llvm>>,
     static_gc_roots: Vec<(PointerValue<'llvm>, u64)>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
+    target_machine: TargetMachine,
     target_data: inkwell::targets::TargetData,
     gc_descs: FxHashMap<Ty<'gcx>, PointerValue<'llvm>>,
     enum_layouts: FxHashMap<
@@ -383,8 +404,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         module: Module<'llvm>,
         builder: Builder<'llvm>,
         gcx: GlobalContext<'gcx>,
-    ) -> Self {
-        let target_data = gcx.store.target_layout.target_data();
+    ) -> CompileResult<Self> {
+        let target_machine = gcx.store.target_layout.create_target_machine(
+            gcx.dcx(),
+            gcx.config.profile,
+            gcx.config.codegen.optimization,
+        )?;
+        let target_data = target_machine.get_target_data();
         let target_triple = gcx.store.target_layout.triple();
         let target_triple_str = target_triple.as_str().to_str().unwrap_or("");
         let default_indirect_return_threshold =
@@ -418,7 +444,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap_or(0);
         let debug = matches!(gcx.config.debug.debug_info, DebugInfo::LineTables)
             .then(|| debug::DebugContext::new(context, &module, gcx));
-        Emitter {
+        Ok(Emitter {
             context,
             module,
             builder,
@@ -429,6 +455,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             globals: FxHashMap::default(),
             static_gc_roots: Vec::new(),
             strings: FxHashMap::default(),
+            target_machine,
             target_data,
             gc_descs: FxHashMap::default(),
             enum_layouts: FxHashMap::default(),
@@ -454,7 +481,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             env_argc_storage: None,
             env_argv_storage: None,
             new_function_instances: Vec::new(),
-        }
+        })
     }
 
     fn enum_layout_for(
@@ -2211,30 +2238,48 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(true)
     }
 
-    fn run_function_passes(&self) -> CompileResult<()> {
-        let pipeline = llvm_function_pass_pipeline(self.gcx.config.profile);
-        let target_machine = self.gcx.store.target_layout.target_machine();
+    fn run_optimization_passes(&self) -> CompileResult<()> {
+        let pipeline = llvm_optimization_pipeline(
+            self.gcx.config.profile,
+            self.gcx.config.codegen.optimization,
+        );
 
-        // Run the new-pass-manager pipeline on each function, matching the
-        // scope and ordering of the legacy function pass manager exactly.
-        for function in self.module.get_functions() {
-            // LLVMRunPassesOnFunction expects a definition. Modules also
-            // contain extern and intrinsic declarations, which have no IR for
-            // a function pass pipeline to transform.
-            if !has_llvm_function_body(function) {
-                continue;
+        match pipeline {
+            LlvmOptimizationPipeline::Function(pipeline) => {
+                // Baseline and O0 intentionally retain the old function-level
+                // scope. Declarations have no body for LLVMRunPassesOnFunction.
+                for function in self.module.get_functions() {
+                    if !has_llvm_function_body(function) {
+                        continue;
+                    }
+                    let name = function.get_name().to_string_lossy();
+                    let options = PassBuilderOptions::create();
+                    options.set_verify_each(cfg!(test));
+                    if let Err(error) = function.run_passes(pipeline, &self.target_machine, options)
+                    {
+                        self.gcx.dcx().emit_error(
+                            format!(
+                                "LLVM function pass pipeline `{pipeline}` failed for `{name}`: {error}"
+                            ),
+                            None,
+                        );
+                        return Err(crate::error::ReportedError);
+                    }
+                }
             }
-            let name = function.get_name().to_string_lossy();
-            if let Err(error) =
-                function.run_passes(pipeline, target_machine, PassBuilderOptions::create())
-            {
-                self.gcx.dcx().emit_error(
-                    format!(
-                        "LLVM function pass pipeline `{pipeline}` failed for `{name}`: {error}"
-                    ),
-                    None,
-                );
-                return Err(crate::error::ReportedError);
+            LlvmOptimizationPipeline::Module(pipeline) => {
+                let options = PassBuilderOptions::create();
+                options.set_verify_each(cfg!(test));
+                if let Err(error) = self
+                    .module
+                    .run_passes(pipeline, &self.target_machine, options)
+                {
+                    self.gcx.dcx().emit_error(
+                        format!("LLVM module pass pipeline `{pipeline}` failed: {error}"),
+                        None,
+                    );
+                    return Err(crate::error::ReportedError);
+                }
             }
         }
 
@@ -2242,7 +2287,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn emit_object_file(&mut self) -> CompileResult<PathBuf> {
-        let tm = self.gcx.store.target_layout.target_machine();
         let out_dir = self.gcx.output_root().clone();
         if let Err(e) = fs::create_dir_all(&out_dir) {
             let msg = format!("failed to create output directory: {e}");
@@ -2251,7 +2295,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
         let obj_path = out_dir.join(format!("{}.o", self.gcx.config.identifier));
 
-        tm.write_to_file(&self.module, FileType::Object, &obj_path)
+        self.target_machine
+            .write_to_file(&self.module, FileType::Object, &obj_path)
             .map_err(|e| {
                 let msg = format!("failed to write object file: {e}");
                 self.gcx.dcx().emit_error(msg.into(), None);
@@ -7231,14 +7276,15 @@ fn build_byte_offset_ptr<'llvm>(
 #[cfg(test)]
 mod struct_layout_tests {
     use super::{
-        AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
-        add_llvm_enum_function_attribute, build_byte_offset_ptr, concrete_array_len_for_gc_offsets,
-        has_llvm_function_body, indirect_return_threshold_for_triple, llvm_function_pass_pipeline,
-        llvm_inline_attribute_name, logical_to_physical_map, packed_field_order,
+        AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, LlvmOptimizationPipeline,
+        NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, add_llvm_enum_function_attribute,
+        build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_function_body,
+        indirect_return_threshold_for_triple, llvm_inline_attribute_name,
+        llvm_optimization_pipeline, logical_to_physical_map, packed_field_order,
         static_initializer_value_for_codegen, target_is_aarch64,
     };
     use crate::{
-        compile::config::BuildProfile,
+        compile::config::{BuildProfile, OptLevel, OptimizationMode},
         hir::KnownAttribute,
         sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
         span::Symbol,
@@ -7289,11 +7335,29 @@ mod struct_layout_tests {
     }
 
     #[test]
-    fn llvm_pass_pipeline_preserves_profile_policy() {
-        assert_eq!(llvm_function_pass_pipeline(BuildProfile::Debug), "mem2reg");
+    fn llvm_pass_pipeline_preserves_baseline_and_maps_explicit_levels() {
         assert_eq!(
-            llvm_function_pass_pipeline(BuildProfile::Release),
-            "mem2reg,instcombine,reassociate,gvn,simplifycfg"
+            llvm_optimization_pipeline(BuildProfile::Debug, OptimizationMode::Baseline),
+            LlvmOptimizationPipeline::Function("mem2reg")
+        );
+        assert_eq!(
+            llvm_optimization_pipeline(BuildProfile::Release, OptimizationMode::Baseline),
+            LlvmOptimizationPipeline::Function("mem2reg,instcombine,reassociate,gvn,simplifycfg")
+        );
+        assert_eq!(
+            llvm_optimization_pipeline(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O0),),
+            LlvmOptimizationPipeline::Function("mem2reg")
+        );
+        assert_eq!(
+            llvm_optimization_pipeline(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O2),),
+            LlvmOptimizationPipeline::Module("default<O2>")
+        );
+        assert_eq!(
+            llvm_optimization_pipeline(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::Oz),
+            ),
+            LlvmOptimizationPipeline::Module("default<Oz>")
         );
     }
 
