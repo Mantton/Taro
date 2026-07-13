@@ -44,7 +44,7 @@ Taro is experimental. Syntax, compiler metadata, standard library APIs, and pack
 - Package management supports manifests, lockfiles, Git dependencies, and root-local path dependencies, but there is no public registry yet.
 - Incremental compilation reuses unchanged semantic and codegen artifacts for dependencies, root packages, and single-file commands. Executables are relinked for the current output path and linker inputs.
 - Operator overloading is expressed through standard library interfaces such as `std.ops.Add`, not `operator` declarations.
-- The language server is an MVP surface: diagnostics, hover, go-to-definition, signature help, and lexical/member completions are supported; rename, formatting, references, semantic tokens, and code actions are not yet implemented.
+- The language server supports package-wide diagnostics, navigation, references and highlights, package-scoped rename, hierarchical symbols, semantic tokens, inlay hints, signature help, and lexical/member completions. Formatting and code actions are not yet implemented.
 - `.taro_meta` files are binary internal compiler artifacts, not a stable interchange format.
 
 ## Build and Run
@@ -157,13 +157,19 @@ This places both `taro` and `taro-lsp` under `dist/bin/`, with attached std arti
 
 `taro-lsp` currently provides:
 
-- diagnostics (parse/resolve/typecheck and related info) on open/change/save
+- package-wide diagnostics (parse/resolve/typecheck and related info) on open/change/save and watched source/manifest/lockfile changes
 - hover
 - go-to-definition
+- references
+- document highlights
+- package-scoped rename with prepare support
+- hierarchical document symbols
+- full-document semantic tokens
+- inferred-type and parameter-name inlay hints
 - signature help
 - completion for in-scope names plus probe-backed member/static-member contexts
 
-Completion is intentionally an MVP: it covers lexical names plus `value.` / `value.prefix` and `Type.` / `Type.prefix` candidates for identifier and dotted-path receivers. VS Code should automatically request lexical completions when typing an identifier-start character (`A-Z`, `a-z`, or `_`), and the server runs an internal completion probe for incomplete member syntax, so `point.`, `point.m`, `Heading.`, and `Heading.n` should complete even before the source is syntactically complete. Arbitrary expression receivers such as `makePoint().` are not first-class yet. Rename, formatting, references, semantic tokens, and code actions are not part of the current LSP surface.
+Completion covers lexical names plus member/static-member candidates for identifier, dotted-path, call, parenthesized, indexed, and optional-chain receivers. VS Code should automatically request lexical completions when typing an identifier-start character (`A-Z`, `a-z`, or `_`), and the server runs an internal completion probe for incomplete member syntax, so `point.`, `point.m`, and `Heading.n` can complete before the source is syntactically complete. Semantic tokens are full-document only, and inlay hints cover inferred local/closure-parameter types plus names for unlabeled call arguments. Formatting and code actions are not part of the current LSP surface.
 
 Manual smoke fixture: open `examples/lsp_smoke.tr` from the repository root in the VS Code extension development host. Expected checks:
 
@@ -174,6 +180,8 @@ Manual smoke fixture: open `examples/lsp_smoke.tr` from the repository root in t
 - `Heading.n` filters to `north`
 - `describe(` shows signature help
 - hover/go-to-definition work on `SmokePoint`, `Heading`, `point.x`, and `Heading.south`
+- references on `point.x` include the field declaration and all uses
+- prepare-rename and rename update package-owned references without touching dependencies
 
 ### Compiler Timings
 
@@ -686,7 +694,7 @@ exit.
 - **Move Semantics**: Rust-style ownership and move semantics, with values moved by default and explicit copying for copyable types, but without a mutability uniqueness guarantee.
 - **Async Concurrency**: Multithreaded task runtime (`std.task.spawn`, cancellation, task groups, async sleep, async stream I/O).
 - **Diagnostics**: Rich, clear error messages to guide developers.
-- **Basic LSP**: Diagnostics, hover, go-to-definition, signature help, and lexical/member completions via `taro-lsp`.
+- **Basic LSP**: Diagnostics, navigation, references/rename, symbols, semantic tokens, inlay hints, signature help, and lexical/member completions via `taro-lsp`.
 - **Panic Reporting**: Compact Taro-first panic stacks by default, with `TARO_BACKTRACE=full` for raw native traces.
 - **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 - **Interoperability**: C ABI compatibility for easy FFI.

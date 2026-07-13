@@ -105,10 +105,7 @@ function activate(context) {
     const serverOptions = resolveServerOptions();
 
     const clientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'taro' }],
-        synchronize: {
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.tr')
-        }
+        documentSelector: [{ scheme: 'file', language: 'taro' }]
     };
 
     client = new LanguageClient(

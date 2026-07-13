@@ -1,9 +1,14 @@
 use compiler::{
+    constants::{LOCK_FILE, MANIFEST_FILE, SOURCE_DIRECTORY},
     diagnostics::{DiagnosticLevel, DiagnosticRecord, DiagnosticStage},
     ide::{
         AnalysisMode, AnalysisOwner, AnalysisRequest, AnalysisSnapshot, CompletionInfo,
-        CompletionKind as TaroCompletionKind, SourceOverlay, analyze_owner_for_ide, completion_at,
-        reference_span_at, references_at, resolve_analysis_owner, signature_help_at,
+        CompletionKind as TaroCompletionKind, DocumentSymbolInfo,
+        DocumentSymbolKind as TaroDocumentSymbolKind, InlayHintKind as TaroInlayHintKind,
+        SemanticTokenInfo, SemanticTokenKind as TaroSemanticTokenKind, SourceOverlay,
+        analyze_owner_for_ide, completion_at, document_highlights_at, document_symbols_for_file,
+        inlay_hints_in_range, reference_span_at, references_at, resolve_analysis_owner,
+        semantic_tokens_for_file, signature_help_at,
     },
     ide_completion::{
         CompletionContext, build_completion_probe_overlay, completion_context_at,
@@ -12,7 +17,7 @@ use compiler::{
     span::{FileID, Position as SpanPosition, Span},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -38,6 +43,7 @@ struct DocumentData {
 struct AnalysisData {
     snapshot: Option<AnalysisSnapshot>,
     pending_mode: Option<AnalysisMode>,
+    published_diagnostic_uris: HashSet<Url>,
 }
 
 #[derive(Default)]
@@ -45,6 +51,7 @@ struct BackendState {
     documents: HashMap<Url, DocumentData>,
     analyses: HashMap<AnalysisOwner, AnalysisData>,
     tasks: HashMap<AnalysisOwner, JoinHandle<()>>,
+    supports_dynamic_file_watching: bool,
 }
 
 struct Backend {
@@ -63,53 +70,95 @@ impl Backend {
     }
 
     async fn schedule_analysis(&self, uri: Url, mode: AnalysisMode) {
-        let path = match uri.to_file_path() {
-            Ok(path) => path,
-            Err(_) => {
-                self.client
-                    .log_message(MessageType::ERROR, "failed to resolve file path from URI")
-                    .await;
-                return;
-            }
-        };
-        let owner = match resolve_analysis_owner(path, None) {
-            Ok(owner) => owner,
-            Err(error) => {
-                self.client
-                    .log_message(
-                        MessageType::ERROR,
-                        format!("failed to resolve analysis owner for {}: {error}", uri),
-                    )
-                    .await;
-                self.client
-                    .publish_diagnostics(
-                        uri,
-                        vec![general_diagnostic(format!(
-                            "failed to resolve analysis owner: {error}"
-                        ))],
-                        None,
-                    )
-                    .await;
-                return;
-            }
-        };
+        let _ = self.refresh_analysis_owners(vec![uri], mode).await;
+    }
 
-        let mut state = self.state.lock().await;
-        let previous_owner = {
-            let Some(document) = state.documents.get_mut(&uri) else {
-                return;
+    async fn refresh_analysis_owners(
+        &self,
+        uris: Vec<Url>,
+        mode: AnalysisMode,
+    ) -> HashSet<AnalysisOwner> {
+        let mut assignments = Vec::new();
+        for uri in uris {
+            let path = match uri.to_file_path() {
+                Ok(path) => path,
+                Err(_) => {
+                    self.client
+                        .log_message(MessageType::ERROR, "failed to resolve file path from URI")
+                        .await;
+                    continue;
+                }
             };
-            document.owner.replace(owner.clone())
+            match resolve_analysis_owner(path, None) {
+                Ok(owner) => assignments.push((uri, owner)),
+                Err(error) => {
+                    self.client
+                        .log_message(
+                            MessageType::ERROR,
+                            format!("failed to resolve analysis owner for {}: {error}", uri),
+                        )
+                        .await;
+                    self.client
+                        .publish_diagnostics(
+                            uri,
+                            vec![general_diagnostic(format!(
+                                "failed to resolve analysis owner: {error}"
+                            ))],
+                            None,
+                        )
+                        .await;
+                }
+            }
+        }
+        if assignments.is_empty() {
+            return HashSet::new();
+        }
+
+        let (owners_to_schedule, stale_diagnostic_uris) = {
+            let mut state = self.state.lock().await;
+            let mut previous_owners = HashSet::new();
+            let mut owners_to_schedule = HashSet::new();
+
+            for (uri, owner) in assignments {
+                let Some(document) = state.documents.get_mut(&uri) else {
+                    continue;
+                };
+                if let Some(previous_owner) = document.owner.replace(owner.clone())
+                    && previous_owner != owner
+                {
+                    previous_owners.insert(previous_owner);
+                }
+                owners_to_schedule.insert(owner);
+            }
+
+            let mut stale_diagnostic_uris = HashSet::new();
+            for previous_owner in previous_owners {
+                if has_documents_for_owner(&state.documents, &previous_owner) {
+                    owners_to_schedule.insert(previous_owner);
+                } else {
+                    if let Some(handle) = state.tasks.remove(&previous_owner) {
+                        handle.abort();
+                    }
+                    if let Some(analysis) = state.analyses.remove(&previous_owner) {
+                        stale_diagnostic_uris.extend(analysis.published_diagnostic_uris);
+                    }
+                }
+            }
+
+            (owners_to_schedule, stale_diagnostic_uris)
         };
 
-        if let Some(previous_owner) = previous_owner
-            && previous_owner != owner
-            && !has_documents_for_owner(&state.documents, &previous_owner)
-        {
-            if let Some(handle) = state.tasks.remove(&previous_owner) {
-                handle.abort();
-            }
-            state.analyses.remove(&previous_owner);
+        self.clear_diagnostics(stale_diagnostic_uris).await;
+        for owner in &owners_to_schedule {
+            self.schedule_owner_analysis(owner.clone(), mode).await;
+        }
+        owners_to_schedule
+    }
+
+    async fn schedule_owner_analysis(&self, owner: AnalysisOwner, mode: AnalysisMode) {
+        let mut state = self.state.lock().await;
+        if !has_documents_for_owner(&state.documents, &owner) {
+            return;
         }
 
         let entry = state.analyses.entry(owner.clone()).or_default();
@@ -130,10 +179,12 @@ impl Backend {
                 let mut mode = {
                     let mut state = state_ref.lock().await;
                     let Some(entry) = state.analyses.get_mut(&task_owner) else {
-                        break;
+                        state.tasks.remove(&task_owner);
+                        return;
                     };
                     let Some(mode) = entry.pending_mode.take() else {
-                        break;
+                        state.tasks.remove(&task_owner);
+                        return;
                     };
                     mode
                 };
@@ -149,7 +200,8 @@ impl Backend {
                 let (text, version) = {
                     let mut state = state_ref.lock().await;
                     let Some(entry) = state.analyses.get_mut(&task_owner) else {
-                        break;
+                        state.tasks.remove(&task_owner);
+                        return;
                     };
                     if let Some(extra_mode) = entry.pending_mode.take() {
                         mode = merge_analysis_mode(mode, extra_mode);
@@ -157,7 +209,8 @@ impl Backend {
                     let documents = owner_documents(&state.documents, &task_owner);
                     if documents.is_empty() {
                         state.analyses.remove(&task_owner);
-                        break;
+                        state.tasks.remove(&task_owner);
+                        return;
                     }
 
                     let request = AnalysisRequest {
@@ -231,29 +284,57 @@ impl Backend {
 
                 {
                     let state = state_ref.lock().await;
-                    if owner_documents_changed(&state.documents, &task_owner, &version) {
+                    if owner_analysis_superseded(&state, &task_owner, &version) {
                         continue;
                     }
                 }
 
-                for document in &version {
-                    let diagnostics =
-                        diagnostics_for_uri(&snapshot, &document.path, &document.text);
+                let previous_diagnostic_uris = {
+                    let state = state_ref.lock().await;
+                    state
+                        .analyses
+                        .get(&task_owner)
+                        .map(|analysis| analysis.published_diagnostic_uris.clone())
+                        .unwrap_or_default()
+                };
+                let (publications, published_diagnostic_uris) = diagnostic_publications(
+                    &snapshot,
+                    &task_owner,
+                    &version,
+                    &previous_diagnostic_uris,
+                );
+                let mut possibly_published_diagnostic_uris = previous_diagnostic_uris;
+                possibly_published_diagnostic_uris
+                    .extend(published_diagnostic_uris.iter().cloned());
+                {
+                    let mut state = state_ref.lock().await;
+                    if owner_analysis_superseded(&state, &task_owner, &version) {
+                        continue;
+                    }
+                    let Some(entry) = state.analyses.get_mut(&task_owner) else {
+                        continue;
+                    };
+                    // Record every URI that could carry diagnostics before sending. If an
+                    // overlay changes during publication, the next pass will clear any stale URI.
+                    entry.published_diagnostic_uris = possibly_published_diagnostic_uris;
+                }
+                for publication in publications {
                     client
                         .publish_diagnostics(
-                            document.uri.clone(),
-                            diagnostics,
-                            Some(document.version),
+                            publication.uri,
+                            publication.diagnostics,
+                            publication.version,
                         )
                         .await;
                 }
 
                 let mut state = state_ref.lock().await;
-                if owner_documents_changed(&state.documents, &task_owner, &version) {
+                if owner_analysis_superseded(&state, &task_owner, &version) {
                     continue;
                 }
                 if let Some(entry) = state.analyses.get_mut(&task_owner) {
                     entry.snapshot = Some(snapshot);
+                    entry.published_diagnostic_uris = published_diagnostic_uris;
                 }
             }
 
@@ -265,6 +346,12 @@ impl Backend {
         });
 
         state.tasks.insert(owner, handle);
+    }
+
+    async fn clear_diagnostics(&self, uris: impl IntoIterator<Item = Url>) {
+        for uri in uris {
+            self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        }
     }
 
     async fn snapshot_for_uri(&self, uri: &Url) -> Option<(String, i32, AnalysisSnapshot)> {
@@ -419,7 +506,11 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let supports_dynamic_file_watching =
+            client_supports_dynamic_file_watching(&params.capabilities);
+        self.state.lock().await.supports_dynamic_file_watching = supports_dynamic_file_watching;
+
         Ok(InitializeResult {
             server_info: Some(ServerInfo {
                 name: "taro-lsp".to_string(),
@@ -436,6 +527,21 @@ impl LanguageServer for Backend {
                 format!("taro-lsp initialized pid={}", std::process::id()),
             )
             .await;
+
+        let supports_dynamic_file_watching = self.state.lock().await.supports_dynamic_file_watching;
+        if supports_dynamic_file_watching
+            && let Err(error) = self
+                .client
+                .register_capability(vec![watched_files_registration()])
+                .await
+        {
+            self.client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("failed to register file watchers: {error}"),
+                )
+                .await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -475,9 +581,39 @@ impl LanguageServer for Backend {
             .await;
     }
 
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let changed_paths = params
+            .changes
+            .into_iter()
+            .filter_map(|change| change.uri.to_file_path().ok())
+            .collect::<Vec<_>>();
+        if changed_paths.is_empty() {
+            return;
+        }
+
+        let (documents_to_reassign, owners_to_schedule) = {
+            let state = self.state.lock().await;
+            watched_analysis_targets(&state, &changed_paths)
+        };
+
+        let refreshed_owners = if documents_to_reassign.is_empty() {
+            HashSet::new()
+        } else {
+            self.refresh_analysis_owners(documents_to_reassign, AnalysisMode::OnSave)
+                .await
+        };
+        for owner in owners_to_schedule {
+            if !refreshed_owners.contains(&owner) {
+                self.schedule_owner_analysis(owner, AnalysisMode::OnSave)
+                    .await;
+            }
+        }
+    }
+
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         let mut follow_up_uri = None;
+        let mut stale_diagnostic_uris = HashSet::new();
         let mut state = self.state.lock().await;
         let owner = state.documents.remove(&uri).and_then(|doc| doc.owner);
         if let Some(owner) = owner {
@@ -487,12 +623,19 @@ impl LanguageServer for Backend {
                 if let Some(handle) = state.tasks.remove(&owner) {
                     handle.abort();
                 }
-                state.analyses.remove(&owner);
+                if let Some(analysis) = state.analyses.remove(&owner) {
+                    stale_diagnostic_uris.extend(analysis.published_diagnostic_uris);
+                }
+                if stale_diagnostic_uris.is_empty() {
+                    stale_diagnostic_uris.insert(uri.clone());
+                }
             }
+        } else {
+            stale_diagnostic_uris.insert(uri);
         }
         drop(state);
 
-        self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        self.clear_diagnostics(stale_diagnostic_uris).await;
         if let Some(uri) = follow_up_uri {
             self.schedule_analysis(uri, AnalysisMode::OnSave).await;
         }
@@ -627,6 +770,104 @@ impl LanguageServer for Backend {
         }
 
         Ok(Some(locations))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some((text, _version, snapshot)) = self.snapshot_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(file_id) = file_id_for_uri(&snapshot, &uri) else {
+            return Ok(None);
+        };
+        let Some(position) = span_position_from_lsp(&text, position) else {
+            return Ok(None);
+        };
+        let highlights = document_highlights_at(&snapshot, file_id, position)
+            .into_iter()
+            .map(|reference| DocumentHighlight {
+                range: range_from_span(reference.span, &text),
+                kind: Some(DocumentHighlightKind::TEXT),
+            })
+            .collect();
+        Ok(Some(highlights))
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let Some((text, _version, snapshot)) = self.snapshot_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(file_id) = file_id_for_uri(&snapshot, &uri) else {
+            return Ok(None);
+        };
+        let symbols = document_symbols_for_file(&snapshot, file_id)
+            .into_iter()
+            .map(|symbol| lsp_document_symbol(symbol, &text))
+            .collect();
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let Some((text, _version, snapshot)) = self.snapshot_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(file_id) = file_id_for_uri(&snapshot, &uri) else {
+            return Ok(None);
+        };
+        let data = encode_semantic_tokens(semantic_tokens_for_file(&snapshot, file_id), &text);
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data,
+        })))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let Some((text, _version, snapshot)) = self.snapshot_for_uri(&uri).await else {
+            return Ok(None);
+        };
+        let Some(file_id) = file_id_for_uri(&snapshot, &uri) else {
+            return Ok(None);
+        };
+        let Some(start) = span_position_from_lsp(&text, params.range.start) else {
+            return Ok(Some(Vec::new()));
+        };
+        let Some(end) = span_position_from_lsp(&text, params.range.end) else {
+            return Ok(Some(Vec::new()));
+        };
+        let hints = inlay_hints_in_range(&snapshot, file_id, start, end)
+            .into_iter()
+            .map(|hint| InlayHint {
+                position: position_from_span_location(
+                    &text,
+                    hint.position.line,
+                    hint.position.offset,
+                ),
+                label: InlayHintLabel::String(hint.label),
+                kind: Some(match hint.kind {
+                    TaroInlayHintKind::Type => InlayHintKind::TYPE,
+                    TaroInlayHintKind::Parameter => InlayHintKind::PARAMETER,
+                }),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(true),
+                padding_right: None,
+                data: None,
+            })
+            .collect();
+        Ok(Some(hints))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -797,11 +1038,118 @@ struct OwnerDocument {
     version: i32,
 }
 
+struct DiagnosticPublication {
+    uri: Url,
+    diagnostics: Vec<Diagnostic>,
+    version: Option<i32>,
+}
+
+struct DiagnosticTarget {
+    uri: Url,
+    path: PathBuf,
+    text: String,
+    version: Option<i32>,
+}
+
+fn diagnostic_publications(
+    snapshot: &AnalysisSnapshot,
+    owner: &AnalysisOwner,
+    documents: &[OwnerDocument],
+    previous_uris: &HashSet<Url>,
+) -> (Vec<DiagnosticPublication>, HashSet<Url>) {
+    let mut targets = HashMap::<Url, DiagnosticTarget>::new();
+    let mut current_uris = HashSet::new();
+
+    for document in documents {
+        current_uris.insert(document.uri.clone());
+        targets.insert(
+            document.uri.clone(),
+            DiagnosticTarget {
+                uri: document.uri.clone(),
+                path: document.path.clone(),
+                text: document.text.clone(),
+                version: Some(document.version),
+            },
+        );
+    }
+
+    for diagnostic in &snapshot.diagnostics {
+        let Some(span) = diagnostic.span else {
+            continue;
+        };
+        let Some(path) = path_for_file_id(snapshot, span.file) else {
+            continue;
+        };
+        if !owner_contains_source_path(owner, path) {
+            continue;
+        }
+        if let Some(document) = documents
+            .iter()
+            .find(|document| paths_match(&document.path, path))
+        {
+            current_uris.insert(document.uri.clone());
+            continue;
+        }
+        let Some(uri) = Url::from_file_path(path).ok() else {
+            continue;
+        };
+
+        current_uris.insert(uri.clone());
+        targets
+            .entry(uri.clone())
+            .or_insert_with(|| DiagnosticTarget {
+                uri,
+                path: path.to_path_buf(),
+                text: std::fs::read_to_string(path).unwrap_or_default(),
+                version: None,
+            });
+    }
+
+    for uri in previous_uris {
+        let Some(path) = uri.to_file_path().ok() else {
+            continue;
+        };
+        targets
+            .entry(uri.clone())
+            .or_insert_with(|| DiagnosticTarget {
+                uri: uri.clone(),
+                text: std::fs::read_to_string(&path).unwrap_or_default(),
+                path,
+                version: None,
+            });
+    }
+
+    let general_diagnostic_uri = documents.first().map(|document| &document.uri);
+    let mut publications = targets
+        .into_values()
+        .map(|target| {
+            let diagnostics = if current_uris.contains(&target.uri) {
+                diagnostics_for_uri(
+                    snapshot,
+                    &target.path,
+                    &target.text,
+                    general_diagnostic_uri == Some(&target.uri),
+                )
+            } else {
+                Vec::new()
+            };
+            DiagnosticPublication {
+                diagnostics,
+                uri: target.uri,
+                version: target.version,
+            }
+        })
+        .collect::<Vec<_>>();
+    publications.sort_by(|lhs, rhs| lhs.uri.as_str().cmp(rhs.uri.as_str()));
+
+    (publications, current_uris)
+}
+
 fn owner_documents(
     documents: &HashMap<Url, DocumentData>,
     owner: &AnalysisOwner,
 ) -> Vec<OwnerDocument> {
-    documents
+    let mut matching = documents
         .iter()
         .filter_map(|(uri, document)| {
             if document.owner.as_ref() != Some(owner) {
@@ -816,7 +1164,9 @@ fn owner_documents(
                 version: document.version,
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    matching.sort_by(|lhs, rhs| lhs.path.cmp(&rhs.path));
+    matching
 }
 
 fn owner_documents_changed(
@@ -840,6 +1190,97 @@ fn owner_documents_changed(
                 current.version != document.version || current.owner.as_ref() != Some(owner)
             })
             .unwrap_or(true)
+    })
+}
+
+fn owner_analysis_superseded(
+    state: &BackendState,
+    owner: &AnalysisOwner,
+    tracked: &[OwnerDocument],
+) -> bool {
+    owner_documents_changed(&state.documents, owner, tracked)
+        || state
+            .analyses
+            .get(owner)
+            .and_then(|analysis| analysis.pending_mode)
+            .is_some()
+}
+
+fn watched_analysis_targets(
+    state: &BackendState,
+    changed_paths: &[PathBuf],
+) -> (Vec<Url>, Vec<AnalysisOwner>) {
+    let mut documents_to_reassign = HashSet::new();
+    let mut owners_to_schedule = HashSet::new();
+
+    for changed_path in changed_paths {
+        if changed_path.file_name().and_then(|name| name.to_str()) == Some(MANIFEST_FILE)
+            && let Some(package_root) = changed_path.parent()
+        {
+            let source_root = package_root.join(SOURCE_DIRECTORY);
+            for uri in state.documents.keys() {
+                let Some(document_path) = uri.to_file_path().ok() else {
+                    continue;
+                };
+                if path_is_within(&document_path, &source_root) {
+                    documents_to_reassign.insert(uri.clone());
+                }
+            }
+        }
+
+        // Text sync owns open buffers. Reanalyzing their disk events would duplicate didSave
+        // and, for dirty buffers, would still analyze the in-memory overlay rather than the disk.
+        let changed_document_is_open = state.documents.keys().any(|uri| {
+            uri.to_file_path()
+                .ok()
+                .is_some_and(|path| paths_match(&path, changed_path))
+        });
+        if !changed_document_is_open {
+            for owner in state
+                .documents
+                .values()
+                .filter_map(|document| document.owner.as_ref())
+            {
+                if watched_path_affects_owner(owner, changed_path) {
+                    owners_to_schedule.insert(owner.clone());
+                }
+            }
+        }
+    }
+
+    let mut documents_to_reassign = documents_to_reassign.into_iter().collect::<Vec<_>>();
+    documents_to_reassign.sort_by(|lhs, rhs| lhs.as_str().cmp(rhs.as_str()));
+    let mut owners_to_schedule = owners_to_schedule.into_iter().collect::<Vec<_>>();
+    owners_to_schedule.sort_by(|lhs, rhs| lhs.path().cmp(rhs.path()));
+    (documents_to_reassign, owners_to_schedule)
+}
+
+fn watched_path_affects_owner(owner: &AnalysisOwner, changed_path: &Path) -> bool {
+    match owner {
+        AnalysisOwner::Package(root) => {
+            paths_match(changed_path, &root.join(MANIFEST_FILE))
+                || paths_match(changed_path, &root.join(LOCK_FILE))
+                || path_is_within(changed_path, &root.join(SOURCE_DIRECTORY))
+        }
+        AnalysisOwner::Script(script) => paths_match(changed_path, script),
+    }
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    if path.starts_with(root) {
+        return true;
+    }
+
+    match (normalize_watch_path(path), normalize_watch_path(root)) {
+        (Some(path), Some(root)) => path.starts_with(root),
+        _ => false,
+    }
+}
+
+fn normalize_watch_path(path: &Path) -> Option<PathBuf> {
+    path.canonicalize().ok().or_else(|| {
+        let parent = path.parent()?.canonicalize().ok()?;
+        Some(parent.join(path.file_name()?))
     })
 }
 
@@ -893,12 +1334,58 @@ fn completion_trigger_characters() -> Vec<String> {
     characters
 }
 
+fn watched_files_registration() -> Registration {
+    let options = DidChangeWatchedFilesRegistrationOptions {
+        watchers: ["**/*.tr", "**/package.toml", "**/package.lock"]
+            .into_iter()
+            .map(|pattern| FileSystemWatcher {
+                glob_pattern: GlobPattern::String(pattern.to_string()),
+                kind: None,
+            })
+            .collect(),
+    };
+
+    Registration {
+        id: "taro-watch-files".to_string(),
+        method: "workspace/didChangeWatchedFiles".to_string(),
+        register_options: Some(
+            serde_json::to_value(options).expect("watched-file registration must serialize"),
+        ),
+    }
+}
+
+fn client_supports_dynamic_file_watching(capabilities: &ClientCapabilities) -> bool {
+    capabilities
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+        .and_then(|watching| watching.dynamic_registration)
+        .unwrap_or(false)
+}
+
 fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        semantic_tokens_provider: Some(
+            SemanticTokensOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+                legend: semantic_tokens_legend(),
+                range: None,
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+            }
+            .into(),
+        ),
+        inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+            InlayHintOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+                resolve_provider: Some(false),
+            },
+        ))),
         rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -916,6 +1403,132 @@ fn server_capabilities() -> ServerCapabilities {
             completion_item: None,
         }),
         ..ServerCapabilities::default()
+    }
+}
+
+fn semantic_tokens_legend() -> SemanticTokensLegend {
+    SemanticTokensLegend {
+        token_types: vec![
+            SemanticTokenType::NAMESPACE,
+            SemanticTokenType::TYPE,
+            SemanticTokenType::STRUCT,
+            SemanticTokenType::ENUM,
+            SemanticTokenType::INTERFACE,
+            SemanticTokenType::TYPE_PARAMETER,
+            SemanticTokenType::FUNCTION,
+            SemanticTokenType::METHOD,
+            SemanticTokenType::PROPERTY,
+            SemanticTokenType::VARIABLE,
+            SemanticTokenType::PARAMETER,
+            SemanticTokenType::ENUM_MEMBER,
+        ],
+        token_modifiers: vec![
+            SemanticTokenModifier::DECLARATION,
+            SemanticTokenModifier::READONLY,
+            SemanticTokenModifier::STATIC,
+            SemanticTokenModifier::ASYNC,
+            SemanticTokenModifier::DEFAULT_LIBRARY,
+        ],
+    }
+}
+
+#[allow(deprecated)]
+fn lsp_document_symbol(symbol: DocumentSymbolInfo, source_text: &str) -> DocumentSymbol {
+    DocumentSymbol {
+        name: symbol.name,
+        detail: symbol.detail,
+        kind: match symbol.kind {
+            TaroDocumentSymbolKind::Namespace => SymbolKind::NAMESPACE,
+            TaroDocumentSymbolKind::Struct => SymbolKind::STRUCT,
+            TaroDocumentSymbolKind::Enum => SymbolKind::ENUM,
+            TaroDocumentSymbolKind::Interface => SymbolKind::INTERFACE,
+            TaroDocumentSymbolKind::Function => SymbolKind::FUNCTION,
+            TaroDocumentSymbolKind::Method => SymbolKind::METHOD,
+            TaroDocumentSymbolKind::Field => SymbolKind::FIELD,
+            TaroDocumentSymbolKind::Property => SymbolKind::PROPERTY,
+            TaroDocumentSymbolKind::EnumMember => SymbolKind::ENUM_MEMBER,
+            TaroDocumentSymbolKind::TypeAlias => SymbolKind::TYPE_PARAMETER,
+            TaroDocumentSymbolKind::Constant => SymbolKind::CONSTANT,
+            TaroDocumentSymbolKind::Variable => SymbolKind::VARIABLE,
+            TaroDocumentSymbolKind::Type => SymbolKind::CLASS,
+        },
+        tags: None,
+        deprecated: None,
+        range: range_from_span(symbol.span, source_text),
+        selection_range: range_from_span(symbol.selection_span, source_text),
+        children: if symbol.children.is_empty() {
+            None
+        } else {
+            Some(
+                symbol
+                    .children
+                    .into_iter()
+                    .map(|child| lsp_document_symbol(child, source_text))
+                    .collect(),
+            )
+        },
+    }
+}
+
+fn encode_semantic_tokens(items: Vec<SemanticTokenInfo>, source_text: &str) -> Vec<SemanticToken> {
+    let mut encoded = Vec::new();
+    let mut previous_line = 0;
+    let mut previous_start = 0;
+    let mut previous_end: Option<(u32, u32)> = None;
+
+    for item in items {
+        if item.span.start.line != item.span.end.line {
+            continue;
+        }
+        let range = range_from_span(item.span, source_text);
+        if range.start == range.end {
+            continue;
+        }
+        if previous_end
+            .is_some_and(|(line, end)| line == range.start.line && range.start.character < end)
+        {
+            continue;
+        }
+        let delta_line = range.start.line - previous_line;
+        let delta_start = if delta_line == 0 {
+            range.start.character - previous_start
+        } else {
+            range.start.character
+        };
+        let mut modifiers = 0;
+        modifiers |= u32::from(item.modifiers.declaration);
+        modifiers |= u32::from(item.modifiers.readonly) << 1;
+        modifiers |= u32::from(item.modifiers.static_member) << 2;
+        modifiers |= u32::from(item.modifiers.async_member) << 3;
+        modifiers |= u32::from(item.modifiers.default_library) << 4;
+        encoded.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: range.end.character - range.start.character,
+            token_type: semantic_token_type_index(item.kind),
+            token_modifiers_bitset: modifiers,
+        });
+        previous_line = range.start.line;
+        previous_start = range.start.character;
+        previous_end = Some((range.end.line, range.end.character));
+    }
+    encoded
+}
+
+fn semantic_token_type_index(kind: TaroSemanticTokenKind) -> u32 {
+    match kind {
+        TaroSemanticTokenKind::Namespace => 0,
+        TaroSemanticTokenKind::Type => 1,
+        TaroSemanticTokenKind::Struct => 2,
+        TaroSemanticTokenKind::Enum => 3,
+        TaroSemanticTokenKind::Interface => 4,
+        TaroSemanticTokenKind::TypeParameter => 5,
+        TaroSemanticTokenKind::Function => 6,
+        TaroSemanticTokenKind::Method => 7,
+        TaroSemanticTokenKind::Property => 8,
+        TaroSemanticTokenKind::Variable => 9,
+        TaroSemanticTokenKind::Parameter => 10,
+        TaroSemanticTokenKind::EnumMember => 11,
     }
 }
 
@@ -957,6 +1570,7 @@ fn diagnostics_for_uri(
     snapshot: &AnalysisSnapshot,
     current_path: &Path,
     source_text: &str,
+    include_general: bool,
 ) -> Vec<Diagnostic> {
     let mut file_map: HashMap<FileID, PathBuf> = HashMap::new();
     for mapping in &snapshot.file_mappings {
@@ -966,6 +1580,7 @@ fn diagnostics_for_uri(
     snapshot
         .diagnostics
         .iter()
+        .filter(|diagnostic| include_general || diagnostic.span.is_some())
         .filter_map(|diagnostic| lsp_diagnostic(diagnostic, current_path, source_text, &file_map))
         .collect()
 }
@@ -1153,6 +1768,14 @@ fn range_from_span(span: Span, source_text: &str) -> Range {
     Range { start, end }
 }
 
+fn span_position_from_lsp(source_text: &str, position: Position) -> Option<SpanPosition> {
+    let line = line_at(source_text, position.line as usize)?;
+    Some(SpanPosition {
+        line: position.line as usize,
+        offset: utf16_to_char_offset(line, position.character),
+    })
+}
+
 fn extract_span_text(source_text: &str, span: Span) -> Option<&str> {
     if span.start.line != span.end.line {
         return None;
@@ -1220,13 +1843,23 @@ fn paths_match(lhs: &Path, rhs: &Path) -> bool {
 
     match (lhs.canonicalize(), rhs.canonicalize()) {
         (Ok(lhs), Ok(rhs)) => lhs == rhs,
-        _ => false,
+        _ => match (normalize_watch_path(lhs), normalize_watch_path(rhs)) {
+            (Some(lhs), Some(rhs)) => lhs == rhs,
+            _ => false,
+        },
     }
 }
 
 fn owner_contains_path(owner: &AnalysisOwner, path: &Path) -> bool {
     match owner {
         AnalysisOwner::Package(root) => path.starts_with(root),
+        AnalysisOwner::Script(script) => paths_match(script, path),
+    }
+}
+
+fn owner_contains_source_path(owner: &AnalysisOwner, path: &Path) -> bool {
+    match owner {
+        AnalysisOwner::Package(root) => path_is_within(path, &root.join(SOURCE_DIRECTORY)),
         AnalysisOwner::Script(script) => paths_match(script, path),
     }
 }
@@ -1301,20 +1934,43 @@ fn is_taro_keyword(value: &str) -> bool {
     )
 }
 
+#[tokio::main]
+async fn main() {
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+
+    let (service, socket) = LspService::new(Backend::new);
+    Server::new(stdin, stdout, socket).serve(service).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AnalysisOwner, CompletionInfo, DocumentData, OneOf, OwnerDocument, TaroCompletionKind,
-        completion_prefix, completion_trigger_characters, find_navigation_index,
-        general_diagnostic, is_valid_rename_identifier, lsp_completion_item, owner_documents,
-        owner_documents_changed, server_capabilities, signature_help_trigger_characters,
-        utf16_to_char_offset,
+        AnalysisData, AnalysisMode, AnalysisOwner, BackendState, CompletionInfo, DocumentData,
+        OneOf, OwnerDocument, TaroCompletionKind, client_supports_dynamic_file_watching,
+        completion_prefix, completion_trigger_characters, diagnostic_publications,
+        encode_semantic_tokens, find_navigation_index, general_diagnostic,
+        is_valid_rename_identifier, lsp_completion_item, owner_analysis_superseded,
+        owner_documents, owner_documents_changed, server_capabilities,
+        signature_help_trigger_characters, utf16_to_char_offset, watched_analysis_targets,
+        watched_files_registration, watched_path_affects_owner,
     };
-    use compiler::ide_completion::CompletionContext;
     use compiler::span::{FileID, Position, Span};
+    use compiler::{
+        diagnostics::{DiagnosticLevel, DiagnosticRecord, DiagnosticStage},
+        ide::{
+            AnalysisSnapshot, FileMapping, SemanticTokenInfo, SemanticTokenKind,
+            SemanticTokenModifiers,
+        },
+        ide_completion::CompletionContext,
+    };
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
-    use tower_lsp::lsp_types::{CompletionItemKind, Url};
+    use tower_lsp::lsp_types::{
+        ClientCapabilities, CompletionItemKind, DidChangeWatchedFilesClientCapabilities,
+        DidChangeWatchedFilesRegistrationOptions, GlobPattern, SemanticTokensFullOptions,
+        SemanticTokensServerCapabilities, Url, WorkspaceClientCapabilities,
+    };
 
     #[test]
     fn owner_documents_collects_matching_documents() {
@@ -1392,6 +2048,249 @@ mod tests {
     }
 
     #[test]
+    fn pending_filesystem_analysis_supersedes_matching_open_versions() {
+        let owner = AnalysisOwner::Package(PathBuf::from("/tmp/pkg"));
+        let uri = Url::from_file_path("/tmp/pkg/src/a.tr").expect("uri");
+        let document = DocumentData {
+            text: "a".into(),
+            version: 1,
+            owner: Some(owner.clone()),
+        };
+        let tracked = vec![OwnerDocument {
+            uri: uri.clone(),
+            path: PathBuf::from("/tmp/pkg/src/a.tr"),
+            text: "a".into(),
+            version: 1,
+        }];
+        let mut state = BackendState::default();
+        state.documents.insert(uri, document);
+        state.analyses.insert(
+            owner.clone(),
+            AnalysisData {
+                pending_mode: Some(AnalysisMode::OnSave),
+                ..AnalysisData::default()
+            },
+        );
+
+        assert!(owner_analysis_superseded(&state, &owner, &tracked));
+    }
+
+    #[test]
+    fn watched_file_registration_covers_sources_and_package_metadata() {
+        let registration = watched_files_registration();
+        assert_eq!(registration.method, "workspace/didChangeWatchedFiles");
+        let options: DidChangeWatchedFilesRegistrationOptions =
+            serde_json::from_value(registration.register_options.expect("registration options"))
+                .expect("deserialize registration options");
+        let patterns = options
+            .watchers
+            .into_iter()
+            .map(|watcher| match watcher.glob_pattern {
+                GlobPattern::String(pattern) => pattern,
+                GlobPattern::Relative(_) => panic!("expected workspace-wide pattern"),
+            })
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            patterns,
+            HashSet::from([
+                "**/*.tr".to_string(),
+                "**/package.toml".to_string(),
+                "**/package.lock".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn dynamic_file_watching_requires_client_registration_support() {
+        assert!(!client_supports_dynamic_file_watching(
+            &ClientCapabilities::default()
+        ));
+
+        let capabilities = ClientCapabilities {
+            workspace: Some(WorkspaceClientCapabilities {
+                did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
+                    dynamic_registration: Some(true),
+                    relative_pattern_support: None,
+                }),
+                ..WorkspaceClientCapabilities::default()
+            }),
+            ..ClientCapabilities::default()
+        };
+        assert!(client_supports_dynamic_file_watching(&capabilities));
+    }
+
+    #[test]
+    fn deleted_package_source_path_schedules_known_owner_without_io() {
+        let owner = AnalysisOwner::Package(PathBuf::from("/tmp/taro-lsp-deleted-source"));
+        let deleted = PathBuf::from("/tmp/taro-lsp-deleted-source/src/removed.tr");
+        assert!(watched_path_affects_owner(&owner, &deleted));
+    }
+
+    #[test]
+    fn watched_change_for_open_source_relies_on_text_document_sync() {
+        let root = PathBuf::from("/tmp/taro-lsp-open-source");
+        let source = root.join("src/main.tr");
+        let uri = Url::from_file_path(&source).expect("source uri");
+        let mut state = BackendState::default();
+        state.documents.insert(
+            uri,
+            DocumentData {
+                text: String::new(),
+                version: 1,
+                owner: Some(AnalysisOwner::Package(root)),
+            },
+        );
+
+        let (documents, owners) = watched_analysis_targets(&state, &[source]);
+        assert!(documents.is_empty());
+        assert!(owners.is_empty());
+    }
+
+    #[test]
+    fn manifest_change_reassigns_open_package_documents() {
+        let root = PathBuf::from("/tmp/taro-lsp-manifest-change");
+        let owner = AnalysisOwner::Package(root.clone());
+        let uri = Url::from_file_path(root.join("src/main.tr")).expect("source uri");
+        let mut state = BackendState::default();
+        state.documents.insert(
+            uri.clone(),
+            DocumentData {
+                text: "func main() {}".into(),
+                version: 1,
+                owner: Some(owner.clone()),
+            },
+        );
+
+        let (documents, owners) = watched_analysis_targets(&state, &[root.join("package.toml")]);
+        assert_eq!(documents, vec![uri]);
+        assert_eq!(owners, vec![owner]);
+    }
+
+    #[test]
+    fn nested_manifest_change_still_schedules_outer_owner() {
+        let root = PathBuf::from("/tmp/taro-lsp-nested-manifest");
+        let owner = AnalysisOwner::Package(root.clone());
+        let outer_uri = Url::from_file_path(root.join("src/main.tr")).expect("outer uri");
+        let nested_root = root.join("src/nested");
+        let nested_uri = Url::from_file_path(nested_root.join("src/lib.tr")).expect("nested uri");
+        let mut state = BackendState::default();
+        for uri in [outer_uri, nested_uri.clone()] {
+            state.documents.insert(
+                uri,
+                DocumentData {
+                    text: String::new(),
+                    version: 1,
+                    owner: Some(owner.clone()),
+                },
+            );
+        }
+
+        let (documents, owners) =
+            watched_analysis_targets(&state, &[nested_root.join("package.toml")]);
+        assert_eq!(documents, vec![nested_uri]);
+        assert_eq!(owners, vec![owner]);
+    }
+
+    #[test]
+    fn diagnostic_publications_include_unopened_and_clear_stale_files() {
+        let root = PathBuf::from("/tmp/taro-lsp-diagnostic-publications");
+        let open_path = root.join("src/open.tr");
+        let unopened_path = root.join("src/unopened.tr");
+        let stale_path = root.join("src/stale.tr");
+        let dependency_path = root.join("vendor/dependency.tr");
+        let open_uri = Url::from_file_path(&open_path).expect("open uri");
+        let unopened_uri = Url::from_file_path(&unopened_path).expect("unopened uri");
+        let stale_uri = Url::from_file_path(&stale_path).expect("stale uri");
+        let dependency_uri = Url::from_file_path(&dependency_path).expect("dependency uri");
+        let open_file = FileID::new(0);
+        let unopened_file = FileID::new(1);
+        let dependency_file = FileID::new(2);
+        let snapshot = AnalysisSnapshot {
+            diagnostics: vec![
+                DiagnosticRecord {
+                    message: "unopened error".into(),
+                    span: Some(Span {
+                        file: unopened_file,
+                        start: Position { line: 0, offset: 0 },
+                        end: Position { line: 0, offset: 1 },
+                    }),
+                    level: DiagnosticLevel::Error,
+                    code: None,
+                    stage: DiagnosticStage::Typecheck,
+                    related_info: Vec::new(),
+                },
+                DiagnosticRecord {
+                    message: "package error".into(),
+                    span: None,
+                    level: DiagnosticLevel::Error,
+                    code: None,
+                    stage: DiagnosticStage::General,
+                    related_info: Vec::new(),
+                },
+                DiagnosticRecord {
+                    message: "dependency error".into(),
+                    span: Some(Span {
+                        file: dependency_file,
+                        start: Position { line: 0, offset: 0 },
+                        end: Position { line: 0, offset: 1 },
+                    }),
+                    level: DiagnosticLevel::Error,
+                    code: None,
+                    stage: DiagnosticStage::Typecheck,
+                    related_info: Vec::new(),
+                },
+            ],
+            file_mappings: vec![
+                FileMapping {
+                    file: open_file,
+                    path: open_path.clone(),
+                },
+                FileMapping {
+                    file: unopened_file,
+                    path: unopened_path,
+                },
+                FileMapping {
+                    file: dependency_file,
+                    path: dependency_path,
+                },
+            ],
+            ..AnalysisSnapshot::default()
+        };
+        let documents = vec![OwnerDocument {
+            uri: open_uri.clone(),
+            path: open_path,
+            text: "func main() {}".into(),
+            version: 7,
+        }];
+
+        let (publications, current) = diagnostic_publications(
+            &snapshot,
+            &AnalysisOwner::Package(root),
+            &documents,
+            &HashSet::from([stale_uri.clone()]),
+        );
+        let publication = |uri: &Url| {
+            publications
+                .iter()
+                .find(|publication| publication.uri == *uri)
+                .expect("publication")
+        };
+
+        assert_eq!(publication(&open_uri).diagnostics.len(), 1);
+        assert_eq!(publication(&open_uri).version, Some(7));
+        assert_eq!(publication(&unopened_uri).diagnostics.len(), 1);
+        assert_eq!(publication(&unopened_uri).version, None);
+        assert!(publication(&stale_uri).diagnostics.is_empty());
+        assert!(
+            publications
+                .iter()
+                .all(|publication| publication.uri != dependency_uri)
+        );
+        assert_eq!(current, HashSet::from([open_uri, unopened_uri]));
+    }
+
+    #[test]
     fn find_navigation_index_selects_deepest_nested_span() {
         let file = FileID::new(0);
         let outer = Span {
@@ -1442,6 +2341,59 @@ mod tests {
             panic!("expected rename options");
         };
         assert_eq!(rename.prepare_provider, Some(true));
+    }
+
+    #[test]
+    fn server_capabilities_advertise_remaining_lsp_stories() {
+        let capabilities = server_capabilities();
+        assert!(matches!(
+            capabilities.document_highlight_provider,
+            Some(OneOf::Left(true))
+        ));
+        assert!(matches!(
+            capabilities.document_symbol_provider,
+            Some(OneOf::Left(true))
+        ));
+        let Some(SemanticTokensServerCapabilities::SemanticTokensOptions(tokens)) =
+            capabilities.semantic_tokens_provider
+        else {
+            panic!("expected semantic token options");
+        };
+        assert_eq!(tokens.range, None);
+        assert!(matches!(
+            tokens.full,
+            Some(SemanticTokensFullOptions::Bool(true))
+        ));
+        assert_eq!(tokens.legend.token_types.len(), 12);
+        assert_eq!(tokens.legend.token_modifiers.len(), 5);
+        assert!(capabilities.inlay_hint_provider.is_some());
+    }
+
+    #[test]
+    fn semantic_token_encoding_uses_utf16_and_modifier_bits() {
+        let file = FileID::new(0);
+        let tokens = encode_semantic_tokens(
+            vec![SemanticTokenInfo {
+                span: Span {
+                    file,
+                    start: Position { line: 0, offset: 2 },
+                    end: Position { line: 0, offset: 5 },
+                },
+                kind: SemanticTokenKind::Function,
+                modifiers: SemanticTokenModifiers {
+                    declaration: true,
+                    async_member: true,
+                    ..SemanticTokenModifiers::default()
+                },
+            }],
+            "😀 foo",
+        );
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].delta_start, 3);
+        assert_eq!(tokens[0].length, 3);
+        assert_eq!(tokens[0].token_type, 6);
+        assert_eq!(tokens[0].token_modifiers_bitset, 0b01001);
     }
 
     #[test]
@@ -1521,13 +2473,4 @@ mod tests {
         assert_eq!(diagnostic.range.start.character, 0);
         assert_eq!(diagnostic.message, "missing TARO_HOME");
     }
-}
-
-#[tokio::main]
-async fn main() {
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-
-    let (service, socket) = LspService::new(Backend::new);
-    Server::new(stdin, stdout, socket).serve(service).await;
 }

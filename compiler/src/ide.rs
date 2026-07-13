@@ -107,6 +107,94 @@ pub struct ReferenceInfo {
     pub is_declaration: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentSymbolKind {
+    Namespace,
+    Struct,
+    Enum,
+    Interface,
+    Function,
+    Method,
+    Field,
+    Property,
+    EnumMember,
+    TypeAlias,
+    Constant,
+    Variable,
+    Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSymbolInfo {
+    pub name: String,
+    pub detail: Option<String>,
+    pub kind: DocumentSymbolKind,
+    pub span: Span,
+    pub selection_span: Span,
+    pub children: Vec<DocumentSymbolInfo>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DocumentSymbolData {
+    items: Vec<DocumentSymbolInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticTokenKind {
+    Namespace,
+    Type,
+    Struct,
+    Enum,
+    Interface,
+    TypeParameter,
+    Function,
+    Method,
+    Property,
+    Variable,
+    Parameter,
+    EnumMember,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticTokenModifiers {
+    pub declaration: bool,
+    pub readonly: bool,
+    pub static_member: bool,
+    pub async_member: bool,
+    pub default_library: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticTokenInfo {
+    pub span: Span,
+    pub kind: SemanticTokenKind,
+    pub modifiers: SemanticTokenModifiers,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SemanticTokenData {
+    items: Vec<SemanticTokenInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlayHintKind {
+    Type,
+    Parameter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlayHintInfo {
+    pub position: Position,
+    pub file: FileID,
+    pub label: String,
+    pub kind: InlayHintKind,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InlayHintData {
+    items: Vec<InlayHintInfo>,
+}
+
 #[derive(Debug, Clone)]
 struct ReferenceMention {
     key: ReferenceKey,
@@ -210,6 +298,9 @@ pub struct AnalysisSnapshot {
     pub diagnostics: Vec<DiagnosticRecord>,
     pub navigation: NavigationData,
     pub references: ReferenceData,
+    pub document_symbols: DocumentSymbolData,
+    pub semantic_tokens: SemanticTokenData,
+    pub inlay_hints: InlayHintData,
     pub signatures: SignatureHelpData,
     pub completions: CompletionData,
     pub status: AnalysisStatus,
@@ -221,6 +312,9 @@ pub struct AnalysisSnapshot {
 struct IdeArtifacts {
     navigation: NavigationData,
     references: ReferenceData,
+    document_symbols: DocumentSymbolData,
+    semantic_tokens: SemanticTokenData,
+    inlay_hints: InlayHintData,
     signatures: SignatureHelpData,
     completions: CompletionData,
     status: AnalysisStatus,
@@ -299,6 +393,9 @@ pub fn analyze_owner_for_ide(
             diagnostics,
             navigation: artifacts.navigation,
             references: artifacts.references,
+            document_symbols: artifacts.document_symbols,
+            semantic_tokens: artifacts.semantic_tokens,
+            inlay_hints: artifacts.inlay_hints,
             signatures: artifacts.signatures,
             completions: artifacts.completions,
             status: artifacts.status,
@@ -323,6 +420,9 @@ pub fn analyze_owner_for_ide(
                 diagnostics: snapshot_diagnostics,
                 navigation: NavigationData::default(),
                 references: ReferenceData::default(),
+                document_symbols: DocumentSymbolData::default(),
+                semantic_tokens: SemanticTokenData::default(),
+                inlay_hints: InlayHintData::default(),
                 signatures: SignatureHelpData::default(),
                 completions: CompletionData::default(),
                 status: AnalysisStatus::default(),
@@ -2398,6 +2498,494 @@ fn signature_candidate_for_definition(
     Some(SignatureCandidate { label, parameters })
 }
 
+fn collect_document_symbol_data(gcx: Gcx<'_>, package: &hir::Package) -> DocumentSymbolData {
+    fn module_symbols(gcx: Gcx<'_>, module: &Module, items: &mut Vec<DocumentSymbolInfo>) {
+        items.extend(
+            module
+                .declarations
+                .iter()
+                .filter_map(|declaration| declaration_symbol(gcx, declaration)),
+        );
+        for submodule in &module.submodules {
+            module_symbols(gcx, submodule, items);
+        }
+    }
+
+    fn declaration_symbol(gcx: Gcx<'_>, declaration: &Declaration) -> Option<DocumentSymbolInfo> {
+        let name = gcx.symbol_text(declaration.identifier.symbol).to_string();
+        let mut symbol = DocumentSymbolInfo {
+            name,
+            detail: signature_candidate_for_definition(gcx, declaration.id).map(|item| item.label),
+            kind: DocumentSymbolKind::Type,
+            span: declaration.span,
+            selection_span: declaration.identifier.span,
+            children: Vec::new(),
+        };
+        match &declaration.kind {
+            DeclarationKind::Namespace(namespace) => {
+                symbol.kind = DocumentSymbolKind::Namespace;
+                symbol.children = namespace
+                    .declarations
+                    .iter()
+                    .filter_map(|item| declaration_symbol(gcx, item))
+                    .collect();
+            }
+            DeclarationKind::Struct(definition) => {
+                symbol.kind = DocumentSymbolKind::Struct;
+                symbol.children = definition
+                    .fields
+                    .iter()
+                    .map(|field| field_symbol(gcx, field))
+                    .collect();
+            }
+            DeclarationKind::Enum(definition) => {
+                symbol.kind = DocumentSymbolKind::Enum;
+                symbol.children = definition
+                    .variants
+                    .iter()
+                    .map(|variant| variant_symbol(gcx, variant))
+                    .collect();
+            }
+            DeclarationKind::Interface(definition) => {
+                symbol.kind = DocumentSymbolKind::Interface;
+                symbol.children = definition
+                    .declarations
+                    .iter()
+                    .map(|item| associated_symbol(gcx, item))
+                    .collect();
+            }
+            DeclarationKind::Function(_) => symbol.kind = DocumentSymbolKind::Function,
+            DeclarationKind::TypeAlias(_) => symbol.kind = DocumentSymbolKind::TypeAlias,
+            DeclarationKind::Constant(_) => symbol.kind = DocumentSymbolKind::Constant,
+            DeclarationKind::StaticVariable(_) => symbol.kind = DocumentSymbolKind::Variable,
+            DeclarationKind::Impl(definition) => {
+                let target = gcx
+                    .get_impl_target_ty(declaration.id)
+                    .map(|ty| ty.format(gcx))
+                    .unwrap_or_else(|| "target".to_string());
+                symbol.name = format!("impl {target}");
+                symbol.kind = DocumentSymbolKind::Namespace;
+                symbol.selection_span = definition.target.span;
+                symbol.children = definition
+                    .declarations
+                    .iter()
+                    .map(|item| associated_symbol(gcx, item))
+                    .collect();
+            }
+            DeclarationKind::OpaqueType => symbol.kind = DocumentSymbolKind::Type,
+            DeclarationKind::Import(_)
+            | DeclarationKind::Export(_)
+            | DeclarationKind::Malformed => {
+                return None;
+            }
+        }
+        Some(symbol)
+    }
+
+    fn associated_symbol(gcx: Gcx<'_>, declaration: &AssociatedDeclaration) -> DocumentSymbolInfo {
+        let kind = match declaration.kind {
+            AssociatedDeclarationKind::Function(_) => DocumentSymbolKind::Method,
+            AssociatedDeclarationKind::Constant(_) => DocumentSymbolKind::Constant,
+            AssociatedDeclarationKind::Type(_) => DocumentSymbolKind::TypeAlias,
+            AssociatedDeclarationKind::Property(_) => DocumentSymbolKind::Property,
+        };
+        DocumentSymbolInfo {
+            name: gcx.symbol_text(declaration.identifier.symbol).to_string(),
+            detail: signature_candidate_for_definition(gcx, declaration.id).map(|item| item.label),
+            kind,
+            span: declaration.span,
+            selection_span: declaration.identifier.span,
+            children: Vec::new(),
+        }
+    }
+
+    fn field_symbol(gcx: Gcx<'_>, field: &FieldDefinition) -> DocumentSymbolInfo {
+        DocumentSymbolInfo {
+            name: gcx.symbol_text(field.identifier.symbol).to_string(),
+            detail: None,
+            kind: DocumentSymbolKind::Field,
+            span: field.span,
+            selection_span: field.identifier.span,
+            children: Vec::new(),
+        }
+    }
+
+    fn variant_symbol(gcx: Gcx<'_>, variant: &Variant) -> DocumentSymbolInfo {
+        let children = match &variant.kind {
+            hir::VariantKind::Unit => Vec::new(),
+            hir::VariantKind::Tuple(fields) => fields
+                .iter()
+                .map(|field| field_symbol(gcx, field))
+                .collect(),
+        };
+        DocumentSymbolInfo {
+            name: gcx.symbol_text(variant.identifier.symbol).to_string(),
+            detail: None,
+            kind: DocumentSymbolKind::EnumMember,
+            span: variant.span,
+            selection_span: variant.identifier.span,
+            children,
+        }
+    }
+
+    let mut items = Vec::new();
+    module_symbols(gcx, &package.root, &mut items);
+    DocumentSymbolData { items }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SemanticClassification {
+    kind: SemanticTokenKind,
+    readonly: bool,
+    static_member: bool,
+    async_member: bool,
+    default_library: bool,
+}
+
+fn semantic_classification_for_definition(
+    gcx: Gcx<'_>,
+    def_id: DefinitionID,
+) -> Option<SemanticClassification> {
+    let kind = match gcx.definition_kind(def_id) {
+        DefinitionKind::Module | DefinitionKind::Namespace => SemanticTokenKind::Namespace,
+        DefinitionKind::Struct => SemanticTokenKind::Struct,
+        DefinitionKind::Enum => SemanticTokenKind::Enum,
+        DefinitionKind::Interface => SemanticTokenKind::Interface,
+        DefinitionKind::TypeAlias | DefinitionKind::OpaqueType => SemanticTokenKind::Type,
+        DefinitionKind::TypeParameter | DefinitionKind::ConstParameter => {
+            SemanticTokenKind::TypeParameter
+        }
+        DefinitionKind::Function | DefinitionKind::VariantConstructor(_) => {
+            SemanticTokenKind::Function
+        }
+        DefinitionKind::AssociatedFunction | DefinitionKind::AssociatedOperator => {
+            SemanticTokenKind::Method
+        }
+        DefinitionKind::Field | DefinitionKind::AssociatedProperty => SemanticTokenKind::Property,
+        DefinitionKind::Constant
+        | DefinitionKind::AssociatedConstant
+        | DefinitionKind::ModuleVariable => SemanticTokenKind::Variable,
+        DefinitionKind::Variant => SemanticTokenKind::EnumMember,
+        DefinitionKind::Impl | DefinitionKind::Import | DefinitionKind::Export => return None,
+        DefinitionKind::AssociatedType => SemanticTokenKind::Type,
+    };
+    let definition_kind = gcx.definition_kind(def_id);
+    Some(SemanticClassification {
+        kind,
+        readonly: matches!(
+            definition_kind,
+            DefinitionKind::Constant
+                | DefinitionKind::AssociatedConstant
+                | DefinitionKind::Variant
+                | DefinitionKind::TypeParameter
+                | DefinitionKind::ConstParameter
+        ),
+        static_member: matches!(
+            definition_kind,
+            DefinitionKind::AssociatedFunction
+                | DefinitionKind::AssociatedConstant
+                | DefinitionKind::AssociatedProperty
+                | DefinitionKind::AssociatedOperator
+                | DefinitionKind::AssociatedType
+        ),
+        async_member: matches!(
+            definition_kind,
+            DefinitionKind::Function | DefinitionKind::AssociatedFunction
+        ) && gcx.definition_is_async(def_id),
+        default_library: gcx.is_std_package(def_id.package()),
+    })
+}
+
+struct LocalSemanticVisitor {
+    classifications: FxHashMap<hir::NodeID, SemanticClassification>,
+    definition_readonly: FxHashMap<DefinitionID, bool>,
+}
+
+impl LocalSemanticVisitor {
+    fn record_pattern(&mut self, pattern: &Pattern, kind: SemanticTokenKind, readonly: bool) {
+        match &pattern.kind {
+            PatternKind::Binding { .. } => {
+                self.classifications.insert(
+                    pattern.id,
+                    SemanticClassification {
+                        kind,
+                        readonly,
+                        static_member: false,
+                        async_member: false,
+                        default_library: false,
+                    },
+                );
+            }
+            PatternKind::Tuple(items, _) | PatternKind::Or(items, _) => {
+                for item in items {
+                    self.record_pattern(item, kind, readonly);
+                }
+            }
+            PatternKind::Reference { pattern, .. } => self.record_pattern(pattern, kind, readonly),
+            PatternKind::PathTuple { fields, .. } => {
+                for field in fields {
+                    self.record_pattern(field, kind, readonly);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl HirVisitor for LocalSemanticVisitor {
+    fn visit_declaration(&mut self, node: &Declaration) {
+        if let DeclarationKind::StaticVariable(variable) = &node.kind {
+            self.definition_readonly
+                .insert(node.id, variable.mutability == hir::Mutability::Immutable);
+        }
+        walk_declaration(self, node)
+    }
+
+    fn visit_field_definition(&mut self, node: &FieldDefinition) {
+        self.definition_readonly
+            .insert(node.def_id, node.mutability == hir::Mutability::Immutable);
+        hir::walk_field_definition(self, node)
+    }
+
+    fn visit_assoc_declaration(
+        &mut self,
+        node: &AssociatedDeclaration,
+        context: hir::AssocContext,
+    ) {
+        if let AssociatedDeclarationKind::Property(property) = &node.kind {
+            self.definition_readonly
+                .insert(node.id, property.setter_id.is_none());
+        }
+        walk_assoc_declaration(self, node, context)
+    }
+
+    fn visit_function_parameter(&mut self, node: &hir::FunctionParameter) {
+        self.classifications.insert(
+            node.id,
+            SemanticClassification {
+                kind: SemanticTokenKind::Parameter,
+                readonly: true,
+                static_member: false,
+                async_member: false,
+                default_library: false,
+            },
+        );
+        hir::walk_function_parameter(self, node)
+    }
+
+    fn visit_local(&mut self, node: &hir::Local) {
+        self.record_pattern(
+            &node.pattern,
+            SemanticTokenKind::Variable,
+            node.mutability == hir::Mutability::Immutable,
+        );
+        hir::walk_local(self, node)
+    }
+
+    fn visit_expression(&mut self, node: &Expression) {
+        if let ExpressionKind::Closure(closure) = &node.kind {
+            for parameter in &closure.params {
+                self.record_pattern(&parameter.pattern, SemanticTokenKind::Parameter, true);
+            }
+        }
+        walk_expression(self, node)
+    }
+}
+
+fn collect_semantic_token_data<'ctx>(
+    gcx: Gcx<'ctx>,
+    package: &hir::Package,
+    results: Option<&TypeCheckResults<'ctx>>,
+) -> SemanticTokenData {
+    let references = collect_reference_data(gcx, package, results);
+    let mut local_visitor = LocalSemanticVisitor {
+        classifications: FxHashMap::default(),
+        definition_readonly: FxHashMap::default(),
+    };
+    local_visitor.visit_package(package);
+
+    let mut items = Vec::new();
+    for group in references.groups {
+        let classification =
+            match group.key {
+                ReferenceKey::Definition(def_id) => {
+                    semantic_classification_for_definition(gcx, def_id).map(|mut classification| {
+                        if let Some(readonly) = local_visitor.definition_readonly.get(&def_id) {
+                            classification.readonly = *readonly;
+                        }
+                        classification
+                    })
+                }
+                ReferenceKey::Local(id) => local_visitor.classifications.get(&id).copied().or(
+                    Some(SemanticClassification {
+                        kind: SemanticTokenKind::Variable,
+                        readonly: true,
+                        static_member: false,
+                        async_member: false,
+                        default_library: false,
+                    }),
+                ),
+            };
+        let Some(classification) = classification else {
+            continue;
+        };
+        for reference in group.items {
+            items.push(SemanticTokenInfo {
+                span: reference.span,
+                kind: classification.kind,
+                modifiers: SemanticTokenModifiers {
+                    declaration: reference.is_declaration,
+                    readonly: classification.readonly,
+                    static_member: classification.static_member,
+                    async_member: classification.async_member,
+                    default_library: classification.default_library,
+                },
+            });
+        }
+    }
+    items.sort_by(|lhs, rhs| compare_navigation_spans(lhs.span, rhs.span));
+    items.dedup_by(|lhs, rhs| lhs.span == rhs.span);
+    SemanticTokenData { items }
+}
+
+struct InlayHintVisitor<'ctx, 'results> {
+    gcx: Gcx<'ctx>,
+    results: Option<&'results TypeCheckResults<'ctx>>,
+    items: Vec<InlayHintInfo>,
+}
+
+impl<'ctx, 'results> InlayHintVisitor<'ctx, 'results> {
+    fn push_pattern_type_hints(&mut self, pattern: &Pattern) {
+        match &pattern.kind {
+            PatternKind::Binding { name, .. } => {
+                let Some(ty) = self
+                    .results
+                    .and_then(|results| results.try_node_type(pattern.id))
+                else {
+                    return;
+                };
+                if ty.is_error() || ty.is_infer() || ty.contains_inference() {
+                    return;
+                }
+                self.items.push(InlayHintInfo {
+                    position: name.span.end,
+                    file: name.span.file,
+                    label: format!(": {}", ty.format(self.gcx)),
+                    kind: InlayHintKind::Type,
+                });
+            }
+            PatternKind::Tuple(items, _) | PatternKind::Or(items, _) => {
+                for item in items {
+                    self.push_pattern_type_hints(item);
+                }
+            }
+            PatternKind::Reference { pattern, .. } => self.push_pattern_type_hints(pattern),
+            PatternKind::PathTuple { fields, .. } => {
+                for field in fields {
+                    self.push_pattern_type_hints(field);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn push_parameter_hints(&mut self, node: &Expression) {
+        let (arguments, def_id, is_method) = match &node.kind {
+            ExpressionKind::Call { callee, arguments } => {
+                let def_id = self
+                    .results
+                    .and_then(|results| results.overload_source(node.id))
+                    .or_else(|| {
+                        expression_resolution_for_ide(self.gcx, self.results, callee)
+                            .and_then(|resolution| resolution.definition_id())
+                    });
+                (arguments, def_id, false)
+            }
+            ExpressionKind::MethodCall { arguments, .. } => (
+                arguments,
+                self.results
+                    .and_then(|results| results.overload_source(node.id)),
+                true,
+            ),
+            _ => return,
+        };
+        let Some(signature) = def_id.and_then(|id| self.gcx.try_get_signature(id)) else {
+            return;
+        };
+        let mut parameters = signature.inputs.as_slice();
+        if is_method
+            && parameters
+                .first()
+                .is_some_and(|parameter| self.gcx.symbol_text(parameter.name).as_ref() == "self")
+        {
+            parameters = &parameters[1..];
+        }
+
+        for (index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
+            if argument.label.is_some() || (signature.is_variadic && index + 1 == parameters.len())
+            {
+                continue;
+            }
+            let name = self.gcx.symbol_text(parameter.name);
+            if name.as_ref() == "_" || name.as_ref() == "self" {
+                continue;
+            }
+            self.items.push(InlayHintInfo {
+                position: argument.expression.span.start,
+                file: argument.expression.span.file,
+                label: format!("{name}:"),
+                kind: InlayHintKind::Parameter,
+            });
+        }
+    }
+}
+
+impl<'ctx, 'results> HirVisitor for InlayHintVisitor<'ctx, 'results> {
+    fn visit_local(&mut self, node: &hir::Local) {
+        if node.ty.is_none() {
+            self.push_pattern_type_hints(&node.pattern);
+        }
+        hir::walk_local(self, node)
+    }
+
+    fn visit_expression(&mut self, node: &Expression) {
+        if let ExpressionKind::Closure(closure) = &node.kind {
+            for parameter in &closure.params {
+                if parameter.ty.is_none() {
+                    self.push_pattern_type_hints(&parameter.pattern);
+                }
+            }
+        }
+        self.push_parameter_hints(node);
+        walk_expression(self, node)
+    }
+}
+
+fn collect_inlay_hint_data<'ctx>(
+    gcx: Gcx<'ctx>,
+    package: &hir::Package,
+    results: Option<&TypeCheckResults<'ctx>>,
+) -> InlayHintData {
+    let mut visitor = InlayHintVisitor {
+        gcx,
+        results,
+        items: Vec::new(),
+    };
+    visitor.visit_package(package);
+    visitor.items.sort_by(|lhs, rhs| {
+        lhs.file
+            .cmp(&rhs.file)
+            .then_with(|| compare_positions(lhs.position, rhs.position))
+            .then_with(|| lhs.label.cmp(&rhs.label))
+    });
+    visitor.items.dedup_by(|lhs, rhs| {
+        lhs.file == rhs.file && lhs.position == rhs.position && lhs.label == rhs.label
+    });
+    InlayHintData {
+        items: visitor.items,
+    }
+}
+
 fn collect_ide_artifacts<'ctx>(
     gcx: Gcx<'ctx>,
     package: &hir::Package,
@@ -2408,6 +2996,9 @@ fn collect_ide_artifacts<'ctx>(
     IdeArtifacts {
         navigation: collect_navigation_data(gcx, package, results, module_targets),
         references: collect_reference_data(gcx, package, results),
+        document_symbols: collect_document_symbol_data(gcx, package),
+        semantic_tokens: collect_semantic_token_data(gcx, package, results),
+        inlay_hints: collect_inlay_hint_data(gcx, package, results),
         signatures: collect_signature_help_data(gcx, package, results),
         completions: collect_completion_data(gcx, package, results),
         status,
@@ -2484,6 +3075,74 @@ pub fn references_at(
         .items
         .iter()
         .filter(|item| include_declaration || !item.is_declaration)
+        .cloned()
+        .collect()
+}
+
+pub fn document_highlights_at(
+    snapshot: &AnalysisSnapshot,
+    file_id: FileID,
+    position: Position,
+) -> Vec<ReferenceInfo> {
+    references_at(snapshot, file_id, position, true)
+        .into_iter()
+        .filter(|item| item.span.file == file_id)
+        .collect()
+}
+
+pub fn document_symbols_for_file(
+    snapshot: &AnalysisSnapshot,
+    file_id: FileID,
+) -> Vec<DocumentSymbolInfo> {
+    fn filter_symbol(symbol: &DocumentSymbolInfo, file_id: FileID) -> Option<DocumentSymbolInfo> {
+        if symbol.span.file != file_id {
+            return None;
+        }
+        let mut symbol = symbol.clone();
+        symbol.children = symbol
+            .children
+            .iter()
+            .filter_map(|child| filter_symbol(child, file_id))
+            .collect();
+        Some(symbol)
+    }
+
+    snapshot
+        .document_symbols
+        .items
+        .iter()
+        .filter_map(|symbol| filter_symbol(symbol, file_id))
+        .collect()
+}
+
+pub fn semantic_tokens_for_file(
+    snapshot: &AnalysisSnapshot,
+    file_id: FileID,
+) -> Vec<SemanticTokenInfo> {
+    snapshot
+        .semantic_tokens
+        .items
+        .iter()
+        .filter(|item| item.span.file == file_id)
+        .copied()
+        .collect()
+}
+
+pub fn inlay_hints_in_range(
+    snapshot: &AnalysisSnapshot,
+    file_id: FileID,
+    start: Position,
+    end: Position,
+) -> Vec<InlayHintInfo> {
+    snapshot
+        .inlay_hints
+        .items
+        .iter()
+        .filter(|item| {
+            item.file == file_id
+                && compare_positions(item.position, start) != Ordering::Less
+                && compare_positions(item.position, end) != Ordering::Greater
+        })
         .cloned()
         .collect()
 }
@@ -2686,6 +3345,20 @@ fn pattern_navigation_span(node: &Pattern) -> Span {
             path: PatternPath::Inferred { name, .. },
             ..
         } => name.span,
+        PatternKind::Member(PatternPath::Qualified {
+            path: ResolvedPath::Resolved(path),
+        })
+        | PatternKind::PathTuple {
+            path:
+                PatternPath::Qualified {
+                    path: ResolvedPath::Resolved(path),
+                },
+            ..
+        } => path
+            .segments
+            .last()
+            .map(|segment| segment.span)
+            .unwrap_or(node.span),
         _ => node.span,
     }
 }
@@ -3120,6 +3793,9 @@ mod tests {
                 diagnostics: Vec::new(),
                 navigation: artifacts.navigation,
                 references: artifacts.references,
+                document_symbols: artifacts.document_symbols,
+                semantic_tokens: artifacts.semantic_tokens,
+                inlay_hints: artifacts.inlay_hints,
                 signatures: artifacts.signatures,
                 completions: artifacts.completions,
                 status: artifacts.status,
@@ -3220,6 +3896,9 @@ mod tests {
             diagnostics: Vec::new(),
             navigation: artifacts.navigation,
             references: artifacts.references,
+            document_symbols: artifacts.document_symbols,
+            semantic_tokens: artifacts.semantic_tokens,
+            inlay_hints: artifacts.inlay_hints,
             signatures: artifacts.signatures,
             completions: artifacts.completions,
             status: artifacts.status,
@@ -3389,10 +4068,132 @@ mod tests {
             .collect()
     }
 
+    fn text_for_span<'a>(source: &'a str, span: crate::span::Span) -> &'a str {
+        assert_eq!(span.start.line, span.end.line);
+        let line = source.lines().nth(span.start.line).expect("span line");
+        let start = line
+            .char_indices()
+            .nth(span.start.offset)
+            .map(|(index, _)| index)
+            .unwrap_or(line.len());
+        let end = line
+            .char_indices()
+            .nth(span.end.offset)
+            .map(|(index, _)| index)
+            .unwrap_or(line.len());
+        &line[start..end]
+    }
+
     fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
         lhs == rhs
             || lhs.canonicalize().ok() == rhs.canonicalize().ok()
             || (lhs.file_name() == rhs.file_name() && lhs.parent() == rhs.parent())
+    }
+
+    #[test]
+    fn document_highlights_reuse_same_file_reference_groups() {
+        let source =
+            "func main() {\n    let value = 1\n    let copy = value\n    let other = value\n}\n";
+        let (snapshot, source, file_id) = analyze_signature_source(source);
+        let highlights =
+            super::document_highlights_at(&snapshot, file_id, start_position(&source, "value", 2));
+
+        assert_eq!(highlights.len(), 3);
+        assert!(highlights.iter().all(|item| item.span.file == file_id));
+        assert_eq!(
+            highlights
+                .iter()
+                .map(|item| text_for_span(&source, item.span))
+                .collect::<Vec<_>>(),
+            vec!["value", "value", "value"]
+        );
+    }
+
+    #[test]
+    fn document_symbols_preserve_declaration_hierarchy() {
+        let source = "struct Point {\n    x: uint32\n}\n\nimpl Point {\n    func value(self) -> uint32 { self.x }\n}\n\nfunc main() {}\n";
+        let (snapshot, _, file_id) = analyze_signature_source(source);
+        let symbols = super::document_symbols_for_file(&snapshot, file_id);
+
+        let point = symbols
+            .iter()
+            .find(|item| item.name == "Point")
+            .expect("Point");
+        assert_eq!(point.kind, super::DocumentSymbolKind::Struct);
+        assert_eq!(point.children.len(), 1);
+        assert_eq!(point.children[0].name, "x");
+        let implementation = symbols
+            .iter()
+            .find(|item| item.name == "impl Point")
+            .expect("impl Point");
+        assert_eq!(implementation.children.len(), 1);
+        assert_eq!(implementation.children[0].name, "value");
+        assert_eq!(
+            implementation.children[0].kind,
+            super::DocumentSymbolKind::Method
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_classify_declarations_and_uses() {
+        let source = "struct Point {\n    x: uint32\n}\n\nfunc read(_ point: Point) -> uint32 { point.x }\nfunc main() {\n    let point = Point { x: 1 }\n    let value = read(point)\n}\n";
+        let (snapshot, source, file_id) = analyze_signature_source(source);
+        let tokens = super::semantic_tokens_for_file(&snapshot, file_id);
+
+        assert!(tokens.iter().any(|item| {
+            text_for_span(&source, item.span) == "Point"
+                && item.kind == super::SemanticTokenKind::Struct
+                && item.modifiers.declaration
+        }));
+        assert!(tokens.iter().any(|item| {
+            text_for_span(&source, item.span) == "read"
+                && item.kind == super::SemanticTokenKind::Function
+                && !item.modifiers.declaration
+        }));
+        assert!(tokens.iter().any(|item| {
+            text_for_span(&source, item.span) == "point"
+                && item.kind == super::SemanticTokenKind::Parameter
+                && item.modifiers.readonly
+        }));
+    }
+
+    #[test]
+    fn inlay_hints_cover_inferred_locals_and_unlabeled_arguments() {
+        let source = "func consume(_ value: uint32) {}\nfunc main() {\n    let count = 1 as uint32\n    consume(count)\n    let explicit: uint32 = count\n}\n";
+        let (snapshot, source, file_id) = analyze_signature_source(source);
+        let hints = super::inlay_hints_in_range(
+            &snapshot,
+            file_id,
+            Position { line: 0, offset: 0 },
+            Position {
+                line: source.lines().count(),
+                offset: 0,
+            },
+        );
+
+        assert!(hints.iter().any(|hint| hint.label == ": uint32"));
+        assert!(hints.iter().any(|hint| hint.label == "value:"));
+        assert!(!hints.iter().any(|hint| {
+            hint.kind == super::InlayHintKind::Type
+                && hint.position == end_position(&source, "explicit", 1)
+        }));
+
+        let call_line_hints = super::inlay_hints_in_range(
+            &snapshot,
+            file_id,
+            Position { line: 3, offset: 0 },
+            Position {
+                line: 3,
+                offset: usize::MAX,
+            },
+        );
+        assert_eq!(
+            call_line_hints
+                .iter()
+                .map(|hint| hint.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["value:"]
+        );
     }
 
     #[test]
