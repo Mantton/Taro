@@ -145,10 +145,7 @@ func mutexGuardAndWithLock() async {
     match nestedTry {
         case .ok(_) => std.panic.panic("nested tryLock should report wouldBlock")
         case .err(err) => {
-            match err {
-                case .wouldBlock => {}
-                case _ => std.panic.panic("nested tryLock should return wouldBlock")
-            }
+            std.testing.assertTrue(err.isKind(.wouldBlock), "nested tryLock should return wouldBlock")
         }
     }
 
@@ -192,10 +189,7 @@ func rwlockReadWriteGuardsAndTryMethods() async {
     let blockedWrite = lock.tryWrite()
     match blockedWrite {
         case .ok(_) => std.panic.panic("tryWrite should block while read guard is held")
-        case .err(err) => match err {
-            case .wouldBlock => {}
-            case _ => std.panic.panic("tryWrite should return wouldBlock")
-        }
+        case .err(err) => std.testing.assertTrue(err.isKind(.wouldBlock), "tryWrite should return wouldBlock")
     }
 
     std.testing.assertTrue(readGuard.unlock().isOk(), "read unlock should succeed")

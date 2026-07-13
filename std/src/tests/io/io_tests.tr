@@ -1,5 +1,32 @@
 import std.io.{Reader, Writer}
 
+struct ZeroWriter {}
+
+impl Writer for ZeroWriter {
+    public func write(&mut self, _ buf: std.mem.Span[uint8]) -> std.result.Result[usize, std.io.Error] {
+        return .ok(0)
+    }
+
+    public func flush(&mut self) -> std.result.Result[(), std.io.Error] {
+        return .ok(())
+    }
+}
+
+@test
+func testWriteAllReportsWriteZero() {
+    var writer = ZeroWriter {}
+    let value: uint8 = 42_u8
+    let bytes = std.mem.Span[uint8].from(unsafe { &value as *const uint8 }, 1)
+
+    match std.io.writeAll(&mut writer, bytes) {
+        case .ok(_) => std.testing.fail("writeAll should reject a zero-byte write")
+        case .err(err) => {
+            std.testing.assertTrue(err.isKind(.writeZero), "writeAll should report writeZero")
+            std.testing.assertTrue(err.rawOsError().isNone(), "writeZero should not invent a native error code")
+        }
+    }
+}
+
 @test
 func testBufReaderReadLine() {
     let path = "taro_io_buf_reader_lines.txt"
@@ -344,15 +371,34 @@ func testReadExactUnexpectedEof() {
     match readRes {
         case .ok(_) => std.panic.panic("expected readExact eof to fail")
         case .err(err) => {
-            match err {
-                case .unexpected(_) => {}
-                case _ => std.panic.panic("expected unexpected error for readExact eof")
-            }
+            std.assert(err.isKind(.unexpectedEof), "expected unexpectedEof for readExact eof")
         }
     }
 
     std.assert(reader.close().isOk(), "failed to close readExact eof file")
     std.assert(std.fs.removeFile(path).isOk(), "failed to remove readExact eof file")
+}
+
+@test
+func testReadAtLeastUnexpectedEof() {
+    let path = "taro_io_read_at_least_eof.txt"
+    std.assert(std.fs.writeString(path, "ab").isOk(), "failed to write readAtLeast eof file")
+
+    var reader = match std.fs.File.open(path) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("failed to open readAtLeast eof file")
+    }
+
+    var storage: [uint8; 4] = [0; 4]
+    let storagePtr = unsafe { (&mut storage as *mut [uint8; 4]) as *mut uint8 }
+    let buf = std.mem.MutableSpan[uint8].from(storagePtr, 4)
+    match std.io.readAtLeast(&mut reader, 4, buf) {
+        case .ok(_) => std.testing.fail("readAtLeast should fail on short input")
+        case .err(err) => std.testing.assertTrue(err.isKind(.unexpectedEof), "readAtLeast should report unexpectedEof")
+    }
+
+    std.assert(reader.close().isOk(), "failed to close readAtLeast eof file")
+    std.assert(std.fs.removeFile(path).isOk(), "failed to remove readAtLeast eof file")
 }
 
 @test
@@ -408,10 +454,7 @@ func testReadAtLeastInvalidInput() {
     match readRes {
         case .ok(_) => std.panic.panic("expected invalidInput for readAtLeast min > len")
         case .err(err) => {
-            match err {
-                case .invalidInput => {}
-                case _ => std.panic.panic("expected invalidInput for readAtLeast min > len")
-            }
+            std.assert(err.isKind(.invalidInput), "expected invalidInput for readAtLeast min > len")
         }
     }
 

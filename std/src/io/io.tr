@@ -25,7 +25,7 @@ public func writeAll[W: Writer](_ writer: &mut W, _ buf: Span[uint8]) -> Result[
         match writeRes {
             case .ok(count) => {
                 if count == 0 {
-                    return .err(Error.unexpected(0_i32))
+                    return .err(Error(.writeZero).withOperation("write all"))
                 }
                 written += count
             }
@@ -113,7 +113,7 @@ public func readExact[R: Reader](_ reader: &mut R, _ buf: MutableSpan[uint8]) ->
         }
 
         if count == 0 {
-            return .err(Error.unexpected(0_i32))
+            return .err(Error(.unexpectedEof).withOperation("read exact"))
         }
 
         total += count
@@ -129,7 +129,7 @@ public func readAtLeast[R: Reader](
 ) -> Result[usize, Error] {
     let len = buf.len()
     if min > len {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("read at least"))
     }
 
     if min == 0 {
@@ -147,7 +147,7 @@ public func readAtLeast[R: Reader](
         }
 
         if count == 0 {
-            return .err(Error.unexpected(0_i32))
+            return .err(Error(.unexpectedEof).withOperation("read at least"))
         }
 
         total += count

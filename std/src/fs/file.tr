@@ -2,6 +2,13 @@ import std.io.{Error, Reader, Writer, Seeker, SeekFrom}
 import std.mem.{MutableSpan, Span}
 import std.result.Result
 
+func withFileContext[T](_ result: Result[T, Error], _ operation: string, _ path: string) -> Result[T, Error] {
+    match result {
+        case .ok(value) => return .ok(value)
+        case .err(err) => return .err(err.withOperation(operation).withPath(path))
+    }
+}
+
 public struct OpenOptions {
     readFlag: bool
     writeFlag: bool
@@ -56,30 +63,31 @@ impl OpenOptions {
             self.truncateFlag,
         )
         match res {
-            case .ok(sysFile) => return .ok(File { inner: sysFile })
-            case .err(err) => return .err(err)
+            case .ok(sysFile) => return .ok(File { inner: sysFile, path })
+            case .err(err) => return .err(err.withOperation("open").withPath(path))
         }
     }
 }
 
 public struct File {
     inner: std.sys.fs.RawFile
+    path: string
 }
 
 impl File {
     public func open(_ path: string) -> Result[File, Error] {
         let res = std.sys.fs.openReadOnly(path)
         match res {
-            case .ok(sysFile) => return .ok(File { inner: sysFile })
-            case .err(err) => return .err(err)
+            case .ok(sysFile) => return .ok(File { inner: sysFile, path })
+            case .err(err) => return .err(err.withOperation("open").withPath(path))
         }
     }
 
     public func create(_ path: string) -> Result[File, Error] {
         let res = std.sys.fs.createWrite(path)
         match res {
-            case .ok(sysFile) => return .ok(File { inner: sysFile })
-            case .err(err) => return .err(err)
+            case .ok(sysFile) => return .ok(File { inner: sysFile, path })
+            case .err(err) => return .err(err.withOperation("create").withPath(path))
         }
     }
 
@@ -87,7 +95,7 @@ impl File {
         let res = std.sys.fs.close(&mut self.inner)
         match res {
             case .ok(_) => {}
-            case .err(err) => return .err(err)
+            case .err(err) => return .err(err.withOperation("close").withPath(self.path))
         }
         return .ok(())
     }
@@ -102,7 +110,7 @@ impl Reader for File {
 
         var writable = buf
         let ptr = unsafe { writable.at(0) as *mut uint8 }
-        return std.sys.fs.read(&self.inner, ptr, len)
+        return withFileContext(std.sys.fs.read(&self.inner, ptr, len), "read", self.path)
     }
 }
 
@@ -114,7 +122,7 @@ impl Writer for File {
         }
 
         let ptr = unsafe { buf.at(0) as *const uint8 }
-        return std.sys.fs.write(&self.inner, ptr, len)
+        return withFileContext(std.sys.fs.write(&self.inner, ptr, len), "write", self.path)
     }
 
     public func flush(&mut self) -> Result[(), Error] {
@@ -142,6 +150,6 @@ impl Seeker for File {
             }
         }
 
-        return std.sys.fs.seek(&self.inner, offset, whence)
+        return withFileContext(std.sys.fs.seek(&self.inner, offset, whence), "seek", self.path)
     }
 }

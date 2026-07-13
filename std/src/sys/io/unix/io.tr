@@ -18,7 +18,7 @@ public struct PlatformAsyncStream {
 public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(std.libc.STDOUT_FILENO, buf, len)
     if res < 0 {
-        return .err(lastError())
+        return .err(lastError().withOperation("write stdout"))
     }
     return .ok(res as usize)
 }
@@ -26,7 +26,7 @@ public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Erro
 public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(std.libc.STDERR_FILENO, buf, len)
     if res < 0 {
-        return .err(lastError())
+        return .err(lastError().withOperation("write stderr"))
     }
     return .ok(res as usize)
 }
@@ -35,7 +35,7 @@ public func adoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
     let sourceId = __rt__async_io_adopt_fd(fd)
     if sourceId == 0 {
         let _ = std.libc.close(fd)
-        return .err(lastError())
+        return .err(lastError().withOperation("adopt file descriptor"))
     }
 
     return .ok(PlatformAsyncStream {
@@ -46,7 +46,7 @@ public func adoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
 func duplicateAndWrap(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
     let duplicated = __rt__async_io_dup(fd)
     if duplicated < 0 {
-        return .err(lastError())
+        return .err(lastError().withOperation("duplicate file descriptor"))
     }
 
     return adoptFd(duplicated)
@@ -72,7 +72,7 @@ public func pipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] 
         unsafe { (&mut writeFd as *mut int32) },
     )
     if res < 0 {
-        return .err(lastError())
+        return .err(lastError().withOperation("create pipe"))
     }
 
     let readEnd = adoptFd(readFd)
@@ -103,7 +103,7 @@ public func close(_ stream: PlatformAsyncStream) -> Result[(), Error] {
 
     let res = __rt__async_io_close_source(stream.source_id)
     if res < 0 {
-        return .err(mapErrno((0_i32 - res) as int32))
+        return .err(mapErrno((0_i32 - res) as int32).withOperation("close"))
     }
     return .ok(())
 }
@@ -115,7 +115,7 @@ public func read(
 ) -> Result[usize, Error] {
     let res = __rt__async_io_read_source(stream.source_id, buf, len)
     if res < 0 {
-        return .err(mapErrno(((0 as isize) - res) as int32))
+        return .err(mapErrno(((0 as isize) - res) as int32).withOperation("read"))
     }
     return .ok(res as usize)
 }
@@ -127,7 +127,7 @@ public func write(
 ) -> Result[usize, Error] {
     let res = __rt__async_io_write_source(stream.source_id, buf, len)
     if res < 0 {
-        return .err(mapErrno(((0 as isize) - res) as int32))
+        return .err(mapErrno(((0 as isize) - res) as int32).withOperation("write"))
     }
     return .ok(res as usize)
 }

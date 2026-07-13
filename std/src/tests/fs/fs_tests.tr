@@ -62,9 +62,40 @@ func testOpenMissingFileReturnsNotFound() {
     match openRes {
         case .ok(_) => std.panic.panic("expected open to fail for missing file")
         case .err(err) => {
-            match err {
-                case .notFound => {}
-                case _ => std.panic.panic("expected io.Error.notFound for missing file")
+            std.assert(err.isKind(.notFound), "expected io.ErrorKind.notFound for missing file")
+            match err.rawOsError() {
+                case .some(code) => std.testing.assertEqual(code, 2_i32, "missing file should preserve ENOENT")
+                case .none => std.testing.fail("missing file should preserve ENOENT")
+            }
+            match err.operation() {
+                case .some(operation) => std.testing.assertEqual(operation, "open", "missing file should identify open")
+                case .none => std.testing.fail("missing file should identify its operation")
+            }
+            match err.context() {
+                case .path(path) => std.testing.assertEqual(*path, missing, "missing file should retain its path")
+                case _ => std.testing.fail("missing file should include path context")
+            }
+        }
+    }
+}
+
+@test
+func testRenameMissingFileIncludesBothPaths() {
+    let from = "taro_fs_rename_missing_source.txt"
+    let to = "taro_fs_rename_missing_destination.txt"
+    let _ = std.fs.removeFile(from)
+    let _ = std.fs.removeFile(to)
+
+    match std.fs.rename(from, to) {
+        case .ok(_) => std.testing.fail("renaming a missing source should fail")
+        case .err(err) => {
+            std.testing.assertTrue(err.isKind(.notFound), "rename should preserve notFound")
+            match err.context() {
+                case .paths(first, second) => {
+                    std.testing.assertEqual(*first, from, "rename should retain its source path")
+                    std.testing.assertEqual(*second, to, "rename should retain its destination path")
+                }
+                case _ => std.testing.fail("rename should include both paths")
             }
         }
     }
@@ -127,10 +158,7 @@ func testReadMissingFileReturnsNotFound() {
     match readRes {
         case .ok(_) => std.panic.panic("expected read to fail")
         case .err(err) => {
-            match err {
-                case .notFound => {}
-                case _ => std.panic.panic("expected io.Error.notFound")
-            }
+            std.assert(err.isKind(.notFound), "expected io.ErrorKind.notFound")
         }
     }
 }
@@ -195,10 +223,7 @@ func testManualLeafToRootRemoval() {
     match removeAgainRes {
         case .ok(_) => std.panic.panic("expected removeDir to fail after manual removal")
         case .err(err) => {
-            match err {
-                case .notFound => {}
-                case _ => std.panic.panic("expected notFound after manual removal")
-            }
+            std.assert(err.isKind(.notFound), "expected notFound after manual removal")
         }
     }
 }
@@ -294,10 +319,7 @@ func testOpenOptionsInvalidConfigurations() {
     match res1 {
         case .ok(_) => std.panic.panic("expected invalidInput for no-mode options")
         case .err(err) => {
-            match err {
-                case .invalidInput => {}
-                case _ => std.panic.panic("expected invalidInput for no-mode options")
-            }
+            std.assert(err.isKind(.invalidInput), "expected invalidInput for no-mode options")
         }
     }
 
@@ -308,10 +330,7 @@ func testOpenOptionsInvalidConfigurations() {
     match res2 {
         case .ok(_) => std.panic.panic("expected invalidInput for create+read-only options")
         case .err(err) => {
-            match err {
-                case .invalidInput => {}
-                case _ => std.panic.panic("expected invalidInput for create+read-only options")
-            }
+            std.assert(err.isKind(.invalidInput), "expected invalidInput for create+read-only options")
         }
     }
 
@@ -322,10 +341,7 @@ func testOpenOptionsInvalidConfigurations() {
     match res3 {
         case .ok(_) => std.panic.panic("expected invalidInput for truncate+read-only options")
         case .err(err) => {
-            match err {
-                case .invalidInput => {}
-                case _ => std.panic.panic("expected invalidInput for truncate+read-only options")
-            }
+            std.assert(err.isKind(.invalidInput), "expected invalidInput for truncate+read-only options")
         }
     }
 
@@ -336,10 +352,7 @@ func testOpenOptionsInvalidConfigurations() {
     match res4 {
         case .ok(_) => std.panic.panic("expected invalidInput for append+truncate options")
         case .err(err) => {
-            match err {
-                case .invalidInput => {}
-                case _ => std.panic.panic("expected invalidInput for append+truncate options")
-            }
+            std.assert(err.isKind(.invalidInput), "expected invalidInput for append+truncate options")
         }
     }
 }

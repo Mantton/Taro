@@ -79,9 +79,10 @@ func transformedMessage(_ request: string) -> string {
 
 @cfg(family("unix"))
 func expectUnexpectedCode(_ err: std.io.Error, _ code: int32, _ message: string) {
-    match err {
-        case .unexpected(actual) => std.testing.assertEqual(actual, code, message)
-        case _ => std.panic.panic(message)
+    std.testing.assertTrue(err.isKind(.unexpected), message)
+    match err.rawOsError() {
+        case .some(actual) => std.testing.assertEqual(actual, code, message)
+        case .none => std.panic.panic(message)
     }
 }
 

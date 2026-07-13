@@ -44,6 +44,13 @@ public func mapStatus(_ code: int32) -> Result[(), Error] {
     return .err(std.sys.io.unix.mapErrno(code))
 }
 
+func mapOperationStatus(_ code: int32, _ operation: string) -> Result[(), Error] {
+    match mapStatus(code) {
+        case .ok(_) => return .ok(())
+        case .err(err) => return .err(err.withOperation(operation))
+    }
+}
+
 public func channelCreate(
     _ elemSize: usize,
     _ elemDesc: *const GcDesc,
@@ -51,7 +58,7 @@ public func channelCreate(
     _ bounded: bool,
 ) -> Result[RawChannel, Error] {
     if bounded && capacity == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("create channel"))
     }
 
     let boundedByte: uint8 = if bounded { 1_u8 } else { 0_u8 }
@@ -62,22 +69,22 @@ public func channelCreate(
         elemDesc,
     )
     if unsafe { handle as usize } == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("create channel"))
     }
 
     return .ok(RawChannel { handle })
 }
 
 public func channelDestroy(_ channel: RawChannel) -> Result[(), Error] {
-    mapStatus(__rt__sync_channel_destroy(channel.handle))
+    mapOperationStatus(__rt__sync_channel_destroy(channel.handle), "destroy channel")
 }
 
 public func channelClose(_ channel: &RawChannel) -> Result[(), Error] {
-    mapStatus(__rt__sync_channel_close(channel.handle))
+    mapOperationStatus(__rt__sync_channel_close(channel.handle), "close channel")
 }
 
 public func channelTrySend(_ channel: &RawChannel, _ value_ptr: *const uint8) -> Result[(), Error] {
-    mapStatus(__rt__sync_channel_try_send(channel.handle, value_ptr))
+    mapOperationStatus(__rt__sync_channel_try_send(channel.handle, value_ptr), "send channel value")
 }
 
 public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Result[ChannelTryRecvStatus, Error] {
@@ -91,19 +98,19 @@ public func channelTryRecv(_ channel: &RawChannel, _ out_ptr: *mut uint8) -> Res
     if code == errnoBrokenPipe() {
         return .ok(.closed)
     }
-    return .err(std.sys.io.unix.mapErrno(code))
+    return .err(std.sys.io.unix.mapErrno(code).withOperation("receive channel value"))
 }
 
 public func mutexCreate() -> Result[RawMutex, Error] {
     let handle = __rt__sync_mutex_create()
     if unsafe { handle as usize } == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("create mutex"))
     }
     return .ok(RawMutex { handle })
 }
 
 public func mutexDestroy(_ mutex: RawMutex) -> Result[(), Error] {
-    mapStatus(__rt__sync_mutex_destroy(mutex.handle))
+    mapOperationStatus(__rt__sync_mutex_destroy(mutex.handle), "destroy mutex")
 }
 
 public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
@@ -114,23 +121,23 @@ public func mutexTryLock(_ mutex: &RawMutex) -> Result[bool, Error] {
     if code == errnoWouldBlock() {
         return .ok(false)
     }
-    return .err(std.sys.io.unix.mapErrno(code))
+    return .err(std.sys.io.unix.mapErrno(code).withOperation("try mutex lock"))
 }
 
 public func mutexUnlock(_ mutex: &RawMutex) -> Result[(), Error] {
-    mapStatus(__rt__sync_mutex_unlock(mutex.handle))
+    mapOperationStatus(__rt__sync_mutex_unlock(mutex.handle), "unlock mutex")
 }
 
 public func rwlockCreate() -> Result[RawRwLock, Error] {
     let handle = __rt__sync_rwlock_create()
     if unsafe { handle as usize } == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("create rwlock"))
     }
     return .ok(RawRwLock { handle })
 }
 
 public func rwlockDestroy(_ lock: RawRwLock) -> Result[(), Error] {
-    mapStatus(__rt__sync_rwlock_destroy(lock.handle))
+    mapOperationStatus(__rt__sync_rwlock_destroy(lock.handle), "destroy rwlock")
 }
 
 public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
@@ -141,7 +148,7 @@ public func rwlockTryRead(_ lock: &RawRwLock) -> Result[bool, Error] {
     if code == errnoWouldBlock() {
         return .ok(false)
     }
-    return .err(std.sys.io.unix.mapErrno(code))
+    return .err(std.sys.io.unix.mapErrno(code).withOperation("try rwlock read"))
 }
 
 public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
@@ -152,13 +159,13 @@ public func rwlockTryWrite(_ lock: &RawRwLock) -> Result[bool, Error] {
     if code == errnoWouldBlock() {
         return .ok(false)
     }
-    return .err(std.sys.io.unix.mapErrno(code))
+    return .err(std.sys.io.unix.mapErrno(code).withOperation("try rwlock write"))
 }
 
 public func rwlockUnlockRead(_ lock: &RawRwLock) -> Result[(), Error] {
-    mapStatus(__rt__sync_rwlock_unlock_read(lock.handle))
+    mapOperationStatus(__rt__sync_rwlock_unlock_read(lock.handle), "unlock rwlock read")
 }
 
 public func rwlockUnlockWrite(_ lock: &RawRwLock) -> Result[(), Error] {
-    mapStatus(__rt__sync_rwlock_unlock_write(lock.handle))
+    mapOperationStatus(__rt__sync_rwlock_unlock_write(lock.handle), "unlock rwlock write")
 }

@@ -1,4 +1,4 @@
-import std.io.Error
+import std.io.{Error, ErrorKind}
 import std.libc
 
 @cfg(os("linux"))
@@ -12,31 +12,81 @@ func errnoValue() -> int32 {
 }
 
 func mapCommonErrno(_ code: int32) -> Error {
-    match code {
-        case 2  => Error.notFound
-        case 4  => Error.interrupted
-        case 13 => Error.permissionDenied
-        case 17 => Error.alreadyExists
-        case 22 => Error.invalidInput
-        case 32 => Error.brokenPipe
-        case _  => Error.unexpected(code)
+    let kind: ErrorKind = match code {
+        case 1 => .permissionDenied
+        case 2 => .notFound
+        case 4 => .interrupted
+        case 12 => .resourceExhausted
+        case 13 => .permissionDenied
+        case 16 => .resourceBusy
+        case 17 => .alreadyExists
+        case 20 => .notADirectory
+        case 21 => .isADirectory
+        case 22 => .invalidInput
+        case 23 => .resourceExhausted
+        case 24 => .resourceExhausted
+        case 28 => .storageFull
+        case 29 => .notSeekable
+        case 30 => .readOnlyFilesystem
+        case 32 => .brokenPipe
+        case _ => .unexpected
     }
+    return Error.fromRawOsError(kind, code)
 }
 
 @cfg(os("linux"))
 public func mapErrno(_ code: int32) -> Error {
-    if code == 11 || code == std.libc.EINPROGRESS {
-        return Error.wouldBlock
+    if code == std.libc.EINPROGRESS {
+        return Error.fromRawOsError(.wouldBlock, code)
     }
-    return mapCommonErrno(code)
+
+    let kind: ErrorKind? = match code {
+        case 11 => .some(.wouldBlock)
+        case 39 => .some(.directoryNotEmpty)
+        case 95 => .some(.unsupported)
+        case 98 => .some(.addressInUse)
+        case 99 => .some(.addressNotAvailable)
+        case 101 => .some(.networkUnreachable)
+        case 103 => .some(.connectionAborted)
+        case 104 => .some(.connectionReset)
+        case 107 => .some(.notConnected)
+        case 110 => .some(.timedOut)
+        case 111 => .some(.connectionRefused)
+        case 113 => .some(.hostUnreachable)
+        case _ => .none
+    }
+    match kind {
+        case .some(value) => return Error.fromRawOsError(value, code)
+        case .none => return mapCommonErrno(code)
+    }
 }
 
 @cfg(os("macos"))
 public func mapErrno(_ code: int32) -> Error {
-    if code == 35 || code == std.libc.EINPROGRESS {
-        return Error.wouldBlock
+    if code == std.libc.EINPROGRESS {
+        return Error.fromRawOsError(.wouldBlock, code)
     }
-    return mapCommonErrno(code)
+
+    let kind: ErrorKind? = match code {
+        case 35 => .some(.wouldBlock)
+        case 36 => .some(.wouldBlock)
+        case 45 => .some(.unsupported)
+        case 48 => .some(.addressInUse)
+        case 49 => .some(.addressNotAvailable)
+        case 51 => .some(.networkUnreachable)
+        case 53 => .some(.connectionAborted)
+        case 54 => .some(.connectionReset)
+        case 57 => .some(.notConnected)
+        case 60 => .some(.timedOut)
+        case 61 => .some(.connectionRefused)
+        case 65 => .some(.hostUnreachable)
+        case 66 => .some(.directoryNotEmpty)
+        case _ => .none
+    }
+    match kind {
+        case .some(value) => return Error.fromRawOsError(value, code)
+        case .none => return mapCommonErrno(code)
+    }
 }
 
 public func lastError() -> Error {

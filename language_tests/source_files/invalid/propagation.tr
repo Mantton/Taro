@@ -15,7 +15,7 @@ func resultValue(_ value: int32) -> Result[int32, Error] {
         return .ok(value)
     }
 
-    return .err(Error.invalidInput)
+    return .err(Error(.invalidInput))
 }
 
 func invalidOperand() -> Optional[int32] {

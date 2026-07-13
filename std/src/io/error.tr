@@ -1,47 +1,274 @@
 import std.fmt.Display
+import std.marker.Copy
+import std.ops.PartialEq
 
-/// A platform-agnostic list of I/O error categories.
+/// A stable, platform-agnostic category for an I/O failure.
 ///
-/// Backends (std.sys.*) map OS-specific error codes into these variants.
-public enum Error {
-    /// An entity was not found, typically a file or directory.
+/// OS backends preserve their native error code separately on `Error`, so
+/// callers can usually branch on this portable kind without losing details.
+public enum ErrorKind: Copy, PartialEq {
+    /// An entity could not be found.
     case notFound
-    /// The operation lacked the necessary privileges to complete.
+    /// The operation lacked the required permission.
     case permissionDenied
-    /// An entity already exists, often a file.
-    case alreadyExists
-    /// A parameter was incorrect.
-    case invalidInput
-    /// The operation was interrupted before completion.
-    case interrupted
-    /// The operation failed because it would block.
-    case wouldBlock
-    /// The operation timed out.
-    case timedOut
-    /// The operation failed because a pipe/socket endpoint was closed.
+    /// A remote endpoint refused a connection attempt.
+    case connectionRefused
+    /// A connection was reset by its peer.
+    case connectionReset
+    /// A connection was aborted locally or by the network stack.
+    case connectionAborted
+    /// The operation requires a connected endpoint.
+    case notConnected
+    /// The requested local address is already in use.
+    case addressInUse
+    /// The requested address is not available on this host.
+    case addressNotAvailable
+    /// No route to the destination network is available.
+    case networkUnreachable
+    /// No route to the destination host is available.
+    case hostUnreachable
+    /// A pipe or socket endpoint has been closed.
     case brokenPipe
-    /// This operation is not supported on the current platform or backend.
+    /// An entity already exists.
+    case alreadyExists
+    /// The operation cannot complete without blocking.
+    case wouldBlock
+    /// A path component that must be a directory is not one.
+    case notADirectory
+    /// An operation requiring a non-directory received a directory.
+    case isADirectory
+    /// A directory could not be changed because it is not empty.
+    case directoryNotEmpty
+    /// The target filesystem is read-only.
+    case readOnlyFilesystem
+    /// An argument is invalid for the requested operation.
+    case invalidInput
+    /// Input bytes are malformed for the expected representation.
+    case invalidData
+    /// The operation exceeded its deadline.
+    case timedOut
+    /// A write reported success without consuming any bytes.
+    case writeZero
+    /// The target storage device has no remaining space.
+    case storageFull
+    /// The target does not support seeking.
+    case notSeekable
+    /// The requested resource is currently busy.
+    case resourceBusy
+    /// A process, descriptor, memory, or similar resource limit was reached.
+    case resourceExhausted
+    /// The operation was interrupted and may be retried.
+    case interrupted
+    /// The operation is not supported by this platform or resource.
     case unsupported
-    /// OS-specific error code not currently classified.
-    case unexpected(int32)
+    /// Input ended before the requested amount was read.
+    case unexpectedEof
+    /// The operating system reported an unclassified failure.
+    case unexpected
 }
 
-impl std.fmt.Display for Error {
+/// Identifies the resource associated with an I/O failure.
+public enum ErrorContext {
+    /// No resource context is available.
+    case none
+    /// The failure concerns one filesystem path.
+    case path(string)
+    /// The failure concerns a source and destination path.
+    case paths(string, string)
+    /// The failure concerns a network address.
+    case address(string)
+}
+
+/// A portable I/O failure with optional native and operation context.
+///
+/// Use `kind()` or `isKind()` for recovery logic. `rawOsError()` retains the
+/// original platform code when the failure came from the operating system.
+public struct Error {
+    kindValue: ErrorKind
+    rawCode: int32?
+    operationValue: string?
+    contextValue: ErrorContext
+}
+
+impl Error {
+    /// Construct a library-generated error without a native OS code.
+    public func new(_ kind: ErrorKind) -> Self {
+        Error {
+            kindValue: kind,
+            rawCode: .none,
+            operationValue: .none,
+            contextValue: .none,
+        }
+    }
+
+    /// Construct an error translated from a native OS error code.
+    public func fromRawOsError(_ kind: ErrorKind, _ code: int32) -> Self {
+        let rawCode: int32? = .some(code)
+        Error {
+            kindValue: kind,
+            rawCode,
+            operationValue: .none,
+            contextValue: .none,
+        }
+    }
+
+    /// Return the portable category for this failure.
+    public func kind(&self) -> ErrorKind {
+        self.kindValue
+    }
+
+    /// Return whether this failure has the requested portable category.
+    public func isKind(&self, _ kind: ErrorKind) -> bool {
+        self.kindValue == kind
+    }
+
+    /// Return the native OS error code, when one was reported.
+    public func rawOsError(&self) -> int32? {
+        self.rawCode
+    }
+
+    /// Return the operation that failed, when available.
+    public func operation(&self) -> string? {
+        self.operationValue
+    }
+
+    /// Return the resource context associated with the failure.
+    public func context(&self) -> &ErrorContext {
+        return &self.contextValue
+    }
+
+    /// Replace the operation context and return the enriched error.
+    public func withOperation(self, _ operation: string) -> Self {
+        let operationValue: string? = .some(operation)
+        Error {
+            kindValue: self.kindValue,
+            rawCode: self.rawCode,
+            operationValue,
+            contextValue: self.contextValue,
+        }
+    }
+
+    /// Replace the resource context with one filesystem path.
+    public func withPath(self, _ path: string) -> Self {
+        let contextValue: ErrorContext = .path(path)
+        Error {
+            kindValue: self.kindValue,
+            rawCode: self.rawCode,
+            operationValue: self.operationValue,
+            contextValue,
+        }
+    }
+
+    /// Replace the resource context with source and destination paths.
+    public func withPaths(self, _ first: string, _ second: string) -> Self {
+        let contextValue: ErrorContext = .paths(first, second)
+        Error {
+            kindValue: self.kindValue,
+            rawCode: self.rawCode,
+            operationValue: self.operationValue,
+            contextValue,
+        }
+    }
+
+    /// Replace the resource context with a network address.
+    public func withAddress(self, _ address: string) -> Self {
+        let contextValue: ErrorContext = .address(address)
+        Error {
+            kindValue: self.kindValue,
+            rawCode: self.rawCode,
+            operationValue: self.operationValue,
+            contextValue,
+        }
+    }
+}
+
+impl Display for ErrorKind {
     public func display(&self, _ into: &mut std.fmt.Formatter) {
         match self {
             case .notFound => into.writeString("not found")
             case .permissionDenied => into.writeString("permission denied")
-            case .alreadyExists => into.writeString("already exists")
-            case .invalidInput => into.writeString("invalid input")
-            case .interrupted => into.writeString("interrupted")
-            case .wouldBlock => into.writeString("would block")
-            case .timedOut => into.writeString("timed out")
+            case .connectionRefused => into.writeString("connection refused")
+            case .connectionReset => into.writeString("connection reset")
+            case .connectionAborted => into.writeString("connection aborted")
+            case .notConnected => into.writeString("not connected")
+            case .addressInUse => into.writeString("address in use")
+            case .addressNotAvailable => into.writeString("address not available")
+            case .networkUnreachable => into.writeString("network unreachable")
+            case .hostUnreachable => into.writeString("host unreachable")
             case .brokenPipe => into.writeString("broken pipe")
+            case .alreadyExists => into.writeString("already exists")
+            case .wouldBlock => into.writeString("would block")
+            case .notADirectory => into.writeString("not a directory")
+            case .isADirectory => into.writeString("is a directory")
+            case .directoryNotEmpty => into.writeString("directory not empty")
+            case .readOnlyFilesystem => into.writeString("read-only filesystem")
+            case .invalidInput => into.writeString("invalid input")
+            case .invalidData => into.writeString("invalid data")
+            case .timedOut => into.writeString("timed out")
+            case .writeZero => into.writeString("write returned zero bytes")
+            case .storageFull => into.writeString("storage full")
+            case .notSeekable => into.writeString("not seekable")
+            case .resourceBusy => into.writeString("resource busy")
+            case .resourceExhausted => into.writeString("resource exhausted")
+            case .interrupted => into.writeString("interrupted")
             case .unsupported => into.writeString("unsupported")
-            case .unexpected(code) => {
-                into.writeString("unexpected io error ")
-                (*code).display(into)
+            case .unexpectedEof => into.writeString("unexpected end of file")
+            case .unexpected => into.writeString("unexpected I/O error")
+        }
+    }
+}
+
+impl Display for Error {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        var hasPrefix = false
+
+        match self.operationValue {
+            case .some(operation) => {
+                into.writeString(operation)
+                hasPrefix = true
             }
+            case .none => {}
+        }
+
+        match &self.contextValue {
+            case .none => {}
+            case .path(path) => {
+                if hasPrefix {
+                    into.writeString(" ")
+                }
+                into.writeString(*path)
+                hasPrefix = true
+            }
+            case .paths(first, second) => {
+                if hasPrefix {
+                    into.writeString(" ")
+                }
+                into.writeString(*first)
+                into.writeString(" -> ")
+                into.writeString(*second)
+                hasPrefix = true
+            }
+            case .address(address) => {
+                if hasPrefix {
+                    into.writeString(" ")
+                }
+                into.writeString(*address)
+                hasPrefix = true
+            }
+        }
+
+        if hasPrefix {
+            into.writeString(": ")
+        }
+        self.kindValue.display(into)
+
+        match self.rawCode {
+            case .some(code) => {
+                into.writeString(" (os error ")
+                code.display(into)
+                into.writeString(")")
+            }
+            case .none => {}
         }
     }
 }

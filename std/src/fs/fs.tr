@@ -2,6 +2,13 @@ import std.io.Error
 import std.mem.Span
 import std.result.Result
 
+func withPathContext[T](_ result: Result[T, Error], _ operation: string, _ path: string) -> Result[T, Error] {
+    match result {
+        case .ok(value) => return .ok(value)
+        case .err(err) => return .err(err.withOperation(operation).withPath(path))
+    }
+}
+
 /// Reads the entire file into memory.
 public func read(_ path: string) -> Result[std.collections.List[uint8], Error] {
     let openRes = std.fs.File.open(path)
@@ -92,25 +99,31 @@ public func writeString(_ path: string, _ s: string) -> Result[(), Error] {
 
 /// Creates a new, empty directory at the provided path.
 public func createDir(_ path: string) -> Result[(), Error] {
-    return std.sys.fs.createDir(path)
+    return withPathContext(std.sys.fs.createDir(path), "create directory", path)
 }
 
 /// Removes an empty directory.
 public func removeDir(_ path: string) -> Result[(), Error] {
-    return std.sys.fs.removeDir(path)
+    return withPathContext(std.sys.fs.removeDir(path), "remove directory", path)
 }
 
 /// Removes a file from the filesystem.
 public func removeFile(_ path: string) -> Result[(), Error] {
-    return std.sys.fs.removeFile(path)
+    return withPathContext(std.sys.fs.removeFile(path), "remove file", path)
 }
 
 /// Creates a new symbolic link.
 public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
-    return std.sys.fs.symlink(target, linkPath)
+    match std.sys.fs.symlink(target, linkPath) {
+        case .ok(_) => return .ok(())
+        case .err(err) => return .err(err.withOperation("symlink").withPaths(target, linkPath))
+    }
 }
 
 /// Rename a file or directory to a new name.
 public func rename(_ from: string, _ to: string) -> Result[(), Error] {
-    return std.sys.fs.rename(from, to)
+    match std.sys.fs.rename(from, to) {
+        case .ok(_) => return .ok(())
+        case .err(err) => return .err(err.withOperation("rename").withPaths(from, to))
+    }
 }

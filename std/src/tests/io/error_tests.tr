@@ -1,0 +1,70 @@
+@test
+func testIoErrorKindAndLibraryError() {
+    let err = std.io.Error(.unexpectedEof)
+        .withOperation("read exact")
+        .withPath("payload.bin")
+
+    std.testing.assertTrue(err.isKind(.unexpectedEof), "error should expose its portable kind")
+    match err.kind() {
+        case .unexpectedEof => {}
+        case _ => std.testing.fail("kind should remain pattern-matchable")
+    }
+    std.testing.assertTrue(err.rawOsError().isNone(), "library-generated error should not invent an OS code")
+
+    match err.operation() {
+        case .some(operation) => std.testing.assertEqual(operation, "read exact", "operation should be retained")
+        case .none => std.testing.fail("operation should be present")
+    }
+    match err.context() {
+        case .path(path) => std.testing.assertEqual(*path, "payload.bin", "path should be retained")
+        case _ => std.testing.fail("path context should be present")
+    }
+
+    let rendered = std.sprintf("%v", err)
+    std.testing.assertEqual(
+        rendered,
+        "read exact payload.bin: unexpected end of file",
+        "library error display should include operation and path",
+    )
+}
+
+@test
+func testIoErrorPreservesRawOsCode() {
+    let err = std.io.Error.fromRawOsError(.permissionDenied, 13_i32)
+        .withOperation("open")
+        .withPath("config.toml")
+
+    std.testing.assertTrue(err.isKind(.permissionDenied), "known OS error should expose its portable kind")
+    match err.rawOsError() {
+        case .some(code) => std.testing.assertEqual(code, 13_i32, "known OS error should retain errno")
+        case .none => std.testing.fail("known OS error should retain errno")
+    }
+
+    let rendered = std.sprintf("%v", err)
+    std.testing.assertEqual(
+        rendered,
+        "open config.toml: permission denied (os error 13)",
+        "OS error display should include native code",
+    )
+}
+
+@test
+func testIoErrorSupportsTwoPathContext() {
+    let err = std.io.Error(.alreadyExists)
+        .withOperation("rename")
+        .withPaths("old.txt", "new.txt")
+
+    match err.context() {
+        case .paths(first, second) => {
+            std.testing.assertEqual(*first, "old.txt", "first path should be retained")
+            std.testing.assertEqual(*second, "new.txt", "second path should be retained")
+        }
+        case _ => std.testing.fail("two-path context should be present")
+    }
+
+    std.testing.assertEqual(
+        std.sprintf("%v", err),
+        "rename old.txt -> new.txt: already exists",
+        "two-path display should be actionable",
+    )
+}

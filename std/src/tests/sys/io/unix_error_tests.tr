@@ -1,46 +1,51 @@
 //+cfg family("unix")
 
+func assertMappedErrno(_ code: int32, _ kind: std.io.ErrorKind, _ message: string) {
+    let err = std.sys.io.unix.mapErrno(code)
+    std.assert(err.isKind(kind), message)
+    match err.rawOsError() {
+        case .some(actual) => std.assert(actual == code, "mapped error should preserve raw errno")
+        case .none => std.panic.panic("mapped error should contain raw errno")
+    }
+}
+
 @test
 func testUnixErrnoMapperKnownCodes() {
-    match std.sys.io.unix.mapErrno(2) {
-        case .notFound => {}
-        case _ => std.panic.panic("ENOENT should map to notFound")
-    }
-
-    match std.sys.io.unix.mapErrno(13) {
-        case .permissionDenied => {}
-        case _ => std.panic.panic("EACCES should map to permissionDenied")
-    }
-
-    match std.sys.io.unix.mapErrno(32) {
-        case .brokenPipe => {}
-        case _ => std.panic.panic("EPIPE should map to brokenPipe")
-    }
-
+    assertMappedErrno(std.libc.EINPROGRESS, .wouldBlock, "EINPROGRESS should map to wouldBlock")
+    assertMappedErrno(2, .notFound, "ENOENT should map to notFound")
+    assertMappedErrno(13, .permissionDenied, "EACCES should map to permissionDenied")
+    assertMappedErrno(16, .resourceBusy, "EBUSY should map to resourceBusy")
+    assertMappedErrno(20, .notADirectory, "ENOTDIR should map to notADirectory")
+    assertMappedErrno(21, .isADirectory, "EISDIR should map to isADirectory")
+    assertMappedErrno(28, .storageFull, "ENOSPC should map to storageFull")
+    assertMappedErrno(29, .notSeekable, "ESPIPE should map to notSeekable")
+    assertMappedErrno(30, .readOnlyFilesystem, "EROFS should map to readOnlyFilesystem")
+    assertMappedErrno(32, .brokenPipe, "EPIPE should map to brokenPipe")
 }
 
 @cfg(os("linux"))
 @test
-func testUnixErrnoMapperWouldBlockLinux() {
-    match std.sys.io.unix.mapErrno(11) {
-        case .wouldBlock => {}
-        case _ => std.panic.panic("linux EWOULDBLOCK should map to wouldBlock")
-    }
+func testUnixErrnoMapperLinuxCodes() {
+    assertMappedErrno(11, .wouldBlock, "linux EWOULDBLOCK should map to wouldBlock")
+    assertMappedErrno(39, .directoryNotEmpty, "linux ENOTEMPTY should map to directoryNotEmpty")
+    assertMappedErrno(98, .addressInUse, "linux EADDRINUSE should map to addressInUse")
+    assertMappedErrno(104, .connectionReset, "linux ECONNRESET should map to connectionReset")
+    assertMappedErrno(110, .timedOut, "linux ETIMEDOUT should map to timedOut")
+    assertMappedErrno(111, .connectionRefused, "linux ECONNREFUSED should map to connectionRefused")
 }
 
 @cfg(os("macos"))
 @test
-func testUnixErrnoMapperWouldBlockMacos() {
-    match std.sys.io.unix.mapErrno(35) {
-        case .wouldBlock => {}
-        case _ => std.panic.panic("macOS EWOULDBLOCK should map to wouldBlock")
-    }
+func testUnixErrnoMapperMacosCodes() {
+    assertMappedErrno(35, .wouldBlock, "macOS EWOULDBLOCK should map to wouldBlock")
+    assertMappedErrno(66, .directoryNotEmpty, "macOS ENOTEMPTY should map to directoryNotEmpty")
+    assertMappedErrno(48, .addressInUse, "macOS EADDRINUSE should map to addressInUse")
+    assertMappedErrno(54, .connectionReset, "macOS ECONNRESET should map to connectionReset")
+    assertMappedErrno(60, .timedOut, "macOS ETIMEDOUT should map to timedOut")
+    assertMappedErrno(61, .connectionRefused, "macOS ECONNREFUSED should map to connectionRefused")
 }
 
 @test
 func testUnixErrnoMapperFallsBackToUnexpected() {
-    match std.sys.io.unix.mapErrno(999) {
-        case .unexpected(code) => std.assert(code == 999, "unexpected should preserve the raw errno")
-        case _ => std.panic.panic("unknown errno should map to unexpected")
-    }
+    assertMappedErrno(999, .unexpected, "unknown errno should map to unexpected")
 }

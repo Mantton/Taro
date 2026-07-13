@@ -6,11 +6,11 @@ public struct PlatformAsyncStream {
 }
 
 public func mapErrno(_ code: int32) -> Error {
-    Error.unexpected(code)
+    Error.fromRawOsError(.unexpected, code)
 }
 
 public func lastError() -> Error {
-    Error.unsupported
+    Error(.unsupported)
 }
 
 public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {

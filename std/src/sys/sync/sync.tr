@@ -39,22 +39,29 @@ public enum ChannelTryRecvStatus {
     case closed
 }
 
+func withSyncOperation(_ result: Result[(), Error], _ operation: string) -> Result[(), Error] {
+    match result {
+        case .ok(_) => return .ok(())
+        case .err(err) => return .err(err.withOperation(operation))
+    }
+}
+
 public func waitChannelSend(_ channel: &RawChannel) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_channel_wait_send(channel.handle))
+    withSyncOperation(mapStatus(await __intrinsic_channel_wait_send(channel.handle)), "wait to send channel value")
 }
 
 public func waitChannelRecv(_ channel: &RawChannel) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_channel_wait_recv(channel.handle))
+    withSyncOperation(mapStatus(await __intrinsic_channel_wait_recv(channel.handle)), "wait to receive channel value")
 }
 
 public func waitMutexLock(_ mutex: &RawMutex) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_mutex_lock(mutex.handle))
+    withSyncOperation(mapStatus(await __intrinsic_mutex_lock(mutex.handle)), "wait for mutex")
 }
 
 public func waitRwLockRead(_ lock: &RawRwLock) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_rwlock_read(lock.handle))
+    withSyncOperation(mapStatus(await __intrinsic_rwlock_read(lock.handle)), "wait for rwlock read")
 }
 
 public func waitRwLockWrite(_ lock: &RawRwLock) async -> Result[(), Error] {
-    mapStatus(await __intrinsic_rwlock_write(lock.handle))
+    withSyncOperation(mapStatus(await __intrinsic_rwlock_write(lock.handle)), "wait for rwlock write")
 }

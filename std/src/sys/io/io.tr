@@ -42,7 +42,7 @@ public type RawAsyncStream = PlatformAsyncStream
 
 public func waitReadable(_ stream: &RawAsyncStream) async -> Result[(), Error] {
     if stream.source_id == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("wait readable"))
     }
 
     let code = await __intrinsic_wait_readable(stream.source_id)
@@ -54,7 +54,7 @@ public func waitReadable(_ stream: &RawAsyncStream) async -> Result[(), Error] {
 
 public func waitReadableSourceId(_ source_id: usize) async -> Result[(), Error] {
     if source_id == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("wait readable"))
     }
 
     let code = await __intrinsic_wait_readable(source_id)
@@ -66,7 +66,7 @@ public func waitReadableSourceId(_ source_id: usize) async -> Result[(), Error] 
 
 public func waitWritable(_ stream: &RawAsyncStream) async -> Result[(), Error] {
     if stream.source_id == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("wait writable"))
     }
 
     let code = await __intrinsic_wait_writable(stream.source_id)
@@ -78,7 +78,7 @@ public func waitWritable(_ stream: &RawAsyncStream) async -> Result[(), Error] {
 
 public func waitWritableSourceId(_ source_id: usize) async -> Result[(), Error] {
     if source_id == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("wait writable"))
     }
 
     let code = await __intrinsic_wait_writable(source_id)

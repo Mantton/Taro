@@ -43,7 +43,7 @@ func optionalDefaultProviderEarlyReturn(
 
 func checkedAdd(_ value: int32) -> Result[int32, Error] {
     if value < 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput))
     }
 
     return .ok(value + 1)
@@ -108,7 +108,7 @@ func resultDefaultProvider(_ value: Result[int32, Error] = .ok(defaultResultSeed
 }
 
 func defaultResultErrSeed() -> Result[int32, Error] {
-    return .err(Error.permissionDenied)
+    return .err(Error(.permissionDenied))
 }
 
 func resultDefaultProviderEarlyReturn(
@@ -195,9 +195,9 @@ func main() async {
         case .ok(_) => assert(false, "default Result provider should return err when propagation fails")
     }
 
-    acceptError(Error.notFound)
+    acceptError(Error(.notFound))
     assert(
-        std.sprintf("%v", Error.notFound) == "not found",
+        std.sprintf("%v", Error(.notFound)) == "not found",
         "std.io.Error should conform to std.error.Error",
     )
 

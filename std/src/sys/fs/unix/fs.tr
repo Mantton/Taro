@@ -43,19 +43,19 @@ func openFile(
     _ truncate: bool,
 ) -> Result[PlatformFile, Error] {
     if !read && !write && !append {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("open").withPath(path))
     }
 
     if create && !write && !append {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("open").withPath(path))
     }
 
     if truncate && !write && !append {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("open").withPath(path))
     }
 
     if append && truncate {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("open").withPath(path))
     }
 
     var access = std.libc.O_RDONLY
@@ -87,7 +87,7 @@ func openFile(
         __rt__open2(cpath.asPtr(), flags)
     }
     if fd < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("open").withPath(path))
     }
 
     return .ok(PlatformFile { fd })
@@ -98,7 +98,7 @@ public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
     let clink = CString.new(linkPath)
     let res = std.libc.symlink(ctarget.asPtr(), clink.asPtr())
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("symlink").withPaths(target, linkPath))
     }
     return .ok(())
 }
@@ -110,7 +110,7 @@ public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
 
     let res = std.libc.close(file.fd)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("close"))
     }
     file.fd = -1
     return .ok(())
@@ -119,7 +119,7 @@ public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
 public func read(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.read(file.fd, buf, len)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("read"))
     }
     return .ok(res as usize)
 }
@@ -127,7 +127,7 @@ public func read(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Resu
 public func write(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
     let res = std.libc.write(file.fd, buf, len)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("write"))
     }
     return .ok(res as usize)
 }
@@ -135,14 +135,14 @@ public func write(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> R
 public func seek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
     let res = std.libc.lseek(file.fd, offset, whence)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("seek"))
     }
     return .ok(res)
 }
 
 public func intoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
     if file.fd < 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("adopt file stream"))
     }
 
     let fd = file.fd
@@ -154,7 +154,7 @@ public func createDir(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.mkdir(cpath.asPtr(), DEFAULT_DIR_MODE)
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("create directory").withPath(path))
     }
     return .ok(())
 }
@@ -163,7 +163,7 @@ public func removeDir(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.rmdir(cpath.asPtr())
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("remove directory").withPath(path))
     }
     return .ok(())
 }
@@ -172,7 +172,7 @@ public func removeFile(_ path: string) -> Result[(), Error] {
     let cpath = CString.new(path)
     let res = std.libc.unlink(cpath.asPtr())
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("remove file").withPath(path))
     }
     return .ok(())
 }
@@ -182,7 +182,7 @@ public func rename(_ from: string, _ to: string) -> Result[(), Error] {
     let cto = CString.new(to)
     let res = std.libc.rename(cfrom.asPtr(), cto.asPtr())
     if res < 0 {
-        return .err(std.sys.io.unix.lastError())
+        return .err(std.sys.io.unix.lastError().withOperation("rename").withPaths(from, to))
     }
     return .ok(())
 }

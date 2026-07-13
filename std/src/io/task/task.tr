@@ -9,8 +9,8 @@ func readSourceLoop(_ source_id: usize, _ buf: *mut uint8, _ len: usize) async -
         let readRes = std.sys.io.readSourceId(source_id, buf, len)
         match readRes {
             case .ok(count) => return .ok(count)
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitReadableSourceId(source_id)
                 match waitRes {
                     case .ok(_) => {}
@@ -27,8 +27,8 @@ func writeSourceLoop(_ source_id: usize, _ buf: *const uint8, _ len: usize) asyn
         let writeRes = std.sys.io.writeSourceId(source_id, buf, len)
         match writeRes {
             case .ok(count) => return .ok(count)
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitWritableSourceId(source_id)
                 match waitRes {
                     case .ok(_) => {}
@@ -95,7 +95,7 @@ public func writeAll[W: AsyncWriter](_ writer: &W, _ buf: Span[uint8]) async -> 
         match writeRes {
             case .ok(count) => {
                 if count == 0 {
-                    return .err(Error.unexpected(0_i32))
+                    return .err(Error(.writeZero).withOperation("write all"))
                 }
                 written += count
             }
@@ -134,7 +134,7 @@ public func readExact[R: AsyncReader](_ reader: &R, _ buf: MutableSpan[uint8]) a
         }
 
         if count == 0 {
-            return .err(Error.unexpected(0_i32))
+            return .err(Error(.unexpectedEof).withOperation("read exact"))
         }
 
         total += count
@@ -150,7 +150,7 @@ public func readAtLeast[R: AsyncReader](
 ) async -> Result[usize, Error] {
     let len = buf.len()
     if min > len {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("read at least"))
     }
 
     if min == 0 {
@@ -168,7 +168,7 @@ public func readAtLeast[R: AsyncReader](
         }
 
         if count == 0 {
-            return .err(Error.unexpected(0_i32))
+            return .err(Error(.unexpectedEof).withOperation("read at least"))
         }
 
         total += count

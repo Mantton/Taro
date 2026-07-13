@@ -92,8 +92,8 @@ public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> 
         let readRes = std.sys.io.read(stream, ptr, len)
         match readRes {
             case .ok(count) => return .ok(count)
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitReadable(stream)
                 match waitRes {
                     case .ok(_) => {}
@@ -123,8 +123,8 @@ public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) async -> Result
         let writeRes = std.sys.io.write(stream, ptr, len)
         match writeRes {
             case .ok(count) => return .ok(count)
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitWritable(stream)
                 match waitRes {
                     case .ok(_) => {}
@@ -147,8 +147,8 @@ public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddr
         let connectRes = std.sys.net.connect(&socket.inner, address)
         match connectRes {
             case .ok(_) => return .ok(())
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitWritable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
@@ -164,7 +164,7 @@ public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddr
                 if code == 0 {
                     return .ok(())
                 }
-                return .err(std.sys.io.unix.mapErrno(code))
+                return .err(std.sys.io.unix.mapErrno(code).withOperation("connect"))
             }
             case .err(err) => return .err(err)
         }
@@ -198,8 +198,8 @@ public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, s
                     address,
                 ))
             }
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitReadable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
@@ -232,8 +232,8 @@ public func sendTo(
         let sendRes = std.sys.net.sendTo(&socket.inner, ptr, len, address)
         match sendRes {
             case .ok(count) => return .ok(count)
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitWritable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
@@ -261,7 +261,7 @@ public func recvFrom(
 ) async -> Result[(usize, std.sys.net.SocketAddress), Error] {
     let len = buf.len()
     if len == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("receive datagram"))
     }
 
     var writable = buf
@@ -270,8 +270,8 @@ public func recvFrom(
         let recvRes = std.sys.net.recvFrom(&socket.inner, ptr, len)
         match recvRes {
             case .ok(value) => return .ok(value)
-            case .err(.interrupted) => {}
-            case .err(.wouldBlock) => {
+            case .err(err) if err.isKind(.interrupted) => {}
+            case .err(err) if err.isKind(.wouldBlock) => {
                 let waitRes = await std.sys.io.waitReadable(&socket.stream)
                 match waitRes {
                     case .ok(_) => {}
@@ -294,7 +294,7 @@ public func recvFrom(
 @cfg(family("unix"))
 public func intoStream(_ socket: &mut RawAsyncSocket) -> Result[std.io.task.AsyncStream, Error] {
     if std.sys.io.sourceId(&socket.stream) == 0 {
-        return .err(Error.invalidInput)
+        return .err(Error(.invalidInput).withOperation("convert socket to stream"))
     }
 
     let stream = std.sys.io.take(&mut socket.stream)

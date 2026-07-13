@@ -135,7 +135,7 @@ impl TcpStream {
             match writeRes {
                 case .ok(count) => {
                     if count == 0 {
-                        return .err(Error.unexpected(0_i32))
+                        return .err(Error(.writeZero).withOperation("write all"))
                     }
                     written += count
                 }
@@ -174,7 +174,7 @@ impl TcpStream {
             }
 
             if count == 0 {
-                return .err(Error.unexpected(0_i32))
+                return .err(Error(.unexpectedEof).withOperation("read exact"))
             }
 
             total += count
