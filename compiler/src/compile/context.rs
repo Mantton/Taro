@@ -1,7 +1,7 @@
 use crate::span::Symbol;
 use crate::{
     PackageIndex,
-    codegen::target::TargetLayout,
+    codegen::{artifact::ModuleArtifact, target::TargetLayout},
     compile::config::{BuildProfile, Config, StdMode},
     diagnostics::DiagCtx,
     error::CompileResult,
@@ -1503,16 +1503,21 @@ impl<'arena> GlobalContext<'arena> {
         false
     }
 
-    pub fn cache_object_file(self, path: PathBuf) {
+    pub fn cache_module_artifact(self, artifact: ModuleArtifact) {
         self.context
             .store
-            .object_files
+            .module_artifacts
             .borrow_mut()
-            .insert(self.package_index(), path);
+            .insert(self.package_index(), artifact);
     }
 
-    pub fn get_object_file(self, pkg: PackageIndex) -> Option<PathBuf> {
-        self.context.store.object_files.borrow().get(&pkg).cloned()
+    pub fn get_module_artifact(self, pkg: PackageIndex) -> Option<ModuleArtifact> {
+        self.context
+            .store
+            .module_artifacts
+            .borrow()
+            .get(&pkg)
+            .cloned()
     }
 
     pub fn cache_specializations(self, pkg: PackageIndex, instances: FxHashSet<Instance<'arena>>) {
@@ -1573,10 +1578,16 @@ impl<'arena> GlobalContext<'arena> {
         let mut inputs: Vec<PathBuf> = self
             .context
             .store
-            .object_files
+            .module_artifacts
             .borrow()
             .values()
-            .cloned()
+            .filter(|artifact| {
+                matches!(
+                    artifact.kind,
+                    crate::compile::config::ModuleArtifactKind::Object
+                )
+            })
+            .map(|artifact| artifact.path.clone())
             .collect();
         inputs.extend(self.context.store.all_link_inputs());
         inputs
@@ -1686,7 +1697,7 @@ pub struct CompilerStore<'arena> {
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
     pub queued_mir_bodies: RefCell<FxHashMap<DefinitionID, Body<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
-    pub object_files: RefCell<FxHashMap<PackageIndex, PathBuf>>,
+    pub module_artifacts: RefCell<FxHashMap<PackageIndex, ModuleArtifact>>,
     pub link_inputs: RefCell<Vec<PathBuf>>,
     /// Optional Clang-compatible linker driver selected by the CLI.
     pub linker: RefCell<Option<PathBuf>>,
@@ -1694,7 +1705,7 @@ pub struct CompilerStore<'arena> {
     pub linker_sysroot: RefCell<Option<PathBuf>>,
     pub output_root: PathBuf,
     pub specialization_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
-    /// Per-package set of instances emitted into that package object file.
+    /// Per-package set of instances emitted into that package module artifact.
     pub emitted_instances: RefCell<FxHashMap<PackageIndex, FxHashSet<Instance<'arena>>>>,
     /// Global set of instances that have been compiled (to avoid duplicate work)
     pub compiled_instances: RefCell<FxHashSet<Instance<'arena>>>,
@@ -1738,7 +1749,7 @@ impl<'arena> CompilerStore<'arena> {
             mir_packages: Default::default(),
             queued_mir_bodies: Default::default(),
             llvm_modules: Default::default(),
-            object_files: Default::default(),
+            module_artifacts: Default::default(),
             link_inputs: Default::default(),
             linker: Default::default(),
             linker_sysroot: Default::default(),

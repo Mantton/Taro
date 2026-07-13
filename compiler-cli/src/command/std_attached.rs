@@ -4,11 +4,12 @@ use crate::{
 };
 use compiler::{
     PackageIndex,
+    codegen::artifact::ModuleArtifact,
     compile::{
         Compiler,
         config::{
-            BuildProfile, CodegenOptions, Config, DebugOptions, OptLevel, OptimizationMode,
-            PackageKind, StdMode,
+            BuildProfile, CodegenOptions, Config, DebugOptions, ModuleArtifactKind, OptLevel,
+            OptimizationMode, PackageKind, StdMode,
         },
         context::CompilerContext,
     },
@@ -125,7 +126,10 @@ pub fn compile_std<'a>(
             ReuseMode::CodegenDependency | ReuseMode::CodegenRoot
         ) {
             // Ensure downstream codegen links against the attached std object path.
-            compiler.context.cache_object_file(attached.object.clone());
+            compiler.context.cache_module_artifact(ModuleArtifact::new(
+                ModuleArtifactKind::Object,
+                attached.object.clone(),
+            ));
         }
     } else {
         let attached_object_for_load = match reuse_mode {
@@ -202,6 +206,7 @@ pub fn compile_std<'a>(
 fn attached_std_codegen_options() -> CodegenOptions {
     CodegenOptions {
         optimization: OptimizationMode::Level(OptLevel::O2),
+        artifact: ModuleArtifactKind::Object,
     }
 }
 
@@ -440,13 +445,17 @@ fn atomic_copy_file(src: &Path, dst: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::attached_std_codegen_options;
-    use compiler::compile::config::{OptLevel, OptimizationMode};
+    use compiler::compile::config::{ModuleArtifactKind, OptLevel, OptimizationMode};
 
     #[test]
     fn attached_std_uses_canonical_o2_policy() {
         assert_eq!(
             attached_std_codegen_options().optimization,
             OptimizationMode::Level(OptLevel::O2)
+        );
+        assert_eq!(
+            attached_std_codegen_options().artifact,
+            ModuleArtifactKind::Object
         );
     }
 }

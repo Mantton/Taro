@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use compiler::compile::config::{
-    BuildProfile, CodegenOptions, DebugInfo, OptLevel, OptimizationMode,
+    BuildProfile, CodegenOptions, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode,
 };
 use std::{path::PathBuf, process::exit};
 
@@ -45,6 +45,9 @@ pub enum CliCommand {
 pub struct BuildArgs {
     #[command(flatten)]
     pub common: CommonCompileArgs,
+    /// Select the final build artifact.
+    #[arg(long = "emit", value_enum, default_value_t = BuildEmit::Link)]
+    pub emit: BuildEmit,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -135,7 +138,7 @@ pub struct CommonCompileArgs {
     /// Force integer overflow checks off.
     #[arg(long = "no-overflow-checks", conflicts_with = "overflow_checks")]
     pub no_overflow_checks: bool,
-    /// Print compiler phase timings (parse -> link) to stderr.
+    /// Print compiler phase timings through artifact emission and optional linking.
     #[arg(long = "timings")]
     pub timings: bool,
     /// Disable incremental dependency reuse and force cold compilation.
@@ -158,6 +161,25 @@ pub enum NewProjectKind {
     Executable,
     Library,
     Both,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum BuildEmit {
+    /// Produce the package's normal linked executable when applicable.
+    #[default]
+    Link,
+    /// Produce optimized LLVM bitcode without native code generation or linking.
+    #[value(name = "llvm-bc")]
+    LlvmBitcode,
+}
+
+impl BuildEmit {
+    pub(crate) const fn module_artifact_kind(self) -> ModuleArtifactKind {
+        match self {
+            Self::Link => ModuleArtifactKind::Object,
+            Self::LlvmBitcode => ModuleArtifactKind::LlvmBitcode,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -251,7 +273,10 @@ impl CommonCompileArgs {
             .unwrap_or_else(|| default_optimization_mode(profile));
         CompileModeOptions {
             profile,
-            codegen: CodegenOptions { optimization },
+            codegen: CodegenOptions {
+                optimization,
+                artifact: ModuleArtifactKind::Object,
+            },
             overflow_checks: self.overflow_checks_enabled(),
             timings: self.timings,
             debug_info: self.debug_info.map(Into::into).unwrap_or_else(|| {
@@ -319,9 +344,28 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, CliCommand, NewProjectKind};
+    use super::{BuildEmit, Cli, CliCommand, NewProjectKind};
     use clap::Parser;
-    use compiler::compile::config::{BuildProfile, DebugInfo, OptLevel, OptimizationMode};
+    use compiler::compile::config::{
+        BuildProfile, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode,
+    };
+
+    #[test]
+    fn build_defaults_to_link_and_parses_llvm_bitcode_output() {
+        let linked = Cli::parse_from(["taro", "build", "examples/hello.tr"]);
+        let bitcode = Cli::parse_from(["taro", "build", "examples/hello.tr", "--emit", "llvm-bc"]);
+
+        let emit = |cli: Cli| match cli.command {
+            CliCommand::Build(build) => build.emit,
+            other => panic!("expected build command, got {other:?}"),
+        };
+        assert_eq!(emit(linked), BuildEmit::Link);
+        assert_eq!(emit(bitcode), BuildEmit::LlvmBitcode);
+        assert_eq!(
+            BuildEmit::LlvmBitcode.module_artifact_kind(),
+            ModuleArtifactKind::LlvmBitcode
+        );
+    }
 
     #[test]
     fn parses_new_command() {
@@ -535,6 +579,7 @@ mod tests {
         let size_optimized = mode(size_optimized);
         let retained_baseline = mode(retained_baseline);
         assert_eq!(debug.codegen.optimization, OptimizationMode::Baseline);
+        assert_eq!(debug.codegen.artifact, ModuleArtifactKind::Object);
         assert_eq!(
             release.codegen.optimization,
             OptimizationMode::Level(OptLevel::O2)

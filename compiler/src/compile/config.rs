@@ -58,6 +58,17 @@ pub enum OptimizationMode {
     Level(OptLevel),
 }
 
+/// Native or LLVM module artifact emitted for one compiled package.
+///
+/// Object artifacts are consumed by the native linker. LLVM bitcode preserves
+/// the optimized module for explicit compiler output and future LTO stages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ModuleArtifactKind {
+    #[default]
+    Object,
+    LlvmBitcode,
+}
+
 /// Code-generation policy for a package.
 ///
 /// LTO and instruction-selector policy will join this structure when their
@@ -66,6 +77,7 @@ pub enum OptimizationMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct CodegenOptions {
     pub optimization: OptimizationMode,
+    pub artifact: ModuleArtifactKind,
 }
 
 /// Amount of source-level debug metadata emitted into generated objects.

@@ -1,10 +1,11 @@
 use crate::{
     codegen::{
         abi,
+        artifact::ModuleArtifact,
         mangle::{mangle, mangle_instance},
     },
     compile::{
-        config::{BuildProfile, DebugInfo, OptLevel, OptimizationMode},
+        config::{BuildProfile, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode},
         context::{Gcx, GlobalContext},
     },
     error::CompileResult,
@@ -43,7 +44,6 @@ use inkwell::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     fs,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -149,13 +149,31 @@ fn static_initializer_value_for_codegen(name: &str, kind: Option<ConstKind>) -> 
     value
 }
 
+fn write_llvm_bitcode(module: &Module<'_>, path: &std::path::Path) -> std::io::Result<()> {
+    let buffer = module.write_bitcode_to_memory();
+    let bytes = buffer.as_slice();
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    if !has_llvm_bitcode_magic(bytes) {
+        return Err(std::io::Error::other(
+            "LLVM produced a buffer without bitcode magic",
+        ));
+    }
+    fs::write(path, bytes)
+}
+
+fn has_llvm_bitcode_magic(bytes: &[u8]) -> bool {
+    // LLVM emits either raw bitcode or the target-independent bitcode wrapper
+    // used by Apple toolchains. Both forms are accepted by LLVM's parser.
+    bytes.starts_with(b"BC\xc0\xde") || bytes.starts_with(b"\xde\xc0\x17\x0b")
+}
+
 /// Lower MIR for a package into a single LLVM module and cache its IR.
 pub fn emit_package<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
     gcx: GlobalContext<'gcx>,
-) -> CompileResult<PathBuf> {
-    let (obj, _) = emit_package_with_timings(package, gcx)?;
-    Ok(obj)
+) -> CompileResult<ModuleArtifact> {
+    let (artifact, _) = emit_package_with_timings(package, gcx)?;
+    Ok(artifact)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -166,7 +184,7 @@ pub struct CodegenPhaseTimings {
     pub emit_entry_or_harness: Duration,
     pub verify: Duration,
     pub optimize_ir: Duration,
-    pub emit_object: Duration,
+    pub emit_artifact: Duration,
 }
 
 /// Lower MIR for a package into a single LLVM module and cache its IR,
@@ -174,7 +192,7 @@ pub struct CodegenPhaseTimings {
 pub fn emit_package_with_timings<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
     gcx: GlobalContext<'gcx>,
-) -> CompileResult<(PathBuf, CodegenPhaseTimings)> {
+) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
     let mut timings = CodegenPhaseTimings::default();
 
     let phase_started_at = Instant::now();
@@ -234,11 +252,11 @@ pub fn emit_package_with_timings<'gcx>(
     }
 
     let phase_started_at = Instant::now();
-    let obj = emitter.emit_object_file()?;
-    timings.emit_object = phase_started_at.elapsed();
+    let artifact = emitter.emit_module_artifact()?;
+    timings.emit_artifact = phase_started_at.elapsed();
 
-    gcx.cache_object_file(obj.clone());
-    Ok((obj, timings))
+    gcx.cache_module_artifact(artifact.clone());
+    Ok((artifact, timings))
 }
 
 /// Lower MIR for a package and generate a test harness instead of a normal entry shim.
@@ -246,9 +264,9 @@ pub fn emit_test_package<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
     gcx: GlobalContext<'gcx>,
     tests: &[crate::compile::test_collector::TestCase],
-) -> CompileResult<PathBuf> {
-    let (obj, _) = emit_test_package_with_timings(package, gcx, tests)?;
-    Ok(obj)
+) -> CompileResult<ModuleArtifact> {
+    let (artifact, _) = emit_test_package_with_timings(package, gcx, tests)?;
+    Ok(artifact)
 }
 
 /// Lower MIR for a package and generate a test harness instead of a normal entry shim,
@@ -257,7 +275,7 @@ pub fn emit_test_package_with_timings<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
     gcx: GlobalContext<'gcx>,
     tests: &[crate::compile::test_collector::TestCase],
-) -> CompileResult<(PathBuf, CodegenPhaseTimings)> {
+) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
     let mut timings = CodegenPhaseTimings::default();
 
     let phase_started_at = Instant::now();
@@ -315,11 +333,11 @@ pub fn emit_test_package_with_timings<'gcx>(
     }
 
     let phase_started_at = Instant::now();
-    let obj = emitter.emit_object_file()?;
-    timings.emit_object = phase_started_at.elapsed();
+    let artifact = emitter.emit_module_artifact()?;
+    timings.emit_artifact = phase_started_at.elapsed();
 
-    gcx.cache_object_file(obj.clone());
-    Ok((obj, timings))
+    gcx.cache_module_artifact(artifact.clone());
+    Ok((artifact, timings))
 }
 
 struct Emitter<'llvm, 'gcx> {
@@ -2286,24 +2304,45 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(())
     }
 
-    fn emit_object_file(&mut self) -> CompileResult<PathBuf> {
+    fn emit_module_artifact(&mut self) -> CompileResult<ModuleArtifact> {
         let out_dir = self.gcx.output_root().clone();
         if let Err(e) = fs::create_dir_all(&out_dir) {
             let msg = format!("failed to create output directory: {e}");
             self.gcx.dcx().emit_error(msg.into(), None);
             return Err(crate::error::ReportedError);
         }
-        let obj_path = out_dir.join(format!("{}.o", self.gcx.config.identifier));
+        let kind = self.gcx.config.codegen.artifact;
+        let path = out_dir.join(format!(
+            "{}.{}",
+            self.gcx.config.identifier,
+            kind.extension()
+        ));
 
-        self.target_machine
-            .write_to_file(&self.module, FileType::Object, &obj_path)
-            .map_err(|e| {
-                let msg = format!("failed to write object file: {e}");
-                self.gcx.dcx().emit_error(msg.into(), None);
-                crate::error::ReportedError
-            })?;
+        match kind {
+            ModuleArtifactKind::Object => {
+                self.target_machine
+                    .write_to_file(&self.module, FileType::Object, &path)
+                    .map_err(|error| {
+                        self.gcx
+                            .dcx()
+                            .emit_error(format!("failed to write object file: {error}"), None);
+                        crate::error::ReportedError
+                    })?;
+            }
+            ModuleArtifactKind::LlvmBitcode => {
+                // Inkwell's path-based bitcode writer requires Unicode and
+                // panics for other paths. Writing LLVM's memory buffer through
+                // std::fs keeps valid platform paths diagnostic-safe.
+                write_llvm_bitcode(&self.module, &path).map_err(|error| {
+                    self.gcx
+                        .dcx()
+                        .emit_error(format!("failed to write LLVM bitcode: {error}"), None);
+                    crate::error::ReportedError
+                })?;
+            }
+        }
 
-        Ok(obj_path)
+        Ok(ModuleArtifact::new(kind, path))
     }
 
     fn lower_body(
@@ -7278,18 +7317,76 @@ mod struct_layout_tests {
     use super::{
         AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, LlvmOptimizationPipeline,
         NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, add_llvm_enum_function_attribute,
-        build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_function_body,
-        indirect_return_threshold_for_triple, llvm_inline_attribute_name,
+        build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_bitcode_magic,
+        has_llvm_function_body, indirect_return_threshold_for_triple, llvm_inline_attribute_name,
         llvm_optimization_pipeline, logical_to_physical_map, packed_field_order,
-        static_initializer_value_for_codegen, target_is_aarch64,
+        static_initializer_value_for_codegen, target_is_aarch64, write_llvm_bitcode,
     };
     use crate::{
+        codegen::target::TargetLayout,
         compile::config::{BuildProfile, OptLevel, OptimizationMode},
+        diagnostics::DiagCtx,
         hir::KnownAttribute,
         sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
         span::Symbol,
     };
-    use inkwell::{AddressSpace, attributes::AttributeLoc, context::Context};
+    use inkwell::{AddressSpace, attributes::AttributeLoc, context::Context, module::Module};
+    use std::{fs, path::PathBuf};
+
+    fn temporary_bitcode_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "taro-{name}-{}-{}.bc",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn bitcode_round_trip_preserves_target_identity() {
+        let diagnostics = DiagCtx::new(PathBuf::from("."));
+        let layout = TargetLayout::new(&diagnostics, None, BuildProfile::Release)
+            .unwrap_or_else(|_| panic!("host target layout should initialize"));
+        let context = Context::create();
+        let module = context.create_module("bitcode-round-trip");
+        module.set_triple(&layout.triple());
+        module.set_data_layout(&layout.data_layout());
+        module.add_function("smoke", context.void_type().fn_type(&[], false), None);
+
+        let path = temporary_bitcode_path("round-trip");
+        write_llvm_bitcode(&module, &path).expect("bitcode write should succeed");
+        let bytes = fs::read(&path).expect("bitcode should be readable");
+        assert!(has_llvm_bitcode_magic(&bytes));
+
+        let parsed_context = Context::create();
+        let parsed = Module::parse_bitcode_from_path(&path, &parsed_context)
+            .expect("emitted bitcode should parse");
+        assert_eq!(parsed.get_triple(), layout.triple());
+        assert_eq!(
+            parsed.get_data_layout().as_str(),
+            layout.data_layout().as_str()
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bitcode_writer_accepts_non_ascii_paths() {
+        let context = Context::create();
+        let module = context.create_module("non-ascii-bitcode-path");
+        let root = std::env::current_dir()
+            .expect("current directory")
+            .join("target")
+            .join("non-ascii-bitcode-test");
+        fs::create_dir_all(&root).expect("test output directory");
+        let path = root.join("taro-bitcode-雪.bc");
+
+        write_llvm_bitcode(&module, &path).expect("non-ASCII path should be supported");
+        assert!(fs::metadata(&path).expect("bitcode metadata").len() > 0);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir(root);
+    }
 
     #[test]
     fn packed_field_order_sorts_by_align_then_size_then_source_index() {

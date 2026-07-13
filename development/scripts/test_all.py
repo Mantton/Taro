@@ -2,8 +2,10 @@
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -26,9 +28,34 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None
     subprocess.run(command, cwd=str(cwd), env=env, check=True)
 
 
+def run_command_capture(
+    command: list[str], cwd: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    print(f"Running: {format_command(command)}")
+    completed = subprocess.run(
+        command,
+        cwd=str(cwd),
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if completed.stdout:
+        print(completed.stdout, end="")
+    if completed.stderr:
+        print(completed.stderr, end="", file=sys.stderr)
+    return completed
+
+
 def print_stage(index: int, total: int, name: str) -> None:
     print()
     print(f"[{index}/{total}] {name}")
+
+
+def is_llvm_bitcode(contents: bytes) -> bool:
+    return contents.startswith(b"BC\xc0\xde") or contents.startswith(
+        b"\xde\xc0\x17\x0b"
+    )
 
 
 def main() -> int:
@@ -42,6 +69,7 @@ def main() -> int:
     parser.add_argument("--skip-cargo-tests", action="store_true")
     parser.add_argument("--skip-build-dist", action="store_true")
     parser.add_argument("--skip-compile-std", action="store_true")
+    parser.add_argument("--skip-bitcode-smoke", action="store_true")
     parser.add_argument("--skip-std-package-tests", action="store_true")
     parser.add_argument("--skip-language-tests", action="store_true")
     args = parser.parse_args()
@@ -55,8 +83,11 @@ def main() -> int:
     taro_bin = dist_dir / "bin" / "taro"
     std_path = repo_root / "std"
     hello_example = repo_root / "examples" / "hello.tr"
+    package_fixture = (
+        repo_root / "language_tests" / "package_fixtures" / "default_params"
+    )
 
-    stage_count = 5
+    stage_count = 6
     current_stage = "startup"
 
     try:
@@ -123,8 +154,92 @@ def main() -> int:
                 env=env,
             )
 
+        current_stage = "bitcode artifact smoke"
+        print_stage(4, stage_count, "LLVM bitcode artifact smoke")
+        if args.skip_bitcode_smoke:
+            print("SKIPPED: disabled via --skip-bitcode-smoke")
+        else:
+            if not taro_bin.exists():
+                print(
+                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
+                )
+                return 1
+
+            env = os.environ.copy()
+            env["TARO_HOME"] = str(dist_dir)
+            with tempfile.TemporaryDirectory(prefix="taro_bitcode_smoke_") as temp:
+                output = Path(temp) / "hello.bc"
+                missing_runtime = Path(temp) / "runtime-does-not-exist.a"
+                command = [
+                    str(taro_bin),
+                    "build",
+                    str(hello_example),
+                    "--std-path",
+                    str(std_path),
+                    "--emit",
+                    "llvm-bc",
+                    "--runtime-path",
+                    str(missing_runtime),
+                    "-o",
+                    str(output),
+                ]
+                run_command([*command, "--no-incremental"], cwd=repo_root, env=env)
+                reused = run_command_capture(command, cwd=repo_root, env=env)
+                if "Reusing (metadata+bitcode)" not in reused.stderr:
+                    raise RuntimeError("second bitcode build did not reuse its cached artifact")
+                bitcode = output.read_bytes()
+                if not is_llvm_bitcode(bitcode):
+                    raise RuntimeError(
+                        f"bitcode smoke output has invalid magic: {output}"
+                    )
+
+                copied_fixture = Path(temp) / "default_params"
+                shutil.copytree(package_fixture, copied_fixture)
+                package_output = Path(temp) / "default-params.bc"
+                run_command(
+                    [
+                        str(taro_bin),
+                        "build",
+                        str(copied_fixture / "app"),
+                        "--std-path",
+                        str(std_path),
+                        "--emit",
+                        "llvm-bc",
+                        "--runtime-path",
+                        str(missing_runtime),
+                        "--no-incremental",
+                        "-o",
+                        str(package_output),
+                    ],
+                    cwd=repo_root,
+                    env=env,
+                )
+                package_artifacts = list(
+                    (copied_fixture / "app" / "target" / "debug" / "objects").glob(
+                        "*.bc"
+                    )
+                )
+                native_objects = list(
+                    (copied_fixture / "app" / "target" / "debug" / "objects").glob(
+                        "*.o"
+                    )
+                )
+                if len(package_artifacts) < 2:
+                    raise RuntimeError(
+                        "package bitcode build did not retain root and dependency artifacts"
+                    )
+                if native_objects:
+                    raise RuntimeError(
+                        "bitcode-only package build unexpectedly emitted native objects"
+                    )
+                for artifact in [package_output, *package_artifacts]:
+                    if not is_llvm_bitcode(artifact.read_bytes()):
+                        raise RuntimeError(
+                            f"package bitcode artifact has invalid magic: {artifact}"
+                        )
+
         current_stage = "std package tests"
-        print_stage(4, stage_count, "Std package tests")
+        print_stage(5, stage_count, "Std package tests")
         if args.skip_std_package_tests:
             print("SKIPPED: disabled via --skip-std-package-tests")
         else:
@@ -152,7 +267,7 @@ def main() -> int:
                 )
 
         current_stage = "language tests"
-        print_stage(5, stage_count, "Language tests")
+        print_stage(6, stage_count, "Language tests")
         if args.skip_language_tests:
             print("SKIPPED: disabled via --skip-language-tests")
         else:
@@ -167,6 +282,10 @@ def main() -> int:
             f"error: stage '{current_stage}' failed with exit code {error.returncode}"
         )
         return error.returncode or 1
+    except RuntimeError as error:
+        print()
+        print(f"error: stage '{current_stage}' failed: {error}")
+        return 1
     except KeyboardInterrupt:
         print()
         print("Interrupted")

@@ -1,7 +1,8 @@
 use crate::{
     ast_lowering, cfg, cfg_eval, codegen,
+    codegen::artifact::ModuleArtifact,
     compile::{
-        config::Config,
+        config::{Config, ModuleArtifactKind},
         context::{CompilerContext, GlobalContext},
     },
     error::CompileResult,
@@ -91,11 +92,25 @@ impl<'state> Compiler<'state> {
 
 impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
+        let (_, executable) = self.build_with_link(true)?;
+        Ok(executable)
+    }
+
+    /// Compile the package into its selected module artifact without linking.
+    pub fn emit_module(&mut self) -> CompileResult<ModuleArtifact> {
+        let (artifact, _) = self.build_with_link(false)?;
+        Ok(artifact)
+    }
+
+    fn build_with_link(
+        &mut self,
+        should_link: bool,
+    ) -> CompileResult<(ModuleArtifact, Option<std::path::PathBuf>)> {
         let total_started_at = Instant::now();
         let package_name = self.context.config.name.to_string();
         let mut timings = TimingReport::default();
 
-        let result = (|| -> CompileResult<Option<std::path::PathBuf>> {
+        let result = (|| -> CompileResult<(ModuleArtifact, Option<std::path::PathBuf>)> {
             let (package, results) = self.analyze_with_timings(&mut timings)?;
 
             let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
@@ -111,7 +126,7 @@ impl<'state> Compiler<'state> {
             let compiled_before_codegen = self.context.store.compiled_instances.borrow().clone();
 
             let phase_started_at = Instant::now();
-            let (_, codegen_timings) =
+            let (artifact, codegen_timings) =
                 codegen::llvm::emit_package_with_timings(package, self.context)?;
             timings.push_elapsed("codegen.llvm", phase_started_at);
             timings.push_duration("codegen.llvm.setup", codegen_timings.module_setup);
@@ -129,7 +144,7 @@ impl<'state> Compiler<'state> {
             );
             timings.push_duration("codegen.llvm.verify", codegen_timings.verify);
             timings.push_duration("codegen.llvm.optimize_ir", codegen_timings.optimize_ir);
-            timings.push_duration("codegen.llvm.emit_object", codegen_timings.emit_object);
+            timings.push_duration("codegen.llvm.emit_artifact", codegen_timings.emit_artifact);
 
             let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
             let emitted_instances = compiled_after_codegen
@@ -146,15 +161,31 @@ impl<'state> Compiler<'state> {
             // Fail here rather than linking a binary for an errored build.
             self.context.dcx().ok()?;
 
-            let phase_started_at = Instant::now();
-            let exe = codegen::link::link_executable(self.context)?;
-            timings.push_elapsed("link.executable", phase_started_at);
+            let exe = if should_link {
+                if artifact.kind != ModuleArtifactKind::Object {
+                    self.context.dcx().emit_error(
+                        format!(
+                            "cannot pass {} directly to the native linker",
+                            artifact.kind.display_name()
+                        ),
+                        None,
+                    );
+                    return Err(crate::error::ReportedError);
+                }
+                let phase_started_at = Instant::now();
+                let executable = codegen::link::link_executable(self.context)?;
+                timings.push_elapsed("link.executable", phase_started_at);
+                executable
+            } else {
+                None
+            };
 
-            Ok(exe)
+            Ok((artifact, exe))
         })();
 
         if self.context.config.debug.timings {
-            timings.emit(&package_name, "build", total_started_at.elapsed());
+            let mode = if should_link { "build" } else { "emit" };
+            timings.emit(&package_name, mode, total_started_at.elapsed());
         }
 
         result
@@ -210,7 +241,10 @@ impl<'state> Compiler<'state> {
             );
             timings.push_duration("codegen.llvm_test.verify", codegen_timings.verify);
             timings.push_duration("codegen.llvm_test.optimize_ir", codegen_timings.optimize_ir);
-            timings.push_duration("codegen.llvm_test.emit_object", codegen_timings.emit_object);
+            timings.push_duration(
+                "codegen.llvm_test.emit_artifact",
+                codegen_timings.emit_artifact,
+            );
 
             let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
             let emitted_instances = compiled_after_codegen
@@ -261,9 +295,9 @@ impl<'state> Compiler<'state> {
     }
 
     /// Compile dependency semantic state (HIR/THIR/MIR/specializations) without
-    /// producing a new object file. This is used to reuse cached dependency
-    /// objects while still making dependency semantics available to downstream
-    /// packages in the current session.
+    /// producing a new module artifact. This is used to reuse cached dependency
+    /// artifacts while still making dependency semantics available to
+    /// downstream packages in the current session.
     pub fn prepare_dependency_reuse(&mut self) -> CompileResult<()> {
         let total_started_at = Instant::now();
         let package_name = self.context.config.name.to_string();

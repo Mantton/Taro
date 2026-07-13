@@ -3,7 +3,7 @@ use super::{
     incremental, runtime_artifact, std_attached,
 };
 use crate::{
-    CommonCompileArgs, CompileModeOptions, TestArgs,
+    BuildEmit, CommonCompileArgs, CompileModeOptions, TestArgs,
     package::{
         manifest::ValidatedDependencyGraph,
         sync::sync_dependencies,
@@ -12,10 +12,11 @@ use crate::{
 };
 use compiler::{
     PackageIndex, codegen,
+    codegen::artifact::ModuleArtifact,
     compile::{
         Compiler,
-        config::{Config, DebugOptions, PackageKind, StdMode},
-        context::{CompilerArenas, CompilerContext, CompilerStore},
+        config::{Config, DebugOptions, ModuleArtifactKind, PackageKind, StdMode},
+        context::{CompilerArenas, CompilerContext, CompilerStore, GlobalContext},
         test_collector::TestSelection,
     },
     constants::STD_PREFIX,
@@ -24,29 +25,32 @@ use compiler::{
     metadata::{self, MetadataLoadStatus, ReuseMode},
 };
 use rustc_hash::FxHashMap;
-use std::{path::PathBuf, process::Command, rc::Rc};
+use std::{fs, path::PathBuf, process::Command, rc::Rc};
 
 pub fn run(
     arguments: CommonCompileArgs,
     require_executable: bool,
+    emit: BuildEmit,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     if arguments.is_single_file() {
-        run_single_file(arguments)
+        run_single_file(arguments, emit)
     } else {
-        run_package(arguments, require_executable)
+        run_package(arguments, require_executable, emit)
     }
 }
 
 fn run_single_file(
     arguments: CommonCompileArgs,
+    emit: BuildEmit,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
-    let compile_options = arguments.compile_mode_options();
+    let mut compile_options = arguments.compile_mode_options();
+    compile_options.codegen.artifact = emit.module_artifact_kind();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
         ReportedError
     })?;
-    let dcx = Rc::new(DiagCtx::new(cwd));
+    let dcx = Rc::new(DiagCtx::new(cwd.clone()));
     let arenas = CompilerArenas::new();
 
     // Resolve file path and extract name
@@ -69,6 +73,10 @@ fn run_single_file(
             );
             ReportedError
         })?;
+    let bitcode_output = arguments
+        .output
+        .clone()
+        .unwrap_or_else(|| default_script_bitcode_output(&cwd, file_stem));
 
     // Create target directory based on file path hash
     let target_root = script_target_dir(&file_path, profile_dir);
@@ -101,7 +109,9 @@ fn run_single_file(
         arguments.build_std,
         &mut package_fingerprints,
     )?;
-    build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
+    if matches!(emit, BuildEmit::Link) {
+        build_runtime(&icx, &target_root, arguments.runtime_path.clone())?;
+    }
 
     // Create virtual config for single file
     let package_index = PackageIndex::new(1);
@@ -115,7 +125,11 @@ fn run_single_file(
         dependencies,
         index: package_index,
         kind: PackageKind::Executable,
-        executable_out: arguments.output.clone(),
+        executable_out: if matches!(emit, BuildEmit::Link) {
+            arguments.output.clone()
+        } else {
+            None
+        },
         no_std_prelude: false,
         is_script: true,
         profile: compile_options.profile,
@@ -158,7 +172,11 @@ fn run_single_file(
                 ReuseMode::CodegenRoot,
             ) {
                 Ok(()) => {
-                    eprintln!("Reusing (metadata+object) – {}", file_stem);
+                    eprintln!(
+                        "Reusing (metadata+{}) – {}",
+                        artifact_label(compile_options.codegen.artifact),
+                        file_stem
+                    );
                     true
                 }
                 Err(e) => {
@@ -181,9 +199,21 @@ fn run_single_file(
     };
 
     if reused {
-        codegen::link::link_executable(compiler.context)
+        match emit {
+            BuildEmit::Link => codegen::link::link_executable(compiler.context),
+            BuildEmit::LlvmBitcode => {
+                let artifact = cached_module_artifact(compiler.context)?;
+                publish_bitcode(&artifact, bitcode_output).map(Some)
+            }
+        }
     } else {
-        let exe = compiler.build()?;
+        let output = match emit {
+            BuildEmit::Link => compiler.build()?,
+            BuildEmit::LlvmBitcode => {
+                let artifact = compiler.emit_module()?;
+                Some(publish_bitcode(&artifact, bitcode_output)?)
+            }
+        };
         if let Err(e) = metadata::write_package_metadata(
             compiler.context,
             &fingerprint_input,
@@ -194,15 +224,17 @@ fn run_single_file(
                 file_stem, e
             );
         }
-        Ok(exe)
+        Ok(output)
     }
 }
 
 fn run_package(
     arguments: CommonCompileArgs,
     require_executable: bool,
+    emit: BuildEmit,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
-    let compile_options = arguments.compile_mode_options();
+    let mut compile_options = arguments.compile_mode_options();
+    compile_options.codegen.artifact = emit.module_artifact_kind();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
@@ -218,10 +250,8 @@ fn run_package(
         );
         ReportedError
     })?;
-    let target_root = project_root
-        .join("target")
-        .join(profile_dir)
-        .join("objects");
+    let profile_root = project_root.join("target").join(profile_dir);
+    let target_root = profile_root.join("objects");
     let store = CompilerStore::new(
         &arenas,
         target_root,
@@ -247,7 +277,9 @@ fn run_package(
             arguments.build_std,
             &mut package_fingerprints,
         )?;
-        build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
+        if matches!(emit, BuildEmit::Link) {
+            build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
+        }
     }
 
     let total = graph.ordered.len();
@@ -286,6 +318,12 @@ fn run_package(
             );
             ReportedError
         })?;
+        let bitcode_output = is_root.then(|| {
+            arguments
+                .output
+                .clone()
+                .unwrap_or_else(|| default_package_bitcode_output(&profile_root, &name))
+        });
         let is_std_package = root_is_std && is_root;
         let identifier = if is_std_package {
             STD_PREFIX.into()
@@ -339,7 +377,11 @@ fn run_package(
             dependencies,
             index: package_index,
             kind: package.kind,
-            executable_out: arguments.output.clone(),
+            executable_out: if matches!(emit, BuildEmit::Link) {
+                arguments.output.clone()
+            } else {
+                None
+            },
             no_std_prelude: package.no_std_prelude,
             is_script: false,
             profile: compile_options.profile,
@@ -392,7 +434,11 @@ fn run_package(
                     match metadata::hydrate_loaded_metadata(compiler.context, &hit, reuse_mode) {
                         Ok(()) => {
                             if is_root || compiler.context.config.debug.timings {
-                                eprintln!("Reusing (metadata+object) – {}", package.package.0);
+                                eprintln!(
+                                    "Reusing (metadata+{}) – {}",
+                                    artifact_label(compile_options.codegen.artifact),
+                                    package.package.0
+                                );
                             }
                             true
                         }
@@ -424,12 +470,38 @@ fn run_package(
 
         let exe_path = if reused {
             if is_root {
-                codegen::link::link_executable(compiler.context)?
+                match emit {
+                    BuildEmit::Link => codegen::link::link_executable(compiler.context)?,
+                    BuildEmit::LlvmBitcode => {
+                        let artifact = cached_module_artifact(compiler.context)?;
+                        Some(publish_bitcode(
+                            &artifact,
+                            bitcode_output
+                                .clone()
+                                .expect("root bitcode output should be selected"),
+                        )?)
+                    }
+                }
             } else {
                 None
             }
         } else {
-            let exe_path = compiler.build()?;
+            let exe_path = match emit {
+                BuildEmit::Link => compiler.build()?,
+                BuildEmit::LlvmBitcode => {
+                    let artifact = compiler.emit_module()?;
+                    if is_root {
+                        Some(publish_bitcode(
+                            &artifact,
+                            bitcode_output
+                                .clone()
+                                .expect("root bitcode output should be selected"),
+                        )?)
+                    } else {
+                        None
+                    }
+                }
+            };
             if let Err(e) =
                 metadata::write_package_metadata(compiler.context, &fingerprint_input, reuse_mode)
             {
@@ -451,6 +523,73 @@ fn run_package(
         }
     }
     Ok(None)
+}
+
+fn artifact_label(kind: ModuleArtifactKind) -> &'static str {
+    match kind {
+        ModuleArtifactKind::Object => "object",
+        ModuleArtifactKind::LlvmBitcode => "bitcode",
+    }
+}
+
+fn default_script_bitcode_output(cwd: &std::path::Path, file_stem: &str) -> PathBuf {
+    cwd.join(format!("{file_stem}.bc"))
+}
+
+fn default_package_bitcode_output(profile_root: &std::path::Path, package_name: &str) -> PathBuf {
+    profile_root.join(format!("{package_name}.bc"))
+}
+
+fn cached_module_artifact(context: GlobalContext<'_>) -> Result<ModuleArtifact, ReportedError> {
+    context
+        .get_module_artifact(context.package_index())
+        .ok_or_else(|| {
+            context.dcx().emit_error(
+                "incremental metadata did not restore a module artifact".into(),
+                None,
+            );
+            ReportedError
+        })
+}
+
+fn publish_bitcode(artifact: &ModuleArtifact, output: PathBuf) -> Result<PathBuf, ReportedError> {
+    if artifact.kind != ModuleArtifactKind::LlvmBitcode {
+        eprintln!(
+            "error: expected LLVM bitcode, compiler produced {}",
+            artifact.kind.display_name()
+        );
+        return Err(ReportedError);
+    }
+
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            eprintln!(
+                "error: failed to create bitcode output directory '{}': {}",
+                parent.display(),
+                error
+            );
+            ReportedError
+        })?;
+    }
+
+    let source_is_output = artifact.path == output
+        || output.exists() && artifact.path.canonicalize().ok() == output.canonicalize().ok();
+    if !source_is_output {
+        fs::copy(&artifact.path, &output).map_err(|error| {
+            eprintln!(
+                "error: failed to publish LLVM bitcode to '{}': {}",
+                output.display(),
+                error
+            );
+            ReportedError
+        })?;
+    }
+
+    eprintln!("Emitted LLVM bitcode – {}", output.display());
+    Ok(output)
 }
 
 /// Locates and links the Taro runtime library.
@@ -1126,8 +1265,12 @@ fn run_package_test(
 
 #[cfg(test)]
 mod target_runtime_tests {
-    use super::installed_runtime_path;
-    use std::path::Path;
+    use super::{
+        default_package_bitcode_output, default_script_bitcode_output, installed_runtime_path,
+        publish_bitcode,
+    };
+    use compiler::{codegen::artifact::ModuleArtifact, compile::config::ModuleArtifactKind};
+    use std::{fs, path::Path};
 
     #[test]
     fn host_runtime_uses_legacy_toolchain_location() {
@@ -1143,5 +1286,46 @@ mod target_runtime_tests {
             installed_runtime_path(Path::new("/toolchain"), Some("aarch64-unknown-linux-gnu")),
             Path::new("/toolchain/lib/taro/runtime/aarch64-unknown-linux-gnu/libtaro_runtime.a")
         );
+    }
+
+    #[test]
+    fn bitcode_defaults_are_user_facing_and_profile_scoped() {
+        assert_eq!(
+            default_script_bitcode_output(Path::new("/workspace"), "hello"),
+            Path::new("/workspace/hello.bc")
+        );
+        assert_eq!(
+            default_package_bitcode_output(Path::new("/workspace/target/release"), "app"),
+            Path::new("/workspace/target/release/app.bc")
+        );
+    }
+
+    #[test]
+    fn publishing_bitcode_copies_the_internal_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "taro-publish-bitcode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let source = root.join("objects/app.bc");
+        let output = root.join("published/app.bc");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
+        fs::write(&source, b"BC\xc0\xde").expect("source bitcode");
+
+        let published = publish_bitcode(
+            &ModuleArtifact::new(ModuleArtifactKind::LlvmBitcode, source),
+            output.clone(),
+        )
+        .unwrap_or_else(|_| panic!("bitcode should publish"));
+
+        assert_eq!(published, output);
+        assert_eq!(
+            fs::read(published).expect("published bitcode"),
+            b"BC\xc0\xde"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

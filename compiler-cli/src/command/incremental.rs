@@ -1,7 +1,8 @@
 use compiler::{
     compile::{
         config::{
-            BuildProfile, Config, DebugInfo, OptLevel, OptimizationMode, PackageKind, StdMode,
+            BuildProfile, Config, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode,
+            PackageKind, StdMode,
         },
         context::CompilerContext,
         test_collector::TestSelection,
@@ -74,6 +75,7 @@ pub fn compute_package_fingerprint_input_with_test_selection(
 
     hasher.update(profile_name(config.profile).as_bytes());
     hash_optimization_mode(config.codegen.optimization, &mut hasher);
+    hasher.update(&[module_artifact_kind_tag(config.codegen.artifact)]);
     hasher.update(&[
         config.overflow_checks as u8,
         config.no_std_prelude as u8,
@@ -89,7 +91,8 @@ pub fn compute_package_fingerprint_input_with_test_selection(
     hash_test_selection(config, test_selection, &mut hasher)?;
 
     // `executable_out` and linker/runtime inputs are intentionally absent: they do not change
-    // the compiled object, and root cache hits always relink using the current invocation.
+    // the compiled module artifact, and linked root cache hits always relink
+    // using the current invocation.
 
     let mut dependency_mapping: Vec<_> = config
         .dependencies
@@ -156,6 +159,13 @@ fn opt_level_tag(level: OptLevel) -> u8 {
         OptLevel::O3 => 3,
         OptLevel::Os => 4,
         OptLevel::Oz => 5,
+    }
+}
+
+fn module_artifact_kind_tag(kind: ModuleArtifactKind) -> u8 {
+    match kind {
+        ModuleArtifactKind::Object => 0,
+        ModuleArtifactKind::LlvmBitcode => 1,
     }
 }
 
@@ -322,8 +332,8 @@ mod tests {
         PackageIndex,
         compile::{
             config::{
-                BuildProfile, Config, DebugInfo, DebugOptions, OptLevel, OptimizationMode,
-                PackageKind, StdMode,
+                BuildProfile, Config, DebugInfo, DebugOptions, ModuleArtifactKind, OptLevel,
+                OptimizationMode, PackageKind, StdMode,
             },
             context::{CompilerArenas, CompilerContext, CompilerStore},
             test_collector::TestSelection,
@@ -468,6 +478,24 @@ mod tests {
                 .unwrap()
                 .package_fingerprint;
             assert_ne!(baseline, optimized);
+        });
+    }
+
+    #[test]
+    fn module_artifact_kind_changes_compilation_fingerprint() {
+        with_context(|context, source| {
+            let object = base_config(source.clone());
+            let mut bitcode = base_config(source);
+            bitcode.codegen.artifact = ModuleArtifactKind::LlvmBitcode;
+            let known = FxHashMap::default();
+
+            let object = compute_package_fingerprint_input(context, &object, &known)
+                .unwrap()
+                .package_fingerprint;
+            let bitcode = compute_package_fingerprint_input(context, &bitcode, &known)
+                .unwrap()
+                .package_fingerprint;
+            assert_ne!(object, bitcode);
         });
     }
 

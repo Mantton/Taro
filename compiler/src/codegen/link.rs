@@ -293,8 +293,11 @@ mod tests {
     use super::{build_link_plan, link_executable};
     use crate::{
         PackageIndex,
+        codegen::artifact::ModuleArtifact,
         compile::{
-            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+            config::{
+                BuildProfile, Config, DebugOptions, ModuleArtifactKind, PackageKind, StdMode,
+            },
             context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
         },
         diagnostics::DiagCtx,
@@ -373,6 +376,19 @@ mod tests {
 
             assert!(result.is_err());
             assert_eq!(gcx.dcx().error_count(), 1);
+        });
+    }
+
+    #[test]
+    fn llvm_bitcode_is_not_forwarded_to_the_native_linker() {
+        with_test_gcx(PackageKind::Executable, |gcx| {
+            gcx.cache_module_artifact(ModuleArtifact::new(
+                ModuleArtifactKind::LlvmBitcode,
+                PathBuf::from("main.bc"),
+            ));
+
+            assert!(gcx.all_object_files().is_empty());
+            assert!(link_executable(gcx).is_err());
         });
     }
 

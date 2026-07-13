@@ -1,7 +1,8 @@
 use crate::{
     PackageIndex,
+    codegen::artifact::ModuleArtifact,
     compile::{
-        config::{BuildProfile, Config, OptLevel, OptimizationMode},
+        config::{BuildProfile, Config, ModuleArtifactKind, OptLevel, OptimizationMode},
         context::GlobalContext,
     },
     hir::{Abi, DefinitionID, DefinitionKind, KnownAttribute},
@@ -18,7 +19,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 15;
+const META_FORMAT_VERSION: u32 = 16;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -54,11 +55,12 @@ struct MetadataHeader {
     test_mode: bool,
     package_fingerprint: String,
     dependency_fingerprints: Vec<DependencyFingerprint>,
-    object_relpath: Option<String>,
+    artifact_kind: Option<ModuleArtifactKind>,
+    artifact_relpath: Option<String>,
     payload_checksum_hex: String,
     has_semantic_payload: bool,
     has_mir_payload: bool,
-    has_object_ref: bool,
+    has_artifact_ref: bool,
     frontend_reusable: bool,
 }
 
@@ -66,7 +68,7 @@ struct MetadataHeader {
 pub struct LoadedMetadata {
     pub package_identifier: String,
     pub package_index: PackageIndex,
-    pub object_path: Option<PathBuf>,
+    pub artifact: Option<ModuleArtifact>,
     pub payload: wire::MetadataPayloadWire,
 }
 
@@ -100,12 +102,12 @@ impl std::error::Error for HydrationError {}
 fn validate_mode_capabilities(header: &MetadataHeader, mode: ReuseMode) -> Result<(), String> {
     match mode {
         ReuseMode::CodegenDependency => {
-            if !(header.has_semantic_payload && header.has_mir_payload && header.has_object_ref) {
+            if !(header.has_semantic_payload && header.has_mir_payload && header.has_artifact_ref) {
                 return Err("metadata missing required codegen capabilities".into());
             }
         }
         ReuseMode::CodegenRoot => {
-            if !(header.has_semantic_payload && header.has_object_ref) {
+            if !(header.has_semantic_payload && header.has_artifact_ref) {
                 return Err("metadata missing required root codegen capabilities".into());
             }
         }
@@ -114,6 +116,15 @@ fn validate_mode_capabilities(header: &MetadataHeader, mode: ReuseMode) -> Resul
                 return Err("metadata missing required semantic capabilities".into());
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_artifact_header(header: &MetadataHeader) -> Result<(), String> {
+    let has_kind = header.artifact_kind.is_some();
+    let has_path = header.artifact_relpath.is_some();
+    if has_kind != header.has_artifact_ref || has_path != header.has_artifact_ref {
+        return Err("metadata artifact capability mismatch".into());
     }
     Ok(())
 }
@@ -163,6 +174,26 @@ fn metadata_dir(output_root: &Path) -> PathBuf {
         .unwrap_or_else(|| output_root.join("metadata"))
 }
 
+fn resolve_metadata_artifact_path(output_root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(relative);
+    let mut has_component = false;
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(_) => has_component = true,
+            std::path::Component::CurDir
+            | std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err("metadata artifact path escapes its output directory".into());
+            }
+        }
+    }
+    if !has_component {
+        return Err("metadata artifact path is empty".into());
+    }
+    Ok(output_root.join(relative))
+}
+
 pub fn metadata_path_for_config(config: &Config, output_root: &Path) -> PathBuf {
     metadata_dir(output_root).join(format!("{}.taro_meta", config.identifier))
 }
@@ -175,19 +206,45 @@ pub fn write_package_metadata<'ctx>(
     let pkg = gcx.package_index();
     let config = gcx.config;
 
-    let object_relpath = match mode {
+    let (artifact_kind, artifact_relpath) = match mode {
         ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
-            let object_relpath = format!("{}.o", config.identifier);
-            let object_path = gcx.output_root().join(&object_relpath);
-            if !object_path.exists() {
-                return Err(io::Error::new(
+            let artifact = gcx.get_module_artifact(pkg).ok_or_else(|| {
+                io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("object file missing at '{}'", object_path.display()),
+                    format!("{} artifact missing from compiler state", config.identifier),
+                )
+            })?;
+            if artifact.kind != config.codegen.artifact {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "cached module artifact kind does not match codegen configuration",
                 ));
             }
-            Some(object_relpath)
+            if !artifact.path.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "{} artifact missing at '{}'",
+                        artifact.kind.display_name(),
+                        artifact.path.display()
+                    ),
+                ));
+            }
+            let relative = artifact.path.strip_prefix(gcx.output_root()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "module artifact is outside the compiler output directory",
+                )
+            })?;
+            let relative = relative.to_str().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "module artifact relative path is not valid Unicode",
+                )
+            })?;
+            (Some(artifact.kind), Some(relative.to_owned()))
         }
-        ReuseMode::SemanticDependency => None,
+        ReuseMode::SemanticDependency => (None, None),
     };
 
     let payload = build_payload_wire(gcx, mode)?;
@@ -197,10 +254,10 @@ pub fn write_package_metadata<'ctx>(
 
     let has_semantic_payload = payload.semantic_payload.is_some();
     let has_mir_payload = payload.mir_payload.is_some();
-    let has_object_ref = object_relpath.is_some();
+    let has_artifact_ref = artifact_relpath.is_some();
     let frontend_reusable = match mode {
-        ReuseMode::CodegenDependency => has_semantic_payload && has_mir_payload && has_object_ref,
-        ReuseMode::CodegenRoot => has_semantic_payload && has_object_ref,
+        ReuseMode::CodegenDependency => has_semantic_payload && has_mir_payload && has_artifact_ref,
+        ReuseMode::CodegenRoot => has_semantic_payload && has_artifact_ref,
         ReuseMode::SemanticDependency => has_semantic_payload,
     };
 
@@ -224,11 +281,12 @@ pub fn write_package_metadata<'ctx>(
         test_mode: config.test_mode,
         package_fingerprint: fp.package_fingerprint.clone(),
         dependency_fingerprints: fp.dependencies.clone(),
-        object_relpath,
+        artifact_kind,
+        artifact_relpath,
         payload_checksum_hex: checksum,
         has_semantic_payload,
         has_mir_payload,
-        has_object_ref,
+        has_artifact_ref,
         frontend_reusable,
     };
 
@@ -298,6 +356,9 @@ pub fn try_load_package_metadata<'ctx>(
     if header.optimization != optimization_name(config.codegen.optimization) {
         return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
     }
+    if header.has_artifact_ref && header.artifact_kind != Some(config.codegen.artifact) {
+        return MetadataLoadStatus::Miss("metadata module artifact kind mismatch".into());
+    }
     if header.overflow_checks != config.overflow_checks
         || header.no_std_prelude != config.no_std_prelude
         || header.test_mode != config.test_mode
@@ -331,6 +392,9 @@ pub fn try_load_package_metadata<'ctx>(
         return MetadataLoadStatus::Miss("metadata marked non-reusable".into());
     }
 
+    if let Err(message) = validate_artifact_header(&header) {
+        return MetadataLoadStatus::Miss(message);
+    }
     if let Err(message) = validate_mode_capabilities(&header, mode) {
         return MetadataLoadStatus::Miss(message);
     }
@@ -346,18 +410,28 @@ pub fn try_load_package_metadata<'ctx>(
         return MetadataLoadStatus::Miss(message);
     }
 
-    let object_path = if header.has_object_ref {
-        let Some(object_relpath) = header.object_relpath.as_ref() else {
-            return MetadataLoadStatus::Miss("metadata object reference missing".into());
+    let artifact = if header.has_artifact_ref {
+        let Some(kind) = header.artifact_kind else {
+            return MetadataLoadStatus::Miss("metadata artifact kind missing".into());
         };
-        let object_path = gcx.output_root().join(object_relpath);
+        let Some(artifact_relpath) = header.artifact_relpath.as_ref() else {
+            return MetadataLoadStatus::Miss("metadata artifact reference missing".into());
+        };
+        let artifact_path =
+            match resolve_metadata_artifact_path(gcx.output_root(), artifact_relpath) {
+                Ok(path) => path,
+                Err(message) => return MetadataLoadStatus::Miss(message),
+            };
         if matches!(mode, ReuseMode::CodegenDependency | ReuseMode::CodegenRoot)
-            && !object_path.exists()
+            && !artifact_path.exists()
         {
-            return MetadataLoadStatus::Miss("cached object file missing".into());
+            return MetadataLoadStatus::Miss(format!(
+                "cached {} artifact missing",
+                kind.display_name()
+            ));
         }
-        if object_path.exists() {
-            Some(object_path)
+        if artifact_path.exists() {
+            Some(ModuleArtifact::new(kind, artifact_path))
         } else {
             None
         }
@@ -368,7 +442,7 @@ pub fn try_load_package_metadata<'ctx>(
     MetadataLoadStatus::Hit(LoadedMetadata {
         package_identifier: header.package_identifier,
         package_index: PackageIndex::new(header.package_index as usize),
-        object_path,
+        artifact,
         payload,
     })
 }
@@ -382,7 +456,7 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
     gcx: GlobalContext<'ctx>,
     mode: ReuseMode,
     metadata_path: &Path,
-    object_path: Option<&Path>,
+    artifact_path: Option<&Path>,
 ) -> MetadataLoadStatus {
     let config = gcx.config;
     let mut file = match fs::File::open(metadata_path) {
@@ -437,6 +511,9 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
     if header.optimization != optimization_name(config.codegen.optimization) {
         return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
     }
+    if header.has_artifact_ref && header.artifact_kind != Some(config.codegen.artifact) {
+        return MetadataLoadStatus::Miss("metadata module artifact kind mismatch".into());
+    }
 
     let payload_checksum = blake3::hash(&payload_bytes).to_hex().to_string();
     if payload_checksum != header.payload_checksum_hex {
@@ -447,6 +524,9 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
         return MetadataLoadStatus::Miss("metadata marked non-reusable".into());
     }
 
+    if let Err(message) = validate_artifact_header(&header) {
+        return MetadataLoadStatus::Miss(message);
+    }
     if let Err(message) = validate_mode_capabilities(&header, mode) {
         return MetadataLoadStatus::Miss(message);
     }
@@ -462,28 +542,38 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
         return MetadataLoadStatus::Miss(message);
     }
 
-    let object_path = match mode {
+    let artifact = match mode {
         ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
-            let Some(path) = object_path else {
-                return MetadataLoadStatus::Miss("object file path not provided".into());
+            let Some(kind) = header.artifact_kind else {
+                return MetadataLoadStatus::Miss("metadata artifact kind missing".into());
+            };
+            let Some(path) = artifact_path else {
+                return MetadataLoadStatus::Miss(format!(
+                    "{} artifact path not provided",
+                    kind.display_name()
+                ));
             };
             if !path.exists() {
                 return MetadataLoadStatus::Miss(format!(
-                    "object file missing at '{}'",
+                    "{} artifact missing at '{}'",
+                    kind.display_name(),
                     path.display()
                 ));
             }
-            Some(path.to_path_buf())
+            Some(ModuleArtifact::new(kind, path.to_path_buf()))
         }
-        ReuseMode::SemanticDependency => object_path
-            .filter(|path| path.exists())
-            .map(|path| path.to_path_buf()),
+        ReuseMode::SemanticDependency => match (header.artifact_kind, artifact_path) {
+            (Some(kind), Some(path)) if path.exists() => {
+                Some(ModuleArtifact::new(kind, path.to_path_buf()))
+            }
+            _ => None,
+        },
     };
 
     MetadataLoadStatus::Hit(LoadedMetadata {
         package_identifier: header.package_identifier,
         package_index: PackageIndex::new(header.package_index as usize),
-        object_path,
+        artifact,
         payload,
     })
 }
@@ -551,10 +641,10 @@ pub fn hydrate_loaded_metadata<'ctx>(
         )));
     }
 
-    let cached_object_path = if let Some(object_path) = loaded.object_path.as_ref() {
-        Some(object_path.clone())
+    let cached_artifact = if let Some(artifact) = loaded.artifact.as_ref() {
+        Some(artifact.clone())
     } else if matches!(mode, ReuseMode::CodegenDependency | ReuseMode::CodegenRoot) {
-        return Err(HydrationError::new("metadata missing object reference"));
+        return Err(HydrationError::new("metadata missing module artifact"));
     } else {
         None
     };
@@ -607,8 +697,8 @@ pub fn hydrate_loaded_metadata<'ctx>(
     }
     gcx.cache_emitted_instances(gcx.package_index(), emitted_instances);
 
-    if let Some(object_path) = cached_object_path {
-        gcx.cache_object_file(object_path);
+    if let Some(artifact) = cached_artifact {
+        gcx.cache_module_artifact(artifact);
     }
 
     gcx.store
@@ -865,11 +955,12 @@ fn encode_header(header: &MetadataHeader) -> Vec<u8> {
         write_string(&mut out, &dep.fingerprint);
     }
 
-    write_optional_string(&mut out, header.object_relpath.as_deref());
+    write_optional_artifact_kind(&mut out, header.artifact_kind);
+    write_optional_string(&mut out, header.artifact_relpath.as_deref());
     write_string(&mut out, &header.payload_checksum_hex);
     out.push(header.has_semantic_payload as u8);
     out.push(header.has_mir_payload as u8);
-    out.push(header.has_object_ref as u8);
+    out.push(header.has_artifact_ref as u8);
     out.push(header.frontend_reusable as u8);
     out
 }
@@ -900,11 +991,12 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
         });
     }
 
-    let object_relpath = read_optional_string(&mut cursor)?;
+    let artifact_kind = read_optional_artifact_kind(&mut cursor)?;
+    let artifact_relpath = read_optional_string(&mut cursor)?;
     let payload_checksum_hex = read_string(&mut cursor)?;
     let has_semantic_payload = read_bool(&mut cursor)?;
     let has_mir_payload = read_bool(&mut cursor)?;
-    let has_object_ref = read_bool(&mut cursor)?;
+    let has_artifact_ref = read_bool(&mut cursor)?;
     let frontend_reusable = read_bool(&mut cursor)?;
 
     Ok(MetadataHeader {
@@ -921,11 +1013,12 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
         test_mode,
         package_fingerprint,
         dependency_fingerprints,
-        object_relpath,
+        artifact_kind,
+        artifact_relpath,
         payload_checksum_hex,
         has_semantic_payload,
         has_mir_payload,
-        has_object_ref,
+        has_artifact_ref,
         frontend_reusable,
     })
 }
@@ -945,6 +1038,14 @@ fn write_optional_string(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
+fn write_optional_artifact_kind(out: &mut Vec<u8>, value: Option<ModuleArtifactKind>) {
+    out.push(match value {
+        None => 0,
+        Some(ModuleArtifactKind::Object) => 1,
+        Some(ModuleArtifactKind::LlvmBitcode) => 2,
+    });
+}
+
 fn read_string(input: &mut dyn Read) -> io::Result<String> {
     let len = read_u32(input)? as usize;
     let mut bytes = vec![0u8; len];
@@ -959,6 +1060,17 @@ fn read_optional_string(input: &mut dyn Read) -> io::Result<Option<String>> {
         1 => Ok(Some(read_string(input)?)),
         other => Err(io::Error::other(format!(
             "invalid optional string tag: {other}",
+        ))),
+    }
+}
+
+fn read_optional_artifact_kind(input: &mut dyn Read) -> io::Result<Option<ModuleArtifactKind>> {
+    match read_u8(input)? {
+        0 => Ok(None),
+        1 => Ok(Some(ModuleArtifactKind::Object)),
+        2 => Ok(Some(ModuleArtifactKind::LlvmBitcode)),
+        other => Err(io::Error::other(format!(
+            "invalid module artifact kind tag: {other}",
         ))),
     }
 }
@@ -1003,11 +1115,12 @@ mod tests {
             test_mode: false,
             package_fingerprint: "pkg-fp".into(),
             dependency_fingerprints: vec![],
-            object_relpath: Some("std.o".into()),
+            artifact_kind: Some(ModuleArtifactKind::Object),
+            artifact_relpath: Some("std.o".into()),
             payload_checksum_hex: "checksum".into(),
             has_semantic_payload: true,
             has_mir_payload: true,
-            has_object_ref: true,
+            has_artifact_ref: true,
             frontend_reusable: true,
         }
     }
@@ -1035,12 +1148,14 @@ mod tests {
     fn mode_capabilities_allow_semantic_only_metadata() {
         let mut header = sample_header();
         header.has_mir_payload = false;
-        header.has_object_ref = false;
+        header.has_artifact_ref = false;
+        header.artifact_kind = None;
+        header.artifact_relpath = None;
         assert!(validate_mode_capabilities(&header, ReuseMode::SemanticDependency).is_ok());
     }
 
     #[test]
-    fn mode_capabilities_allow_root_object_without_mir() {
+    fn mode_capabilities_allow_root_artifact_without_mir() {
         let mut header = sample_header();
         header.has_mir_payload = false;
         assert!(validate_mode_capabilities(&header, ReuseMode::CodegenRoot).is_ok());
@@ -1081,7 +1196,43 @@ mod tests {
         assert_eq!(decoded.target_cpu, header.target_cpu);
         assert_eq!(decoded.target_features, header.target_features);
         assert_eq!(decoded.optimization, header.optimization);
+        assert_eq!(decoded.artifact_kind, header.artifact_kind);
+        assert_eq!(decoded.artifact_relpath, header.artifact_relpath);
         assert_eq!(decoded_payload, payload);
+    }
+
+    #[test]
+    fn envelope_round_trip_preserves_bitcode_artifact_identity() {
+        let mut header = sample_header();
+        header.artifact_kind = Some(ModuleArtifactKind::LlvmBitcode);
+        header.artifact_relpath = Some("std.bc".into());
+        let mut bytes = Vec::new();
+        write_envelope(&mut bytes, &header, b"payload").expect("envelope write should succeed");
+
+        let (decoded, _) = read_envelope(&mut Cursor::new(bytes)).expect("envelope should decode");
+        assert_eq!(decoded.artifact_kind, Some(ModuleArtifactKind::LlvmBitcode));
+        assert_eq!(decoded.artifact_relpath.as_deref(), Some("std.bc"));
+    }
+
+    #[test]
+    fn artifact_capability_mismatch_is_detected() {
+        let mut header = sample_header();
+        header.artifact_kind = Some(ModuleArtifactKind::LlvmBitcode);
+        header.artifact_relpath = None;
+
+        let error = validate_artifact_header(&header).unwrap_err();
+        assert!(error.contains("artifact capability mismatch"));
+    }
+
+    #[test]
+    fn metadata_artifact_paths_cannot_escape_the_output_directory() {
+        let output = Path::new("/workspace/target/debug/objects");
+        assert_eq!(
+            resolve_metadata_artifact_path(output, "deps/library.bc").unwrap(),
+            output.join("deps/library.bc")
+        );
+        assert!(resolve_metadata_artifact_path(output, "../library.bc").is_err());
+        assert!(resolve_metadata_artifact_path(output, "/tmp/library.bc").is_err());
     }
 
     #[test]

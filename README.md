@@ -139,6 +139,7 @@ Common flags:
 | `--target <TRIPLE>` | Compile for a target triple override. |
 | `--linker <PATH>` | Use a Clang-compatible linker driver for the selected target. |
 | `--sysroot <PATH>` | Use a target SDK/sysroot while linking. |
+| `--emit <link\|llvm-bc>` | Select the final `build` artifact; defaults to a normal linked output. |
 | `--timings` | Print compiler phase timings. |
 | `--optimization-remarks <PASS_REGEX>` | Print LLVM passed, missed, and analysis remarks for matching pass names. |
 | `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
@@ -259,6 +260,23 @@ taro build examples/arithmetic.tr --release \
   --debug-info line-tables
 ```
 
+### LLVM Bitcode Artifacts
+
+`taro build --emit llvm-bc` emits the verified, post-optimization LLVM module
+without performing native object generation or linking. Runtime libraries,
+linkers, and sysroots are therefore not required for this output mode:
+
+```bash
+taro build examples/arithmetic.tr --release --emit llvm-bc -o arithmetic.bc
+```
+
+Without `-o`, package bitcode is written to
+`target/<profile>/<package-name>.bc`; a single source file is written as
+`<current-directory>/<file-stem>.bc`. The command prints the selected path.
+Dependency bitcode remains in the profile's internal artifact directory and is
+covered by incremental metadata. `--emit llvm-bc` is a terminal artifact mode:
+it does not additionally produce an executable.
+
 ### Incremental Compilation
 
 Incremental dependency reuse is enabled by default for:
@@ -271,11 +289,14 @@ Incremental dependency reuse is enabled by default for:
 Per dependency package, the compiler emits:
 
 - `target/<profile>/metadata/<package-identifier>.taro_meta`
-- `target/<profile>/objects/<package-identifier>.o` (build/run/test paths)
+- `target/<profile>/objects/<package-identifier>.o` (linked build/run/test paths)
+- `target/<profile>/objects/<package-identifier>.bc` (`--emit llvm-bc` paths)
 
 Reuse is mode-aware:
 
-- `build`/`run`/`test` reuse dependency metadata + object artifacts.
+- Linked `build`/`run`/`test` reuse dependency metadata + object artifacts.
+- Bitcode builds reuse dependency metadata + bitcode artifacts; artifact kinds
+  cannot satisfy one another's cache entries.
 - `check` reuses dependency semantic metadata only (no object requirement).
 
 ### Attached Std Artifacts (Strict)
