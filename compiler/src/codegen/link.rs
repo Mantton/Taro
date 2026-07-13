@@ -57,6 +57,7 @@ fn build_link_plan(
     linker: Option<&Path>,
     sysroot: Option<&Path>,
     darwin_sdk: Option<&Path>,
+    darwin_linker: Option<&Path>,
     object_inputs: &[PathBuf],
     library_inputs: &[PathBuf],
     output: &Path,
@@ -135,10 +136,19 @@ fn build_link_plan(
     args.push(OsString::from("-o"));
     args.push(output.as_os_str().to_owned());
 
-    Ok(LinkPlan {
-        program: linker.unwrap_or_else(|| Path::new("clang")).to_path_buf(),
-        args,
-    })
+    let program = match (linker, target_platform) {
+        (Some(linker), _) => linker.to_path_buf(),
+        (None, LinkPlatform::Darwin) => darwin_linker
+            .ok_or_else(|| {
+                format!(
+                    "linking Darwin target `{target_triple}` requires Apple Clang from xcrun; pass --linker when xcrun is unavailable"
+                )
+            })?
+            .to_path_buf(),
+        (None, _) => PathBuf::from("clang"),
+    };
+
+    Ok(LinkPlan { program, args })
 }
 
 /// Link all known object files into a single executable for the current package.
@@ -207,12 +217,21 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
     } else {
         None
     };
+    // A random `clang` earlier in PATH may be too old to map the host Darwin
+    // version to the matching macOS deployment target. The SDK's Apple Clang
+    // and linker are versioned together, so use that pair by default.
+    let darwin_linker = if target_info.matches_os("macos") && linker.is_none() {
+        macos_clang_path()
+    } else {
+        None
+    };
     let plan = build_link_plan(
         &target_triple,
         &host_triple,
         linker.as_deref(),
         sysroot.as_deref(),
         darwin_sdk.as_deref(),
+        darwin_linker.as_deref(),
         &obj_inputs,
         &lib_inputs,
         &output,
@@ -239,17 +258,23 @@ pub fn link_executable(gcx: GlobalContext) -> CompileResult<Option<PathBuf>> {
 }
 
 fn macos_sdk_path() -> Option<PathBuf> {
+    xcrun_path(&["--sdk", "macosx", "--show-sdk-path"])
+}
+
+fn macos_clang_path() -> Option<PathBuf> {
+    xcrun_path(&["--sdk", "macosx", "--find", "clang"])
+}
+
+fn xcrun_path(arguments: &[&str]) -> Option<PathBuf> {
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = arguments;
         return None;
     }
 
     #[cfg(target_os = "macos")]
     {
-        let out = Command::new("xcrun")
-            .args(["--sdk", "macosx", "--show-sdk-path"])
-            .output()
-            .ok()?;
+        let out = Command::new("xcrun").args(arguments).output().ok()?;
         if !out.status.success() {
             return None;
         }
@@ -360,6 +385,7 @@ mod tests {
             None,
             None,
             Some(std::path::Path::new("/SDKs/MacOSX.sdk")),
+            Some(std::path::Path::new("/Xcode/usr/bin/clang")),
             &objects,
             &libraries,
             std::path::Path::new("app"),
@@ -367,7 +393,7 @@ mod tests {
         .expect("same-OS Darwin cross-link plan");
         let args = args(&plan);
 
-        assert_eq!(plan.program, PathBuf::from("clang"));
+        assert_eq!(plan.program, PathBuf::from("/Xcode/usr/bin/clang"));
         assert!(args.contains(&"--target=x86_64-apple-darwin".into()));
         assert!(
             args.windows(2)
@@ -387,6 +413,7 @@ mod tests {
             "x86_64-apple-darwin",
             Some(std::path::Path::new("/cross/bin/clang")),
             Some(std::path::Path::new("/cross/sysroot")),
+            None,
             None,
             &[PathBuf::from("main.o")],
             &[PathBuf::from("libtaro_runtime.a")],
@@ -411,6 +438,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
             &[],
             std::path::Path::new("app"),
@@ -428,6 +456,7 @@ mod tests {
             Some(std::path::Path::new("clang")),
             Some(std::path::Path::new("sysroot")),
             None,
+            None,
             &[],
             &[],
             std::path::Path::new("app"),
@@ -435,5 +464,41 @@ mod tests {
         .expect_err("Windows link is outside this backend");
 
         assert!(error.contains("not supported by the Unix linker backend"));
+    }
+
+    #[test]
+    fn explicit_darwin_linker_overrides_xcrun_default() {
+        let plan = build_link_plan(
+            "arm64-apple-darwin25.5.0",
+            "arm64-apple-darwin25.5.0",
+            Some(std::path::Path::new("/custom/bin/clang")),
+            None,
+            Some(std::path::Path::new("/SDKs/MacOSX.sdk")),
+            Some(std::path::Path::new("/Xcode/usr/bin/clang")),
+            &[PathBuf::from("main.o")],
+            &[],
+            std::path::Path::new("app"),
+        )
+        .expect("explicit Darwin linker should remain authoritative");
+
+        assert_eq!(plan.program, PathBuf::from("/custom/bin/clang"));
+    }
+
+    #[test]
+    fn darwin_plan_requires_xcrun_linker_when_not_explicit() {
+        let error = build_link_plan(
+            "arm64-apple-darwin25.5.0",
+            "arm64-apple-darwin25.5.0",
+            None,
+            None,
+            Some(std::path::Path::new("/SDKs/MacOSX.sdk")),
+            None,
+            &[PathBuf::from("main.o")],
+            &[],
+            std::path::Path::new("app"),
+        )
+        .expect_err("Darwin linking needs an SDK-matched default linker");
+
+        assert!(error.contains("requires Apple Clang from xcrun"));
     }
 }
