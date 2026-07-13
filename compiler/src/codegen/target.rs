@@ -14,10 +14,10 @@ static CONFIGURE_LLVM_CODEGEN: Once = Once::new();
 
 fn configure_llvm_codegen() {
     CONFIGURE_LLVM_CODEGEN.call_once(|| {
-        // LLVM 16 enables GlobalISel automatically for AArch64 at O0. Its
-        // incomplete legalization and PHI lowering can abort or segfault on
-        // valid Taro modules, while SelectionDAG supports the same IR. Make
-        // the stable selector explicit for every target and build profile.
+        // Keep SelectionDAG as Taro's stable instruction selector on LLVM 22.
+        // GlobalISel remains an explicit follow-up experiment: changing the
+        // selector during the LLVM compatibility upgrade would conflate
+        // backend policy with toolchain compatibility.
         let program = CString::new("taro-llvm").expect("static string has no NUL");
         let option = CString::new("--global-isel=0").expect("static string has no NUL");
         let overview = CString::new("Taro LLVM options").expect("static string has no NUL");
@@ -175,8 +175,13 @@ fn pointer_abi_alignment(target_data: &TargetData) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::pointer_abi_alignment;
-    use inkwell::targets::TargetData;
+    use super::{TargetLayout, pointer_abi_alignment};
+    use crate::{compile::config::BuildProfile, diagnostics::DiagCtx};
+    use inkwell::{
+        context::Context,
+        targets::{FileType, TargetData},
+    };
+    use std::path::PathBuf;
 
     fn pointer_layout(data_layout: &str) -> (u64, u64) {
         let target_data = TargetData::create(data_layout);
@@ -184,6 +189,32 @@ mod tests {
             target_data.get_pointer_byte_size(None) as u64,
             pointer_abi_alignment(&target_data),
         )
+    }
+
+    fn diagnostics() -> DiagCtx {
+        DiagCtx::new(PathBuf::from("."))
+    }
+
+    fn emit_smoke_object(layout: &TargetLayout, module_name: &str) -> Vec<u8> {
+        let context = Context::create();
+        let module = context.create_module(module_name);
+        module.set_data_layout(&layout.data_layout());
+        module.set_triple(&layout.triple());
+        let builder = context.create_builder();
+        let function = module.add_function("smoke", context.i32_type().fn_type(&[], false), None);
+        let block = context.append_basic_block(function, "entry");
+        builder.position_at_end(block);
+        builder
+            .build_return(Some(&context.i32_type().const_zero()))
+            .unwrap();
+        module.verify().expect("smoke module should verify");
+
+        layout
+            .target_machine()
+            .write_to_memory_buffer(&module, FileType::Object)
+            .expect("target machine should emit an object")
+            .as_slice()
+            .to_vec()
     }
 
     #[test]
@@ -203,5 +234,36 @@ mod tests {
 
         assert_eq!(pointer_size, 8);
         assert_eq!(pointer_align, 8);
+    }
+
+    #[test]
+    fn host_target_emits_objects_for_both_profiles() {
+        let dcx = diagnostics();
+        for profile in [BuildProfile::Debug, BuildProfile::Release] {
+            let layout = TargetLayout::new(&dcx, None, profile)
+                .unwrap_or_else(|_| panic!("host target layout should initialize"));
+            let object = emit_smoke_object(&layout, "host-object-smoke");
+            assert!(!object.is_empty());
+        }
+    }
+
+    #[test]
+    fn cross_targets_emit_linux_and_macos_objects() {
+        let dcx = diagnostics();
+        let cases: [(&str, &[u8]); 2] = [
+            ("x86_64-unknown-linux-gnu", b"\x7fELF"),
+            ("aarch64-apple-darwin", b"\xcf\xfa\xed\xfe"),
+        ];
+
+        for (triple, magic) in cases {
+            let layout = TargetLayout::new(&dcx, Some(triple), BuildProfile::Debug)
+                .unwrap_or_else(|_| panic!("cross target layout should initialize"));
+            assert_eq!(layout.requested_triple(), Some(triple));
+            let object = emit_smoke_object(&layout, "cross-object-smoke");
+            assert!(
+                object.starts_with(magic),
+                "object for {triple} did not use the expected file format"
+            );
+        }
     }
 }
