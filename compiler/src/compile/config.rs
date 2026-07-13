@@ -31,6 +31,43 @@ impl Default for BuildProfile {
     }
 }
 
+/// LLVM optimization level selected for the middle-end and target backend.
+///
+/// This is intentionally separate from [`BuildProfile`]. Profiles control
+/// language-facing defaults such as overflow checks and `cfg(profile = ...)`,
+/// while optimization is an independently selectable code-generation policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OptLevel {
+    O0,
+    O1,
+    O2,
+    O3,
+    Os,
+    Oz,
+}
+
+/// Which LLVM IR optimization pipeline should be used for a package.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum OptimizationMode {
+    /// Preserve Taro's pre-LLVM-22-upgrade pipelines for controlled rollout
+    /// and benchmark comparisons.
+    #[default]
+    Baseline,
+    /// Use LLVM's maintained default pipeline for the selected level.
+    Level(OptLevel),
+}
+
+/// Code-generation policy for a package.
+///
+/// LTO and instruction-selector policy will join this structure when their
+/// implementations land; keeping this separate now avoids coupling them to a
+/// source-level build profile later.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct CodegenOptions {
+    pub optimization: OptimizationMode,
+}
+
 /// Amount of source-level debug metadata emitted into generated objects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum DebugInfo {
@@ -79,6 +116,7 @@ pub struct Config {
     /// True for single-file scripts (no package structure)
     pub is_script: bool,
     pub profile: BuildProfile,
+    pub codegen: CodegenOptions,
     pub overflow_checks: bool,
     /// Debug options for dumps
     pub debug: DebugOptions,

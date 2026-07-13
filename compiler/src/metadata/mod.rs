@@ -1,7 +1,7 @@
 use crate::{
     PackageIndex,
     compile::{
-        config::{BuildProfile, Config},
+        config::{BuildProfile, Config, OptLevel, OptimizationMode},
         context::GlobalContext,
     },
     hir::{Abi, DefinitionID, DefinitionKind, KnownAttribute},
@@ -18,7 +18,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 14;
+const META_FORMAT_VERSION: u32 = 15;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -45,7 +45,10 @@ struct MetadataHeader {
     package_identifier: String,
     package_index: u32,
     target_triple: String,
+    target_cpu: String,
+    target_features: String,
     profile: String,
+    optimization: String,
     overflow_checks: bool,
     no_std_prelude: bool,
     test_mode: bool,
@@ -141,6 +144,18 @@ fn profile_name(profile: BuildProfile) -> &'static str {
     }
 }
 
+fn optimization_name(mode: OptimizationMode) -> &'static str {
+    match mode {
+        OptimizationMode::Baseline => "baseline",
+        OptimizationMode::Level(OptLevel::O0) => "o0",
+        OptimizationMode::Level(OptLevel::O1) => "o1",
+        OptimizationMode::Level(OptLevel::O2) => "o2",
+        OptimizationMode::Level(OptLevel::O3) => "o3",
+        OptimizationMode::Level(OptLevel::Os) => "os",
+        OptimizationMode::Level(OptLevel::Oz) => "oz",
+    }
+}
+
 fn metadata_dir(output_root: &Path) -> PathBuf {
     output_root
         .parent()
@@ -200,7 +215,10 @@ pub fn write_package_metadata<'ctx>(
             .as_str()
             .to_string_lossy()
             .into_owned(),
+        target_cpu: gcx.store.target_layout.cpu().to_owned(),
+        target_features: gcx.store.target_layout.features().to_owned(),
         profile: profile_name(config.profile).to_string(),
+        optimization: optimization_name(config.codegen.optimization).to_string(),
         overflow_checks: config.overflow_checks,
         no_std_prelude: config.no_std_prelude,
         test_mode: config.test_mode,
@@ -269,8 +287,16 @@ pub fn try_load_package_metadata<'ctx>(
     {
         return MetadataLoadStatus::Miss("metadata target mismatch".into());
     }
+    if header.target_cpu != gcx.store.target_layout.cpu()
+        || header.target_features != gcx.store.target_layout.features()
+    {
+        return MetadataLoadStatus::Miss("metadata target CPU/features mismatch".into());
+    }
     if header.profile != profile_name(config.profile) {
         return MetadataLoadStatus::Miss("metadata profile mismatch".into());
+    }
+    if header.optimization != optimization_name(config.codegen.optimization) {
+        return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
     }
     if header.overflow_checks != config.overflow_checks
         || header.no_std_prelude != config.no_std_prelude
@@ -349,9 +375,9 @@ pub fn try_load_package_metadata<'ctx>(
 
 /// Load metadata from explicit artifact paths (used for attached/prebuilt std artifacts).
 ///
-/// This path intentionally skips local profile/options/fingerprint matching because
-/// attached artifacts are validated by compiler revision + target + checksum + payload
-/// capability gates instead.
+/// This path intentionally skips invocation-specific profile/options/fingerprint matching.
+/// Attached artifacts are instead validated by compiler revision, target codegen identity,
+/// optimization mode, checksum, and payload capability gates.
 pub fn try_load_package_metadata_from_paths<'ctx>(
     gcx: GlobalContext<'ctx>,
     mode: ReuseMode,
@@ -402,6 +428,14 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
             .as_ref()
     {
         return MetadataLoadStatus::Miss("metadata target mismatch".into());
+    }
+    if header.target_cpu != gcx.store.target_layout.cpu()
+        || header.target_features != gcx.store.target_layout.features()
+    {
+        return MetadataLoadStatus::Miss("metadata target CPU/features mismatch".into());
+    }
+    if header.optimization != optimization_name(config.codegen.optimization) {
+        return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
     }
 
     let payload_checksum = blake3::hash(&payload_bytes).to_hex().to_string();
@@ -816,7 +850,10 @@ fn encode_header(header: &MetadataHeader) -> Vec<u8> {
     write_string(&mut out, &header.package_identifier);
     out.extend_from_slice(&header.package_index.to_le_bytes());
     write_string(&mut out, &header.target_triple);
+    write_string(&mut out, &header.target_cpu);
+    write_string(&mut out, &header.target_features);
     write_string(&mut out, &header.profile);
+    write_string(&mut out, &header.optimization);
     out.push(header.overflow_checks as u8);
     out.push(header.no_std_prelude as u8);
     out.push(header.test_mode as u8);
@@ -843,7 +880,10 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
     let package_identifier = read_string(&mut cursor)?;
     let package_index = read_u32(&mut cursor)?;
     let target_triple = read_string(&mut cursor)?;
+    let target_cpu = read_string(&mut cursor)?;
+    let target_features = read_string(&mut cursor)?;
     let profile = read_string(&mut cursor)?;
+    let optimization = read_string(&mut cursor)?;
 
     let overflow_checks = read_bool(&mut cursor)?;
     let no_std_prelude = read_bool(&mut cursor)?;
@@ -872,7 +912,10 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
         package_identifier,
         package_index,
         target_triple,
+        target_cpu,
+        target_features,
         profile,
+        optimization,
         overflow_checks,
         no_std_prelude,
         test_mode,
@@ -951,7 +994,10 @@ mod tests {
             package_identifier: "std".into(),
             package_index: 0,
             target_triple: "x86_64-unknown-linux-gnu".into(),
+            target_cpu: "generic".into(),
+            target_features: "".into(),
             profile: "release".into(),
+            optimization: "baseline".into(),
             overflow_checks: false,
             no_std_prelude: true,
             test_mode: false,
@@ -1020,6 +1066,22 @@ mod tests {
         let mut cursor = Cursor::new(bytes);
         let err = read_envelope(&mut cursor).unwrap_err();
         assert!(err.to_string().contains("magic mismatch"));
+    }
+
+    #[test]
+    fn envelope_round_trip_preserves_codegen_identity() {
+        let header = sample_header();
+        let payload = b"payload";
+        let mut bytes = Vec::new();
+        write_envelope(&mut bytes, &header, payload).expect("envelope write should succeed");
+
+        let (decoded, decoded_payload) =
+            read_envelope(&mut Cursor::new(bytes)).expect("envelope should decode");
+        assert_eq!(decoded.target_triple, header.target_triple);
+        assert_eq!(decoded.target_cpu, header.target_cpu);
+        assert_eq!(decoded.target_features, header.target_features);
+        assert_eq!(decoded.optimization, header.optimization);
+        assert_eq!(decoded_payload, payload);
     }
 
     #[test]

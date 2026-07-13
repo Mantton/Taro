@@ -1,6 +1,8 @@
 use compiler::{
     compile::{
-        config::{BuildProfile, Config, DebugInfo, PackageKind, StdMode},
+        config::{
+            BuildProfile, Config, DebugInfo, OptLevel, OptimizationMode, PackageKind, StdMode,
+        },
         context::CompilerContext,
         test_collector::TestSelection,
     },
@@ -65,8 +67,13 @@ pub fn compute_package_fingerprint_input_with_test_selection(
         .into_owned();
     hasher.update(target_triple.as_bytes());
     hasher.update(&[0]);
+    hasher.update(ctx.store.target_layout.cpu().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(ctx.store.target_layout.features().as_bytes());
+    hasher.update(&[0]);
 
     hasher.update(profile_name(config.profile).as_bytes());
+    hash_optimization_mode(config.codegen.optimization, &mut hasher);
     hasher.update(&[
         config.overflow_checks as u8,
         config.no_std_prelude as u8,
@@ -127,6 +134,28 @@ fn debug_info_tag(debug_info: DebugInfo) -> u8 {
     match debug_info {
         DebugInfo::None => 0,
         DebugInfo::LineTables => 1,
+    }
+}
+
+fn hash_optimization_mode(mode: OptimizationMode, hasher: &mut blake3::Hasher) {
+    match mode {
+        OptimizationMode::Baseline => {
+            hasher.update(&[0]);
+        }
+        OptimizationMode::Level(level) => {
+            hasher.update(&[1, opt_level_tag(level)]);
+        }
+    }
+}
+
+fn opt_level_tag(level: OptLevel) -> u8 {
+    match level {
+        OptLevel::O0 => 0,
+        OptLevel::O1 => 1,
+        OptLevel::O2 => 2,
+        OptLevel::O3 => 3,
+        OptLevel::Os => 4,
+        OptLevel::Oz => 5,
     }
 }
 
@@ -292,7 +321,10 @@ mod tests {
     use compiler::{
         PackageIndex,
         compile::{
-            config::{BuildProfile, Config, DebugInfo, DebugOptions, PackageKind, StdMode},
+            config::{
+                BuildProfile, Config, DebugInfo, DebugOptions, OptLevel, OptimizationMode,
+                PackageKind, StdMode,
+            },
             context::{CompilerArenas, CompilerContext, CompilerStore},
             test_collector::TestSelection,
         },
@@ -334,6 +366,7 @@ mod tests {
             no_std_prelude: true,
             is_script: true,
             profile: BuildProfile::Debug,
+            codegen: Default::default(),
             overflow_checks: true,
             debug: DebugOptions::default(),
             test_mode: false,
@@ -417,6 +450,24 @@ mod tests {
                     .unwrap()
                     .package_fingerprint;
             assert_ne!(without_debug_info, with_line_tables);
+        });
+    }
+
+    #[test]
+    fn optimization_mode_changes_compilation_fingerprint() {
+        with_context(|context, source| {
+            let baseline = base_config(source.clone());
+            let mut optimized = base_config(source);
+            optimized.codegen.optimization = OptimizationMode::Level(OptLevel::O2);
+            let known = FxHashMap::default();
+
+            let baseline = compute_package_fingerprint_input(context, &baseline, &known)
+                .unwrap()
+                .package_fingerprint;
+            let optimized = compute_package_fingerprint_input(context, &optimized, &known)
+                .unwrap()
+                .package_fingerprint;
+            assert_ne!(baseline, optimized);
         });
     }
 

@@ -119,6 +119,7 @@ fn run_single_file(
         no_std_prelude: false,
         is_script: true,
         profile: compile_options.profile,
+        codegen: compile_options.codegen,
         overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions {
             dump_mir: arguments.dump_mir,
@@ -342,6 +343,7 @@ fn run_package(
             no_std_prelude: package.no_std_prelude,
             is_script: false,
             profile: compile_options.profile,
+            codegen: compile_options.codegen,
             // std intentionally relies on wrapping arithmetic (e.g. SipHash)
             // and always compiles without overflow checks, like attached std.
             overflow_checks: compile_options.overflow_checks && !is_std_package,
@@ -739,6 +741,7 @@ fn run_single_file_test(
         no_std_prelude: false,
         is_script: true,
         profile: compile_options.profile,
+        codegen: compile_options.codegen,
         overflow_checks: compile_options.overflow_checks,
         debug: DebugOptions {
             dump_mir: arguments.dump_mir,
@@ -975,6 +978,7 @@ fn run_package_test(
             no_std_prelude: package.no_std_prelude,
             is_script: false,
             profile: compile_options.profile,
+            codegen: compile_options.codegen,
             // std intentionally relies on wrapping arithmetic (e.g. SipHash)
             // and always compiles without overflow checks, like attached std.
             overflow_checks: compile_options.overflow_checks && !is_std_package,

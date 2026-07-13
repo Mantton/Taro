@@ -54,6 +54,7 @@ pub(crate) fn make_script_config<'a>(
         no_std_prelude: true,
         is_script: true,
         profile: BuildProfile::Debug,
+        codegen: Default::default(),
         overflow_checks: false,
         debug: DebugOptions {
             dump_mir: false,
@@ -83,6 +84,7 @@ pub(crate) fn make_package_config<'a>(
         no_std_prelude: true,
         is_script: false,
         profile: BuildProfile::Debug,
+        codegen: Default::default(),
         overflow_checks: false,
         debug: DebugOptions {
             dump_mir: false,

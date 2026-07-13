@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use compiler::compile::config::{BuildProfile, DebugInfo};
+use compiler::compile::config::{BuildProfile, CodegenOptions, DebugInfo};
 use std::{path::PathBuf, process::exit};
 
 mod command;
@@ -8,6 +8,7 @@ mod package;
 #[derive(Clone, Copy, Debug)]
 pub struct CompileModeOptions {
     pub profile: BuildProfile,
+    pub codegen: CodegenOptions,
     pub overflow_checks: bool,
     pub timings: bool,
     pub debug_info: DebugInfo,
@@ -193,6 +194,7 @@ impl CommonCompileArgs {
     pub fn compile_mode_options(&self) -> CompileModeOptions {
         CompileModeOptions {
             profile: self.build_profile(),
+            codegen: CodegenOptions::default(),
             overflow_checks: self.overflow_checks_enabled(),
             timings: self.timings,
             debug_info: self.debug_info.map(Into::into).unwrap_or_else(|| {

@@ -503,6 +503,7 @@ fn analyze_script_owner<'a>(
         no_std_prelude: false,
         is_script: true,
         profile: BuildProfile::Debug,
+        codegen: Default::default(),
         overflow_checks: false,
         debug: DebugOptions {
             dump_mir: false,
@@ -597,6 +598,7 @@ fn analyze_package_owner<'a>(
             no_std_prelude: package.no_std_prelude,
             is_script: false,
             profile: BuildProfile::Debug,
+            codegen: Default::default(),
             overflow_checks: false,
             debug: DebugOptions {
                 dump_mir: false,
@@ -3512,6 +3514,7 @@ fn compile_std_for_ide<'a>(
         no_std_prelude: true,
         is_script: false,
         profile: BuildProfile::Release,
+        codegen: Default::default(),
         overflow_checks: false,
         debug: DebugOptions {
             dump_mir: false,
@@ -3696,6 +3699,7 @@ mod tests {
             no_std_prelude: true,
             is_script: true,
             profile: BuildProfile::Debug,
+            codegen: Default::default(),
             overflow_checks: false,
             debug: DebugOptions {
                 dump_mir: false,
@@ -3742,6 +3746,7 @@ mod tests {
             no_std_prelude: true,
             is_script: true,
             profile: BuildProfile::Debug,
+            codegen: Default::default(),
             overflow_checks: false,
             debug: DebugOptions {
                 dump_mir: false,
@@ -3848,6 +3853,7 @@ mod tests {
             no_std_prelude: true,
             is_script: false,
             profile: BuildProfile::Debug,
+            codegen: Default::default(),
             overflow_checks: false,
             debug: DebugOptions {
                 dump_mir: false,

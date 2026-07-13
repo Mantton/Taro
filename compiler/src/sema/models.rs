@@ -1438,6 +1438,7 @@ mod tests {
             no_std_prelude: true,
             is_script: true,
             profile: BuildProfile::Debug,
+            codegen: Default::default(),
             overflow_checks: false,
             debug: DebugOptions {
                 dump_mir: false,

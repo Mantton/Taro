@@ -45,6 +45,7 @@ pub(crate) fn with_test_gcx<R>(f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
         no_std_prelude: true,
         is_script: true,
         profile: BuildProfile::Debug,
+        codegen: Default::default(),
         overflow_checks: true,
         debug: DebugOptions::default(),
         test_mode: false,

@@ -39,6 +39,8 @@ pub struct TargetLayout {
     pub pointer_size: u64,
     pub pointer_align: u64,
     requested_triple: Option<String>,
+    cpu: String,
+    features: String,
     target_machine: TargetMachine,
 }
 
@@ -120,6 +122,8 @@ impl TargetLayout {
             pointer_size,
             pointer_align,
             requested_triple: target_override.map(ToOwned::to_owned),
+            cpu,
+            features,
             target_machine,
         })
     }
@@ -148,6 +152,18 @@ impl TargetLayout {
     #[inline]
     pub fn requested_triple(&self) -> Option<&str> {
         self.requested_triple.as_deref()
+    }
+
+    /// CPU name used to produce native artifacts for this compilation.
+    #[inline]
+    pub fn cpu(&self) -> &str {
+        &self.cpu
+    }
+
+    /// Target feature string used to produce native artifacts.
+    #[inline]
+    pub fn features(&self) -> &str {
+        &self.features
     }
 
     pub fn triple_string(&self) -> String {

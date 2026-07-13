@@ -58,6 +58,7 @@ pub fn compile_std<'a>(
         no_std_prelude: true,
         is_script: false,
         profile: std_profile,
+        codegen: compile_options.codegen,
         overflow_checks: std_overflow_checks,
         debug: DebugOptions {
             dump_mir: false,
