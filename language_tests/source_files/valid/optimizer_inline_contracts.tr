@@ -1,0 +1,15 @@
+@noinline
+func neverInline(_ value: int32) -> int32 {
+    return value + 1
+}
+
+@inline
+func inlineHint(_ value: int32) -> int32 {
+    return value * 2
+}
+
+func main() {
+    let result = inlineHint(neverInline(20_i32))
+    assert(result == 42_i32, "inline attribute contract mismatch")
+    print("PASS: optimizer inline contracts\n")
+}

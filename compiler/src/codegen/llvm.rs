@@ -23,6 +23,7 @@ use crate::{
 };
 use inkwell::{
     AddressSpace, FloatPredicate, IntPredicate,
+    attributes::{Attribute, AttributeLoc},
     basic_block::BasicBlock,
     builder::Builder,
     context::Context,
@@ -71,6 +72,36 @@ fn llvm_function_pass_pipeline(profile: BuildProfile) -> &'static str {
 
 fn has_llvm_function_body(function: FunctionValue<'_>) -> bool {
     function.count_basic_blocks() != 0
+}
+
+fn llvm_inline_attribute_name(
+    attributes: impl IntoIterator<Item = hir::KnownAttribute>,
+) -> Option<&'static str> {
+    attributes
+        .into_iter()
+        .find_map(|attribute| match attribute {
+            // `@inline` is documented as a hint. MIR already attempts eager
+            // inlining; InlineHint lets LLVM make the final profitability decision
+            // when the call could not be inlined at MIR level.
+            hir::KnownAttribute::Inline => Some("inlinehint"),
+            // Unlike a hint, `@noinline` is a language contract and must survive
+            // into LLVM's optimizer.
+            hir::KnownAttribute::NoInline => Some("noinline"),
+            _ => None,
+        })
+}
+
+fn add_llvm_enum_function_attribute(
+    context: &Context,
+    function: FunctionValue<'_>,
+    attribute_name: &str,
+) {
+    let kind_id = Attribute::get_named_enum_kind_id(attribute_name);
+    debug_assert_ne!(kind_id, 0, "LLVM must recognize `{attribute_name}`");
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(kind_id, 0),
+    );
 }
 
 fn target_is_aarch64(triple: &str) -> bool {
@@ -455,11 +486,32 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         function: FunctionValue<'llvm>,
         fn_abi: abi::FnAbi<'gcx>,
     ) {
+        self.apply_source_function_attributes(instance, function);
         let inserted = self.functions.insert(instance, function).is_none();
         self.fn_abis.insert(instance, fn_abi);
         if inserted {
             self.new_function_instances.push(instance);
         }
+    }
+
+    fn apply_source_function_attributes(
+        &self,
+        instance: Instance<'gcx>,
+        function: FunctionValue<'llvm>,
+    ) {
+        let InstanceKind::Item(def_id) = instance.kind() else {
+            return;
+        };
+        let Some(attribute_name) = llvm_inline_attribute_name(
+            self.gcx
+                .attributes_of(def_id)
+                .iter()
+                .filter_map(|attribute| attribute.as_known(self.gcx)),
+        ) else {
+            return;
+        };
+
+        add_llvm_enum_function_attribute(self.context, function, attribute_name);
     }
 
     fn instance_for_call(
@@ -7180,16 +7232,18 @@ fn build_byte_offset_ptr<'llvm>(
 mod struct_layout_tests {
     use super::{
         AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
-        build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_function_body,
-        indirect_return_threshold_for_triple, llvm_function_pass_pipeline, logical_to_physical_map,
-        packed_field_order, static_initializer_value_for_codegen, target_is_aarch64,
+        add_llvm_enum_function_attribute, build_byte_offset_ptr, concrete_array_len_for_gc_offsets,
+        has_llvm_function_body, indirect_return_threshold_for_triple, llvm_function_pass_pipeline,
+        llvm_inline_attribute_name, logical_to_physical_map, packed_field_order,
+        static_initializer_value_for_codegen, target_is_aarch64,
     };
     use crate::{
         compile::config::BuildProfile,
+        hir::KnownAttribute,
         sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
         span::Symbol,
     };
-    use inkwell::{AddressSpace, context::Context};
+    use inkwell::{AddressSpace, attributes::AttributeLoc, context::Context};
 
     #[test]
     fn packed_field_order_sorts_by_align_then_size_then_source_index() {
@@ -7241,6 +7295,40 @@ mod struct_layout_tests {
             llvm_function_pass_pipeline(BuildProfile::Release),
             "mem2reg,instcombine,reassociate,gvn,simplifycfg"
         );
+    }
+
+    #[test]
+    fn source_inline_contracts_map_to_llvm_attributes() {
+        assert_eq!(
+            llvm_inline_attribute_name([KnownAttribute::Inline]),
+            Some("inlinehint")
+        );
+        assert_eq!(
+            llvm_inline_attribute_name([KnownAttribute::NoInline]),
+            Some("noinline")
+        );
+        assert_eq!(llvm_inline_attribute_name([KnownAttribute::Test]), None);
+    }
+
+    #[test]
+    fn named_llvm_function_attributes_are_attached_to_functions() {
+        let context = Context::create();
+        let module = context.create_module("function-attributes");
+        let function = module.add_function(
+            "never_inline",
+            context.void_type().fn_type(&[], false),
+            None,
+        );
+
+        add_llvm_enum_function_attribute(&context, function, "noinline");
+
+        let kind_id = inkwell::attributes::Attribute::get_named_enum_kind_id("noinline");
+        assert!(
+            function
+                .get_enum_attribute(AttributeLoc::Function, kind_id)
+                .is_some()
+        );
+        assert!(module.print_to_string().to_string().contains("noinline"));
     }
 
     #[test]

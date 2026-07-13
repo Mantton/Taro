@@ -1,22 +1,29 @@
 # Instruction selection and intrinsics
 valid/debug_codegen_selectiondag.tr
 valid/ptr_int_casts.tr
+valid/optimizer_inline_contracts.tr
 
 # GC roots, descriptors, and stack allocation
 valid/gc_descriptor_shadow_roots_regression.tr
 valid/gc_generic_make_descriptor_cache_regression.tr
 valid/gc_offsets_linkage_regression.tr
 valid/gc_static_roots_regression.tr
+valid/gc_loop_fstring_regression.tr
+valid/gc_loop_printf_regression.tr
+valid/cleanup_panic_observation.tr
 valid/loop_alloca_stack_growth_regression.tr
 
 # Calls, ABI boundaries, and cross-package symbols
 valid/call_destination_liveness_regression.tr
 valid/cross_package_fn_pointer_regression.tr
+valid/impl_method_mangling_cross_package.tr
 valid/indirect_arg_alias_regression.tr
+valid/result_propagation_cross_package.tr
 valid/virtual_call_indirect_arg_regression.tr
 
 # Unwinding and async state machines
 valid/async_fn_once_owned_adapter.tr
+valid/async_spawn_main.tr
 valid/panic_unwind_defer_lifo.tr
 valid/panic_unwind_double_panic.tr
 valid/panic_unwind_nested_defer.tr
