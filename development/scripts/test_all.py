@@ -70,6 +70,7 @@ def main() -> int:
     parser.add_argument("--skip-build-dist", action="store_true")
     parser.add_argument("--skip-compile-std", action="store_true")
     parser.add_argument("--skip-bitcode-smoke", action="store_true")
+    parser.add_argument("--skip-lto-smoke", action="store_true")
     parser.add_argument("--skip-std-package-tests", action="store_true")
     parser.add_argument("--skip-language-tests", action="store_true")
     args = parser.parse_args()
@@ -87,7 +88,7 @@ def main() -> int:
         repo_root / "language_tests" / "package_fixtures" / "default_params"
     )
 
-    stage_count = 6
+    stage_count = 7
     current_stage = "startup"
 
     try:
@@ -238,8 +239,73 @@ def main() -> int:
                             f"package bitcode artifact has invalid magic: {artifact}"
                         )
 
+        current_stage = "full LTO smoke"
+        print_stage(5, stage_count, "Full LTO smoke")
+        if args.skip_lto_smoke:
+            print("SKIPPED: disabled via --skip-lto-smoke")
+        else:
+            if not taro_bin.exists():
+                print(
+                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
+                )
+                return 1
+
+            env = os.environ.copy()
+            env["TARO_HOME"] = str(dist_dir)
+            with tempfile.TemporaryDirectory(prefix="taro_full_lto_smoke_") as temp:
+                copied_fixture = Path(temp) / "default_params"
+                shutil.copytree(package_fixture, copied_fixture)
+                output = Path(temp) / "default-params-lto"
+                command = [
+                    str(taro_bin),
+                    "build",
+                    str(copied_fixture / "app"),
+                    "--std-path",
+                    str(std_path),
+                    "--release",
+                    "--lto",
+                    "full",
+                    "-o",
+                    str(output),
+                ]
+                cold = run_command_capture(
+                    [*command, "--no-incremental"], cwd=repo_root, env=env
+                )
+                if "Full LTO – 2 modules" not in cold.stderr:
+                    raise RuntimeError("cold package build did not merge both LTO modules")
+
+                reused = run_command_capture(command, cwd=repo_root, env=env)
+                if "Reusing (metadata+bitcode)" not in reused.stderr:
+                    raise RuntimeError("second full-LTO build did not reuse package bitcode")
+                if "Full LTO – 2 modules" not in reused.stderr:
+                    raise RuntimeError("cached package build did not rerun full LTO")
+
+                executed = run_command_capture([str(output)], cwd=repo_root, env=env)
+                if "PASS: cross-package closure default" not in executed.stdout:
+                    raise RuntimeError("full-LTO executable produced unexpected output")
+
+                object_root = (
+                    copied_fixture / "app" / "target" / "release" / "objects"
+                )
+                bitcode_inputs = list(object_root.glob("*.bc"))
+                lto_objects = list(object_root.glob("*.lto.o"))
+                native_objects = list(object_root.glob("*.o"))
+                if len(bitcode_inputs) != 2:
+                    raise RuntimeError(
+                        f"full LTO expected two package bitcode inputs, found {len(bitcode_inputs)}"
+                    )
+                if len(lto_objects) != 1 or native_objects != lto_objects:
+                    raise RuntimeError(
+                        "full LTO did not replace package objects with exactly one final object"
+                    )
+                for artifact in bitcode_inputs:
+                    if not is_llvm_bitcode(artifact.read_bytes()):
+                        raise RuntimeError(
+                            f"full-LTO input has invalid bitcode magic: {artifact}"
+                        )
+
         current_stage = "std package tests"
-        print_stage(5, stage_count, "Std package tests")
+        print_stage(6, stage_count, "Std package tests")
         if args.skip_std_package_tests:
             print("SKIPPED: disabled via --skip-std-package-tests")
         else:
@@ -267,7 +333,7 @@ def main() -> int:
                 )
 
         current_stage = "language tests"
-        print_stage(6, stage_count, "Language tests")
+        print_stage(7, stage_count, "Language tests")
         if args.skip_language_tests:
             print("SKIPPED: disabled via --skip-language-tests")
         else:

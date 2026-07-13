@@ -2,7 +2,7 @@ use crate::{
     PackageIndex,
     codegen::artifact::ModuleArtifact,
     compile::{
-        config::{BuildProfile, Config, ModuleArtifactKind, OptLevel, OptimizationMode},
+        config::{BuildProfile, Config, LtoMode, ModuleArtifactKind, OptLevel, OptimizationMode},
         context::GlobalContext,
     },
     hir::{Abi, DefinitionID, DefinitionKind, KnownAttribute},
@@ -19,7 +19,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 16;
+const META_FORMAT_VERSION: u32 = 17;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -50,6 +50,7 @@ struct MetadataHeader {
     target_features: String,
     profile: String,
     optimization: String,
+    lto: String,
     overflow_checks: bool,
     no_std_prelude: bool,
     test_mode: bool,
@@ -167,6 +168,13 @@ fn optimization_name(mode: OptimizationMode) -> &'static str {
     }
 }
 
+fn lto_name(mode: LtoMode) -> &'static str {
+    match mode {
+        LtoMode::Off => "off",
+        LtoMode::Full => "full",
+    }
+}
+
 fn metadata_dir(output_root: &Path) -> PathBuf {
     output_root
         .parent()
@@ -276,6 +284,7 @@ pub fn write_package_metadata<'ctx>(
         target_features: gcx.store.target_layout.features().to_owned(),
         profile: profile_name(config.profile).to_string(),
         optimization: optimization_name(config.codegen.optimization).to_string(),
+        lto: lto_name(config.codegen.lto).to_string(),
         overflow_checks: config.overflow_checks,
         no_std_prelude: config.no_std_prelude,
         test_mode: config.test_mode,
@@ -355,6 +364,9 @@ pub fn try_load_package_metadata<'ctx>(
     }
     if header.optimization != optimization_name(config.codegen.optimization) {
         return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
+    }
+    if header.lto != lto_name(config.codegen.lto) {
+        return MetadataLoadStatus::Miss("metadata LTO mode mismatch".into());
     }
     if header.has_artifact_ref && header.artifact_kind != Some(config.codegen.artifact) {
         return MetadataLoadStatus::Miss("metadata module artifact kind mismatch".into());
@@ -510,6 +522,9 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
     }
     if header.optimization != optimization_name(config.codegen.optimization) {
         return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
+    }
+    if header.lto != lto_name(config.codegen.lto) {
+        return MetadataLoadStatus::Miss("metadata LTO mode mismatch".into());
     }
     if header.has_artifact_ref && header.artifact_kind != Some(config.codegen.artifact) {
         return MetadataLoadStatus::Miss("metadata module artifact kind mismatch".into());
@@ -944,6 +959,7 @@ fn encode_header(header: &MetadataHeader) -> Vec<u8> {
     write_string(&mut out, &header.target_features);
     write_string(&mut out, &header.profile);
     write_string(&mut out, &header.optimization);
+    write_string(&mut out, &header.lto);
     out.push(header.overflow_checks as u8);
     out.push(header.no_std_prelude as u8);
     out.push(header.test_mode as u8);
@@ -975,6 +991,7 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
     let target_features = read_string(&mut cursor)?;
     let profile = read_string(&mut cursor)?;
     let optimization = read_string(&mut cursor)?;
+    let lto = read_string(&mut cursor)?;
 
     let overflow_checks = read_bool(&mut cursor)?;
     let no_std_prelude = read_bool(&mut cursor)?;
@@ -1008,6 +1025,7 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
         target_features,
         profile,
         optimization,
+        lto,
         overflow_checks,
         no_std_prelude,
         test_mode,
@@ -1110,6 +1128,7 @@ mod tests {
             target_features: "".into(),
             profile: "release".into(),
             optimization: "baseline".into(),
+            lto: "off".into(),
             overflow_checks: false,
             no_std_prelude: true,
             test_mode: false,
@@ -1196,6 +1215,7 @@ mod tests {
         assert_eq!(decoded.target_cpu, header.target_cpu);
         assert_eq!(decoded.target_features, header.target_features);
         assert_eq!(decoded.optimization, header.optimization);
+        assert_eq!(decoded.lto, header.lto);
         assert_eq!(decoded.artifact_kind, header.artifact_kind);
         assert_eq!(decoded.artifact_relpath, header.artifact_relpath);
         assert_eq!(decoded_payload, payload);

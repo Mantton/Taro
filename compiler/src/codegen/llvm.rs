@@ -5,7 +5,9 @@ use crate::{
         mangle::{mangle, mangle_instance},
     },
     compile::{
-        config::{BuildProfile, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode},
+        config::{
+            BuildProfile, DebugInfo, LtoMode, ModuleArtifactKind, OptLevel, OptimizationMode,
+        },
         context::{Gcx, GlobalContext},
     },
     error::CompileResult,
@@ -69,11 +71,33 @@ enum LlvmOptimizationPipeline {
 fn llvm_optimization_pipeline(
     profile: BuildProfile,
     optimization: OptimizationMode,
+    lto: LtoMode,
 ) -> LlvmOptimizationPipeline {
-    match optimization {
+    match (lto, optimization) {
+        // LLVM's pre-link and post-link LTO pipelines are designed as a pair.
+        // Keep mem2reg at O0 because Taro's MIR lowering intentionally begins
+        // every local in stack form.
+        (LtoMode::Full, OptimizationMode::Level(OptLevel::O0)) => {
+            LlvmOptimizationPipeline::Module("function(mem2reg),lto-pre-link<O0>")
+        }
+        (LtoMode::Full, OptimizationMode::Level(OptLevel::O1)) => {
+            LlvmOptimizationPipeline::Module("lto-pre-link<O1>")
+        }
+        (LtoMode::Full, OptimizationMode::Level(OptLevel::O2)) => {
+            LlvmOptimizationPipeline::Module("lto-pre-link<O2>")
+        }
+        (LtoMode::Full, OptimizationMode::Level(OptLevel::O3)) => {
+            LlvmOptimizationPipeline::Module("lto-pre-link<O3>")
+        }
+        (LtoMode::Full, OptimizationMode::Level(OptLevel::Os)) => {
+            LlvmOptimizationPipeline::Module("lto-pre-link<Os>")
+        }
+        (LtoMode::Full, OptimizationMode::Level(OptLevel::Oz)) => {
+            LlvmOptimizationPipeline::Module("lto-pre-link<Oz>")
+        }
         // Keep the certified pre-rollout pipelines available as a comparison
         // baseline until Story 4 promotes release builds to LLVM O2.
-        OptimizationMode::Baseline => match profile {
+        (_, OptimizationMode::Baseline) => match profile {
             BuildProfile::Debug => LlvmOptimizationPipeline::Function("mem2reg"),
             BuildProfile::Release => LlvmOptimizationPipeline::Function(
                 "mem2reg,instcombine,reassociate,gvn,simplifycfg",
@@ -81,12 +105,24 @@ fn llvm_optimization_pipeline(
         },
         // Every MIR local begins as an alloca. Even at O0, retain mem2reg so
         // explicit `-O0` has the same usable baseline IR shape as debug builds.
-        OptimizationMode::Level(OptLevel::O0) => LlvmOptimizationPipeline::Function("mem2reg"),
-        OptimizationMode::Level(OptLevel::O1) => LlvmOptimizationPipeline::Module("default<O1>"),
-        OptimizationMode::Level(OptLevel::O2) => LlvmOptimizationPipeline::Module("default<O2>"),
-        OptimizationMode::Level(OptLevel::O3) => LlvmOptimizationPipeline::Module("default<O3>"),
-        OptimizationMode::Level(OptLevel::Os) => LlvmOptimizationPipeline::Module("default<Os>"),
-        OptimizationMode::Level(OptLevel::Oz) => LlvmOptimizationPipeline::Module("default<Oz>"),
+        (LtoMode::Off, OptimizationMode::Level(OptLevel::O0)) => {
+            LlvmOptimizationPipeline::Function("mem2reg")
+        }
+        (LtoMode::Off, OptimizationMode::Level(OptLevel::O1)) => {
+            LlvmOptimizationPipeline::Module("default<O1>")
+        }
+        (LtoMode::Off, OptimizationMode::Level(OptLevel::O2)) => {
+            LlvmOptimizationPipeline::Module("default<O2>")
+        }
+        (LtoMode::Off, OptimizationMode::Level(OptLevel::O3)) => {
+            LlvmOptimizationPipeline::Module("default<O3>")
+        }
+        (LtoMode::Off, OptimizationMode::Level(OptLevel::Os)) => {
+            LlvmOptimizationPipeline::Module("default<Os>")
+        }
+        (LtoMode::Off, OptimizationMode::Level(OptLevel::Oz)) => {
+            LlvmOptimizationPipeline::Module("default<Oz>")
+        }
     }
 }
 
@@ -2260,6 +2296,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let pipeline = llvm_optimization_pipeline(
             self.gcx.config.profile,
             self.gcx.config.codegen.optimization,
+            self.gcx.config.codegen.lto,
         );
 
         match pipeline {
@@ -7324,7 +7361,7 @@ mod struct_layout_tests {
     };
     use crate::{
         codegen::target::TargetLayout,
-        compile::config::{BuildProfile, OptLevel, OptimizationMode},
+        compile::config::{BuildProfile, LtoMode, OptLevel, OptimizationMode},
         diagnostics::DiagCtx,
         hir::KnownAttribute,
         sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
@@ -7434,27 +7471,52 @@ mod struct_layout_tests {
     #[test]
     fn llvm_pass_pipeline_preserves_baseline_and_maps_explicit_levels() {
         assert_eq!(
-            llvm_optimization_pipeline(BuildProfile::Debug, OptimizationMode::Baseline),
+            llvm_optimization_pipeline(
+                BuildProfile::Debug,
+                OptimizationMode::Baseline,
+                LtoMode::Off,
+            ),
             LlvmOptimizationPipeline::Function("mem2reg")
         );
         assert_eq!(
-            llvm_optimization_pipeline(BuildProfile::Release, OptimizationMode::Baseline),
+            llvm_optimization_pipeline(
+                BuildProfile::Release,
+                OptimizationMode::Baseline,
+                LtoMode::Off,
+            ),
             LlvmOptimizationPipeline::Function("mem2reg,instcombine,reassociate,gvn,simplifycfg")
         );
         assert_eq!(
-            llvm_optimization_pipeline(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O0),),
+            llvm_optimization_pipeline(
+                BuildProfile::Debug,
+                OptimizationMode::Level(OptLevel::O0),
+                LtoMode::Off,
+            ),
             LlvmOptimizationPipeline::Function("mem2reg")
         );
         assert_eq!(
-            llvm_optimization_pipeline(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O2),),
+            llvm_optimization_pipeline(
+                BuildProfile::Debug,
+                OptimizationMode::Level(OptLevel::O2),
+                LtoMode::Off,
+            ),
             LlvmOptimizationPipeline::Module("default<O2>")
         );
         assert_eq!(
             llvm_optimization_pipeline(
                 BuildProfile::Release,
                 OptimizationMode::Level(OptLevel::Oz),
+                LtoMode::Off,
             ),
             LlvmOptimizationPipeline::Module("default<Oz>")
+        );
+        assert_eq!(
+            llvm_optimization_pipeline(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::O2),
+                LtoMode::Full,
+            ),
+            LlvmOptimizationPipeline::Module("lto-pre-link<O2>")
         );
     }
 

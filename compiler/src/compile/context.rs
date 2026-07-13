@@ -1520,6 +1520,23 @@ impl<'arena> GlobalContext<'arena> {
             .cloned()
     }
 
+    /// Return package artifacts in stable package-index order.
+    ///
+    /// Deterministic ordering matters when a later stage merges modules for
+    /// whole-program optimization or reports the participating inputs.
+    pub fn module_artifacts(self) -> Vec<(PackageIndex, ModuleArtifact)> {
+        let mut artifacts: Vec<_> = self
+            .context
+            .store
+            .module_artifacts
+            .borrow()
+            .iter()
+            .map(|(package, artifact)| (*package, artifact.clone()))
+            .collect();
+        artifacts.sort_by_key(|(package, _)| package.raw());
+        artifacts
+    }
+
     pub fn cache_specializations(self, pkg: PackageIndex, instances: FxHashSet<Instance<'arena>>) {
         self.context
             .store

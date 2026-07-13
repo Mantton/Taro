@@ -54,7 +54,7 @@ fn signal_exit_code(_status: &ExitStatus) -> Option<i32> {
 pub fn handle(arguments: Cli) -> CommandResult {
     match arguments.command {
         CliCommand::Build(arguments) => {
-            build::run(arguments.common, false, arguments.emit)?;
+            build::run(arguments.common, false, arguments.emit, arguments.lto)?;
             ()
         }
         CliCommand::Check(arguments) => check::run(arguments)?,
@@ -110,6 +110,12 @@ mod tests {
     fn rejects_build_emit_mode_for_run_command() {
         let args = Cli::try_parse_from(["taro", "run", "main.tr", "--emit", "llvm-bc"]);
         assert!(args.is_err());
+    }
+
+    #[test]
+    fn rejects_lto_for_non_linking_commands() {
+        assert!(Cli::try_parse_from(["taro", "check", "main.tr", "--lto", "full"]).is_err());
+        assert!(Cli::try_parse_from(["taro", "test", "std", "--lto", "full"]).is_err());
     }
 
     #[test]

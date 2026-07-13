@@ -8,8 +8,8 @@ use compiler::{
     compile::{
         Compiler,
         config::{
-            BuildProfile, CodegenOptions, Config, DebugOptions, ModuleArtifactKind, OptLevel,
-            OptimizationMode, PackageKind, StdMode,
+            BuildProfile, CodegenOptions, Config, DebugOptions, LtoMode, ModuleArtifactKind,
+            OptLevel, OptimizationMode, PackageKind, StdMode,
         },
         context::CompilerContext,
     },
@@ -207,6 +207,7 @@ fn attached_std_codegen_options() -> CodegenOptions {
     CodegenOptions {
         optimization: OptimizationMode::Level(OptLevel::O2),
         artifact: ModuleArtifactKind::Object,
+        lto: LtoMode::Off,
     }
 }
 
@@ -445,7 +446,7 @@ fn atomic_copy_file(src: &Path, dst: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::attached_std_codegen_options;
-    use compiler::compile::config::{ModuleArtifactKind, OptLevel, OptimizationMode};
+    use compiler::compile::config::{LtoMode, ModuleArtifactKind, OptLevel, OptimizationMode};
 
     #[test]
     fn attached_std_uses_canonical_o2_policy() {
@@ -457,5 +458,6 @@ mod tests {
             attached_std_codegen_options().artifact,
             ModuleArtifactKind::Object
         );
+        assert_eq!(attached_std_codegen_options().lto, LtoMode::Off);
     }
 }

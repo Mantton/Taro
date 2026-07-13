@@ -1,8 +1,8 @@
 use compiler::{
     compile::{
         config::{
-            BuildProfile, Config, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode,
-            PackageKind, StdMode,
+            BuildProfile, Config, DebugInfo, LtoMode, ModuleArtifactKind, OptLevel,
+            OptimizationMode, PackageKind, StdMode,
         },
         context::CompilerContext,
         test_collector::TestSelection,
@@ -76,6 +76,7 @@ pub fn compute_package_fingerprint_input_with_test_selection(
     hasher.update(profile_name(config.profile).as_bytes());
     hash_optimization_mode(config.codegen.optimization, &mut hasher);
     hasher.update(&[module_artifact_kind_tag(config.codegen.artifact)]);
+    hasher.update(&[lto_mode_tag(config.codegen.lto)]);
     hasher.update(&[
         config.overflow_checks as u8,
         config.no_std_prelude as u8,
@@ -166,6 +167,13 @@ fn module_artifact_kind_tag(kind: ModuleArtifactKind) -> u8 {
     match kind {
         ModuleArtifactKind::Object => 0,
         ModuleArtifactKind::LlvmBitcode => 1,
+    }
+}
+
+fn lto_mode_tag(mode: LtoMode) -> u8 {
+    match mode {
+        LtoMode::Off => 0,
+        LtoMode::Full => 1,
     }
 }
 
@@ -332,8 +340,8 @@ mod tests {
         PackageIndex,
         compile::{
             config::{
-                BuildProfile, Config, DebugInfo, DebugOptions, ModuleArtifactKind, OptLevel,
-                OptimizationMode, PackageKind, StdMode,
+                BuildProfile, Config, DebugInfo, DebugOptions, LtoMode, ModuleArtifactKind,
+                OptLevel, OptimizationMode, PackageKind, StdMode,
             },
             context::{CompilerArenas, CompilerContext, CompilerStore},
             test_collector::TestSelection,
@@ -496,6 +504,26 @@ mod tests {
                 .unwrap()
                 .package_fingerprint;
             assert_ne!(object, bitcode);
+        });
+    }
+
+    #[test]
+    fn lto_mode_changes_compilation_fingerprint() {
+        with_context(|context, source| {
+            let mut off = base_config(source.clone());
+            let mut full = base_config(source);
+            off.codegen.artifact = ModuleArtifactKind::LlvmBitcode;
+            full.codegen.artifact = ModuleArtifactKind::LlvmBitcode;
+            full.codegen.lto = LtoMode::Full;
+            let known = FxHashMap::default();
+
+            let off = compute_package_fingerprint_input(context, &off, &known)
+                .unwrap()
+                .package_fingerprint;
+            let full = compute_package_fingerprint_input(context, &full, &known)
+                .unwrap()
+                .package_fingerprint;
+            assert_ne!(off, full);
         });
     }
 

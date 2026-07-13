@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use compiler::compile::config::{
-    BuildProfile, CodegenOptions, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode,
+    BuildProfile, CodegenOptions, DebugInfo, LtoMode, ModuleArtifactKind, OptLevel,
+    OptimizationMode,
 };
 use std::{path::PathBuf, process::exit};
 
@@ -48,6 +49,9 @@ pub struct BuildArgs {
     /// Select the final build artifact.
     #[arg(long = "emit", value_enum, default_value_t = BuildEmit::Link)]
     pub emit: BuildEmit,
+    /// Select link-time optimization for participating Taro packages.
+    #[arg(long = "lto", value_enum, default_value_t = Lto::Off)]
+    pub lto: Lto,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -60,6 +64,9 @@ pub struct CheckArgs {
 pub struct RunArgs {
     #[command(flatten)]
     pub common: CommonCompileArgs,
+    /// Select link-time optimization for participating Taro packages.
+    #[arg(long = "lto", value_enum, default_value_t = Lto::Off)]
+    pub lto: Lto,
     /// Print a scheduler, I/O, and GC summary when the program exits.
     #[arg(long = "runtime-stats")]
     pub runtime_stats: bool,
@@ -174,10 +181,26 @@ pub enum BuildEmit {
 }
 
 impl BuildEmit {
-    pub(crate) const fn module_artifact_kind(self) -> ModuleArtifactKind {
+    pub(crate) const fn module_artifact_kind(self, lto: Lto) -> ModuleArtifactKind {
+        match (self, lto) {
+            (Self::Link, Lto::Off) => ModuleArtifactKind::Object,
+            (Self::Link, Lto::Full) | (Self::LlvmBitcode, _) => ModuleArtifactKind::LlvmBitcode,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum Lto {
+    #[default]
+    Off,
+    Full,
+}
+
+impl Lto {
+    pub(crate) const fn mode(self) -> LtoMode {
         match self {
-            Self::Link => ModuleArtifactKind::Object,
-            Self::LlvmBitcode => ModuleArtifactKind::LlvmBitcode,
+            Self::Off => LtoMode::Off,
+            Self::Full => LtoMode::Full,
         }
     }
 }
@@ -276,6 +299,7 @@ impl CommonCompileArgs {
             codegen: CodegenOptions {
                 optimization,
                 artifact: ModuleArtifactKind::Object,
+                lto: LtoMode::Off,
             },
             overflow_checks: self.overflow_checks_enabled(),
             timings: self.timings,
@@ -344,10 +368,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{BuildEmit, Cli, CliCommand, NewProjectKind};
+    use super::{BuildEmit, Cli, CliCommand, Lto, NewProjectKind};
     use clap::Parser;
     use compiler::compile::config::{
-        BuildProfile, DebugInfo, ModuleArtifactKind, OptLevel, OptimizationMode,
+        BuildProfile, DebugInfo, LtoMode, ModuleArtifactKind, OptLevel, OptimizationMode,
     };
 
     #[test]
@@ -362,9 +386,36 @@ mod tests {
         assert_eq!(emit(linked), BuildEmit::Link);
         assert_eq!(emit(bitcode), BuildEmit::LlvmBitcode);
         assert_eq!(
-            BuildEmit::LlvmBitcode.module_artifact_kind(),
+            BuildEmit::LlvmBitcode.module_artifact_kind(Lto::Off),
             ModuleArtifactKind::LlvmBitcode
         );
+    }
+
+    #[test]
+    fn build_and_run_parse_full_lto_without_changing_the_default() {
+        let build = Cli::parse_from(["taro", "build", "examples/hello.tr", "--lto", "full"]);
+        let run = Cli::parse_from(["taro", "run", "examples/hello.tr", "--lto", "full"]);
+        let default = Cli::parse_from(["taro", "build", "examples/hello.tr"]);
+
+        match build.command {
+            CliCommand::Build(build) => {
+                assert_eq!(build.lto, Lto::Full);
+                assert_eq!(build.lto.mode(), LtoMode::Full);
+                assert_eq!(
+                    build.emit.module_artifact_kind(build.lto),
+                    ModuleArtifactKind::LlvmBitcode
+                );
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
+        match run.command {
+            CliCommand::Run(run) => assert_eq!(run.lto, Lto::Full),
+            other => panic!("expected run command, got {other:?}"),
+        }
+        match default.command {
+            CliCommand::Build(build) => assert_eq!(build.lto, Lto::Off),
+            other => panic!("expected build command, got {other:?}"),
+        }
     }
 
     #[test]
@@ -580,6 +631,7 @@ mod tests {
         let retained_baseline = mode(retained_baseline);
         assert_eq!(debug.codegen.optimization, OptimizationMode::Baseline);
         assert_eq!(debug.codegen.artifact, ModuleArtifactKind::Object);
+        assert_eq!(debug.codegen.lto, LtoMode::Off);
         assert_eq!(
             release.codegen.optimization,
             OptimizationMode::Level(OptLevel::O2)

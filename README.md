@@ -140,6 +140,7 @@ Common flags:
 | `--linker <PATH>` | Use a Clang-compatible linker driver for the selected target. |
 | `--sysroot <PATH>` | Use a target SDK/sysroot while linking. |
 | `--emit <link\|llvm-bc>` | Select the final `build` artifact; defaults to a normal linked output. |
+| `--lto <off\|full>` | Apply full LTO to participating Taro packages for `build`/`run`; defaults to off. |
 | `--timings` | Print compiler phase timings. |
 | `--optimization-remarks <PASS_REGEX>` | Print LLVM passed, missed, and analysis remarks for matching pass names. |
 | `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
@@ -277,6 +278,27 @@ Dependency bitcode remains in the profile's internal artifact directory and is
 covered by incremental metadata. `--emit llvm-bc` is a terminal artifact mode:
 it does not additionally produce an executable.
 
+### Full Link-Time Optimization
+
+`taro build --lto full` and `taro run --lto full` preserve each participating
+Taro package as LLVM bitcode, merge the complete user-package graph inside the
+compiler, run LLVM's full-LTO pipeline, and emit one native object for the
+normal platform linker. Release builds provide the useful default combination:
+
+```bash
+taro build . --release --lto full
+```
+
+Full LTO is opt-in. Attached std and the Rust runtime remain precompiled native
+libraries and form explicit optimization boundaries. This avoids requiring a
+system linker plugin that understands Taro's LLVM version while still enabling
+cross-package optimization for application and library code.
+
+Incremental builds reuse each package's metadata and bitcode, then rerun the
+whole-program optimization and native link. `--lto full` cannot be combined
+with `--emit llvm-bc`: the latter intentionally requests one package-scoped
+bitcode artifact rather than a whole-program linked output.
+
 ### Incremental Compilation
 
 Incremental dependency reuse is enabled by default for:
@@ -290,13 +312,15 @@ Per dependency package, the compiler emits:
 
 - `target/<profile>/metadata/<package-identifier>.taro_meta`
 - `target/<profile>/objects/<package-identifier>.o` (linked build/run/test paths)
-- `target/<profile>/objects/<package-identifier>.bc` (`--emit llvm-bc` paths)
+- `target/<profile>/objects/<package-identifier>.bc` (`--emit llvm-bc` and full-LTO inputs)
+- `target/<profile>/objects/<root-identifier>.lto.o` (full-LTO linked builds)
 
 Reuse is mode-aware:
 
 - Linked `build`/`run`/`test` reuse dependency metadata + object artifacts.
 - Bitcode builds reuse dependency metadata + bitcode artifacts; artifact kinds
   cannot satisfy one another's cache entries.
+- Full-LTO builds reuse package bitcode, then regenerate the final LTO object.
 - `check` reuses dependency semantic metadata only (no object requirement).
 
 ### Attached Std Artifacts (Strict)

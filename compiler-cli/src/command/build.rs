@@ -3,7 +3,7 @@ use super::{
     incremental, runtime_artifact, std_attached,
 };
 use crate::{
-    BuildEmit, CommonCompileArgs, CompileModeOptions, TestArgs,
+    BuildEmit, CommonCompileArgs, CompileModeOptions, Lto, TestArgs,
     package::{
         manifest::ValidatedDependencyGraph,
         sync::sync_dependencies,
@@ -31,20 +31,36 @@ pub fn run(
     arguments: CommonCompileArgs,
     require_executable: bool,
     emit: BuildEmit,
+    lto: Lto,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
-    if arguments.is_single_file() {
-        run_single_file(arguments, emit)
-    } else {
-        run_package(arguments, require_executable, emit)
+    if let Err(message) = validate_build_modes(emit, lto) {
+        eprintln!("error: {message}");
+        return Err(ReportedError);
     }
+    if arguments.is_single_file() {
+        run_single_file(arguments, emit, lto)
+    } else {
+        run_package(arguments, require_executable, emit, lto)
+    }
+}
+
+fn validate_build_modes(emit: BuildEmit, lto: Lto) -> Result<(), &'static str> {
+    if matches!((emit, lto), (BuildEmit::LlvmBitcode, Lto::Full)) {
+        return Err(
+            "--emit llvm-bc cannot be combined with --lto full; LLVM bitcode output is package-scoped",
+        );
+    }
+    Ok(())
 }
 
 fn run_single_file(
     arguments: CommonCompileArgs,
     emit: BuildEmit,
+    lto: Lto,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let mut compile_options = arguments.compile_mode_options();
-    compile_options.codegen.artifact = emit.module_artifact_kind();
+    compile_options.codegen.artifact = emit.module_artifact_kind(lto);
+    compile_options.codegen.lto = lto.mode();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
@@ -200,7 +216,7 @@ fn run_single_file(
 
     if reused {
         match emit {
-            BuildEmit::Link => codegen::link::link_executable(compiler.context),
+            BuildEmit::Link => link_emitted_modules(compiler.context, lto),
             BuildEmit::LlvmBitcode => {
                 let artifact = cached_module_artifact(compiler.context)?;
                 publish_bitcode(&artifact, bitcode_output).map(Some)
@@ -208,7 +224,13 @@ fn run_single_file(
         }
     } else {
         let output = match emit {
-            BuildEmit::Link => compiler.build()?,
+            BuildEmit::Link => match lto {
+                Lto::Off => compiler.build()?,
+                Lto::Full => {
+                    let _ = compiler.emit_module()?;
+                    None
+                }
+            },
             BuildEmit::LlvmBitcode => {
                 let artifact = compiler.emit_module()?;
                 Some(publish_bitcode(&artifact, bitcode_output)?)
@@ -224,7 +246,11 @@ fn run_single_file(
                 file_stem, e
             );
         }
-        Ok(output)
+        if matches!((emit, lto), (BuildEmit::Link, Lto::Full)) {
+            link_emitted_modules(compiler.context, lto)
+        } else {
+            Ok(output)
+        }
     }
 }
 
@@ -232,9 +258,11 @@ fn run_package(
     arguments: CommonCompileArgs,
     require_executable: bool,
     emit: BuildEmit,
+    lto: Lto,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let mut compile_options = arguments.compile_mode_options();
-    compile_options.codegen.artifact = emit.module_artifact_kind();
+    compile_options.codegen.artifact = emit.module_artifact_kind(lto);
+    compile_options.codegen.lto = lto.mode();
     let profile_dir = profile_dir_name(compile_options.profile);
     let cwd = std::env::current_dir().map_err(|e| {
         eprintln!("error: failed to get current directory: {}", e);
@@ -471,7 +499,12 @@ fn run_package(
         let exe_path = if reused {
             if is_root {
                 match emit {
-                    BuildEmit::Link => codegen::link::link_executable(compiler.context)?,
+                    BuildEmit::Link => match lto {
+                        Lto::Off => codegen::link::link_executable(compiler.context)?,
+                        // Finalization happens below after both cold and cached
+                        // paths have restored every participating module.
+                        Lto::Full => None,
+                    },
                     BuildEmit::LlvmBitcode => {
                         let artifact = cached_module_artifact(compiler.context)?;
                         Some(publish_bitcode(
@@ -487,7 +520,13 @@ fn run_package(
             }
         } else {
             let exe_path = match emit {
-                BuildEmit::Link => compiler.build()?,
+                BuildEmit::Link => match lto {
+                    Lto::Off => compiler.build()?,
+                    Lto::Full => {
+                        let _ = compiler.emit_module()?;
+                        None
+                    }
+                },
                 BuildEmit::LlvmBitcode => {
                     let artifact = compiler.emit_module()?;
                     if is_root {
@@ -513,6 +552,15 @@ fn run_package(
             exe_path
         };
 
+        let exe_path = if is_root
+            && matches!(lto, Lto::Full)
+            && matches!(config.kind, PackageKind::Executable | PackageKind::Both)
+        {
+            link_emitted_modules(compiler.context, lto)?
+        } else {
+            exe_path
+        };
+
         package_fingerprints.insert(
             config.identifier.to_string(),
             fingerprint_input.package_fingerprint,
@@ -523,6 +571,17 @@ fn run_package(
         }
     }
     Ok(None)
+}
+
+fn link_emitted_modules(
+    context: GlobalContext<'_>,
+    lto: Lto,
+) -> Result<Option<PathBuf>, ReportedError> {
+    if matches!(lto, Lto::Full) {
+        let artifact = codegen::lto::emit_full_lto_object(context)?;
+        context.store.add_link_input(artifact.path);
+    }
+    codegen::link::link_executable(context)
 }
 
 fn artifact_label(kind: ModuleArtifactKind) -> &'static str {
@@ -1267,8 +1326,9 @@ fn run_package_test(
 mod target_runtime_tests {
     use super::{
         default_package_bitcode_output, default_script_bitcode_output, installed_runtime_path,
-        publish_bitcode,
+        publish_bitcode, validate_build_modes,
     };
+    use crate::{BuildEmit, Lto};
     use compiler::{codegen::artifact::ModuleArtifact, compile::config::ModuleArtifactKind};
     use std::{fs, path::Path};
 
@@ -1298,6 +1358,13 @@ mod target_runtime_tests {
             default_package_bitcode_output(Path::new("/workspace/target/release"), "app"),
             Path::new("/workspace/target/release/app.bc")
         );
+    }
+
+    #[test]
+    fn full_lto_rejects_package_scoped_bitcode_output() {
+        assert!(validate_build_modes(BuildEmit::Link, Lto::Full).is_ok());
+        let error = validate_build_modes(BuildEmit::LlvmBitcode, Lto::Full).unwrap_err();
+        assert!(error.contains("package-scoped"));
     }
 
     #[test]

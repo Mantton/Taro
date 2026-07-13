@@ -2,6 +2,7 @@ pub mod abi;
 pub mod artifact;
 pub mod link;
 pub mod llvm;
+pub mod lto;
 pub mod mangle;
 pub mod target;
 

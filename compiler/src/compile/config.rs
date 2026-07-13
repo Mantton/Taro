@@ -69,15 +69,27 @@ pub enum ModuleArtifactKind {
     LlvmBitcode,
 }
 
+/// Cross-package LLVM optimization policy for linked outputs.
+///
+/// LTO applies only to participating LLVM bitcode modules. Precompiled native
+/// libraries, including the attached standard library and runtime, remain
+/// opaque linker inputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum LtoMode {
+    #[default]
+    Off,
+    Full,
+}
+
 /// Code-generation policy for a package.
 ///
-/// LTO and instruction-selector policy will join this structure when their
-/// implementations land; keeping this separate now avoids coupling them to a
-/// source-level build profile later.
+/// Keeping this separate from a source-level build profile allows callers to
+/// select optimization, artifact, and link-time policy independently.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct CodegenOptions {
     pub optimization: OptimizationMode,
     pub artifact: ModuleArtifactKind,
+    pub lto: LtoMode,
 }
 
 /// Amount of source-level debug metadata emitted into generated objects.
