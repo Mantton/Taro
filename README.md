@@ -221,7 +221,9 @@ taro build examples/hello.tr --timings
 taro check examples/hello.tr --timings
 ```
 
-`benchmark_timings.py` bootstraps per-profile distributions via `build_dist.py` and then reports timing comparison tables:
+`benchmark_timings.py` bootstraps per-profile distributions via `build_dist.py`
+and reports timing comparison tables. Each sample passes `--no-incremental` so
+the results measure cold compiler phases instead of cache reuse:
 
 ```bash
 python3 development/scripts/benchmark_timings.py examples/hello.tr
@@ -564,7 +566,7 @@ To verify the compiler implementation, use the command that matches the test sur
 - `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Bootstraps an isolated distribution via `build_dist.py` (release by default; pass `--debug` for debug bootstrap).
 - `make codegen-matrix`: Runs the high-risk LLVM codegen manifest with both debug and release generated-program profiles.
 - `make std-tests`: Runs std package tests only (`taro test std`) via the `test_all.py` std stage.
-- `python3 development/scripts/test_all.py`: Unified fail-fast pipeline (cargo tests, dist build, std compile smoke, std package tests, language tests).
+- `python3 development/scripts/test_all.py`: Unified fail-fast pipeline (development-script tests, cargo tests, dist build, std compile smoke, std package tests, language tests).
 - `make all-tests`: Shorthand for the unified pipeline.
 
 Std package tests live under `std/src/tests/<module>/<module_tests>.tr` and run in the `test_all.py` std stage (or via `make std-tests`).

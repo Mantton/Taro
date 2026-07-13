@@ -29,7 +29,7 @@ class ProfileEnvironment:
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description=(
-            "Benchmark compiler timings for an input file/package using debug and release profiles."
+            "Benchmark cold compiler timings for an input file/package using debug and release profiles."
         )
     )
     parser.add_argument("input", help="Input file or package path to compile")
@@ -43,7 +43,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--runs",
         type=int,
         default=5,
-        help="Number of runs per profile (default: 5)",
+        help="Number of cold runs per profile (default: 5)",
     )
     parser.add_argument(
         "--std-path",
@@ -141,6 +141,11 @@ def run_once(
         str(std_path),
         "--timings",
     ]
+    # A timing sample must execute compiler phases rather than reuse the
+    # previous sample's metadata and object. This is also less invasive than
+    # deleting the input package's target directory between runs.
+    if "--no-incremental" not in extra_args:
+        cmd.append("--no-incremental")
     cmd.extend(extra_args)
 
     process_env = os.environ.copy()
@@ -274,6 +279,7 @@ def main():
     print()
     print(f"Benchmark input: {input_path}")
     print(f"Command: {args.command}")
+    print("Incremental reuse: disabled (cold samples)")
     if extra_args:
         print(f"Forwarded args: {' '.join(extra_args)}")
     print(f"Runs/profile: {args.runs}")
