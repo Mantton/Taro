@@ -57,6 +57,11 @@ public struct List[Element] {
     cap: usize
 }
 
+// List storage is managed by the collector rather than borrowed from a stack.
+// Transferring a List is therefore safe exactly when transferring its elements
+// is safe; the blocking runtime moves the buffer's GC root with the value.
+impl[Element] std.marker.Sendable for List[Element] where Element: std.marker.Sendable {}
+
 public func __list_from_raw_parts[Element](_ buffer: *mut uint8, _ len: usize, _ cap: usize) -> List[Element] {
     setBufferLen[Element](buffer, len)
     List[Element] {

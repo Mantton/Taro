@@ -46,6 +46,35 @@ pub fn prove_interface_goal<'ctx>(
     }
 }
 
+/// Return whether one declared conformance (rather than a synthesized builtin)
+/// proves this goal. Sendable's structural fallback uses this to respect the
+/// trust boundary of explicit marker impls on raw-storage owner types.
+pub fn prove_declared_interface_goal<'ctx>(
+    gcx: Gcx<'ctx>,
+    goal: InterfaceGoal<'ctx>,
+    mode: SelectionMode,
+) -> GoalResult {
+    if goal_has_unresolved_types(goal) {
+        return GoalResult::NoSolution;
+    }
+
+    let mut selector = Selector::new(gcx, mode);
+    let key = goal_key(gcx, goal, mode);
+    if !selector.visiting.insert(key) {
+        return GoalResult::Ambiguous;
+    }
+    let mut saw_ambiguous_obligation = false;
+    let candidates = selector.collect_declared_candidates(goal, &mut saw_ambiguous_obligation);
+    selector.visiting.remove(&key);
+
+    match candidates.len() {
+        0 if saw_ambiguous_obligation => GoalResult::Ambiguous,
+        0 => GoalResult::NoSolution,
+        1 => GoalResult::Proven,
+        _ => GoalResult::Ambiguous,
+    }
+}
+
 pub fn select_interface_impl<'ctx>(
     gcx: Gcx<'ctx>,
     goal: InterfaceGoal<'ctx>,
@@ -193,6 +222,33 @@ impl<'ctx> Selector<'ctx> {
             out.push(candidate);
         }
 
+        out.extend(self.collect_declared_candidates(goal, &mut saw_ambiguous_obligation));
+
+        if self.gcx.std_item_def(StdItem::Sendable) == Some(goal.interface_id)
+            && out
+                .iter()
+                .any(|candidate| matches!(candidate.source, CandidateSource::Impl(_)))
+        {
+            // Sendable has a structural builtin candidate, but an explicit
+            // marker impl is the type author's trust boundary for hidden raw
+            // storage (for example List's managed buffer pointer). Once such
+            // an impl applies, keeping both candidates would report a false
+            // ambiguity for every structurally-Sendable instantiation of a
+            // conditional container like Result[T, E]. Coherence still checks
+            // overlaps between declared impls; only the synthesized fallback
+            // is suppressed here.
+            out.retain(|candidate| candidate.source != CandidateSource::BuiltinSendable);
+        }
+
+        (out, saw_ambiguous_obligation)
+    }
+
+    fn collect_declared_candidates(
+        &mut self,
+        goal: InterfaceGoal<'ctx>,
+        saw_ambiguous_obligation: &mut bool,
+    ) -> Vec<ConfirmedCandidate<'ctx>> {
+        let mut out = Vec::new();
         let mut head = type_head_from_value_ty(goal.self_ty);
         if head.is_none() {
             let normalized = normalize_aliases(self.gcx, goal.self_ty);
@@ -201,7 +257,7 @@ impl<'ctx> Selector<'ctx> {
             }
         }
         let Some(head) = head else {
-            return (out, saw_ambiguous_obligation);
+            return out;
         };
 
         let mut records: Vec<(ConformanceRecordId, ConformanceRecord<'ctx>)> =
@@ -220,17 +276,13 @@ impl<'ctx> Selector<'ctx> {
             if !seen_ids.insert(record_id) {
                 continue;
             }
-            if let Some(candidate) = self.confirm_record_candidate(
-                goal,
-                record_id,
-                record,
-                &mut saw_ambiguous_obligation,
-            ) {
+            if let Some(candidate) =
+                self.confirm_record_candidate(goal, record_id, record, saw_ambiguous_obligation)
+            {
                 out.push(candidate);
             }
         }
-
-        (out, saw_ambiguous_obligation)
+        out
     }
 
     fn param_env_candidate(&self, goal: InterfaceGoal<'ctx>) -> Option<ConfirmedCandidate<'ctx>> {

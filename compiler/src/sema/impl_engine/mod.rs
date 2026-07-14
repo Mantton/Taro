@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-pub use select::{prove_interface_goal, select_interface_impl};
+pub use select::{prove_declared_interface_goal, prove_interface_goal, select_interface_impl};
 pub(crate) use witness::{method_signature_matches, property_requirement_satisfied};
 
 pub fn build_conformance_witness<'ctx>(

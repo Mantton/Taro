@@ -1,0 +1,26 @@
+struct DeclaredSendable {
+    value: int32
+}
+
+// An explicit Sendable contract must replace, not conflict with, the
+// compiler's structural fallback when both happen to apply.
+impl std.marker.Sendable for DeclaredSendable {}
+
+func main() async {
+    let declared = await std.task.blocking(|| {
+        return DeclaredSendable { value: 17_i32 }
+    })
+    assert(declared.value == 17_i32, "explicit Sendable result should cross blocking pool")
+
+    let bytesResult = await std.task.blocking(|| -> std.result.Result[std.collections.List[uint8], string] {
+        var bytes = std.collections.List[uint8]()
+        bytes.append(3_u8)
+        bytes.append(9_u8)
+        return .ok(bytes)
+    })
+    let bytes = bytesResult.unwrap()
+    assert(bytes.len() == 2, "conditional Sendable containers should compose")
+    assert(*bytes.at(0) == 3_u8 && *bytes.at(1) == 9_u8, "owned list bytes should survive transfer")
+
+    print("PASS: Sendable impl precedence\n")
+}

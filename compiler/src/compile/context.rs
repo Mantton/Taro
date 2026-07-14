@@ -1379,6 +1379,33 @@ impl<'arena> GlobalContext<'arena> {
             return true;
         }
 
+        if matches!(ty.kind(), TyKind::Adt(..))
+            && let Some(sendable_id) = self.std_item_def(StdItem::Sendable)
+        {
+            let declared_goal = InterfaceGoal {
+                interface_id: sendable_id,
+                self_ty: ty,
+                interface_args: GenericArguments::empty(),
+                bindings: &[],
+                param_env: &[],
+            };
+            if matches!(
+                crate::sema::impl_engine::prove_declared_interface_goal(
+                    self,
+                    declared_goal,
+                    SelectionMode::Typecheck,
+                ),
+                GoalResult::Proven
+            ) {
+                // Explicit Sendable is a deliberate trust boundary for owners
+                // whose representation contains raw pointers but whose public
+                // ownership contract is safe to transfer. Structural descent
+                // must honor it before inspecting those private fields.
+                visited.remove(&ty);
+                return true;
+            }
+        }
+
         let sendable = match ty.kind() {
             TyKind::Bool
             | TyKind::Rune
