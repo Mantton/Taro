@@ -210,6 +210,17 @@ fn indirect_arg_threshold_for_triple(triple: &str) -> u64 {
     }
 }
 
+fn llvm_type_contains_array(ty: BasicTypeEnum<'_>) -> bool {
+    match ty {
+        BasicTypeEnum::ArrayType(_) => true,
+        BasicTypeEnum::StructType(struct_ty) => struct_ty
+            .get_field_types()
+            .into_iter()
+            .any(llvm_type_contains_array),
+        _ => false,
+    }
+}
+
 fn static_initializer_value_for_codegen(name: &str, kind: Option<ConstKind>) -> ConstValue {
     let Some(kind) = kind else {
         panic!("ICE: local static `{name}` reached codegen without a cached constant initializer");
@@ -679,22 +690,25 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             &input_tys,
             output,
             sig.is_variadic,
-            |ty| {
-                let llvm_ty = self.lower_ty(ty)?;
-                Some(abi::TypeLayout {
-                    size: self.target_data.get_store_size(&llvm_ty),
-                    align: self.target_data.get_abi_alignment(&llvm_ty),
-                })
-            },
+            |ty| self.type_layout(ty),
             self.abi_policy_for_signature(sig),
         )
     }
 
     fn type_layout(&self, ty: Ty<'gcx>) -> Option<abi::TypeLayout> {
         let llvm_ty = self.lower_ty(ty)?;
+        let target_triple = self.target_machine.get_triple();
+        let target_triple = target_triple.as_str().to_str().unwrap_or("");
         Some(abi::TypeLayout {
             size: self.target_data.get_store_size(&llvm_ty),
             align: self.target_data.get_abi_alignment(&llvm_ty),
+            // LLVM 22 uses GlobalISel for AArch64 O0 and SelectionDAG above O0.
+            // They assign different overflow stack slots to recursively expanded
+            // array aggregates, so direct passing would make debug callers ABI-
+            // incompatible with release libraries. Passing those values by
+            // address keeps Taro's cross-profile ABI stable while leaving plain
+            // scalar and struct values on the normal size-based path.
+            force_indirect: target_is_aarch64(target_triple) && llvm_type_contains_array(llvm_ty),
         })
     }
 
@@ -740,13 +754,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             &input_tys,
             output,
             false,
-            |ty| {
-                let llvm_ty = self.lower_ty(ty)?;
-                Some(abi::TypeLayout {
-                    size: self.target_data.get_store_size(&llvm_ty),
-                    align: self.target_data.get_abi_alignment(&llvm_ty),
-                })
-            },
+            |ty| self.type_layout(ty),
             abi::AbiPolicy {
                 enable_indirect_returns: true,
                 indirect_return_threshold_bytes: self.indirect_return_threshold_bytes,

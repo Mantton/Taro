@@ -16,6 +16,10 @@ pub enum PassMode {
 pub struct TypeLayout {
     pub size: u64,
     pub align: u32,
+    /// Whether the backend representation must cross the Taro ABI by address.
+    /// This is independent of size: some otherwise-small aggregates are not
+    /// represented consistently by every instruction selector we support.
+    pub force_indirect: bool,
 }
 
 /// ABI info for one argument or return value.
@@ -90,7 +94,7 @@ fn classify_arg_mode(ty: Ty<'_>, layout: Option<TypeLayout>, policy: AbiPolicy) 
     };
 
     if policy.enable_indirect_args
-        && layout.size >= policy.indirect_arg_threshold_bytes
+        && (layout.force_indirect || layout.size >= policy.indirect_arg_threshold_bytes)
         && should_consider_indirect_argument(ty)
     {
         return PassMode::Indirect {
@@ -108,7 +112,7 @@ fn classify_return_mode(ty: Ty<'_>, layout: Option<TypeLayout>, policy: AbiPolic
     };
 
     if policy.enable_indirect_returns
-        && layout.size >= policy.indirect_return_threshold_bytes
+        && (layout.force_indirect || layout.size >= policy.indirect_return_threshold_bytes)
         && should_consider_indirect_return(ty)
     {
         return PassMode::Indirect {
@@ -218,7 +222,13 @@ mod tests {
                 &[aggregate],
                 aggregate,
                 false,
-                |_| Some(TypeLayout { size: 16, align: 8 }),
+                |_| {
+                    Some(TypeLayout {
+                        size: 16,
+                        align: 8,
+                        force_indirect: false,
+                    })
+                },
                 policy,
             );
 
@@ -240,12 +250,47 @@ mod tests {
                 &[gcx.types.int64],
                 gcx.types.int64,
                 false,
-                |_| Some(TypeLayout { size: 8, align: 8 }),
+                |_| {
+                    Some(TypeLayout {
+                        size: 8,
+                        align: 8,
+                        force_indirect: false,
+                    })
+                },
                 policy,
             );
 
             assert_eq!(abi.ret.mode, PassMode::Direct);
             assert_eq!(abi.args[0].mode, PassMode::Direct);
+        });
+    }
+
+    #[test]
+    fn unstable_small_aggregates_use_indirect_modes_below_threshold() {
+        with_test_gcx(|gcx| {
+            let aggregate = aggregate_ty(gcx);
+            let policy = AbiPolicy {
+                enable_indirect_returns: true,
+                indirect_return_threshold_bytes: 24,
+                enable_indirect_args: true,
+                indirect_arg_threshold_bytes: 24,
+            };
+            let abi = compute_fn_abi_from_tys(
+                &[aggregate],
+                aggregate,
+                false,
+                |_| {
+                    Some(TypeLayout {
+                        size: 16,
+                        align: 8,
+                        force_indirect: true,
+                    })
+                },
+                policy,
+            );
+
+            assert_eq!(abi.ret.mode, PassMode::Indirect { align: 8, size: 16 });
+            assert_eq!(abi.args[0].mode, PassMode::Indirect { align: 8, size: 16 });
         });
     }
 
