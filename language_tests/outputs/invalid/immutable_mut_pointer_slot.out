@@ -1,0 +1,4 @@
+error: cannot take a mutable reference to an immutable binding
+ -> language_tests/source_files/invalid/immutable_mut_pointer_slot.tr:6:26
+	    let _ = unsafe { &mut slot as *mut *mut uint8 }
+	                          ^^^^

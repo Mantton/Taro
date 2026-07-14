@@ -679,21 +679,6 @@ impl<'ctx> Checker<'ctx> {
     pub(super) fn require_mut_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
         match &expr.kind {
             hir::ExpressionKind::Path(hir::ResolvedPath::Resolved(path)) => {
-                if let Some(ty) = cs.expr_ty(expr.id) {
-                    let ty = cs.infer_cx.resolve_vars_if_possible(ty);
-                    if let TyKind::Reference(_, mutability) | TyKind::Pointer(_, mutability) =
-                        ty.kind()
-                    {
-                        if mutability == hir::Mutability::Mutable {
-                            return true;
-                        }
-                        self.gcx().dcx().emit_error(
-                            "cannot borrow through an immutable pointer/reference".into(),
-                            Some(expr.span),
-                        );
-                        return false;
-                    }
-                }
                 if let hir::Resolution::LocalVariable(_)
                 | hir::Resolution::Definition(_, DefinitionKind::ModuleVariable) =
                     &path.resolution
@@ -718,6 +703,10 @@ impl<'ctx> Checker<'ctx> {
                         return false;
                     }
                 }
+                // A direct `&mut pointer_slot` borrows the slot, not the
+                // pointee. Pointer/reference mutability is therefore relevant
+                // only in the Dereference branch below; the path itself obeys
+                // its binding or static declaration's mutability.
                 true
             }
             hir::ExpressionKind::Dereference(inner) => {
@@ -945,6 +934,31 @@ impl<'ctx> Checker<'ctx> {
             }
             _ => true,
         }
+    }
+
+    fn require_mut_receiver_borrow(&self, expr: &hir::Expression, cs: &Cs<'ctx>) -> bool {
+        if let Some(expr_ty) = cs.expr_ty(expr.id) {
+            let expr_ty = cs.infer_cx.resolve_vars_if_possible(expr_ty);
+            match expr_ty.kind() {
+                TyKind::Error => return true,
+                TyKind::Pointer(_, hir::Mutability::Mutable)
+                | TyKind::Reference(_, hir::Mutability::Mutable) => return true,
+                TyKind::Pointer(_, hir::Mutability::Immutable)
+                | TyKind::Reference(_, hir::Mutability::Immutable) => {
+                    self.gcx().dcx().emit_error(
+                        "cannot borrow through an immutable pointer/reference".into(),
+                        Some(expr.span),
+                    );
+                    return false;
+                }
+                _ => {}
+            }
+        }
+
+        // A method/property receiver is implicitly dereferenced, so an immutable
+        // binding that stores `&mut T` may still mutate `T`. Explicit `&mut slot`
+        // uses `require_mut_borrow` directly because it borrows the storage slot.
+        self.require_mut_borrow(expr, cs)
     }
 
     pub(super) fn synth_assign_expression(
@@ -3156,7 +3170,7 @@ impl<'ctx> Checker<'ctx> {
                 return Ty::error(self.gcx());
             }
 
-            if !self.require_mut_borrow(target, cs) {
+            if !self.require_mut_receiver_borrow(target, cs) {
                 return Ty::error(self.gcx());
             }
 
@@ -3597,6 +3611,7 @@ impl<'ctx> Checker<'ctx> {
         cs.add_goal(
             Goal::TupleAccess(TupleAccessGoalData {
                 node_id: expression.id,
+                receiver_node_id: receiver.id,
                 receiver: receiver_ty,
                 index: idx_val,
                 result: result_ty,

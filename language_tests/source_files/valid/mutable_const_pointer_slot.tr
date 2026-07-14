@@ -1,0 +1,16 @@
+func storePointer(_ out: *mut *const uint8, _ value: *const uint8) {
+    out.write(value)
+}
+
+func main() {
+    let source = "slot"
+    var slot: *const uint8 = unsafe { 0 as *const uint8 }
+
+    // The slot is mutable even though the pointer stored in it cannot mutate
+    // its pointee. These are independent mutability dimensions.
+    let out = unsafe { &mut slot as *mut *const uint8 }
+    storePointer(out, std.string.stringData(source))
+
+    assert(slot.read() == 115_u8, "the mutable pointer slot should be replaced")
+    print("mutable const-pointer slot ok\n")
+}

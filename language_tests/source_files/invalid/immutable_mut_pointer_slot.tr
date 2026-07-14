@@ -1,0 +1,7 @@
+func main() {
+    var value: uint8 = 0_u8
+    let slot: *mut uint8 = unsafe { &mut value as *mut uint8 }
+
+    // A mutable pointee does not make the pointer storage slot mutable.
+    let _ = unsafe { &mut slot as *mut *mut uint8 }
+}

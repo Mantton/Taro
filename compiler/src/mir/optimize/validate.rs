@@ -1142,41 +1142,30 @@ pub fn validate_mutability<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileRe
 fn is_place_mutable<'ctx>(_: Gcx<'ctx>, body: &Body<'ctx>, place: &Place<'ctx>) -> bool {
     let local_decl = &body.locals[place.local];
     let mut current_ty = local_decl.ty;
-
-    let base_is_mutable = match current_ty.kind() {
-        TyKind::Reference(_, mutability) | TyKind::Pointer(_, mutability) => {
-            mutability == Mutability::Mutable
-        }
-        _ => local_decl.mutable,
-    };
-
-    if !base_is_mutable {
-        return false;
-    }
+    // Mutability starts at the storage slot. A mutable local may hold an
+    // immutable pointer and still be replaced, while an immutable local may
+    // hold a mutable pointer and permit writes only after dereferencing it.
+    let mut mutable = local_decl.mutable;
 
     for elem in &place.projection {
         match elem {
             PlaceElem::Deref => match current_ty.kind() {
                 TyKind::Reference(inner, mutability) => {
-                    if mutability == Mutability::Immutable {
-                        return false;
-                    }
+                    mutable = mutability == Mutability::Mutable;
                     current_ty = inner;
                 }
                 TyKind::Pointer(inner, mutability) => {
-                    if mutability == Mutability::Immutable {
-                        return false;
-                    }
+                    mutable = mutability == Mutability::Mutable;
                     current_ty = inner;
                 }
-                _ => return true,
+                _ => return mutable,
             },
             PlaceElem::Field(_, field_ty) => current_ty = *field_ty,
             PlaceElem::VariantDowncast { .. } => {}
         }
     }
 
-    true
+    mutable
 }
 
 // ============================================================================

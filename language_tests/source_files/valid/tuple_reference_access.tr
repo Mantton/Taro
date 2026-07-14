@@ -1,0 +1,14 @@
+func first(_ pair: &(int32, string)) -> int32 {
+    return pair.0
+}
+
+func second(_ pair: &(int32, string)) -> string {
+    return pair.1
+}
+
+func main() {
+    let pair = (42_i32, "tuple")
+    assert(first(&pair) == 42_i32, "tuple access should autodereference its receiver")
+    assert(second(&pair) == "tuple", "tuple access should preserve the selected value")
+    print("tuple reference access ok\n")
+}

@@ -13,6 +13,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
     pub fn solve_tuple_access(&mut self, data: TupleAccessGoalData<'ctx>) -> SolverResult<'ctx> {
         let TupleAccessGoalData {
             node_id,
+            receiver_node_id,
             receiver,
             index,
             result,
@@ -41,7 +42,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
             match ty.kind() {
                 TyKind::Tuple(elements) => {
                     if index < elements.len() {
-                        self.record_adjustments(node_id, adjustment);
+                        // Autoderef transforms the receiver before field
+                        // projection. Recording it on the `.N` result instead
+                        // asks THIR to dereference an already-projected element
+                        // and leaves codegen projecting from `&(A, B)`.
+                        self.record_adjustments(receiver_node_id, adjustment);
                         self.record_field_index(node_id, index);
                         return self.solve_equality(span, result, elements[index]);
                     } else {

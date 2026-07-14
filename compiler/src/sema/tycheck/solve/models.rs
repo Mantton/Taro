@@ -377,7 +377,10 @@ pub struct StructLiteralField<'ctx> {
 
 #[derive(Debug, Clone)]
 pub struct TupleAccessGoalData<'ctx> {
+    /// The `.N` access node that owns the resolved field index.
     pub node_id: NodeID,
+    /// The receiver expression that must receive any autoderef adjustments.
+    pub receiver_node_id: NodeID,
     pub receiver: Ty<'ctx>,
     pub index: usize,
     pub result: Ty<'ctx>,
