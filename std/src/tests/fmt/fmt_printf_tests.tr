@@ -76,6 +76,23 @@ func testSprintfCustomType() {
 }
 
 @test
+func testFormatterWritesUnicodeRunesAndGrows() {
+    let rocket = std.intrinsic.__intrinsic_rune_from_u32_unchecked(0x1F680_u32)
+    std.testing.assertEqual(std.sprintf("%v", rocket), "🚀", "rune formatting should emit UTF-8")
+
+    var formatter = std.fmt.Formatter()
+    var index: usize = 0
+    while index < (2048 as usize) {
+        formatter.writeString("xyz")
+        index += 1
+    }
+    let rendered = formatter.intoString()
+    std.testing.assertEqual(rendered.byteLen(), 6144 as usize, "formatter should preserve large accumulated output")
+    std.testing.assertTrue(rendered.startsWith("xyzxyz"), "grown formatter should preserve its prefix")
+    std.testing.assertTrue(rendered.endsWith("xyzxyz"), "grown formatter should preserve its suffix")
+}
+
+@test
 func testDisplayFallbackAndFormattablePreference() {
     let display_only = DisplayOnlyValue { text: "display-only" }
     let display_only_text = std.sprintf("%v", display_only)

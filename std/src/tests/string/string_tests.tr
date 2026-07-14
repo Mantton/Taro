@@ -1,5 +1,18 @@
 // Tests for std.string helper methods and Add operator overloading.
 
+func assertStringParts(
+    _ actual: &std.collections.List[string],
+    _ expected: std.mem.Span[string],
+    _ message: string,
+) {
+    std.testing.assertEqual(actual.len(), expected.len(), message)
+    var index: usize = 0
+    while index < expected.len() {
+        std.testing.assertEqual(*actual.at(index), *expected.at(index), message)
+        index += 1
+    }
+}
+
 // ─── isEmpty ──────────────────────────────────────────────────────────────────
 
 @test
@@ -232,4 +245,134 @@ func testByteAtLast() {
 func testByteAtOutOfBounds() {
     let s = "ABC"
     let _ = s.byteAt(3)
+}
+
+// ─── lengths and searching ───────────────────────────────────────────────────
+
+@test
+func testStringByteLenRuneCountAndFind() {
+    let value = "aπ🚀π"
+    std.testing.assertEqual(value.byteLen(), 9 as usize, "byteLen should report encoded bytes")
+    std.testing.assertEqual(value.runeCount(), 4 as usize, "runeCount should report decoded runes")
+
+    std.testing.assertEqual(value.find("π").unwrap(), 1 as usize, "find should return the first byte index")
+    std.testing.assertEqual(value.rfind("π").unwrap(), 7 as usize, "rfind should return the last byte index")
+    std.testing.assertEqual(value.find("").unwrap(), 0 as usize, "empty find should match at the start")
+    std.testing.assertEqual(value.rfind("").unwrap(), 9 as usize, "empty rfind should match at the end")
+    std.testing.assertTrue(value.find("missing").isNone(), "find should return none for an absent needle")
+    std.testing.assertTrue(value.rfind("missing").isNone(), "rfind should return none for an absent needle")
+}
+
+// ─── splitting and lines ─────────────────────────────────────────────────────
+
+@test
+func testStringSplitPreservesEmptyFields() {
+    let actual = "a,,b,".split(",")
+    let expected: [string; 4] = ["a", "", "b", ""]
+    assertStringParts(&actual, expected.asSpan(), "split should preserve leading, adjacent, and trailing fields")
+
+    let empty = "".split(",")
+    let expectedEmpty: [string; 1] = [""]
+    assertStringParts(&empty, expectedEmpty.asSpan(), "non-empty separator should split empty input once")
+}
+
+@test
+func testStringSplitEmptySeparatorUsesRuneBoundaries() {
+    let actual = "aπ🚀".split("")
+    let expected: [string; 3] = ["a", "π", "🚀"]
+    assertStringParts(&actual, expected.asSpan(), "empty separator should split by decoded rune")
+
+    let empty = "".split("")
+    std.testing.assertEqual(empty.len(), 0 as usize, "empty input and separator should produce no fields")
+}
+
+@test
+func testStringSplitOnce() {
+    match "key=value=tail".splitOnce("=") {
+        case .some(parts) => {
+            std.testing.assertEqual(parts.0, "key", "splitOnce should return bytes before the first match")
+            std.testing.assertEqual(parts.1, "value=tail", "splitOnce should return bytes after the first match")
+        }
+        case .none => std.testing.fail("splitOnce should find an existing separator")
+    }
+
+    match "value".splitOnce("") {
+        case .some(parts) => {
+            std.testing.assertEqual(parts.0, "", "empty splitOnce separator should match at the start")
+            std.testing.assertEqual(parts.1, "value", "empty splitOnce separator should leave the value after it")
+        }
+        case .none => std.testing.fail("empty splitOnce separator should always match")
+    }
+    std.testing.assertTrue("value".splitOnce("missing").isNone(), "splitOnce should return none when absent")
+}
+
+@test
+func testStringLinesHandlesLfCrLfAndTrailingTerminators() {
+    let actual = "first\r\nsecond\n\nlast\n".lines()
+    let expected: [string; 4] = ["first", "second", "", "last"]
+    assertStringParts(&actual, expected.asSpan(), "lines should strip terminators without a synthetic tail")
+
+    let empty = "".lines()
+    std.testing.assertEqual(empty.len(), 0 as usize, "empty input should contain no lines")
+}
+
+// ─── trimming, replacement, and repetition ──────────────────────────────────
+
+@test
+func testStringTrimUsesUnicodeWhitespace() {
+    let value = "\t\u{00A0}  hello π \u{3000}\n"
+    std.testing.assertEqual(value.trim(), "hello π", "trim should remove Unicode whitespace from both ends")
+    std.testing.assertEqual(value.trimStart(), "hello π \u{3000}\n", "trimStart should preserve trailing whitespace")
+    std.testing.assertEqual(value.trimEnd(), "\t\u{00A0}  hello π", "trimEnd should preserve leading whitespace")
+    std.testing.assertEqual("\u{2003}\t".trim(), "", "all-whitespace input should trim to empty")
+}
+
+@test
+func testStringReplaceAndReplaceAll() {
+    let value = "one fish two fish"
+    std.testing.assertEqual(value.replace("fish", "cat"), "one cat two fish", "replace should change the first match")
+    std.testing.assertEqual(value.replaceAll("fish", "cat"), "one cat two cat", "replaceAll should change every match")
+    std.testing.assertEqual("aaaa".replaceAll("aa", "b"), "bb", "replaceAll matches should not overlap")
+    std.testing.assertEqual("abc".replace("", "-"), "-abc", "replace should use the first empty boundary")
+    std.testing.assertEqual("aπ".replaceAll("", "-"), "-a-π-", "replaceAll empty matches should use rune boundaries")
+    std.testing.assertEqual(value.replace("missing", "x"), value, "replace should preserve input when absent")
+}
+
+@test
+func testStringRepeat() {
+    std.testing.assertEqual("ab".repeat(3 as usize), "ababab", "repeat should concatenate the requested copies")
+    std.testing.assertEqual("ab".repeat(0 as usize), "", "zero repetitions should be empty")
+    std.testing.assertEqual("".repeat(100 as usize), "", "empty input should stay empty")
+}
+
+@test
+@expectPanic
+func testStringRepeatRejectsOverflowingCapacity() {
+    let _ = "ab".repeat(std.mem.maxBufferCapacity[uint8]())
+}
+
+// ─── explicit byte and rune slicing ─────────────────────────────────────────
+
+@test
+func testStringByteAndRuneSlicesAreExplicit() {
+    let value = "aπ🚀z"
+    std.testing.assertEqual(value.sliceBytes(1, 2), "π", "sliceBytes should use byte indexes and counts")
+    std.testing.assertEqual(value.sliceRunes(1, 2), "π🚀", "sliceRunes should use decoded rune indexes and counts")
+    std.testing.assertEqual(value.sliceRunes(4, 0), "", "empty rune slice at the end should succeed")
+
+    let partial = value.sliceBytes(1, 1)
+    std.testing.assertEqual(partial.byteLen(), 1 as usize, "byte slicing may intentionally split UTF-8")
+    std.testing.assertEqual(partial.byteAt(0), 0xcf_u8, "byte slicing should preserve the requested raw byte")
+}
+
+@test
+@expectPanic
+func testStringRuneSliceRejectsOutOfBoundsStart() {
+    let _ = "abc".sliceRunes(4, 0)
+}
+
+@test
+@expectPanic
+func testStringRuneSliceRejectsOutOfBoundsCount() {
+    let _ = "abc".sliceRunes(2, 2)
 }

@@ -109,3 +109,42 @@ func testDecodeRuneOutOfBounds() {
     assertEqual(r, replacementCharacter(), "OOB gives replacement rune")
     assertEqual(w, 0, "OOB width is 0")
 }
+
+@test
+func testRuneOrientedStringApisPreserveInvalidUtf8Bytes() {
+    var builder = std.string.Builder()
+    builder.writeByte(0xff_u8)
+    builder.writeByte('a' as uint8)
+    builder.writeByte(0xc0_u8)
+    builder.writeByte(0x80_u8)
+    let value = builder.intoString()
+
+    assertEqual(value.byteLen(), 4 as usize, "invalid UTF-8 sample should retain its raw length")
+    assertEqual(value.runeCount(), 4 as usize, "each invalid byte should count as one decoded rune")
+
+    let first = value.sliceRunes(0, 1)
+    assertEqual(first.byteLen(), 1 as usize, "rune slice should retain one invalid byte")
+    assertEqual(first.byteAt(0), 0xff_u8, "rune slice should preserve invalid bytes verbatim")
+
+    let tail = value.sliceRunes(2, 2)
+    assertEqual(tail.byteLen(), 2 as usize, "rune slice should count consecutive invalid bytes independently")
+    assertEqual(tail.byteAt(0), 0xc0_u8, "rune slice should retain the first invalid tail byte")
+    assertEqual(tail.byteAt(1), 0x80_u8, "rune slice should retain the second invalid tail byte")
+
+    let pieces = value.split("")
+    assertEqual(pieces.len(), 4 as usize, "empty split should emit one field per invalid byte")
+    assertEqual(pieces.at(0).byteAt(0), 0xff_u8, "empty split should preserve invalid field bytes")
+    assertEqual(*pieces.at(1), "a", "empty split should preserve valid fields among invalid bytes")
+}
+
+@test
+func testTrimDoesNotTreatInvalidUtf8AsWhitespace() {
+    var builder = std.string.Builder()
+    builder.writeByte(' ' as uint8)
+    builder.writeByte(0xff_u8)
+    builder.writeByte(' ' as uint8)
+    let trimmed = builder.intoString().trim()
+
+    assertEqual(trimmed.byteLen(), 1 as usize, "trim should remove surrounding spaces only")
+    assertEqual(trimmed.byteAt(0), 0xff_u8, "trim should preserve invalid UTF-8 bytes")
+}

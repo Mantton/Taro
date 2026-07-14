@@ -1,5 +1,6 @@
 import std.collections.List
 import std.mem.Span
+import std.string.Builder
 
 const BYTE_ZERO: uint8 = 48
 const BYTE_MINUS: uint8 = 45
@@ -37,24 +38,28 @@ impl FormatState {
 }
 
 public struct Formatter {
-    buffer: List[uint8]
+    buffer: Builder
 }
 
 impl Formatter {
     public func new() -> Self {
-        Formatter { buffer: List[uint8]() }
+        Formatter { buffer: Builder() }
     }
 
     public func writeByte(&mut self, _ value: uint8) {
-        self.buffer.append(value)
+        self.buffer.writeByte(value)
+    }
+
+    public func writeRune(&mut self, _ value: rune) {
+        self.buffer.writeRune(value)
     }
 
     public func writeString(&mut self, _ value: string) {
-        appendStringBytes(&mut self.buffer, value)
+        self.buffer.writeString(value)
     }
 
     public func intoString(self) -> string {
-        bytesToString(self.buffer)
+        self.buffer.intoString()
     }
 }
 
@@ -66,19 +71,9 @@ public interface Formattable: Display {
     func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState)
 }
 
-func appendStringBytes(_ out: &mut List[uint8], _ value: string) {
-    let len = std.string.stringLen(value)
-    let data = std.string.stringData(value)
-    var idx: usize = 0
-    while idx < len {
-        out.append(data.add(idx).read())
-        idx += 1
-    }
-}
-
-func appendUnsignedDecimal(_ out: &mut List[uint8], _ value: uint64) {
+func appendUnsignedDecimal(_ out: &mut Builder, _ value: uint64) {
     if value == 0 {
-        out.append(BYTE_ZERO)
+        out.writeByte(BYTE_ZERO)
         return
     }
 
@@ -93,13 +88,13 @@ func appendUnsignedDecimal(_ out: &mut List[uint8], _ value: uint64) {
     var idx = rev.len()
     while idx > 0 {
         idx -= 1
-        out.append(*rev.at(idx))
+        out.writeByte(*rev.at(idx))
     }
 }
 
-func appendSignedDecimal(_ out: &mut List[uint8], _ value: int64) {
+func appendSignedDecimal(_ out: &mut Builder, _ value: int64) {
     if value < 0 {
-        out.append(BYTE_MINUS)
+        out.writeByte(BYTE_MINUS)
     }
 
     var n = value
@@ -120,24 +115,8 @@ func appendSignedDecimal(_ out: &mut List[uint8], _ value: int64) {
     var idx = rev.len()
     while idx > 0 {
         idx -= 1
-        out.append(*rev.at(idx))
+        out.writeByte(*rev.at(idx))
     }
-}
-
-func bytesToString(_ bytes: List[uint8]) -> string {
-    let len = bytes.len()
-    if len == 0 {
-        return ""
-    }
-
-    let buffer = std.mem.allocBytes(len)
-    var idx: usize = 0
-    while idx < len {
-        buffer.add(idx).write(*bytes.at(idx))
-        idx += 1
-    }
-
-    std.string.stringFromParts(buffer, len)
 }
 
 func writeSignedInteger(_ into: &mut Formatter, _ value: int64) {
@@ -273,24 +252,14 @@ impl Formattable for bool {
 
 impl Display for rune {
     public func display(&self, _ into: &mut Formatter) {
-        let codepoint = *self as uint32
-        if codepoint > 255 {
-            std.panic.panic("printf: rune value out of byte range")
-        }
-
-        into.writeByte(codepoint as uint8)
+        into.writeRune(*self)
     }
 }
 
 impl Formattable for rune {
     public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
         if spec == 'v' {
-            let codepoint = *self as uint32
-            if codepoint > 255 {
-                std.panic.panic("printf: rune value out of byte range")
-            }
-
-            into.writeByte(codepoint as uint8)
+            into.writeRune(*self)
             return
         }
 

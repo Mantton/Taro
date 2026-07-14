@@ -1,0 +1,144 @@
+import std.mem.{MutableSpan, growBuffer, maxBufferCapacity, setBufferLen}
+import std.panic.panic
+import std.rune.{runeEncode, runeLenUtf8}
+
+const BUILDER_INITIAL_CAPACITY: usize = 32
+
+func builderCapacityOverflow() {
+    panic("string builder capacity overflow")
+}
+
+func checkedBuilderLen(_ len: usize, _ additional: usize) -> usize {
+    match len.checkedAdd(additional) {
+        case .some(nextLen) => return nextLen
+        case .none => {
+            builderCapacityOverflow()
+            return 0 as usize
+        }
+    }
+}
+
+func nextBuilderCapacity(_ current: usize, _ required: usize) -> usize {
+    let maxCapacity = maxBufferCapacity[uint8]()
+    if required > maxCapacity {
+        builderCapacityOverflow()
+    }
+
+    var next = if current == 0 { BUILDER_INITIAL_CAPACITY } else { current }
+    if next > maxCapacity {
+        next = required
+    }
+
+    while next < required {
+        match next.checkedMul(2 as usize) {
+            case .some(doubled) => {
+                if doubled > maxCapacity {
+                    next = required
+                } else {
+                    next = doubled
+                }
+            }
+            case .none => next = required
+        }
+    }
+
+    return next
+}
+
+/// An efficient, growable UTF-8 string accumulator.
+///
+/// `Builder` owns GC-managed byte storage. `intoString` consumes the builder
+/// and transfers that storage directly into the returned string without a
+/// final full-buffer copy.
+public struct Builder {
+    buffer: *mut uint8
+    length: usize
+    capacity: usize
+}
+
+impl Builder {
+    /// Creates an empty builder without allocating.
+    public func new() -> Self {
+        Builder {
+            buffer: unsafe { 0 as *mut uint8 },
+            length: 0,
+            capacity: 0,
+        }
+    }
+
+    /// Returns the number of bytes written so far.
+    public func len(&self) -> usize {
+        self.length
+    }
+
+    /// Ensures storage for at least `minCapacity` total bytes.
+    public func reserve(&mut self, _ minCapacity: usize) {
+        if minCapacity <= self.capacity {
+            return
+        }
+
+        let nextCapacity = nextBuilderCapacity(self.capacity, minCapacity)
+        self.buffer = growBuffer[uint8](self.buffer, self.length, nextCapacity)
+        self.capacity = nextCapacity
+    }
+
+    /// Appends one byte. The byte is not required to be valid UTF-8.
+    public func writeByte(&mut self, _ value: uint8) {
+        let nextLen = checkedBuilderLen(self.length, 1 as usize)
+        self.reserve(nextLen)
+        self.buffer.add(self.length).write(value)
+        self.length = nextLen
+        setBufferLen[uint8](self.buffer, self.length)
+    }
+
+    /// Appends one Unicode scalar encoded as UTF-8.
+    public func writeRune(&mut self, _ value: rune) {
+        let width = runeLenUtf8(value)
+        let nextLen = checkedBuilderLen(self.length, width)
+        self.reserve(nextLen)
+
+        var destination = MutableSpan[uint8].from(self.buffer.add(self.length), width)
+        let _ = runeEncode(value, &mut destination)
+        self.length = nextLen
+        setBufferLen[uint8](self.buffer, self.length)
+    }
+
+    /// Appends all bytes from `value`.
+    public func writeString(&mut self, _ value: string) {
+        self.writeStringRange(value, 0, stringLen(value))
+    }
+
+    // Shared by std.string operations so replacement and formatting can copy
+    // ranges in bulk without allocating intermediate strings.
+    func writeStringRange(&mut self, _ value: string, _ start: usize, _ count: usize) {
+        let valueLen = stringLen(value)
+        if start > valueLen || count > (valueLen - start) {
+            panic("string builder source range out of bounds")
+        }
+        if count == 0 {
+            return
+        }
+
+        let nextLen = checkedBuilderLen(self.length, count)
+        self.reserve(nextLen)
+        stringData(value).add(start).readBytes(self.buffer.add(self.length), count)
+        self.length = nextLen
+        setBufferLen[uint8](self.buffer, self.length)
+    }
+
+    /// Removes all content while retaining allocated capacity for reuse.
+    public func clear(&mut self) {
+        self.length = 0
+        if self.capacity > 0 {
+            setBufferLen[uint8](self.buffer, 0)
+        }
+    }
+
+    /// Consumes the builder and returns its accumulated bytes as a string.
+    public func intoString(self) -> string {
+        if self.length == 0 {
+            return ""
+        }
+        return stringFromParts(self.buffer, self.length)
+    }
+}
