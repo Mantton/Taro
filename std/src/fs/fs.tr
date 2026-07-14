@@ -102,9 +102,98 @@ public func createDir(_ path: string) -> Result[(), Error] {
     return withPathContext(std.sys.fs.createDir(path), "create directory", path)
 }
 
+func appendDirectoryComponent(_ base: string, _ component: string) -> string {
+    if base.isEmpty() {
+        return component
+    }
+    if base == std.path.SEPARATOR {
+        return base.concat(component)
+    }
+    return base.concat(std.path.SEPARATOR).concat(component)
+}
+
+func createDirAllError(_ error: Error, _ path: string) -> Error {
+    error.withOperation("create directory recursively").withPath(path)
+}
+
+/// Create a directory and every missing parent component.
+///
+/// Components are visited without lexically collapsing `..`. For example,
+/// creating `a/../b` must still make `a` first because the operating system
+/// needs that component to exist before it can traverse through it.
+public func createDirAll(_ path: string) -> Result[(), Error] {
+    if path.isEmpty() {
+        return .err(createDirAllError(Error(.invalidInput), path))
+    }
+
+    let parts = std.path.components(path)
+    var current = ""
+    var index: usize = 0
+    if parts.len() > 0 && *parts.at(0) == std.path.SEPARATOR {
+        current = std.path.SEPARATOR
+        index = 1
+    }
+
+    while index < parts.len() {
+        current = appendDirectoryComponent(current, *parts.at(index))
+        match std.fs.metadata(current) {
+            case .ok(value) => {
+                if !value.isDirectory() {
+                    return .err(createDirAllError(Error(.notADirectory), current))
+                }
+            }
+            case .err(err) => {
+                if !err.isKind(.notFound) {
+                    return .err(createDirAllError(err, current))
+                }
+
+                match createDir(current) {
+                    case .ok(_) => {}
+                    case .err(createErr) => {
+                        // Another actor may create the same directory between
+                        // metadata and mkdir. Treat that race as success only
+                        // after verifying the resulting object is a directory.
+                        if createErr.isKind(.alreadyExists) {
+                            match std.fs.metadata(current) {
+                                case .ok(value) => {
+                                    if !value.isDirectory() {
+                                        return .err(createDirAllError(Error(.notADirectory), current))
+                                    }
+                                }
+                                case .err(statErr) => return .err(createDirAllError(statErr, current))
+                            }
+                        } else {
+                            return .err(createDirAllError(createErr, current))
+                        }
+                    }
+                }
+            }
+        }
+        index += 1
+    }
+    return .ok(())
+}
+
 /// Removes an empty directory.
 public func removeDir(_ path: string) -> Result[(), Error] {
     return withPathContext(std.sys.fs.removeDir(path), "remove directory", path)
+}
+
+/// Remove a file, symlink, or directory tree without following directory links.
+public func removeDirAll(_ path: string) -> Result[(), Error] {
+    if path.isEmpty() {
+        // Matching Go's RemoveAll makes cleanup of an optional path naturally
+        // idempotent while still ensuring an empty string cannot name a target.
+        return .ok(())
+    }
+
+    let cleaned = std.path.clean(path)
+    if cleaned == "." || cleaned == std.path.SEPARATOR {
+        // Recursive deletion of the working directory or filesystem root is
+        // too destructive to permit as an accidental lexical spelling.
+        return .err(Error(.invalidInput).withOperation("remove directory recursively").withPath(path))
+    }
+    return withPathContext(std.sys.fs.removeDirAll(path), "remove directory recursively", path)
 }
 
 /// Removes a file from the filesystem.
@@ -125,5 +214,28 @@ public func rename(_ from: string, _ to: string) -> Result[(), Error] {
     match std.sys.fs.rename(from, to) {
         case .ok(_) => return .ok(())
         case .err(err) => return .err(err.withOperation("rename").withPaths(from, to))
+    }
+}
+
+/// Copy one regular file and return the number of bytes written.
+///
+/// The runtime compares opened descriptor identities before truncating the
+/// destination, which prevents aliases and hard links from destroying their
+/// own source content.
+public func copy(_ from: string, _ to: string) -> Result[uint64, Error] {
+    match std.sys.fs.copy(from, to) {
+        case .ok(copied) => return .ok(copied)
+        case .err(err) => return .err(err.withOperation("copy").withPaths(from, to))
+    }
+}
+
+/// Resolve `path` to an absolute path, following symbolic links.
+///
+/// This is a point-in-time filesystem query and does not protect later uses of
+/// the returned path from filesystem replacement races.
+public func canonicalize(_ path: string) -> Result[string, Error] {
+    match std.sys.fs.canonicalize(path) {
+        case .ok(value) => return .ok(value)
+        case .err(err) => return .err(err.withOperation("canonicalize").withPath(path))
     }
 }

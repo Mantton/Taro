@@ -6,14 +6,97 @@ import std.result.Result
 extern "blocking" {
     func __rt__open2(_ path: *const uint8, _ oflags: int32) -> int32
     func __rt__open3(_ path: *const uint8, _ oflags: int32, _ mode: int32) -> int32
+    func __rt__fs_metadata(
+        _ path: string,
+        _ followSymlinks: bool,
+        _ fileTypeOut: *mut uint8,
+        _ lenOut: *mut uint64,
+        _ modifiedSecsOut: *mut int64,
+        _ modifiedNanosOut: *mut uint32,
+        _ accessedSecsOut: *mut int64,
+        _ accessedNanosOut: *mut uint32,
+    ) -> int32
+    func __rt__fs_dir_open(_ path: string, _ errorOut: *mut int32) -> usize
+    func __rt__fs_dir_read(
+        _ handle: usize,
+        _ nameOut: *mut *mut uint8,
+        _ lenOut: *mut usize,
+        _ fileTypeOut: *mut uint8,
+    ) -> int32
+    func __rt__fs_dir_close(_ handle: usize) -> int32
+    func __rt__fs_remove_dir_all(_ path: string) -> int32
+    func __rt__fs_copy(_ from: string, _ to: string, _ copiedOut: *mut uint64) -> int32
+    func __rt__fs_canonicalize(_ path: string, _ dataOut: *mut *mut uint8, _ lenOut: *mut usize) -> int32
+    func __rt__fs_create_temp_dir(
+        _ parent: string,
+        _ prefix: string,
+        _ dataOut: *mut *mut uint8,
+        _ lenOut: *mut usize,
+    ) -> int32
+}
+
+extern "taro_rt" {
+    func __rt__fs_owned_bytes_free(_ data: *mut uint8)
 }
 
 public struct PlatformFile {
     fd: int32
 }
 
+public struct PlatformDir {
+    handle: usize
+}
+
+public const FILE_TYPE_REGULAR: uint8 = 1_u8
+public const FILE_TYPE_DIRECTORY: uint8 = 2_u8
+public const FILE_TYPE_SYMLINK: uint8 = 3_u8
+public const FILE_TYPE_BLOCK_DEVICE: uint8 = 4_u8
+public const FILE_TYPE_CHARACTER_DEVICE: uint8 = 5_u8
+public const FILE_TYPE_FIFO: uint8 = 6_u8
+public const FILE_TYPE_SOCKET: uint8 = 7_u8
+public const FILE_TYPE_OTHER: uint8 = 8_u8
+
+public struct RawMetadata {
+    fileTypeValue: uint8
+    lenValue: uint64
+    modifiedSecsValue: int64
+    modifiedNanosValue: uint32
+    accessedSecsValue: int64
+    accessedNanosValue: uint32
+}
+
+impl RawMetadata {
+    public func fileType(&self) -> uint8 { self.fileTypeValue }
+    public func len(&self) -> uint64 { self.lenValue }
+    public func modifiedSeconds(&self) -> int64 { self.modifiedSecsValue }
+    public func modifiedNanoseconds(&self) -> uint32 { self.modifiedNanosValue }
+    public func accessedSeconds(&self) -> int64 { self.accessedSecsValue }
+    public func accessedNanoseconds(&self) -> uint32 { self.accessedNanosValue }
+}
+
+public struct RawDirEntry {
+    nameValue: string
+    fileTypeValue: uint8
+}
+
+impl RawDirEntry {
+    public func name(&self) -> string { self.nameValue }
+    public func fileType(&self) -> uint8 { self.fileTypeValue }
+}
+
 const DEFAULT_FILE_MODE: int32 = 438
 const DEFAULT_DIR_MODE: int32 = 511
+
+func invalidPathError(_ operation: string, _ path: string) -> Error {
+    Error(.invalidInput).withOperation(operation).withPath(path)
+}
+
+func checkedPath(_ path: string, _ operation: string) -> Result[CString, Error] {
+    match CString.tryNew(path) {
+        case .some(value) => return .ok(value)
+        case .none => return .err(invalidPathError(operation, path))
+    }
+}
 
 public func openReadOnly(_ path: string) -> Result[PlatformFile, Error] {
     openFile(path, true, false, false, false, false)
@@ -80,7 +163,10 @@ func openFile(
         flags = flags | std.libc.O_TRUNC
     }
 
-    let cpath = CString.new(path)
+    let cpath = match checkedPath(path, "open") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
     let fd = if create {
         __rt__open3(cpath.asPtr(), flags, DEFAULT_FILE_MODE)
     } else {
@@ -94,8 +180,14 @@ func openFile(
 }
 
 public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
-    let ctarget = CString.new(target)
-    let clink = CString.new(linkPath)
+    let ctarget = match CString.tryNew(target) {
+        case .some(value) => value
+        case .none => return .err(Error(.invalidInput).withOperation("symlink").withPaths(target, linkPath))
+    }
+    let clink = match CString.tryNew(linkPath) {
+        case .some(value) => value
+        case .none => return .err(Error(.invalidInput).withOperation("symlink").withPaths(target, linkPath))
+    }
     let res = std.libc.symlink(ctarget.asPtr(), clink.asPtr())
     if res < 0 {
         return .err(std.sys.io.unix.lastError().withOperation("symlink").withPaths(target, linkPath))
@@ -162,7 +254,10 @@ public func intoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawA
 }
 
 public func createDir(_ path: string) -> Result[(), Error] {
-    let cpath = CString.new(path)
+    let cpath = match checkedPath(path, "create directory") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
     let res = std.libc.mkdir(cpath.asPtr(), DEFAULT_DIR_MODE)
     if res < 0 {
         return .err(std.sys.io.unix.lastError().withOperation("create directory").withPath(path))
@@ -171,7 +266,10 @@ public func createDir(_ path: string) -> Result[(), Error] {
 }
 
 public func removeDir(_ path: string) -> Result[(), Error] {
-    let cpath = CString.new(path)
+    let cpath = match checkedPath(path, "remove directory") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
     let res = std.libc.rmdir(cpath.asPtr())
     if res < 0 {
         return .err(std.sys.io.unix.lastError().withOperation("remove directory").withPath(path))
@@ -180,7 +278,10 @@ public func removeDir(_ path: string) -> Result[(), Error] {
 }
 
 public func removeFile(_ path: string) -> Result[(), Error] {
-    let cpath = CString.new(path)
+    let cpath = match checkedPath(path, "remove file") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
     let res = std.libc.unlink(cpath.asPtr())
     if res < 0 {
         return .err(std.sys.io.unix.lastError().withOperation("remove file").withPath(path))
@@ -189,11 +290,179 @@ public func removeFile(_ path: string) -> Result[(), Error] {
 }
 
 public func rename(_ from: string, _ to: string) -> Result[(), Error] {
-    let cfrom = CString.new(from)
-    let cto = CString.new(to)
+    let cfrom = match CString.tryNew(from) {
+        case .some(value) => value
+        case .none => return .err(Error(.invalidInput).withOperation("rename").withPaths(from, to))
+    }
+    let cto = match CString.tryNew(to) {
+        case .some(value) => value
+        case .none => return .err(Error(.invalidInput).withOperation("rename").withPaths(from, to))
+    }
     let res = std.libc.rename(cfrom.asPtr(), cto.asPtr())
     if res < 0 {
         return .err(std.sys.io.unix.lastError().withOperation("rename").withPaths(from, to))
     }
     return .ok(())
+}
+
+/// Query scalar metadata without exposing the platform's `struct stat` ABI.
+public func metadata(_ path: string, _ followSymlinks: bool) -> Result[RawMetadata, Error] {
+    var fileType: uint8 = 0_u8
+    var len: uint64 = 0_u64
+    var modifiedSecs: int64 = 0_i64
+    var modifiedNanos: uint32 = 0_u32
+    var accessedSecs: int64 = 0_i64
+    var accessedNanos: uint32 = 0_u32
+    let code = __rt__fs_metadata(
+        path,
+        followSymlinks,
+        unsafe { &mut fileType as *mut uint8 },
+        unsafe { &mut len as *mut uint64 },
+        unsafe { &mut modifiedSecs as *mut int64 },
+        unsafe { &mut modifiedNanos as *mut uint32 },
+        unsafe { &mut accessedSecs as *mut int64 },
+        unsafe { &mut accessedNanos as *mut uint32 },
+    )
+    if code != 0 {
+        let operation = if followSymlinks { "metadata" } else { "symlink metadata" }
+        return .err(std.sys.io.unix.mapErrno(code).withOperation(operation).withPath(path))
+    }
+    return .ok(RawMetadata {
+        fileTypeValue: fileType,
+        lenValue: len,
+        modifiedSecsValue: modifiedSecs,
+        modifiedNanosValue: modifiedNanos,
+        accessedSecsValue: accessedSecs,
+        accessedNanosValue: accessedNanos,
+    })
+}
+
+public func openDir(_ path: string) -> Result[PlatformDir, Error] {
+    var code: int32 = 0
+    let handle = __rt__fs_dir_open(path, unsafe { &mut code as *mut int32 })
+    if handle == 0 {
+        if code == 0 {
+            return .err(Error(.unexpected).withOperation("open directory").withPath(path))
+        }
+        return .err(std.sys.io.unix.mapErrno(code).withOperation("open directory").withPath(path))
+    }
+    return .ok(PlatformDir { handle })
+}
+
+public func isDirValid(_ dir: &PlatformDir) -> bool {
+    dir.handle != 0
+}
+
+/// Move the directory handle out, leaving `dir` permanently invalid.
+public func takeDir(_ dir: &mut PlatformDir) -> PlatformDir {
+    let handle = dir.handle
+    dir.handle = 0
+    return PlatformDir { handle }
+}
+
+public func closeDir(_ dir: &mut PlatformDir) -> Result[(), Error] {
+    if dir.handle == 0 {
+        return .ok(())
+    }
+    let handle = dir.handle
+    dir.handle = 0
+    let code = __rt__fs_dir_close(handle)
+    if code != 0 {
+        return .err(std.sys.io.unix.mapErrno(code).withOperation("close directory"))
+    }
+    return .ok(())
+}
+
+public func readDir(_ dir: &PlatformDir) -> Result[RawDirEntry?, Error] {
+    if dir.handle == 0 {
+        return .err(Error(.closed).withOperation("read directory"))
+    }
+
+    var nameData: *mut uint8 = unsafe { 0 as *mut uint8 }
+    var nameLen: usize = 0
+    var fileType: uint8 = 0_u8
+    let code = __rt__fs_dir_read(
+        dir.handle,
+        unsafe { &mut nameData as *mut *mut uint8 },
+        unsafe { &mut nameLen as *mut usize },
+        unsafe { &mut fileType as *mut uint8 },
+    )
+    if code == -1_i32 {
+        return .ok(.none)
+    }
+    if code != 0 {
+        return .err(std.sys.io.unix.mapErrno(code).withOperation("read directory"))
+    }
+
+    let name = if nameLen == 0 {
+        ""
+    } else {
+        let data = std.mem.allocBytes(nameLen)
+        let source = unsafe { nameData as *const uint8 }
+        source.readBytes(data, nameLen)
+        std.string.stringFromParts(data, nameLen)
+    }
+    return .ok(.some(RawDirEntry {
+        nameValue: name,
+        fileTypeValue: fileType,
+    }))
+}
+
+public func removeDirAll(_ path: string) -> Result[(), Error] {
+    let code = __rt__fs_remove_dir_all(path)
+    if code != 0 {
+        return .err(std.sys.io.unix.mapErrno(code).withOperation("remove directory recursively").withPath(path))
+    }
+    return .ok(())
+}
+
+public func copy(_ from: string, _ to: string) -> Result[uint64, Error] {
+    var copied: uint64 = 0_u64
+    let code = __rt__fs_copy(from, to, unsafe { &mut copied as *mut uint64 })
+    if code != 0 {
+        return .err(std.sys.io.unix.mapErrno(code).withOperation("copy").withPaths(from, to))
+    }
+    return .ok(copied)
+}
+
+func takeOwnedString(_ data: *mut uint8, _ len: usize) -> string {
+    if len == 0 {
+        __rt__fs_owned_bytes_free(data)
+        return ""
+    }
+
+    let managed = std.mem.allocBytes(len)
+    let source = unsafe { data as *const uint8 }
+    source.readBytes(managed, len)
+    __rt__fs_owned_bytes_free(data)
+    return std.string.stringFromParts(managed, len)
+}
+
+public func canonicalize(_ path: string) -> Result[string, Error] {
+    var data: *mut uint8 = unsafe { 0 as *mut uint8 }
+    var len: usize = 0
+    let code = __rt__fs_canonicalize(
+        path,
+        unsafe { &mut data as *mut *mut uint8 },
+        unsafe { &mut len as *mut usize },
+    )
+    if code != 0 {
+        return .err(std.sys.io.unix.mapErrno(code).withOperation("canonicalize").withPath(path))
+    }
+    return .ok(takeOwnedString(data, len))
+}
+
+public func createTempDir(_ parent: string, _ prefix: string) -> Result[string, Error] {
+    var data: *mut uint8 = unsafe { 0 as *mut uint8 }
+    var len: usize = 0
+    let code = __rt__fs_create_temp_dir(
+        parent,
+        prefix,
+        unsafe { &mut data as *mut *mut uint8 },
+        unsafe { &mut len as *mut usize },
+    )
+    if code != 0 {
+        return .err(std.sys.io.unix.mapErrno(code).withOperation("create temporary directory").withPath(parent))
+    }
+    return .ok(takeOwnedString(data, len))
 }

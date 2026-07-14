@@ -1,0 +1,99 @@
+import std.io.Error
+import std.result.Result
+import std.time.SystemTime
+
+/// A portable category for the kind of filesystem object described by metadata.
+public enum FileType: std.marker.Copy, std.ops.PartialEq {
+    case regular
+    case directory
+    case symlink
+    case blockDevice
+    case characterDevice
+    case fifo
+    case socket
+    case other
+}
+
+impl FileType {
+    public func isFile(&self) -> bool { *self == FileType.regular }
+    public func isDirectory(&self) -> bool { *self == FileType.directory }
+    public func isSymlink(&self) -> bool { *self == FileType.symlink }
+}
+
+/// Portable metadata for one filesystem object.
+///
+/// Creation time and raw Unix mode bits are intentionally omitted: creation
+/// time is not available on many Unix filesystems, while exposing native mode
+/// bits here would prematurely make a platform-neutral type Unix-specific.
+public struct Metadata: std.marker.Copy {
+    fileTypeValue: FileType
+    lenValue: uint64
+    modifiedValue: SystemTime
+    accessedValue: SystemTime
+}
+
+impl Metadata {
+    public func fileType(&self) -> FileType { self.fileTypeValue }
+
+    /// Return the OS-reported byte length. Its meaning for non-regular files
+    /// remains platform-defined.
+    public func len(&self) -> uint64 { self.lenValue }
+
+    public func modified(&self) -> SystemTime { self.modifiedValue }
+    public func accessed(&self) -> SystemTime { self.accessedValue }
+    public func isFile(&self) -> bool { self.fileTypeValue.isFile() }
+    public func isDirectory(&self) -> bool { self.fileTypeValue.isDirectory() }
+    public func isSymlink(&self) -> bool { self.fileTypeValue.isSymlink() }
+}
+
+func fileTypeFromRaw(_ value: uint8) -> FileType {
+    if value == std.sys.fs.FILE_TYPE_REGULAR { return .regular }
+    if value == std.sys.fs.FILE_TYPE_DIRECTORY { return .directory }
+    if value == std.sys.fs.FILE_TYPE_SYMLINK { return .symlink }
+    if value == std.sys.fs.FILE_TYPE_BLOCK_DEVICE { return .blockDevice }
+    if value == std.sys.fs.FILE_TYPE_CHARACTER_DEVICE { return .characterDevice }
+    if value == std.sys.fs.FILE_TYPE_FIFO { return .fifo }
+    if value == std.sys.fs.FILE_TYPE_SOCKET { return .socket }
+    return .other
+}
+
+func metadataFromRaw(_ raw: std.sys.fs.RawMetadata) -> Metadata {
+    return Metadata {
+        fileTypeValue: fileTypeFromRaw(raw.fileType()),
+        lenValue: raw.len(),
+        modifiedValue: SystemTime.fromUnixTimestamp(raw.modifiedSeconds(), raw.modifiedNanoseconds()),
+        accessedValue: SystemTime.fromUnixTimestamp(raw.accessedSeconds(), raw.accessedNanoseconds()),
+    }
+}
+
+/// Query metadata after following the final symbolic link.
+public func metadata(_ path: string) -> Result[Metadata, Error] {
+    match std.sys.fs.metadata(path, true) {
+        case .ok(raw) => return .ok(metadataFromRaw(raw))
+        case .err(err) => return .err(err)
+    }
+}
+
+/// Query metadata for the path itself without following the final symbolic link.
+public func symlinkMetadata(_ path: string) -> Result[Metadata, Error] {
+    match std.sys.fs.metadata(path, false) {
+        case .ok(raw) => return .ok(metadataFromRaw(raw))
+        case .err(err) => return .err(err)
+    }
+}
+
+/// Return whether `path` can be verified to exist.
+///
+/// Only `notFound` becomes `false`; permission and malformed-path failures are
+/// preserved so callers never mistake an inaccessible object for an absent one.
+public func exists(_ path: string) -> Result[bool, Error] {
+    match metadata(path) {
+        case .ok(_) => return .ok(true)
+        case .err(err) => {
+            if err.isKind(.notFound) {
+                return .ok(false)
+            }
+            return .err(err)
+        }
+    }
+}

@@ -1,6 +1,8 @@
 mod cleanup;
 pub mod executor;
 pub mod existentials;
+#[cfg(unix)]
+mod fs;
 pub mod garbage_collector;
 pub mod hash_seed;
 mod io_poller;

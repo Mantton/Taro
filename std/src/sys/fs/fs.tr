@@ -11,3 +11,4 @@ import std.sys.fs.windows.*
 export std.sys.fs.windows.*
 
 public type RawFile = PlatformFile
+public type RawDir = PlatformDir

@@ -1,0 +1,273 @@
+import std.io.Error
+import std.iter.{Iterable, Iterator}
+import std.result.Result
+
+struct DirCloseState {
+    inner: std.sys.fs.RawDir
+    cleanup: std.runtime.Cleanup?
+}
+
+// Cleanup receives copied native handle bits so it cannot retain its owner.
+// Cancellation decides whether explicit close or collection owns those bits.
+func snapshotRawDir(_ dir: &std.sys.fs.RawDir) -> std.sys.fs.RawDir {
+    let ptr = unsafe { dir as *const std.sys.fs.RawDir }
+    return unsafe { ptr.read() }
+}
+
+func takeRawDir(_ state: &DirCloseState) -> std.sys.fs.RawDir {
+    let ptr = unsafe { (&state.inner as *const std.sys.fs.RawDir) as *mut std.sys.fs.RawDir }
+    return std.sys.fs.takeDir(unsafe { ptr as &mut std.sys.fs.RawDir })
+}
+
+func closedDirError(_ operation: string, _ path: string) -> Error {
+    Error(.closed).withOperation(operation).withPath(path)
+}
+
+func readDirFromRaw(_ inner: std.sys.fs.RawDir, _ path: string) -> Result[ReadDir, Error] {
+    let state = make(DirCloseState {
+        inner,
+        cleanup: .none,
+    })
+    let cleanupState = snapshotRawDir(&state.inner)
+    let cleanupRes = std.runtime.addCleanup(state, cleanupState, |raw: std.sys.fs.RawDir| {
+        var owned = raw
+        let _ = std.sys.fs.closeDir(&mut owned)
+    })
+
+    match cleanupRes {
+        case .ok(cleanup) => {
+            state.cleanup = .some(cleanup)
+            std.runtime.keepAlive(state)
+            return .ok(ReadDir { state, path })
+        }
+        case .err(_) => {
+            var owned = takeRawDir(state)
+            let _ = std.sys.fs.closeDir(&mut owned)
+            std.runtime.keepAlive(state)
+            return .err(Error(.unexpected).withOperation("register directory cleanup").withPath(path))
+        }
+    }
+}
+
+func closeDirState(_ state: &DirCloseState, _ path: string) -> Result[(), Error] {
+    let cancelled = match &state.cleanup {
+        case .some(cleanup) => cleanup.cancel()
+        case .none => false
+    }
+    if !cancelled {
+        std.runtime.keepAlive(state)
+        return .err(closedDirError("close directory", path))
+    }
+
+    var raw = takeRawDir(state)
+    let result = std.sys.fs.closeDir(&mut raw)
+    std.runtime.keepAlive(state)
+    match result {
+        case .ok(_) => return .ok(())
+        case .err(err) => return .err(err.withOperation("close directory").withPath(path))
+    }
+}
+
+/// A streaming, OS-ordered directory iterator.
+///
+/// Copies share one native stream and close state. The iterator intentionally
+/// does not sort: callers that need reproducible order can collect and sort,
+/// while ordinary traversal avoids a hidden whole-directory allocation.
+// Copying the small wrapper is safe because every copy points at the same
+// cleanup-governed stream state; it does not duplicate the native handle.
+public struct ReadDir: std.marker.Copy {
+    state: &DirCloseState
+    path: string
+}
+
+impl ReadDir {
+    /// Close the native directory stream before reaching EOF.
+    public func close(&self) -> Result[(), Error] {
+        closeDirState(self.state, self.path)
+    }
+}
+
+impl Iterator for ReadDir {
+    type Element = Result[DirEntry, Error]
+
+    public func next(&mut self) -> Self.Element? {
+        if !std.sys.fs.isDirValid(&self.state.inner) {
+            std.runtime.keepAlive(self.state)
+            return .none
+        }
+
+        match std.sys.fs.readDir(&self.state.inner) {
+            case .ok(.some(raw)) => {
+                let name = raw.name()
+                let entry = DirEntry {
+                    nameValue: name,
+                    pathValue: std.path.join(self.path, name),
+                    fileTypeValue: dirEntryFileTypeFromRaw(raw.fileType()),
+                }
+                std.runtime.keepAlive(self.state)
+                return .some(.ok(entry))
+            }
+            case .ok(.none) => {
+                // Closing at EOF releases descriptors promptly instead of
+                // waiting for the iterator itself to become unreachable.
+                match closeDirState(self.state, self.path) {
+                    case .ok(_) => return .none
+                    case .err(err) => return .some(.err(err))
+                }
+            }
+            case .err(err) => {
+                // A failed stream cannot be resumed reliably. Close it and
+                // surface the read failure as the iterator's final element.
+                let _ = closeDirState(self.state, self.path)
+                return .some(.err(err.withOperation("read directory").withPath(self.path)))
+            }
+        }
+    }
+}
+
+impl Iterable for ReadDir {
+    type Iterator = ReadDir
+    type Element = Result[DirEntry, Error]
+
+    public func iter(self) -> Self.Iterator { self }
+}
+
+/// One entry yielded by `readDir`.
+public struct DirEntry {
+    nameValue: string
+    pathValue: string
+    fileTypeValue: std.fs.FileType
+}
+
+func dirEntryFileTypeFromRaw(_ value: uint8) -> std.fs.FileType {
+    if value == std.sys.fs.FILE_TYPE_REGULAR { return .regular }
+    if value == std.sys.fs.FILE_TYPE_DIRECTORY { return .directory }
+    if value == std.sys.fs.FILE_TYPE_SYMLINK { return .symlink }
+    if value == std.sys.fs.FILE_TYPE_BLOCK_DEVICE { return .blockDevice }
+    if value == std.sys.fs.FILE_TYPE_CHARACTER_DEVICE { return .characterDevice }
+    if value == std.sys.fs.FILE_TYPE_FIFO { return .fifo }
+    if value == std.sys.fs.FILE_TYPE_SOCKET { return .socket }
+    return .other
+}
+
+impl DirEntry {
+    /// Return only the final filename bytes, preserving non-UTF-8 Unix names.
+    public func name(&self) -> string { self.nameValue }
+    public func path(&self) -> string { self.pathValue }
+    public func fileType(&self) -> std.fs.FileType { self.fileTypeValue }
+    public func isDirectory(&self) -> bool { self.fileTypeValue.isDirectory() }
+
+    /// Query the entry itself rather than following a symbolic link. This
+    /// matches the type reported during directory traversal and prevents a
+    /// link from unexpectedly becoming metadata for an unrelated target.
+    public func metadata(&self) -> Result[std.fs.Metadata, Error] {
+        std.fs.symlinkMetadata(self.pathValue)
+    }
+}
+
+struct TempDirCleanupState {
+    path: string
+}
+
+struct TempDirState {
+    path: string
+    cleanup: std.runtime.Cleanup?
+}
+
+func tempDirFromPath(_ path: string) -> Result[TempDir, Error] {
+    let state = make(TempDirState {
+        path,
+        cleanup: .none,
+    })
+    let cleanupState = TempDirCleanupState { path }
+    let cleanupRes = std.runtime.addCleanup(state, cleanupState, |value: TempDirCleanupState| {
+        // Automatic cleanup is only a fallback and has no caller to receive an
+        // error. Explicit `close` remains the path for reliable error handling.
+        let _ = std.sys.fs.removeDirAll(value.path)
+    })
+
+    match cleanupRes {
+        case .ok(cleanup) => {
+            state.cleanup = .some(cleanup)
+            std.runtime.keepAlive(state)
+            return .ok(TempDir { state })
+        }
+        case .err(_) => {
+            let _ = std.sys.fs.removeDirAll(path)
+            std.runtime.keepAlive(state)
+            return .err(Error(.unexpected).withOperation("register temporary directory cleanup").withPath(path))
+        }
+    }
+}
+
+func claimTempDir(_ state: &TempDirState, _ operation: string) -> Result[string, Error] {
+    let cancelled = match &state.cleanup {
+        case .some(cleanup) => cleanup.cancel()
+        case .none => false
+    }
+    if !cancelled {
+        std.runtime.keepAlive(state)
+        return .err(Error(.closed).withOperation(operation).withPath(state.path))
+    }
+    let path = state.path
+    std.runtime.keepAlive(state)
+    return .ok(path)
+}
+
+/// An atomically created temporary directory with automatic fallback cleanup.
+// Copies intentionally share one cleanup claim, so exactly one copy can close
+// or keep the directory and every other copy observes `.closed` afterward.
+public struct TempDir: std.marker.Copy {
+    state: &TempDirState
+}
+
+impl std.marker.Sendable for TempDir {}
+
+impl TempDir {
+    /// Return the created path, including after `close` or `keep`, so failures
+    /// and retained directories remain diagnosable.
+    public func path(&self) -> string { self.state.path }
+
+    /// Remove the directory recursively and cancel automatic cleanup.
+    public func close(&self) -> Result[(), Error] {
+        // Claim cleanup before touching the tree so a concurrent collection
+        // cannot race explicit removal. If removal fails, `path()` remains
+        // available for diagnosis or caller-directed recovery.
+        let path = match claimTempDir(self.state, "close temporary directory") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        match std.sys.fs.removeDirAll(path) {
+            case .ok(_) => return .ok(())
+            case .err(err) => return .err(err.withOperation("close temporary directory").withPath(path))
+        }
+    }
+
+    /// Transfer cleanup responsibility to the caller and retain the directory.
+    public func keep(&self) -> Result[string, Error] {
+        claimTempDir(self.state, "keep temporary directory")
+    }
+}
+
+/// Open a directory as a streaming, lifecycle-safe iterator.
+public func readDir(_ path: string) -> Result[ReadDir, Error] {
+    match std.sys.fs.openDir(path) {
+        case .ok(raw) => return readDirFromRaw(raw, path)
+        case .err(err) => return .err(err.withOperation("open directory").withPath(path))
+    }
+}
+
+/// Atomically create a uniquely named temporary directory.
+///
+/// An empty parent delegates to the operating system's temporary-directory
+/// convention. The returned handle removes the tree when explicitly closed or
+/// eventually through its best-effort cleanup fallback.
+public func createTempDir(
+    parent: string = "",
+    prefix: string = "taro-",
+) -> Result[TempDir, Error] {
+    match std.sys.fs.createTempDir(parent, prefix) {
+        case .ok(path) => return tempDirFromPath(path)
+        case .err(err) => return .err(err)
+    }
+}

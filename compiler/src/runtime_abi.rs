@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 4;
+pub const RUNTIME_ABI_REVISION: u32 = 5;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -346,6 +346,27 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     additional("__rt__executor_abort_rootless", "()->void"),
     additional("__rt__executor_finish_rootless", "()->void"),
+    additional_unix(
+        "__rt__fs_canonicalize",
+        "(string,*mut *mut u8,*mut usize)->i32",
+    ),
+    additional_unix("__rt__fs_copy", "(string,string,*mut u64)->i32"),
+    additional_unix(
+        "__rt__fs_create_temp_dir",
+        "(string,string,*mut *mut u8,*mut usize)->i32",
+    ),
+    additional_unix("__rt__fs_dir_close", "(usize)->i32"),
+    additional_unix("__rt__fs_dir_open", "(string,*mut i32)->usize"),
+    additional_unix(
+        "__rt__fs_dir_read",
+        "(usize,*mut *mut u8,*mut usize,*mut u8)->i32",
+    ),
+    additional_unix(
+        "__rt__fs_metadata",
+        "(string,bool,*mut u8,*mut u64,*mut i64,*mut u32,*mut i64,*mut u32)->i32",
+    ),
+    additional_unix("__rt__fs_owned_bytes_free", "(*mut u8)->void"),
+    additional_unix("__rt__fs_remove_dir_all", "(string)->i32"),
     additional(
         "__rt__existential_lookup_conformance",
         "(*const u8,*const u8)->*const u8",
@@ -471,7 +492,11 @@ mod tests {
         let unix = required_symbols_for_target("aarch64-apple-darwin").collect::<HashSet<_>>();
         let windows = required_symbols_for_target("x86_64-pc-windows-msvc").collect::<HashSet<_>>();
         assert!(unix.contains("__rt__open2"));
+        assert!(unix.contains("__rt__fs_metadata"));
+        assert!(unix.contains("__rt__fs_remove_dir_all"));
         assert!(!windows.contains("__rt__open2"));
+        assert!(!windows.contains("__rt__fs_metadata"));
+        assert!(!windows.contains("__rt__fs_remove_dir_all"));
     }
 
     #[test]

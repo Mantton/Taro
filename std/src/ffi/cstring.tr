@@ -3,6 +3,24 @@ public struct CString {
 }
 
 impl CString {
+    /// Construct a NUL-terminated copy when `value` contains no embedded NUL.
+    ///
+    /// C APIs interpret the first NUL as the end of a string, so callers that
+    /// accept untrusted text should use this constructor and return a typed
+    /// invalid-input error rather than silently operating on a path prefix.
+    public func tryNew(_ value: string) -> CString? {
+        let len = std.string.stringLen(value)
+        let data = std.string.stringData(value)
+        var index: usize = 0
+        while index < len {
+            if data.add(index).read() == 0_u8 {
+                return .none
+            }
+            index += 1
+        }
+        return .some(CString.new(value))
+    }
+
     public func new(_ value: string) -> CString {
         let len = std.string.stringLen(value)
         let data = std.string.stringData(value)

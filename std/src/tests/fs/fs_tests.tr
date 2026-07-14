@@ -446,3 +446,478 @@ func testAsyncFileRoundTrip() async {
     }
     std.assert(std.fs.removeFile(path).isOk(), "async file cleanup should succeed")
 }
+
+@cfg(family("unix"))
+func makePathWithEmbeddedNul() -> string {
+    var builder = std.string.Builder.new()
+    builder.writeString("taro-fs-bad")
+    builder.writeByte(0_u8)
+    builder.writeString("path")
+    return builder.intoString()
+}
+
+@cfg(os("linux"))
+func makeNonUtf8FileName() -> string {
+    var builder = std.string.Builder.new()
+    builder.writeString("raw-")
+    builder.writeByte(0xff_u8)
+    return builder.intoString()
+}
+
+@cfg(family("unix"))
+func abandonReadDir(_ path: string) {
+    let stream = match std.fs.readDir(path) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("directory stream should open before abandonment")
+    }
+    std.runtime.keepAlive(&stream)
+}
+
+@cfg(family("unix"))
+func abandonTempDir(_ parent: string) -> string {
+    let temp = match std.fs.createTempDir(parent: parent, prefix: "abandoned-") {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("temporary directory should be created before abandonment")
+    }
+    let path = temp.path()
+    std.testing.assertTrue(
+        std.fs.writeString(path.concat("/value.txt"), "cleanup").isOk(),
+        "abandoned temporary directory should contain a cleanup target",
+    )
+    std.runtime.keepAlive(&temp)
+    return path
+}
+
+@cfg(family("unix"))
+@test
+func testMetadataAndExistsFollowDocumentedSymlinkRules() {
+    let root = "taro_fs_metadata_story6"
+    let filePath = root.concat("/value.txt")
+    let linkPath = root.concat("/value-link")
+    let danglingPath = root.concat("/dangling-link")
+    let _ = std.fs.removeDirAll(root)
+
+    std.testing.assertTrue(std.fs.createDir(root).isOk(), "metadata root should be created")
+    std.testing.assertTrue(std.fs.writeString(filePath, "hello").isOk(), "metadata file should be written")
+    std.testing.assertTrue(std.fs.symlink("value.txt", linkPath).isOk(), "metadata symlink should be created")
+    std.testing.assertTrue(std.fs.symlink("missing.txt", danglingPath).isOk(), "dangling symlink should be created")
+
+    let fileMetadata = match std.fs.metadata(filePath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("regular file metadata should succeed")
+    }
+    std.testing.assertTrue(fileMetadata.isFile(), "regular file metadata should report a file")
+    std.testing.assertEqual(fileMetadata.fileType(), std.fs.FileType.regular, "regular file type should be portable")
+    std.testing.assertEqual(fileMetadata.len(), 5_u64, "regular file length should be reported")
+    std.testing.assertTrue(fileMetadata.modified().unixSeconds() > 0_i64, "modified time should be populated")
+    std.testing.assertTrue(fileMetadata.accessed().unixSeconds() > 0_i64, "accessed time should be populated")
+
+    let followed = match std.fs.metadata(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("metadata should follow the final symlink")
+    }
+    std.testing.assertTrue(followed.isFile(), "followed symlink metadata should describe its target")
+
+    let linkMetadata = match std.fs.symlinkMetadata(linkPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("symlinkMetadata should inspect the link itself")
+    }
+    std.testing.assertTrue(linkMetadata.isSymlink(), "symlinkMetadata should report a symlink")
+    std.testing.assertEqual(linkMetadata.fileType(), std.fs.FileType.symlink, "symlink type should be portable")
+
+    std.testing.assertTrue(std.fs.exists(filePath).unwrap(), "exists should report a regular file")
+    std.testing.assertFalse(std.fs.exists(root.concat("/missing")).unwrap(), "exists should report a missing path")
+    std.testing.assertFalse(std.fs.exists(danglingPath).unwrap(), "exists should follow a dangling final link")
+    std.testing.assertTrue(
+        std.fs.symlinkMetadata(danglingPath).unwrap().isSymlink(),
+        "symlinkMetadata should still observe a dangling link",
+    )
+
+    match std.fs.exists(makePathWithEmbeddedNul()) {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "exists should preserve malformed-path errors")
+        case .ok(_) => std.testing.fail("exists must not turn invalid input into false")
+    }
+
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "metadata tree should be removed")
+}
+
+@cfg(family("unix"))
+@test
+func testReadDirStreamsEntriesAndReportsTypes() {
+    let root = "taro_fs_read_dir_story6"
+    let _ = std.fs.removeDirAll(root)
+
+    std.testing.assertTrue(std.fs.createDir(root).isOk(), "readDir root should be created")
+    std.testing.assertTrue(std.fs.writeString(root.concat("/file.txt"), "file").isOk(), "readDir file should be written")
+    std.testing.assertTrue(std.fs.createDir(root.concat("/child")).isOk(), "readDir child should be created")
+    std.testing.assertTrue(std.fs.symlink("file.txt", root.concat("/link")).isOk(), "readDir link should be created")
+
+    var stream = match std.fs.readDir(root) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("readDir should open the directory")
+    }
+    var count: usize = 0
+    var sawFile = false
+    var sawChild = false
+    var sawLink = false
+    loop {
+        let next = stream.next()
+        match next {
+            case .none => break
+            case .some(result) => {
+                let entry = match result {
+                    case .ok(value) => value
+                    case .err(_) => std.panic.panic("readDir iteration should not fail")
+                }
+                let name = entry.name()
+                std.testing.assertTrue(name != "." && name != "..", "readDir should omit dot entries")
+                std.testing.assertEqual(entry.path(), root.concat("/").concat(name), "entry path should join root and name")
+                if name == "file.txt" {
+                    sawFile = true
+                    std.testing.assertTrue(entry.fileType().isFile(), "regular entry type should be reported")
+                } else if name == "child" {
+                    sawChild = true
+                    std.testing.assertTrue(entry.isDirectory(), "directory entry type should be reported")
+                } else if name == "link" {
+                    sawLink = true
+                    std.testing.assertTrue(entry.fileType().isSymlink(), "directory entry should not follow symlinks")
+                    std.testing.assertTrue(entry.metadata().unwrap().isSymlink(), "entry metadata should not follow symlinks")
+                }
+                count += 1
+            }
+        }
+    }
+
+    std.testing.assertEqual(count, 3 as usize, "readDir should yield each real entry exactly once")
+    std.testing.assertTrue(sawFile && sawChild && sawLink, "readDir should preserve every entry name")
+    std.testing.assertTrue(stream.next().isNone(), "next after EOF should remain empty")
+    match stream.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "EOF should auto-close the directory")
+        case .ok(_) => std.testing.fail("close after EOF should report closed")
+    }
+
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "readDir tree should be removed")
+}
+
+// Darwin filesystems reject malformed UTF-8 names before readdir can observe
+// them (APFS reports EPERM), while Linux permits arbitrary non-NUL bytes. Keep
+// the end-to-end raw-name assertion on a host that can actually create the
+// fixture; the runtime unit test separately verifies lossless byte conversion.
+@cfg(os("linux"))
+@test
+func testReadDirPreservesNonUtf8Names() {
+    let root = "taro_fs_read_dir_raw_story6"
+    let rawName = makeNonUtf8FileName()
+    let rawPath = root.concat("/").concat(rawName)
+    let _ = std.fs.removeDirAll(root)
+
+    std.testing.assertTrue(std.fs.createDir(root).isOk(), "raw readDir root should be created")
+    std.testing.assertTrue(std.fs.writeString(rawPath, "raw").isOk(), "raw-byte filename should be accepted")
+
+    var stream = std.fs.readDir(root).unwrap()
+    var sawRaw = false
+    loop {
+        match stream.next() {
+            case .none => break
+            case .some(result) => {
+                let entry = result.unwrap()
+                if entry.name() == rawName {
+                    sawRaw = true
+                }
+            }
+        }
+    }
+
+    std.testing.assertTrue(sawRaw, "readDir should preserve non-UTF-8 filename bytes")
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "raw readDir tree should be removed")
+}
+
+@cfg(family("unix"))
+@test
+func testReadDirCopiesShareCloseAndCleanupOwnership() {
+    let root = "taro_fs_read_dir_close_story6"
+    let replacementPath = "taro_fs_read_dir_close_replacement.txt"
+    let _ = std.fs.removeDirAll(root)
+    let _ = std.fs.removeFile(replacementPath)
+    std.testing.assertTrue(std.fs.createDir(root).isOk(), "shared readDir root should be created")
+
+    let stream = match std.fs.readDir(root) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("shared readDir should open")
+    }
+    var copy = stream
+    std.testing.assertTrue(stream.close().isOk(), "first directory copy should close the stream")
+    std.testing.assertTrue(copy.next().isNone(), "another directory copy should observe the closed stream")
+    match copy.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "repeated directory close should report closed")
+        case .ok(_) => std.testing.fail("repeated directory close should fail")
+    }
+
+    // Opening a file after close encourages descriptor reuse. Collection must
+    // not let the cancelled cleanup close that replacement descriptor.
+    var replacement = match std.fs.File.create(replacementPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("replacement descriptor should open")
+    }
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertTrue(
+        std.io.writeString(&mut replacement, "still open").isOk(),
+        "cancelled directory cleanup must not close a reused descriptor",
+    )
+    std.testing.assertTrue(replacement.close().isOk(), "replacement file should close")
+
+    abandonReadDir(root)
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    var afterCleanup = match std.fs.File.create(replacementPath) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("descriptor should be reusable after abandoned readDir cleanup")
+    }
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertTrue(
+        std.io.writeString(&mut afterCleanup, "reused safely").isOk(),
+        "completed readDir cleanup must not retain stale descriptor ownership",
+    )
+    std.testing.assertTrue(afterCleanup.close().isOk(), "post-cleanup replacement should close")
+
+    std.testing.assertTrue(std.fs.removeFile(replacementPath).isOk(), "replacement file should be removed")
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "shared readDir root should be removed")
+}
+
+@cfg(family("unix"))
+@test
+func testCreateDirAllHandlesParentsRacesAndTraversalComponents() {
+    let root = "taro_fs_create_dir_all_story6"
+    let nested = root.concat("/one/two/three")
+    let blocker = root.concat("/blocker")
+    let target = root.concat("/target")
+    let link = root.concat("/target-link")
+    let _ = std.fs.removeDirAll(root)
+
+    std.testing.assertTrue(std.fs.createDirAll(nested).isOk(), "createDirAll should create every parent")
+    std.testing.assertTrue(std.fs.metadata(nested).unwrap().isDirectory(), "nested leaf should be a directory")
+    std.testing.assertTrue(std.fs.createDirAll(nested).isOk(), "createDirAll should be idempotent")
+
+    std.testing.assertTrue(std.fs.writeString(blocker, "file").isOk(), "blocker file should be created")
+    match std.fs.createDirAll(blocker.concat("/child")) {
+        case .err(err) => std.testing.assertTrue(err.isKind(.notADirectory), "file parent should report notADirectory")
+        case .ok(_) => std.testing.fail("createDirAll must not traverse through a file")
+    }
+
+    std.testing.assertTrue(std.fs.createDir(target).isOk(), "symlink target directory should be created")
+    std.testing.assertTrue(std.fs.symlink("target", link).isOk(), "directory symlink should be created")
+    std.testing.assertTrue(
+        std.fs.createDirAll(link.concat("/child")).isOk(),
+        "createDirAll should accept a symlink whose target is a directory",
+    )
+    std.testing.assertTrue(
+        std.fs.metadata(target.concat("/child")).unwrap().isDirectory(),
+        "directory symlink traversal should create the child in its target",
+    )
+
+    let traversal = root.concat("/walk/../sibling")
+    std.testing.assertTrue(std.fs.createDirAll(traversal).isOk(), "createDirAll should traverse components in OS order")
+    std.testing.assertTrue(std.fs.metadata(root.concat("/walk")).unwrap().isDirectory(), "pre-.. component should be created")
+    std.testing.assertTrue(std.fs.metadata(root.concat("/sibling")).unwrap().isDirectory(), "post-.. component should be created")
+
+    match std.fs.createDirAll("") {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "empty createDirAll path should be invalid")
+        case .ok(_) => std.testing.fail("empty createDirAll path should fail")
+    }
+
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "createDirAll tree should be removed")
+}
+
+@cfg(family("unix"))
+@test
+func testRemoveDirAllIsIdempotentAndDoesNotFollowSymlinks() {
+    let root = "taro_fs_remove_dir_all_story6"
+    let target = root.concat("/target")
+    let tree = root.concat("/tree")
+    let rootFile = root.concat("/single-file")
+    let _ = std.fs.removeDirAll(root)
+
+    std.testing.assertTrue(std.fs.createDirAll(target).isOk(), "remove target should be created")
+    std.testing.assertTrue(std.fs.writeString(target.concat("/kept.txt"), "kept").isOk(), "target file should be written")
+    std.testing.assertTrue(std.fs.createDirAll(tree.concat("/nested")).isOk(), "remove tree should be created")
+    std.testing.assertTrue(std.fs.writeString(tree.concat("/nested/value.txt"), "value").isOk(), "nested file should be written")
+    std.testing.assertTrue(std.fs.symlink("../target", tree.concat("/target-link")).isOk(), "tree symlink should be created")
+
+    std.testing.assertTrue(std.fs.removeDirAll(tree).isOk(), "removeDirAll should remove a directory tree")
+    std.testing.assertTrue(
+        std.fs.exists(target.concat("/kept.txt")).unwrap(),
+        "removeDirAll must unlink a directory symlink without following its target",
+    )
+
+    std.testing.assertTrue(std.fs.writeString(rootFile, "single").isOk(), "single file should be created")
+    std.testing.assertTrue(std.fs.removeDirAll(rootFile).isOk(), "removeDirAll should remove a file root")
+    std.testing.assertFalse(std.fs.exists(rootFile).unwrap(), "file root should be absent after removeDirAll")
+    std.testing.assertTrue(std.fs.removeDirAll(root.concat("/missing")).isOk(), "missing recursive target should succeed")
+    std.testing.assertTrue(std.fs.removeDirAll("").isOk(), "empty recursive target should be a no-op")
+
+    match std.fs.removeDirAll(".") {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "working-directory removal should be guarded")
+        case .ok(_) => std.testing.fail("removeDirAll must reject a path that cleans to dot")
+    }
+    match std.fs.removeDirAll("/") {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "filesystem-root removal should be guarded")
+        case .ok(_) => std.testing.fail("removeDirAll must reject the filesystem root")
+    }
+
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "removeDirAll fixture should be removed")
+}
+
+@cfg(family("unix"))
+@test
+func testCopyOverwritesFollowsLinksAndProtectsSameFile() {
+    let root = "taro_fs_copy_story6"
+    let source = root.concat("/source.txt")
+    let destination = root.concat("/destination.txt")
+    let sourceLink = root.concat("/source-link")
+    let linkCopy = root.concat("/link-copy.txt")
+    let destinationTarget = root.concat("/destination-target.txt")
+    let destinationLink = root.concat("/destination-link")
+    let payload = "copy payload"
+    let _ = std.fs.removeDirAll(root)
+
+    std.testing.assertTrue(std.fs.createDir(root).isOk(), "copy root should be created")
+    std.testing.assertTrue(std.fs.writeString(source, payload).isOk(), "copy source should be written")
+    std.testing.assertTrue(std.fs.writeString(destination, "long stale destination").isOk(), "copy destination should be seeded")
+
+    let copied = match std.fs.copy(source, destination) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("regular file copy should succeed")
+    }
+    std.testing.assertEqual(copied, std.string.stringLen(payload) as uint64, "copy should return bytes written")
+    std.testing.assertEqual(std.fs.readToString(destination).unwrap(), payload, "copy should truncate and overwrite")
+
+    std.testing.assertTrue(std.fs.symlink("source.txt", sourceLink).isOk(), "source link should be created")
+    std.testing.assertTrue(std.fs.copy(sourceLink, linkCopy).isOk(), "copy should follow a source symlink")
+    std.testing.assertEqual(std.fs.readToString(linkCopy).unwrap(), payload, "source-link copy should preserve data")
+
+    std.testing.assertTrue(std.fs.writeString(destinationTarget, "old").isOk(), "destination target should be seeded")
+    std.testing.assertTrue(std.fs.symlink("destination-target.txt", destinationLink).isOk(), "destination link should be created")
+    std.testing.assertTrue(std.fs.copy(source, destinationLink).isOk(), "copy should follow a destination symlink")
+    std.testing.assertEqual(std.fs.readToString(destinationTarget).unwrap(), payload, "destination target should be replaced")
+
+    match std.fs.copy(source, source) {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "copying onto the same opened file should fail")
+        case .ok(_) => std.testing.fail("same-file copy should fail")
+    }
+    std.testing.assertEqual(std.fs.readToString(source).unwrap(), payload, "same-file rejection must happen before truncation")
+
+    match std.fs.copy(root, destination) {
+        case .err(err) => std.testing.assertTrue(err.isKind(.isADirectory), "directory source should report isADirectory")
+        case .ok(_) => std.testing.fail("copying a directory should fail")
+    }
+    match std.fs.copy(root.concat("/missing"), destination) {
+        case .err(err) => {
+            std.testing.assertTrue(err.isKind(.notFound), "missing copy source should report notFound")
+            match err.context() {
+                case .paths(first, second) => {
+                    std.testing.assertEqual(*first, root.concat("/missing"), "copy error should retain its source")
+                    std.testing.assertEqual(*second, destination, "copy error should retain its destination")
+                }
+                case _ => std.testing.fail("copy error should contain both paths")
+            }
+        }
+        case .ok(_) => std.testing.fail("copying a missing source should fail")
+    }
+
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "copy fixture should be removed")
+}
+
+@cfg(family("unix"))
+@test
+func testCanonicalizeResolvesLinksAndRejectsMalformedPaths() {
+    let root = "taro_fs_canonicalize_story6"
+    let target = root.concat("/sub/target.txt")
+    let link = root.concat("/link")
+    let _ = std.fs.removeDirAll(root)
+
+    std.testing.assertTrue(std.fs.createDirAll(root.concat("/sub")).isOk(), "canonical root should be created")
+    std.testing.assertTrue(std.fs.writeString(target, "target").isOk(), "canonical target should be written")
+    std.testing.assertTrue(std.fs.symlink("sub/target.txt", link).isOk(), "canonical link should be created")
+
+    let targetPath = std.fs.canonicalize(target).unwrap()
+    let linkPath = std.fs.canonicalize(root.concat("/./link")).unwrap()
+    std.testing.assertTrue(std.path.isAbsolute(targetPath), "canonicalize should return an absolute path")
+    std.testing.assertEqual(linkPath, targetPath, "canonicalize should resolve dot components and symlinks")
+
+    match std.fs.canonicalize(root.concat("/missing")) {
+        case .err(err) => std.testing.assertTrue(err.isKind(.notFound), "missing canonical path should report notFound")
+        case .ok(_) => std.testing.fail("canonicalizing a missing path should fail")
+    }
+    match std.fs.canonicalize(makePathWithEmbeddedNul()) {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "canonicalize should reject embedded NUL")
+        case .ok(_) => std.testing.fail("canonicalize should reject malformed paths")
+    }
+
+    std.testing.assertTrue(std.fs.removeDirAll(root).isOk(), "canonical fixture should be removed")
+}
+
+@cfg(family("unix"))
+@test
+func testTempDirSupportsCloseKeepCopiesAndFallbackCleanup() {
+    let parent = "taro_fs_temp_dir_story6"
+    let _ = std.fs.removeDirAll(parent)
+    std.testing.assertTrue(std.fs.createDir(parent).isOk(), "temporary parent should be created")
+
+    let temp = match std.fs.createTempDir(parent: parent, prefix: "case-") {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("custom temporary directory should be created")
+    }
+    let tempCopy = temp
+    let tempPath = temp.path()
+    std.testing.assertTrue(tempPath.startsWith(parent.concat("/case-")), "custom prefix should be preserved")
+    std.testing.assertTrue(std.fs.metadata(tempPath).unwrap().isDirectory(), "temporary path should be a directory")
+    std.testing.assertTrue(std.fs.createDirAll(tempPath.concat("/nested")).isOk(), "temporary tree should support nesting")
+    std.testing.assertTrue(std.fs.writeString(tempPath.concat("/nested/value.txt"), "value").isOk(), "temporary file should be written")
+    std.testing.assertTrue(temp.close().isOk(), "explicit temporary close should remove the tree")
+    std.testing.assertFalse(std.fs.exists(tempPath).unwrap(), "closed temporary directory should be absent")
+    std.testing.assertEqual(tempCopy.path(), tempPath, "path should remain available after close")
+    match tempCopy.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "all copies should share one close claim")
+        case .ok(_) => std.testing.fail("second temporary close should fail")
+    }
+
+    let kept = std.fs.createTempDir(parent: parent, prefix: "kept-").unwrap()
+    let keptCopy = kept
+    let keptPath = kept.keep().unwrap()
+    std.testing.assertTrue(std.fs.exists(keptPath).unwrap(), "keep should retain the temporary directory")
+    match keptCopy.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "keep should consume cleanup ownership")
+        case .ok(_) => std.testing.fail("close after keep should fail")
+    }
+    std.testing.assertTrue(std.fs.removeDirAll(keptPath).isOk(), "caller should remove a kept directory")
+
+    let emptyPrefix = std.fs.createTempDir(parent: parent, prefix: "").unwrap()
+    std.testing.assertTrue(emptyPrefix.path().startsWith(parent.concat("/")), "empty prefix should still use the parent")
+    std.testing.assertTrue(emptyPrefix.close().isOk(), "empty-prefix temporary directory should close")
+
+    let abandonedPath = abandonTempDir(parent)
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    std.testing.assertFalse(
+        std.fs.exists(abandonedPath).unwrap(),
+        "fallback cleanup should recursively remove an abandoned temporary directory",
+    )
+
+    match std.fs.createTempDir(parent: parent, prefix: "bad/prefix") {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "temporary prefix must be one path component")
+        case .ok(_) => std.testing.fail("temporary prefix containing slash should fail")
+    }
+    match std.fs.createTempDir(parent: parent.concat("/missing"), prefix: "case-") {
+        case .err(err) => std.testing.assertTrue(err.isKind(.notFound), "temporary parent must already exist")
+        case .ok(_) => std.testing.fail("temporary creation under a missing parent should fail")
+    }
+
+    let defaultTemp = std.fs.createTempDir().unwrap()
+    std.testing.assertTrue(std.path.isAbsolute(defaultTemp.path()), "default temporary parent should be absolute")
+    std.testing.assertTrue(std.path.base(defaultTemp.path()).startsWith("taro-"), "default temporary prefix should be taro-")
+    std.testing.assertTrue(defaultTemp.close().isOk(), "default temporary directory should close")
+
+    std.testing.assertTrue(std.fs.removeDirAll(parent).isOk(), "temporary parent should be removed")
+}
