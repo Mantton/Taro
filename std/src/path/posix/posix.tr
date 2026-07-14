@@ -1,5 +1,8 @@
 import std.optional.Optional
 import std.string.{stringLen, stringData}
+import std.string.Builder
+import std.collections.List
+import std.result.Result
 
 /// Platform-independent POSIX lexical path helpers.
 ///
@@ -8,14 +11,34 @@ import std.string.{stringLen, stringData}
 /// archive entries) that must travel across platforms. For paths that
 /// should follow the host's native convention, use `std.path` instead.
 ///
-/// This is *lexical* only: no filesystem queries, no symlink resolution,
-/// no `.`/`..` normalization, no `~` expansion, no Windows drive letters.
+/// This is *lexical* only: no filesystem queries, symlink resolution, `~`
+/// expansion, or Windows drive-letter handling. Functions such as `clean`,
+/// `join`, and `relative` process `.` and `..` purely as path components.
 
 /// The separator byte used by this module ('/').
 const SEPARATOR_BYTE: uint8 = 47
 
 /// The separator string used by this module ("/").
 public const SEPARATOR: string = "/"
+
+/// Why one path cannot be expressed relative to another lexically.
+public enum RelativeError: std.marker.Copy, std.ops.PartialEq {
+    /// One path is rooted and the other is relative.
+    case incompatibleRoots
+    /// The unmatched base begins with `..` and therefore requires a working directory.
+    case unresolvedBase
+}
+
+impl std.fmt.Display for RelativeError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .incompatibleRoots => into.writeString("paths have incompatible roots")
+            case .unresolvedBase => into.writeString("relative base begins with an unresolved parent component")
+        }
+    }
+}
+
+impl std.error.Error for RelativeError {}
 
 /// Returns true if `byte` is a path separator ('/').
 public func isSeparator(_ byte: uint8) -> bool {
@@ -37,25 +60,23 @@ public func normalizeSeparators(_ path: string) -> string {
     }
 
     let src = stringData(path)
-    var out = ""
+    var out = Builder()
     var i: usize = 0
+    var previousWasSeparator = false
     while i < len {
         let b = src.add(i).read()
         if isSeparator(b) {
-            out = out.concat(SEPARATOR)
-            i += 1
-            while i < len && isSeparator(src.add(i).read()) {
-                i += 1
+            if !previousWasSeparator {
+                out.writeByte(SEPARATOR_BYTE)
             }
+            previousWasSeparator = true
         } else {
-            let start = i
-            while i < len && !isSeparator(src.add(i).read()) {
-                i += 1
-            }
-            out = out.concat(path.substring(start, i - start))
+            out.writeByte(b)
+            previousWasSeparator = false
         }
+        i += 1
     }
-    return out
+    return out.intoString()
 }
 
 /// Returns true if `path` begins with a '/'.
@@ -63,37 +84,274 @@ public func isAbsolute(_ path: string) -> bool {
     path.startsWith(SEPARATOR)
 }
 
-/// Lexically joins two path segments with a single '/' between them.
+/// Return the original path's logical components.
 ///
-/// Notes:
-///   - Does not canonicalize or resolve `.`/`..`.
-///   - If `rhs` has a leading '/', it is treated as a trailing segment of
-///     `lhs`, not as a fresh absolute path.
+/// Repeated and trailing separators are ignored. A rooted path starts with
+/// the component `"/"`; `.` and `..` components remain unchanged.
+public func components(_ path: string) -> List[string] {
+    var result = List[string]()
+    let len = stringLen(path)
+    if len == 0 {
+        return result
+    }
+
+    let data = stringData(path)
+    var index: usize = 0
+    if isSeparator(data.read()) {
+        result.append(SEPARATOR)
+        while index < len && isSeparator(data.add(index).read()) {
+            index += 1
+        }
+    }
+
+    while index < len {
+        while index < len && isSeparator(data.add(index).read()) {
+            index += 1
+        }
+        if index == len {
+            break
+        }
+
+        let start = index
+        while index < len && !isSeparator(data.add(index).read()) {
+            index += 1
+        }
+        result.append(path.substring(start, index - start))
+    }
+    return result
+}
+
+func componentsAreRooted(_ parts: &List[string]) -> bool {
+    parts.len() > 0 && *parts.at(0) == SEPARATOR
+}
+
+func renderComponentRange(
+    _ parts: &List[string],
+    _ start: usize,
+    _ end: usize,
+    _ rooted: bool,
+    _ emptyValue: string,
+) -> string {
+    if start == end {
+        if rooted {
+            return SEPARATOR
+        }
+        return emptyValue
+    }
+
+    var out = Builder()
+    if rooted {
+        out.writeByte(SEPARATOR_BYTE)
+    }
+    var index = start
+    var wroteComponent = false
+    while index < end {
+        if wroteComponent {
+            out.writeByte(SEPARATOR_BYTE)
+        }
+        out.writeString(*parts.at(index))
+        wroteComponent = true
+        index += 1
+    }
+    return out.intoString()
+}
+
+/// Return the shortest lexically equivalent path.
+///
+/// Empty results become `"."`. Leading `..` components remain on relative
+/// paths, while attempts to walk above a root are clamped at the root.
+public func clean(_ path: string) -> string {
+    let source = components(path)
+    let rooted = componentsAreRooted(&source)
+    var stack = List[string]()
+    var index: usize = if rooted { 1 } else { 0 }
+
+    while index < source.len() {
+        let component = *source.at(index)
+        if component == "." {
+            index += 1
+            continue
+        }
+        if component == ".." {
+            if stack.len() > 0 && *stack.at(stack.len() - (1 as usize)) != ".." {
+                let _ = stack.pop()
+            } else if !rooted {
+                stack.append(component)
+            }
+        } else {
+            stack.append(component)
+        }
+        index += 1
+    }
+
+    return renderComponentRange(&stack, 0 as usize, stack.len(), rooted, ".")
+}
+
+/// Lexically joins two path segments and cleans the result.
+///
+/// An absolute `rhs` is still treated as a trailing segment rather than a
+/// replacement for `lhs`. Empty segments are ignored; when both are empty,
+/// the result is empty rather than `"."`.
 ///
 /// Examples:
 ///   join("a", "b")  -> "a/b"
-///   join("a/", "b") -> "a/b"
+///   join("a", "..") -> "."
 ///   join("a", "/b") -> "a/b"
 ///   join("", "b")   -> "b"
-///   join("a", "")   -> "a"
 public func join(_ lhs: string, _ rhs: string) -> string {
-    if lhs.isEmpty() {
-        return rhs
-    }
-    if rhs.isEmpty() {
-        return lhs
+    joinAll(lhs, rhs)
+}
+
+/// Lexically joins any number of path segments and cleans the result.
+///
+/// Empty segments are ignored. If every segment is empty (including when no
+/// segments are supplied), the result is the empty string.
+public func joinAll(_ paths: string...) -> string {
+    var joined = Builder()
+    var wrotePath = false
+    var index: usize = 0
+    while index < paths.len() {
+        let path = *paths.at(index)
+        if !path.isEmpty() {
+            if wrotePath {
+                joined.writeByte(SEPARATOR_BYTE)
+            }
+            joined.writeString(path)
+            wrotePath = true
+        }
+        index += 1
     }
 
-    let lhs_ends = lhs.endsWith(SEPARATOR)
-    let rhs_starts = rhs.startsWith(SEPARATOR)
+    if !wrotePath {
+        return ""
+    }
+    return clean(joined.intoString())
+}
 
-    if lhs_ends && rhs_starts {
-        return lhs.concat(rhs.substring(1, stringLen(rhs) - 1))
+/// Splits `path` immediately after its final separator.
+///
+/// The returned directory and file always concatenate back to the original
+/// path. Unlike `clean`, this function preserves repeated and trailing
+/// separators.
+public func split(_ path: string) -> (string, string) {
+    match lastSeparatorIndex(path) {
+        case .some(index) => {
+            let boundary = index + (1 as usize)
+            return (
+                path.substring(0 as usize, boundary),
+                path.substring(boundary, stringLen(path) - boundary),
+            )
+        }
+        case .none => return ("", path)
     }
-    if !lhs_ends && !rhs_starts {
-        return lhs.concat(SEPARATOR).concat(rhs)
+}
+
+/// Returns the final non-separator component of `path`.
+///
+/// Empty paths yield `"."`; paths containing only separators yield `"/"`.
+public func base(_ path: string) -> string {
+    if path.isEmpty() {
+        return "."
     }
-    lhs.concat(rhs)
+
+    let trimmed = trimTrailingSeparators(path)
+    if trimmed.isEmpty() {
+        return SEPARATOR
+    }
+
+    match lastSeparatorIndex(trimmed) {
+        case .some(index) => {
+            let start = index + (1 as usize)
+            return trimmed.substring(start, stringLen(trimmed) - start)
+        }
+        case .none => return trimmed
+    }
+}
+
+/// Returns all but the final path component, then cleans the result.
+public func dir(_ path: string) -> string {
+    let (directory, _) = split(path)
+    clean(directory)
+}
+
+/// Returns a lexical path that reaches `target` from `base`.
+///
+/// Both inputs are cleaned first. Rooted and relative paths are incompatible.
+/// A relative base whose unmatched suffix begins with `..` cannot be resolved
+/// without consulting the working directory and returns `.unresolvedBase`.
+public func relative(_ basePath: string, _ targetPath: string) -> Result[string, RelativeError] {
+    let cleanedBase = clean(basePath)
+    let cleanedTarget = clean(targetPath)
+    if cleanedBase == cleanedTarget {
+        return .ok(".")
+    }
+
+    let baseParts = components(cleanedBase)
+    let targetParts = components(cleanedTarget)
+    let baseRooted = componentsAreRooted(&baseParts)
+    let targetRooted = componentsAreRooted(&targetParts)
+    if baseRooted != targetRooted {
+        return .err(.incompatibleRoots)
+    }
+
+    var baseStart: usize = if baseRooted { 1 } else { 0 }
+    var targetStart: usize = if targetRooted { 1 } else { 0 }
+    if !baseRooted && baseParts.len() == 1 && *baseParts.at(0) == "." {
+        baseStart = baseParts.len()
+    }
+    if !targetRooted && targetParts.len() == 1 && *targetParts.at(0) == "." {
+        targetStart = targetParts.len()
+    }
+
+    while baseStart < baseParts.len()
+        && targetStart < targetParts.len()
+        && *baseParts.at(baseStart) == *targetParts.at(targetStart) {
+        baseStart += 1
+        targetStart += 1
+    }
+
+    if baseStart < baseParts.len() && *baseParts.at(baseStart) == ".." {
+        return .err(.unresolvedBase)
+    }
+
+    var resultParts = List[string]()
+    var index = baseStart
+    while index < baseParts.len() {
+        resultParts.append("..")
+        index += 1
+    }
+    index = targetStart
+    while index < targetParts.len() {
+        resultParts.append(*targetParts.at(index))
+        index += 1
+    }
+    return .ok(renderComponentRange(&resultParts, 0 as usize, resultParts.len(), false, "."))
+}
+
+/// Removes a structural component prefix from `path`.
+///
+/// Repeated and trailing separators are ignored for comparison, while `.` and
+/// `..` remain ordinary components. Rooted paths only match rooted prefixes.
+/// The returned suffix uses normalized separators and is empty for an exact
+/// match.
+public func stripPrefix(_ path: string, _ prefix: string) -> string? {
+    let pathParts = components(path)
+    let prefixParts = components(prefix)
+    let pathRooted = componentsAreRooted(&pathParts)
+    let prefixRooted = componentsAreRooted(&prefixParts)
+    if pathRooted != prefixRooted || prefixParts.len() > pathParts.len() {
+        return .none
+    }
+
+    var index: usize = 0
+    while index < prefixParts.len() {
+        if *pathParts.at(index) != *prefixParts.at(index) {
+            return .none
+        }
+        index += 1
+    }
+
+    return .some(renderComponentRange(&pathParts, index, pathParts.len(), false, ""))
 }
 
 /// Returns the final path component of `path`, or `.none` when the path has

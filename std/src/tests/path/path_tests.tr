@@ -13,6 +13,41 @@ func assertNone(_ value: string?, _ message: string) {
     assertTrue(value.isNone(), message)
 }
 
+func assertStringParts(
+    _ actual: &std.collections.List[string],
+    _ expected: std.mem.Span[string],
+    _ message: string,
+) {
+    assertEqual(actual.len(), expected.len(), message)
+    var index: usize = 0
+    while index < expected.len() {
+        assertEqual(*actual.at(index), *expected.at(index), message)
+        index += 1
+    }
+}
+
+func assertRelativeOk(
+    _ result: std.result.Result[string, posix.RelativeError],
+    _ expected: string,
+    _ message: string,
+) {
+    match result {
+        case .ok(actual) => assertEqual(actual, expected, message)
+        case .err(_) => fail(message)
+    }
+}
+
+func assertRelativeError(
+    _ result: std.result.Result[string, posix.RelativeError],
+    _ expected: posix.RelativeError,
+    _ message: string,
+) {
+    match result {
+        case .ok(_) => fail(message)
+        case .err(actual) => assertEqual(actual, expected, message)
+    }
+}
+
 // =====================================================================
 // std.path.posix — platform-independent, always '/'.
 // =====================================================================
@@ -51,6 +86,37 @@ func testPosixIsAbsolute() {
 }
 
 @test
+func testPosixComponentsPreserveLexicalStructure() {
+    let empty = posix.components("")
+    assertEqual(empty.len(), 0 as usize, "empty path has no components")
+
+    let root = posix.components("///")
+    let expectedRoot: [string; 1] = ["/"]
+    assertStringParts(&root, expectedRoot.asSpan(), "root is represented explicitly")
+
+    let absolute = posix.components("/a//./b/../")
+    let expectedAbsolute: [string; 5] = ["/", "a", ".", "b", ".."]
+    assertStringParts(&absolute, expectedAbsolute.asSpan(), "absolute components preserve dot segments")
+
+    let relative = posix.components("a///.././b//")
+    let expectedRelative: [string; 4] = ["a", "..", ".", "b"]
+    assertStringParts(&relative, expectedRelative.asSpan(), "relative components ignore separator runs")
+}
+
+@test
+func testPosixClean() {
+    assertEqual(posix.clean(""), ".", "empty path cleans to dot")
+    assertEqual(posix.clean("."), ".", "dot remains dot")
+    assertEqual(posix.clean("/"), "/", "root remains root")
+    assertEqual(posix.clean("///a//b/"), "/a/b", "separator runs and trailing separators are removed")
+    assertEqual(posix.clean("a/./b"), "a/b", "dot components are removed")
+    assertEqual(posix.clean("a/b/.."), "a", "parent removes the preceding component")
+    assertEqual(posix.clean("a/../.."), "..", "relative paths retain traversal above their start")
+    assertEqual(posix.clean("../../a"), "../../a", "leading relative parents remain")
+    assertEqual(posix.clean("/../../a"), "/a", "absolute paths cannot traverse above root")
+}
+
+@test
 func testPosixJoin() {
     assertEqual(posix.join("a", "b"), "a/b", "basic join inserts separator")
     assertEqual(posix.join("a/", "b"), "a/b", "trailing slash on lhs not duplicated")
@@ -60,6 +126,95 @@ func testPosixJoin() {
     assertEqual(posix.join("a/", "/b"), "a/b", "dup separators collapse to one")
     assertEqual(posix.join("/tmp", "file.txt"), "/tmp/file.txt", "absolute lhs preserved")
     assertEqual(posix.join("", ""), "", "both empty")
+    assertEqual(posix.join("a", ".."), ".", "join cleans parent components")
+    assertEqual(posix.join("/a", "../b"), "/b", "join cleans beneath an absolute root")
+}
+
+@test
+func testPosixJoinAll() {
+    assertEqual(posix.joinAll(), "", "joining no paths produces empty")
+    assertEqual(posix.joinAll("", "", ""), "", "joining only empty paths produces empty")
+    assertEqual(posix.joinAll("a", "b", "..", "c"), "a/c", "joinAll cleans the combined path")
+    assertEqual(posix.joinAll("/", "..", "a"), "/a", "joinAll cannot traverse above root")
+    assertEqual(posix.joinAll("a/", "/b", "./c"), "a/b/c", "joinAll normalizes separators")
+}
+
+@test
+func testPosixSplit() {
+    let (absoluteDir, absoluteFile) = posix.split("/a/b")
+    assertEqual(absoluteDir, "/a/", "split preserves the directory separator")
+    assertEqual(absoluteFile, "b", "split returns the final component")
+
+    let (trailingDir, trailingFile) = posix.split("/a/b/")
+    assertEqual(trailingDir, "/a/b/", "split preserves a trailing separator in the directory")
+    assertEqual(trailingFile, "", "split after a trailing separator has an empty file")
+
+    let (bareDir, bareFile) = posix.split("name")
+    assertEqual(bareDir, "", "bare names have an empty split directory")
+    assertEqual(bareFile, "name", "bare names remain the split file")
+
+    let (rootDir, rootFile) = posix.split("/")
+    assertEqual(rootDir, "/", "root is entirely the split directory")
+    assertEqual(rootFile, "", "root has an empty split file")
+
+    let (emptyDir, emptyFile) = posix.split("")
+    assertEqual(emptyDir, "", "empty split directory is empty")
+    assertEqual(emptyFile, "", "empty split file is empty")
+}
+
+@test
+func testPosixBaseAndDir() {
+    assertEqual(posix.base(""), ".", "base of empty is dot")
+    assertEqual(posix.base("/"), "/", "base of root is root")
+    assertEqual(posix.base("///"), "/", "base of repeated root separators is root")
+    assertEqual(posix.base("/a/b/"), "b", "base ignores trailing separators")
+    assertEqual(posix.base("name"), "name", "base preserves a bare name")
+
+    assertEqual(posix.dir(""), ".", "dir of empty is dot")
+    assertEqual(posix.dir("name"), ".", "dir of a bare name is dot")
+    assertEqual(posix.dir("/a"), "/", "dir of a root child is root")
+    assertEqual(posix.dir("/a/b/"), "/a/b", "dir cleans a trailing separator")
+    assertEqual(posix.dir("a//b"), "a", "dir cleans repeated separators")
+}
+
+@test
+func testPosixRelative() {
+    assertRelativeOk(posix.relative("/a/b", "/a/c"), "../c", "absolute siblings use one parent")
+    assertRelativeOk(posix.relative("/a/b", "/a/b"), ".", "equal paths are dot")
+    assertRelativeOk(posix.relative("/", "/a"), "a", "root can reach a child directly")
+    assertRelativeOk(posix.relative(".", "a/b"), "a/b", "dot base contributes no component")
+    assertRelativeOk(posix.relative("a/b", "a/c"), "../c", "relative siblings use one parent")
+    assertRelativeOk(posix.relative("a", "."), "..", "relative can return to its lexical start")
+    assertRelativeOk(posix.relative("../a", "../b"), "../b", "shared leading parents are resolvable")
+
+    assertRelativeError(
+        posix.relative("/a", "a"),
+        .incompatibleRoots,
+        "absolute and relative paths are incompatible",
+    )
+    assertRelativeError(
+        posix.relative("../a", "b"),
+        .unresolvedBase,
+        "an unmatched leading parent in base is unresolved",
+    )
+    assertEqual(
+        std.sprintf("%v", posix.RelativeError.unresolvedBase),
+        "relative base begins with an unresolved parent component",
+        "relative errors explain why lexical resolution failed",
+    )
+}
+
+@test
+func testPosixStripPrefix() {
+    assertSome(posix.stripPrefix("/a/b/c", "/a/b"), "c", "rooted component prefix is removed")
+    assertSome(posix.stripPrefix("a//b/./c", "a/b"), "./c", "suffix keeps dot components")
+    assertSome(posix.stripPrefix("a/b", "a/b"), "", "exact match has an empty suffix")
+    assertSome(posix.stripPrefix("a///b//c/", "a//b/"), "c", "separator runs are structural")
+    assertSome(posix.stripPrefix("/a/b", "/"), "a/b", "root prefix leaves a relative suffix")
+    assertSome(posix.stripPrefix("a/../b", "a"), "../b", "parent components remain unchanged")
+    assertNone(posix.stripPrefix("/a/b", "a"), "rooted and relative paths do not match")
+    assertNone(posix.stripPrefix("ab/c", "a"), "partial components do not match")
+    assertNone(posix.stripPrefix("a/c", "a/b"), "different components do not match")
 }
 
 @test
@@ -119,6 +274,12 @@ func testNativeMatchesPosixOnUnix() {
     assertEqual(path.normalizeSeparators("a//b"), "a/b", "native normalize on unix")
     assertTrue(path.isAbsolute("/a"), "native isAbsolute on unix")
     assertEqual(path.join("a", "b"), "a/b", "native join on unix")
+    assertEqual(path.clean("a/../b"), "b", "native clean on unix")
+    assertEqual(path.joinAll("a", "b", "..", "c"), "a/c", "native joinAll on unix")
+    assertEqual(path.base("/tmp/file.txt"), "file.txt", "native base on unix")
+    assertEqual(path.dir("/tmp/file.txt"), "/tmp", "native dir on unix")
+    assertSome(path.stripPrefix("/tmp/file.txt", "/tmp"), "file.txt", "native stripPrefix on unix")
+    assertRelativeOk(path.relative("/tmp/a", "/tmp/b"), "../b", "native relative on unix")
     assertSome(path.fileName("/tmp/file.txt"), "file.txt", "native fileName on unix")
     assertSome(path.extension("file.txt"), "txt", "native extension on unix")
     assertSome(path.stem("file.txt"), "file", "native stem on unix")

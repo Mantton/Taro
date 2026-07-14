@@ -9,7 +9,9 @@
 /// directly.
 ///
 /// This module performs *lexical* manipulation only: no filesystem queries,
-/// no symlink resolution, no `.`/`..` normalization, no `~` expansion.
+/// symlink resolution, or `~` expansion. Operations such as `clean`, `join`,
+/// and `relative` resolve `.` and `..` as path components without touching the
+/// filesystem.
 
 @cfg(family("unix"))
 import std.path.posix.*
@@ -17,10 +19,19 @@ import std.path.posix.*
 @cfg(family("unix"))
 export std.path.posix.{
     SEPARATOR,
+    RelativeError,
     isSeparator,
     normalizeSeparators,
     isAbsolute,
+    components,
+    clean,
     join,
+    joinAll,
+    split,
+    base,
+    dir,
+    relative,
+    stripPrefix,
     fileName,
     extension,
     stem,
