@@ -655,7 +655,9 @@ impl Lexer {
                     return Ok(Some(self.read(lo, hi)));
                 }
                 Some('\\') if self.eat('\\') || self.eat('"') => {
-                    self.next_char();
+                    // `eat` already advances past the escaped character. Advancing
+                    // again would swallow the following byte, including a string's
+                    // closing quote when the escaped quote is its final character.
                 }
                 Some('\n') => return Err(LexerError::StringLiteralMustBeSingleLine),
                 None => break,
@@ -1638,6 +1640,25 @@ mod tests {
                 },
                 Token::String {
                     value: r#"escaped \" quote"#.into()
+                },
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_string_ending_with_escaped_quote() {
+        let input = r#""\"" "before\"""#;
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::String {
+                    value: r#"\""#.into()
+                },
+                Token::String {
+                    value: r#"before\""#.into()
                 },
                 Token::Semicolon,
                 Token::EOF,
