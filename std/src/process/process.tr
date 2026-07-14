@@ -1,6 +1,750 @@
-// Process facade.
-// Platform-specific logic is implemented under std.sys.process.
+import std.collections.List
+import std.io.{Error, Reader, Writer}
+import std.mem.{MutableSpan, Span}
+import std.result.Result
 
+/// Controls one standard stream of a spawned process.
+public enum Stdio: std.marker.Copy {
+    /// Connect the child stream to the null device.
+    case null
+    /// Inherit the corresponding stream from the parent process.
+    case inherit
+    /// Create a parent-owned pipe returned on `Child`.
+    case piped
+}
+
+impl Stdio {
+    func rawValue(&self) -> uint8 {
+        match self {
+            case .null => std.sys.process.STDIO_NULL
+            case .inherit => std.sys.process.STDIO_INHERIT
+            case .piped => std.sys.process.STDIO_PIPED
+        }
+    }
+
+    func isPiped(&self) -> bool {
+        match self {
+            case .piped => true
+            case _ => false
+        }
+    }
+}
+
+struct CommandEnvironment {
+    name: string
+    value: string
+}
+
+/// A direct argv subprocess invocation.
+///
+/// Command never invokes a shell. Shell syntax is passed as ordinary argument
+/// bytes unless the program itself is an explicitly selected shell.
+public struct Command {
+    programValue: string
+    argumentsValue: List[string]
+    environmentValue: List[CommandEnvironment]
+    currentDirValue: string?
+    stdinValue: Stdio
+    stdoutValue: Stdio
+    stderrValue: Stdio
+}
+
+// Command owns only immutable strings and private growable buffers. Moving it
+// to the blocking pool transfers exclusive builder ownership with the closure.
+impl std.marker.Sendable for Command {}
+
+impl Command {
+    /// Construct a one-shot command. Standard streams default to `.null`,
+    /// matching Go's safe library behavior; CLI tools can opt into `.inherit`.
+    public func new(_ program: string, _ arguments: string...) -> Self {
+        var storedArguments = List[string](withCapacity: arguments.len())
+        var index: usize = 0
+        while index < arguments.len() {
+            storedArguments.append(*arguments.at(index))
+            index += 1
+        }
+
+        return Command {
+            programValue: program,
+            argumentsValue: storedArguments,
+            environmentValue: List[CommandEnvironment](),
+            currentDirValue: .none,
+            stdinValue: .null,
+            stdoutValue: .null,
+            stderrValue: .null,
+        }
+    }
+
+    /// Append one argv entry. Empty arguments are preserved.
+    public func arg(&mut self, _ argument: string) -> &mut Self {
+        self.argumentsValue.append(argument)
+        return self
+    }
+
+    /// Append multiple argv entries without shell splitting or expansion.
+    public func args(&mut self, _ arguments: string...) -> &mut Self {
+        var index: usize = 0
+        while index < arguments.len() {
+            self.argumentsValue.append(*arguments.at(index))
+            index += 1
+        }
+        return self
+    }
+
+    /// Add or replace one variable in the inherited child environment.
+    /// Repeated names use the final value.
+    public func env(&mut self, _ name: string, _ value: string) -> &mut Self {
+        self.environmentValue.append(CommandEnvironment { name, value })
+        return self
+    }
+
+    /// Select the child's working directory without changing the parent.
+    public func currentDir(&mut self, _ path: string) -> &mut Self {
+        self.currentDirValue = .some(path)
+        return self
+    }
+
+    public func stdin(&mut self, _ mode: Stdio) -> &mut Self {
+        self.stdinValue = mode
+        return self
+    }
+
+    public func stdout(&mut self, _ mode: Stdio) -> &mut Self {
+        self.stdoutValue = mode
+        return self
+    }
+
+    public func stderr(&mut self, _ mode: Stdio) -> &mut Self {
+        self.stderrValue = mode
+        return self
+    }
+
+    func prepare(&self) -> Result[std.sys.process.RawCommand, Error] {
+        var raw = match std.sys.process.commandOpen(self.programValue) {
+            case .ok(value) => value
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+
+        var index: usize = 0
+        while index < self.argumentsValue.len() {
+            match std.sys.process.commandArg(&raw, *self.argumentsValue.at(index)) {
+                case .ok(_) => {}
+                case .err(err) => {
+                    std.sys.process.commandClose(&mut raw)
+                    return .err(err.withPath(self.programValue))
+                }
+            }
+            index += 1
+        }
+
+        index = 0
+        while index < self.environmentValue.len() {
+            let entry = self.environmentValue.at(index)
+            match std.sys.process.commandEnv(&raw, entry.name, entry.value) {
+                case .ok(_) => {}
+                case .err(err) => {
+                    std.sys.process.commandClose(&mut raw)
+                    return .err(err.withPath(self.programValue))
+                }
+            }
+            index += 1
+        }
+
+        match self.currentDirValue {
+            case .some(path) => match std.sys.process.commandCurrentDir(&raw, path) {
+                case .ok(_) => {}
+                case .err(err) => {
+                    std.sys.process.commandClose(&mut raw)
+                    return .err(err)
+                }
+            }
+            case .none => {}
+        }
+
+        match std.sys.process.commandStdio(
+            &raw,
+            self.stdinValue.rawValue(),
+            self.stdoutValue.rawValue(),
+            self.stderrValue.rawValue(),
+        ) {
+            case .ok(_) => return .ok(raw)
+            case .err(err) => {
+                std.sys.process.commandClose(&mut raw)
+                return .err(err.withPath(self.programValue))
+            }
+        }
+    }
+
+    /// Spawn the command and return immediately after exec succeeds.
+    public func spawn(self) -> Result[Child, Error] {
+        var raw = match self.prepare() {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        defer { std.sys.process.commandClose(&mut raw) }
+        let spawn = match std.sys.process.commandSpawn(&raw) {
+            case .ok(value) => value
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+        return childFromRaw(spawn, self.programValue)
+    }
+
+    /// Spawn and synchronously wait for a command with no piped streams.
+    /// Use `statusAsync` from an async task so executor workers remain free.
+    public func status(self) -> Result[ExitStatus, Error] {
+        if self.stdinValue.isPiped() || self.stdoutValue.isPiped() || self.stderrValue.isPiped() {
+            return .err(
+                Error(.invalidInput)
+                    .withOperation("wait for command with piped stdio")
+                    .withPath(self.programValue),
+            )
+        }
+
+        var raw = match self.prepare() {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        defer { std.sys.process.commandClose(&mut raw) }
+        match std.sys.process.commandStatus(&raw) {
+            case .ok(value) => return .ok(exitStatusFromRaw(value))
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+    }
+
+    /// Run and capture stdout and stderr concurrently without a byte limit.
+    /// The configured stdout/stderr modes are replaced by capture pipes.
+    public func output(self) -> Result[Output, Error] {
+        return self.outputImpl(false, 0)
+    }
+
+    /// Run and capture stdout and stderr with one combined byte budget.
+    /// Exceeding the budget kills and reaps this command before returning
+    /// `resourceExhausted`, preventing a child from remaining blocked on pipes
+    /// the parent no longer reads.
+    public func output(self, limit: usize) -> Result[Output, Error] {
+        return self.outputImpl(true, limit)
+    }
+
+    func outputImpl(self, _ limited: bool, _ limit: usize) -> Result[Output, Error] {
+        if self.stdinValue.isPiped() {
+            return .err(
+                Error(.invalidInput)
+                    .withOperation("capture command with piped stdin")
+                    .withPath(self.programValue),
+            )
+        }
+
+        var raw = match self.prepare() {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        defer { std.sys.process.commandClose(&mut raw) }
+        let rawOutput = match std.sys.process.commandOutput(&raw, limited, limit) {
+            case .ok(value) => value
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+        let parts = rawOutput.intoParts()
+        return .ok(Output {
+            statusValue: exitStatusFromRaw(parts.0),
+            stdoutValue: parts.1,
+            stderrValue: parts.2,
+        })
+    }
+
+    /// Run `status` on the bounded blocking pool.
+    public func statusAsync(self) async -> Result[ExitStatus, Error] {
+        return await std.task.blocking(move || self.status())
+    }
+
+    /// Run unlimited `output` on the bounded blocking pool. The runtime still
+    /// drains stdout and stderr on separate native readers inside that job.
+    public func outputAsync(self) async -> Result[Output, Error] {
+        return await std.task.blocking(move || self.output())
+    }
+
+    /// Run byte-limited `output` on the bounded blocking pool.
+    public func outputAsync(self, limit: usize) async -> Result[Output, Error] {
+        return await std.task.blocking(move || self.output(limit: limit))
+    }
+}
+
+/// A completed process status. Unix signal termination has no exit code.
+public struct ExitStatus {
+    codeValue: int32?
+    signalValue: int32?
+}
+
+impl ExitStatus {
+    public func success(&self) -> bool {
+        match self.codeValue {
+            case .some(code) => code == 0
+            case .none => false
+        }
+    }
+
+    public func code(&self) -> int32? { self.codeValue }
+
+    /// Return the terminating Unix signal, or none for a normal exit.
+    public func signal(&self) -> int32? { self.signalValue }
+}
+
+func exitStatusFromRaw(_ raw: std.sys.process.RawExitStatus) -> ExitStatus {
+    let codeValue: int32? = if raw.code() < 0 { .none } else { .some(raw.code()) }
+    let signalValue: int32? = if raw.signal() < 0 { .none } else { .some(raw.signal()) }
+    return ExitStatus { codeValue, signalValue }
+}
+
+/// Captured raw output and the command's status. A non-zero status is data,
+/// not an I/O error, so callers can inspect stderr and recovery policy together.
+public struct Output {
+    statusValue: ExitStatus
+    stdoutValue: List[uint8]
+    stderrValue: List[uint8]
+}
+
+// Captured bytes are owned GC buffers. The blocking intrinsic transfers their
+// roots with the result before the worker returns to the pool.
+impl std.marker.Sendable for Output {}
+
+impl Output {
+    public func status(&self) -> &ExitStatus { return &self.statusValue }
+    public func stdout(&self) -> &List[uint8] { return &self.stdoutValue }
+    public func stderr(&self) -> &List[uint8] { return &self.stderrValue }
+
+    public func intoParts(self) -> (ExitStatus, List[uint8], List[uint8]) {
+        return (self.statusValue, self.stdoutValue, self.stderrValue)
+    }
+}
+
+struct ChildState {
+    inner: std.sys.process.RawChild
+    cleanup: std.runtime.Cleanup?
+}
+
+func snapshotRawChild(_ child: &std.sys.process.RawChild) -> std.sys.process.RawChild {
+    let ptr = unsafe { child as *const std.sys.process.RawChild }
+    return unsafe { ptr.read() }
+}
+
+func childStateFromRaw(_ raw: std.sys.process.RawChild) -> Result[&ChildState, Error] {
+    let state = make(ChildState {
+        inner: raw,
+        cleanup: .none,
+    })
+    let cleanupState = snapshotRawChild(&state.inner)
+    let cleanupResult = std.runtime.addCleanup(
+        state,
+        cleanupState,
+        |child: std.sys.process.RawChild| {
+            // Abandonment queues a wait on the dedicated reaper. It never
+            // signals the child and returns promptly to the cleanup worker.
+            std.sys.process.childAbandon(child)
+        },
+    )
+    match cleanupResult {
+        case .ok(cleanup) => {
+            state.cleanup = .some(cleanup)
+            std.runtime.keepAlive(state)
+            return .ok(state)
+        }
+        case .err(_) => {
+            // A started process cannot be returned without lifecycle
+            // ownership. Terminate and reap this construction failure so the
+            // caller never receives an error alongside an unobservable child.
+            let _ = std.sys.process.childKill(&state.inner)
+            let _ = std.sys.process.childWait(&state.inner)
+            std.sys.process.childAbandon(snapshotRawChild(&state.inner))
+            std.runtime.keepAlive(state)
+            return .err(Error(.unexpected).withOperation("register child cleanup"))
+        }
+    }
+}
+
+struct PipeCloseState {
+    inner: std.sys.process.RawPipe
+    cleanup: std.runtime.Cleanup?
+}
+
+func snapshotRawPipe(_ pipe: &std.sys.process.RawPipe) -> std.sys.process.RawPipe {
+    let ptr = unsafe { pipe as *const std.sys.process.RawPipe }
+    return unsafe { ptr.read() }
+}
+
+func takeRawPipe(_ state: &PipeCloseState) -> std.sys.process.RawPipe {
+    let ptr = unsafe {
+        (&state.inner as *const std.sys.process.RawPipe) as *mut std.sys.process.RawPipe
+    }
+    return std.sys.process.pipeTake(unsafe { ptr as &mut std.sys.process.RawPipe })
+}
+
+func pipeStateFromRaw(_ raw: std.sys.process.RawPipe) -> Result[&PipeCloseState, Error] {
+    let state = make(PipeCloseState {
+        inner: raw,
+        cleanup: .none,
+    })
+    let cleanupState = snapshotRawPipe(&state.inner)
+    let cleanupResult = std.runtime.addCleanup(
+        state,
+        cleanupState,
+        |rawPipe: std.sys.process.RawPipe| {
+            var owned = rawPipe
+            let _ = std.sys.process.pipeClose(&mut owned)
+        },
+    )
+    match cleanupResult {
+        case .ok(cleanup) => {
+            state.cleanup = .some(cleanup)
+            std.runtime.keepAlive(state)
+            return .ok(state)
+        }
+        case .err(_) => {
+            var owned = takeRawPipe(state)
+            let _ = std.sys.process.pipeClose(&mut owned)
+            std.runtime.keepAlive(state)
+            return .err(Error(.unexpected).withOperation("register process pipe cleanup"))
+        }
+    }
+}
+
+func closedPipeError(_ operation: string) -> Error {
+    Error(.closed).withOperation(operation)
+}
+
+func ensurePipeOpen(_ state: &PipeCloseState, _ operation: string) -> Result[(), Error] {
+    let valid = std.sys.process.pipeIsValid(&state.inner)
+    std.runtime.keepAlive(state)
+    if !valid {
+        return .err(closedPipeError(operation))
+    }
+    return .ok(())
+}
+
+func claimRawPipe(
+    _ state: &PipeCloseState,
+    _ operation: string,
+) -> Result[std.sys.process.RawPipe, Error] {
+    let cancelled = match &state.cleanup {
+        case .some(cleanup) => cleanup.cancel()
+        case .none => false
+    }
+    if !cancelled {
+        std.runtime.keepAlive(state)
+        return .err(closedPipeError(operation))
+    }
+    let raw = takeRawPipe(state)
+    std.runtime.keepAlive(state)
+    return .ok(raw)
+}
+
+func closePipeState(_ state: &PipeCloseState) -> Result[(), Error] {
+    var raw = match claimRawPipe(state, "close process pipe") {
+        case .ok(value) => value
+        case .err(err) => return .err(err)
+    }
+    let result = std.sys.process.pipeClose(&mut raw)
+    std.runtime.keepAlive(state)
+    return result
+}
+
+/// The parent writer connected to a child's piped stdin.
+public struct ChildStdin {
+    state: &PipeCloseState
+}
+
+/// A parent reader connected to a child's piped stdout or stderr.
+public struct ChildStdout {
+    state: &PipeCloseState
+}
+
+impl std.marker.Sendable for ChildStdin {}
+impl std.marker.Sendable for ChildStdout {}
+
+impl ChildStdin {
+    public func close(&self) -> Result[(), Error] { closePipeState(self.state) }
+
+    public func writeAll(&self, _ bytes: Span[uint8]) -> Result[(), Error] {
+        var writer = ChildStdin { state: self.state }
+        return std.io.writeAll(&mut writer, bytes)
+    }
+
+    public func writeString(&self, _ value: string) -> Result[(), Error] {
+        var writer = ChildStdin { state: self.state }
+        return std.io.writeString(&mut writer, value)
+    }
+
+    /// Move an owned buffer through the blocking pool. Borrowed spans are not
+    /// accepted across threads because their source may leave scope meanwhile.
+    public func writeAllAsync(&self, _ bytes: List[uint8]) async -> Result[(), Error] {
+        let writer = ChildStdin { state: self.state }
+        return await std.task.blocking(move || writer.writeAll(bytes.asSpan()))
+    }
+
+    public func writeStringAsync(&self, _ value: string) async -> Result[(), Error] {
+        let writer = ChildStdin { state: self.state }
+        return await std.task.blocking(move || writer.writeString(value))
+    }
+
+    /// Transfer this pipe to the executor's non-blocking stream reactor.
+    public func intoAsyncStream(self) -> Result[std.io.task.AsyncStream, Error] {
+        var raw = match claimRawPipe(self.state, "convert process stdin to async stream") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let stream = match std.sys.process.pipeIntoAsyncStream(&mut raw) {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        return std.io.task.fromRaw(stream)
+    }
+}
+
+impl Writer for ChildStdin {
+    public func write(&mut self, _ bytes: Span[uint8]) -> Result[usize, Error] {
+        match ensurePipeOpen(self.state, "write process stdin") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        if bytes.len() == 0 {
+            std.runtime.keepAlive(self.state)
+            return .ok(0)
+        }
+        let result = std.sys.process.pipeWrite(
+            &self.state.inner,
+            unsafe { bytes.at(0) as *const uint8 },
+            bytes.len(),
+        )
+        std.runtime.keepAlive(self.state)
+        return result
+    }
+
+    public func flush(&mut self) -> Result[(), Error] {
+        return ensurePipeOpen(self.state, "flush process stdin")
+    }
+}
+
+impl ChildStdout {
+    public func close(&self) -> Result[(), Error] { closePipeState(self.state) }
+
+    public func readAll(&self) -> Result[List[uint8], Error] {
+        var reader = ChildStdout { state: self.state }
+        return std.io.readAll(&mut reader)
+    }
+
+    public func readToString(&self) -> Result[string, Error] {
+        var reader = ChildStdout { state: self.state }
+        return std.io.readToString(&mut reader)
+    }
+
+    public func readAllAsync(&self) async -> Result[List[uint8], Error] {
+        let reader = ChildStdout { state: self.state }
+        return await std.task.blocking(move || reader.readAll())
+    }
+
+    public func readToStringAsync(&self) async -> Result[string, Error] {
+        let reader = ChildStdout { state: self.state }
+        return await std.task.blocking(move || reader.readToString())
+    }
+
+    /// Transfer this pipe to the executor's non-blocking stream reactor.
+    public func intoAsyncStream(self) -> Result[std.io.task.AsyncStream, Error] {
+        var raw = match claimRawPipe(self.state, "convert process stdout to async stream") {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        let stream = match std.sys.process.pipeIntoAsyncStream(&mut raw) {
+            case .ok(value) => value
+            case .err(err) => return .err(err)
+        }
+        return std.io.task.fromRaw(stream)
+    }
+}
+
+impl Reader for ChildStdout {
+    public func read(&mut self, _ bytes: MutableSpan[uint8]) -> Result[usize, Error] {
+        match ensurePipeOpen(self.state, "read process output") {
+            case .ok(_) => {}
+            case .err(err) => return .err(err)
+        }
+        if bytes.len() == 0 {
+            std.runtime.keepAlive(self.state)
+            return .ok(0)
+        }
+        var writable = bytes
+        let result = std.sys.process.pipeRead(
+            &self.state.inner,
+            unsafe { writable.at(0) as *mut uint8 },
+            bytes.len(),
+        )
+        std.runtime.keepAlive(self.state)
+        return result
+    }
+}
+
+/// A running or already-reaped child. Copies share one runtime wait state and
+/// one set of pipe cleanup owners.
+public struct Child {
+    state: &ChildState
+    stdinValue: ChildStdin?
+    stdoutValue: ChildStdout?
+    stderrValue: ChildStdout?
+    programValue: string
+}
+
+impl std.marker.Sendable for Child {}
+
+func terminateUnreturnableChild(_ raw: &std.sys.process.RawChild) {
+    let _ = std.sys.process.childKill(raw)
+    let _ = std.sys.process.childWait(raw)
+    let snapshot = snapshotRawChild(raw)
+    std.sys.process.childAbandon(snapshot)
+}
+
+func closeOptionalRawPipe(_ pipe: std.sys.process.RawPipe?) {
+    match pipe {
+        case .some(value) => {
+            var owned = value
+            let _ = std.sys.process.pipeClose(&mut owned)
+        }
+        case .none => {}
+    }
+}
+
+func childFromRaw(
+    _ spawn: std.sys.process.RawSpawn,
+    _ program: string,
+) -> Result[Child, Error] {
+    let parts = spawn.intoParts()
+    let rawChild = parts.0
+    var rawStdin = parts.1
+    var rawStdout = parts.2
+    var rawStderr = parts.3
+
+    let state = match childStateFromRaw(rawChild) {
+        case .ok(value) => value
+        case .err(err) => {
+            closeOptionalRawPipe(rawStdin)
+            closeOptionalRawPipe(rawStdout)
+            closeOptionalRawPipe(rawStderr)
+            return .err(err.withPath(program))
+        }
+    }
+
+    var stdinValue: ChildStdin? = .none
+    match rawStdin.take() {
+        case .some(raw) => match pipeStateFromRaw(raw) {
+            case .ok(pipeState) => stdinValue = .some(ChildStdin { state: pipeState })
+            case .err(err) => {
+                terminateUnreturnableChild(&state.inner)
+                closeOptionalRawPipe(rawStdout)
+                closeOptionalRawPipe(rawStderr)
+                return .err(err.withPath(program))
+            }
+        }
+        case .none => {}
+    }
+
+    var stdoutValue: ChildStdout? = .none
+    match rawStdout.take() {
+        case .some(raw) => match pipeStateFromRaw(raw) {
+            case .ok(pipeState) => stdoutValue = .some(ChildStdout { state: pipeState })
+            case .err(err) => {
+                terminateUnreturnableChild(&state.inner)
+                match &stdinValue {
+                    case .some(pipe) => { let _ = pipe.close() }
+                    case .none => {}
+                }
+                closeOptionalRawPipe(rawStderr)
+                return .err(err.withPath(program))
+            }
+        }
+        case .none => {}
+    }
+
+    var stderrValue: ChildStdout? = .none
+    match rawStderr.take() {
+        case .some(raw) => match pipeStateFromRaw(raw) {
+            case .ok(pipeState) => stderrValue = .some(ChildStdout { state: pipeState })
+            case .err(err) => {
+                terminateUnreturnableChild(&state.inner)
+                match &stdinValue {
+                    case .some(pipe) => { let _ = pipe.close() }
+                    case .none => {}
+                }
+                match &stdoutValue {
+                    case .some(pipe) => { let _ = pipe.close() }
+                    case .none => {}
+                }
+                return .err(err.withPath(program))
+            }
+        }
+        case .none => {}
+    }
+
+    std.runtime.keepAlive(state)
+    return .ok(Child {
+        state,
+        stdinValue,
+        stdoutValue,
+        stderrValue,
+        programValue: program,
+    })
+}
+
+impl Child {
+    public func pid(&self) -> Result[uint32, Error] {
+        let result = std.sys.process.childPid(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        match result {
+            case .ok(value) => return .ok(value)
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+    }
+
+    /// Wait synchronously. Repeated calls return the cached status.
+    public func wait(&self) -> Result[ExitStatus, Error] {
+        let result = std.sys.process.childWait(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        match result {
+            case .ok(value) => return .ok(exitStatusFromRaw(value))
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+    }
+
+    /// Observe completion without blocking. Once ready, the same status is
+    /// returned by every later tryWait or wait call.
+    public func tryWait(&self) -> Result[ExitStatus?, Error] {
+        let result = std.sys.process.childTryWait(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        match result {
+            case .ok(.some(value)) => return .ok(.some(exitStatusFromRaw(value)))
+            case .ok(.none) => return .ok(.none)
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+    }
+
+    /// Send the platform's unconditional kill signal. This does not reap; call
+    /// wait afterwards to observe the signal status.
+    public func kill(&self) -> Result[(), Error] {
+        let result = std.sys.process.childKill(&self.state.inner)
+        std.runtime.keepAlive(self.state)
+        match result {
+            case .ok(_) => return .ok(())
+            case .err(err) => return .err(err.withPath(self.programValue))
+        }
+    }
+
+    /// Wait on the bounded blocking pool. This consumes the wrapper, but pipe
+    /// handles taken beforehand remain independently owned.
+    public func waitAsync(self) async -> Result[ExitStatus, Error] {
+        return await std.task.blocking(move || self.wait())
+    }
+
+    public func takeStdin(&mut self) -> ChildStdin? { self.stdinValue.take() }
+    public func takeStdout(&mut self) -> ChildStdout? { self.stdoutValue.take() }
+    public func takeStderr(&mut self) -> ChildStdout? { self.stderrValue.take() }
+}
+
+/// Exit immediately without running deferred cleanup.
 public func exit(_ code: int32) -> ! {
     std.sys.process.exit(code)
 }

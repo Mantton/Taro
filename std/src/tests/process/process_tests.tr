@@ -1,0 +1,283 @@
+@cfg(family("unix"))
+func processBytesToString(_ bytes: &std.collections.List[uint8]) -> string {
+    if bytes.len() == 0 {
+        return ""
+    }
+    let data = std.mem.allocBytes(bytes.len())
+    var index: usize = 0
+    while index < bytes.len() {
+        data.add(index).write(*bytes.at(index))
+        index += 1
+    }
+    return std.string.stringFromParts(data, bytes.len())
+}
+
+@cfg(family("unix"))
+func processStringWithByte(_ prefix: string, _ byte: uint8, _ suffix: string) -> string {
+    var builder = std.string.Builder()
+    builder.writeString(prefix)
+    builder.writeByte(byte)
+    builder.writeString(suffix)
+    return builder.intoString()
+}
+
+@cfg(family("unix"))
+func assertProcessCode(_ status: &std.process.ExitStatus, _ expected: int32, _ message: string) {
+    match status.code() {
+        case .some(code) => std.testing.assertEqual(code, expected, message)
+        case .none => std.testing.fail(message)
+    }
+    std.testing.assertTrue(status.signal().isNone(), "normal exits should not report a signal")
+}
+
+@cfg(family("unix"))
+@test
+func commandExecutesArgvDirectlyAndPreservesRawBytes() {
+    let payload = processStringWithByte("$HOME;", 0xff_u8, "|not-shell")
+    var command = std.process.Command(
+        "/bin/sh",
+        "-c",
+        "printf '%s' \"$1\"",
+        "taro-argv-test",
+        payload,
+    )
+    let output = command.output().unwrap()
+    std.testing.assertEqual(
+        processBytesToString(output.stdout()),
+        payload,
+        "arguments should reach the child without shell expansion or UTF-8 rewriting",
+    )
+    std.testing.assertEqual(output.stderr().len(), 0 as usize, "direct argv child should not write stderr")
+    std.testing.assertTrue(output.status().success(), "direct argv child should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func commandEnvironmentAndCurrentDirectoryAreApplied() {
+    var command = std.process.Command(
+        "/bin/sh",
+        "-c",
+        "printf '%s|%s' \"$TARO_PROCESS_VALUE\" \"$PWD\"",
+    )
+    command.env("TARO_PROCESS_VALUE", "first")
+    command.env("TARO_PROCESS_VALUE", "last")
+    command.currentDir("/")
+
+    let output = command.output().unwrap()
+    std.testing.assertEqual(
+        processBytesToString(output.stdout()),
+        "last|/",
+        "the final environment override and selected PWD should reach the child",
+    )
+    std.testing.assertTrue(output.status().success(), "environment child should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func commandStatusReturnsNonZeroExitAsData() {
+    var command = std.process.Command("/bin/sh", "-c", "exit 7")
+    let status = command.status().unwrap()
+    assertProcessCode(&status, 7_i32, "status should preserve a non-zero exit code")
+    std.testing.assertFalse(status.success(), "a non-zero exit should not report success")
+
+    var inherited = std.process.Command("/bin/sh", "-c", "exit 0")
+    inherited.stdin(.inherit).stdout(.inherit).stderr(.inherit)
+    std.testing.assertTrue(inherited.status().unwrap().success(), "explicit inherited stdio should run")
+
+    var invalid = std.process.Command("/bin/sh", "-c", "exit 0")
+    invalid.stdout(.piped)
+    match invalid.status() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "status should reject an unreturned pipe")
+        case .ok(_) => std.testing.fail("status must not silently discard an explicitly piped stream")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func commandOutputDrainsStdoutAndStderrConcurrently() {
+    var command = std.process.Command(
+        "/bin/sh",
+        "-c",
+        "i=0; while [ \"$i\" -lt 100000 ]; do printf o; i=$((i+1)); done; i=0; while [ \"$i\" -lt 100000 ]; do printf e >&2; i=$((i+1)); done",
+    )
+    let output = command.output().unwrap()
+    std.testing.assertEqual(output.stdout().len(), 100000 as usize, "stdout should drain beyond pipe capacity")
+    std.testing.assertEqual(output.stderr().len(), 100000 as usize, "stderr should drain beyond pipe capacity")
+    std.testing.assertTrue(output.status().success(), "dual-stream producer should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func commandOutputLimitKillsAndReapsProducer() {
+    var command = std.process.Command(
+        "/bin/sh",
+        "-c",
+        "while :; do printf 0123456789; printf abcdefghij >&2; done",
+    )
+    match command.output(limit: 1024 as usize) {
+        case .err(err) => std.testing.assertTrue(
+            err.isKind(.resourceExhausted),
+            "combined output budget should return resourceExhausted",
+        )
+        case .ok(_) => std.testing.fail("an infinite producer must exceed the configured output budget")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func childPipesRoundTripAndCloseExactlyOnce() {
+    var command = std.process.Command(
+        "/bin/sh",
+        "-c",
+        "IFS= read -r line; printf 'out:%s' \"$line\"; printf 'err:%s' \"$line\" >&2",
+    )
+    command.stdin(.piped).stdout(.piped).stderr(.piped)
+    var child = command.spawn().unwrap()
+    let stdinPipe = child.takeStdin().unwrap()
+    let stdoutPipe = child.takeStdout().unwrap()
+    let stderrPipe = child.takeStderr().unwrap()
+    std.testing.assertTrue(child.takeStdin().isNone(), "taking child stdin should be one-shot")
+
+    std.testing.assertTrue(stdinPipe.writeString("hello\n").isOk(), "child stdin should accept bytes")
+    std.testing.assertTrue(stdinPipe.close().isOk(), "closing stdin should deliver EOF")
+    match stdinPipe.close() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "repeated stdin close should be typed closed")
+        case .ok(_) => std.testing.fail("repeated stdin close must not close a reused descriptor")
+    }
+
+    std.testing.assertEqual(stdoutPipe.readToString().unwrap(), "out:hello", "stdout pipe should preserve bytes")
+    std.testing.assertEqual(stderrPipe.readToString().unwrap(), "err:hello", "stderr pipe should preserve bytes")
+    let first = child.wait().unwrap()
+    let second = child.wait().unwrap()
+    assertProcessCode(&first, 0_i32, "piped child should exit successfully")
+    assertProcessCode(&second, 0_i32, "repeated wait should return cached status")
+    std.testing.assertTrue(stdoutPipe.close().isOk(), "stdout pipe should close")
+    std.testing.assertTrue(stderrPipe.close().isOk(), "stderr pipe should close")
+}
+
+@cfg(family("unix"))
+@test
+func childTryWaitKillAndSignalStatusAreConsistent() {
+    var child = std.process.Command("/bin/sleep", "5").spawn().unwrap()
+    match child.tryWait().unwrap() {
+        case .none => {}
+        case .some(_) => std.testing.fail("sleeping child should still be running")
+    }
+    let pid = child.pid().unwrap()
+    std.testing.assertTrue(pid > 0_u32, "spawned child should expose a positive PID")
+    std.testing.assertTrue(child.kill().isOk(), "kill should signal a running child")
+    let status = child.wait().unwrap()
+    std.testing.assertTrue(status.code().isNone(), "signal termination should have no exit code")
+    match status.signal() {
+        case .some(signal) => std.testing.assertEqual(signal, 9_i32, "kill should report SIGKILL")
+        case .none => std.testing.fail("killed child should report its Unix signal")
+    }
+    match child.tryWait().unwrap() {
+        case .some(cached) => std.testing.assertEqual(cached.signal().unwrap(), 9_i32, "tryWait should cache signal status")
+        case .none => std.testing.fail("tryWait should remain ready after wait")
+    }
+    match child.kill() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.closed), "killing an exited child should return closed")
+        case .ok(_) => std.testing.fail("killing an exited child should not report success")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func commandRejectsMalformedInputsAndMissingPrograms() {
+    let withNul = processStringWithByte("bad", 0_u8, "input")
+
+    var emptyProgram = std.process.Command("")
+    match emptyProgram.spawn() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "empty programs should be invalid")
+        case .ok(_) => std.testing.fail("empty program should not spawn")
+    }
+
+    var badArgument = std.process.Command("/bin/sh")
+    badArgument.arg(withNul)
+    match badArgument.spawn() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "NUL arguments should be invalid")
+        case .ok(_) => std.testing.fail("NUL argument should not spawn")
+    }
+
+    var badEnvironment = std.process.Command("/bin/sh")
+    badEnvironment.env("BAD=NAME", "value")
+    match badEnvironment.spawn() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "malformed environment names should fail")
+        case .ok(_) => std.testing.fail("malformed environment name should not spawn")
+    }
+
+    var badDirectory = std.process.Command("/bin/sh")
+    badDirectory.currentDir("")
+    match badDirectory.spawn() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.invalidInput), "empty current directory should fail")
+        case .ok(_) => std.testing.fail("empty current directory should not spawn")
+    }
+
+    var missing = std.process.Command("/definitely/not/a/taro-program")
+    match missing.spawn() {
+        case .err(err) => std.testing.assertTrue(err.isKind(.notFound), "missing executable should return notFound")
+        case .ok(_) => std.testing.fail("missing executable should not spawn")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func asyncProcessWrappersUseBlockingPool() async {
+    var command = std.process.Command("/bin/sh", "-c", "printf async-out; printf async-err >&2; exit 4")
+    let output = (await command.outputAsync()).unwrap()
+    std.testing.assertEqual(processBytesToString(output.stdout()), "async-out", "async output should capture stdout")
+    std.testing.assertEqual(processBytesToString(output.stderr()), "async-err", "async output should capture stderr")
+    assertProcessCode(output.status(), 4_i32, "async output should preserve exit status")
+
+    var piped = std.process.Command("/bin/sh", "-c", "cat")
+    piped.stdin(.piped).stdout(.piped)
+    var child = piped.spawn().unwrap()
+    let stdinPipe = child.takeStdin().unwrap()
+    let stdoutPipe = child.takeStdout().unwrap()
+    std.testing.assertTrue(
+        (await stdinPipe.writeStringAsync("blocking-pipe")).isOk(),
+        "async stdin helper should write through blocking pool",
+    )
+    std.testing.assertTrue(stdinPipe.close().isOk(), "async pipe test should close stdin")
+    std.testing.assertEqual(
+        (await stdoutPipe.readToStringAsync()).unwrap(),
+        "blocking-pipe",
+        "async stdout helper should read through blocking pool",
+    )
+    std.testing.assertTrue((await child.waitAsync()).unwrap().success(), "async wait should use blocking pool")
+    std.testing.assertTrue(stdoutPipe.close().isOk(), "async stdout pipe should close")
+}
+
+@cfg(family("unix"))
+func spawnEventuallyCompletingChild(_ marker: string) {
+    var command = std.process.Command(
+        "/bin/sh",
+        "-c",
+        "sleep 0.05; printf done > \"$1\"",
+        "taro-abandon-test",
+        marker,
+    )
+    let _ = command.spawn().unwrap()
+}
+
+@cfg(family("unix"))
+@test
+func abandonedChildContinuesRunning() async {
+    let temp = std.fs.createTempDir(prefix: "taro-process-abandon-").unwrap()
+    defer { let _ = temp.close() }
+    let marker = std.path.join(temp.path(), "completed")
+    spawnEventuallyCompletingChild(marker)
+
+    std.runtime.collect()
+    std.testing.waitForCleanups()
+    var attempts: int32 = 0
+    while attempts < 100_i32 && !std.fs.exists(marker).unwrap() {
+        await std.task.sleep(std.time.Duration.fromMillis(10_u64))
+        attempts += 1_i32
+    }
+    std.testing.assertTrue(
+        std.fs.exists(marker).unwrap(),
+        "abandoning Child should arrange reaping without killing its process",
+    )
+}

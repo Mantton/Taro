@@ -1,3 +1,438 @@
+import std.collections.List
+import std.io.Error
+import std.result.Result
+
+extern "taro_rt" {
+    func __rt__process_command_open(_ program: string, _ errorOut: *mut int32) -> usize
+    func __rt__process_command_arg(_ handle: usize, _ argument: string) -> int32
+    func __rt__process_command_env(_ handle: usize, _ name: string, _ value: string) -> int32
+    func __rt__process_command_current_dir(_ handle: usize, _ path: string) -> int32
+    func __rt__process_command_stdio(
+        _ handle: usize,
+        _ stdinMode: uint8,
+        _ stdoutMode: uint8,
+        _ stderrMode: uint8,
+    ) -> int32
+    func __rt__process_command_close(_ handle: usize)
+    func __rt__process_child_pid(_ handle: usize, _ pidOut: *mut uint32) -> int32
+    func __rt__process_child_try_wait(
+        _ handle: usize,
+        _ readyOut: *mut bool,
+        _ codeOut: *mut int32,
+        _ signalOut: *mut int32,
+    ) -> int32
+    func __rt__process_child_kill(_ handle: usize) -> int32
+    func __rt__process_child_abandon(_ handle: usize)
+    func __rt__process_output_status(
+        _ handle: usize,
+        _ codeOut: *mut int32,
+        _ signalOut: *mut int32,
+    ) -> int32
+    func __rt__process_output_stdout(
+        _ handle: usize,
+        _ dataOut: *mut *const uint8,
+        _ lenOut: *mut usize,
+    ) -> int32
+    func __rt__process_output_stderr(
+        _ handle: usize,
+        _ dataOut: *mut *const uint8,
+        _ lenOut: *mut usize,
+    ) -> int32
+    func __rt__process_output_close(_ handle: usize)
+}
+
+/// These calls can wait for exec, process exit, or pipe EOF. The blocking ABI
+/// preserves managed roots while a synchronous caller is parked in the OS.
+extern "blocking" {
+    func __rt__process_command_spawn(
+        _ handle: usize,
+        _ childOut: *mut usize,
+        _ stdinFdOut: *mut int32,
+        _ stdoutFdOut: *mut int32,
+        _ stderrFdOut: *mut int32,
+    ) -> int32
+    func __rt__process_command_status(
+        _ handle: usize,
+        _ codeOut: *mut int32,
+        _ signalOut: *mut int32,
+    ) -> int32
+    func __rt__process_child_wait(
+        _ handle: usize,
+        _ codeOut: *mut int32,
+        _ signalOut: *mut int32,
+    ) -> int32
+    func __rt__process_command_output(
+        _ handle: usize,
+        _ limited: bool,
+        _ limit: usize,
+        _ errorOut: *mut int32,
+        _ limitExceededOut: *mut bool,
+    ) -> usize
+}
+
+public const STDIO_NULL: uint8 = 0_u8
+public const STDIO_INHERIT: uint8 = 1_u8
+public const STDIO_PIPED: uint8 = 2_u8
+
+public struct RawCommand {
+    handle: usize
+}
+
+public struct RawChild {
+    handle: usize
+}
+
+public struct RawPipe {
+    fd: int32
+}
+
+public struct RawExitStatus {
+    codeValue: int32
+    signalValue: int32
+}
+
+public struct RawSpawn {
+    childValue: RawChild
+    stdinValue: RawPipe?
+    stdoutValue: RawPipe?
+    stderrValue: RawPipe?
+}
+
+public struct RawOutput {
+    statusValue: RawExitStatus
+    stdoutValue: List[uint8]
+    stderrValue: List[uint8]
+}
+
+impl RawExitStatus {
+    public func code(&self) -> int32 { self.codeValue }
+    public func signal(&self) -> int32 { self.signalValue }
+}
+
+impl RawSpawn {
+    public func intoParts(self) -> (RawChild, RawPipe?, RawPipe?, RawPipe?) {
+        return (self.childValue, self.stdinValue, self.stdoutValue, self.stderrValue)
+    }
+}
+
+impl RawOutput {
+    public func intoParts(self) -> (RawExitStatus, List[uint8], List[uint8]) {
+        return (self.statusValue, self.stdoutValue, self.stderrValue)
+    }
+}
+
+func processError(_ code: int32, _ operation: string) -> Error {
+    std.sys.io.unix.mapErrno(code).withOperation(operation)
+}
+
+func statusFromValues(_ code: int32, _ signal: int32) -> RawExitStatus {
+    RawExitStatus {
+        codeValue: code,
+        signalValue: signal,
+    }
+}
+
+func pipeFromFd(_ fd: int32) -> RawPipe? {
+    if fd < 0 {
+        return .none
+    }
+    return .some(RawPipe { fd })
+}
+
+public func commandOpen(_ program: string) -> Result[RawCommand, Error] {
+    var errorCode: int32 = 0
+    let handle = __rt__process_command_open(
+        program,
+        unsafe { &mut errorCode as *mut int32 },
+    )
+    if handle == 0 {
+        if errorCode == 0 {
+            return .err(Error(.resourceExhausted).withOperation("prepare command"))
+        }
+        return .err(processError(errorCode, "prepare command"))
+    }
+    return .ok(RawCommand { handle })
+}
+
+public func commandClose(_ command: &mut RawCommand) {
+    if command.handle == 0 {
+        return
+    }
+    let handle = command.handle
+    command.handle = 0
+    __rt__process_command_close(handle)
+}
+
+public func commandArg(_ command: &RawCommand, _ argument: string) -> Result[(), Error] {
+    let code = __rt__process_command_arg(command.handle, argument)
+    if code != 0 {
+        return .err(processError(code, "set command argument"))
+    }
+    return .ok(())
+}
+
+public func commandEnv(
+    _ command: &RawCommand,
+    _ name: string,
+    _ value: string,
+) -> Result[(), Error] {
+    let code = __rt__process_command_env(command.handle, name, value)
+    if code != 0 {
+        return .err(processError(code, "set command environment"))
+    }
+    return .ok(())
+}
+
+public func commandCurrentDir(_ command: &RawCommand, _ path: string) -> Result[(), Error] {
+    let code = __rt__process_command_current_dir(command.handle, path)
+    if code != 0 {
+        return .err(processError(code, "set command current directory").withPath(path))
+    }
+    return .ok(())
+}
+
+public func commandStdio(
+    _ command: &RawCommand,
+    _ stdinMode: uint8,
+    _ stdoutMode: uint8,
+    _ stderrMode: uint8,
+) -> Result[(), Error] {
+    let code = __rt__process_command_stdio(command.handle, stdinMode, stdoutMode, stderrMode)
+    if code != 0 {
+        return .err(processError(code, "set command stdio"))
+    }
+    return .ok(())
+}
+
+public func commandSpawn(_ command: &RawCommand) -> Result[RawSpawn, Error] {
+    var childHandle: usize = 0
+    var stdinFd: int32 = -1
+    var stdoutFd: int32 = -1
+    var stderrFd: int32 = -1
+    let code = __rt__process_command_spawn(
+        command.handle,
+        unsafe { &mut childHandle as *mut usize },
+        unsafe { &mut stdinFd as *mut int32 },
+        unsafe { &mut stdoutFd as *mut int32 },
+        unsafe { &mut stderrFd as *mut int32 },
+    )
+    if code != 0 {
+        return .err(processError(code, "spawn process"))
+    }
+    return .ok(RawSpawn {
+        childValue: RawChild { handle: childHandle },
+        stdinValue: pipeFromFd(stdinFd),
+        stdoutValue: pipeFromFd(stdoutFd),
+        stderrValue: pipeFromFd(stderrFd),
+    })
+}
+
+public func commandStatus(_ command: &RawCommand) -> Result[RawExitStatus, Error] {
+    var codeValue: int32 = -1
+    var signalValue: int32 = -1
+    let code = __rt__process_command_status(
+        command.handle,
+        unsafe { &mut codeValue as *mut int32 },
+        unsafe { &mut signalValue as *mut int32 },
+    )
+    if code != 0 {
+        return .err(processError(code, "wait for process"))
+    }
+    return .ok(statusFromValues(codeValue, signalValue))
+}
+
+func copyOutputBytes(_ data: *const uint8, _ len: usize) -> List[uint8] {
+    if len == 0 {
+        return List[uint8]()
+    }
+
+    // The runtime snapshot remains borrowed across this copy. One managed
+    // allocation avoids per-byte List growth while keeping ownership wholly
+    // on the Taro GC side of the ABI.
+    let managed = std.mem.allocBytes(len)
+    data.readBytes(managed, len)
+    return std.collections.__list_from_raw_parts[uint8](managed, len, len)
+}
+
+public func commandOutput(
+    _ command: &RawCommand,
+    _ limited: bool,
+    _ limit: usize,
+) -> Result[RawOutput, Error] {
+    var errorCode: int32 = 0
+    var limitExceeded = false
+    let handle = __rt__process_command_output(
+        command.handle,
+        limited,
+        limit,
+        unsafe { &mut errorCode as *mut int32 },
+        unsafe { &mut limitExceeded as *mut bool },
+    )
+    if handle == 0 {
+        if limitExceeded {
+            return .err(Error(.resourceExhausted).withOperation("capture process output"))
+        }
+        if errorCode == 0 {
+            return .err(Error(.unexpected).withOperation("capture process output"))
+        }
+        return .err(processError(errorCode, "capture process output"))
+    }
+    defer { __rt__process_output_close(handle) }
+
+    var codeValue: int32 = -1
+    var signalValue: int32 = -1
+    var code = __rt__process_output_status(
+        handle,
+        unsafe { &mut codeValue as *mut int32 },
+        unsafe { &mut signalValue as *mut int32 },
+    )
+    if code != 0 {
+        return .err(processError(code, "read process status"))
+    }
+
+    var stdoutData: *const uint8 = unsafe { 0 as *const uint8 }
+    var stdoutLen: usize = 0
+    code = __rt__process_output_stdout(
+        handle,
+        unsafe { &mut stdoutData as *mut *const uint8 },
+        unsafe { &mut stdoutLen as *mut usize },
+    )
+    if code != 0 {
+        return .err(processError(code, "read process stdout"))
+    }
+
+    var stderrData: *const uint8 = unsafe { 0 as *const uint8 }
+    var stderrLen: usize = 0
+    code = __rt__process_output_stderr(
+        handle,
+        unsafe { &mut stderrData as *mut *const uint8 },
+        unsafe { &mut stderrLen as *mut usize },
+    )
+    if code != 0 {
+        return .err(processError(code, "read process stderr"))
+    }
+
+    // Copy both streams before closing the runtime snapshot. The pointers are
+    // deliberately borrowed so ownership cannot be confused across the ABI.
+    return .ok(RawOutput {
+        statusValue: statusFromValues(codeValue, signalValue),
+        stdoutValue: copyOutputBytes(stdoutData, stdoutLen),
+        stderrValue: copyOutputBytes(stderrData, stderrLen),
+    })
+}
+
+public func childPid(_ child: &RawChild) -> Result[uint32, Error] {
+    var pid: uint32 = 0_u32
+    let code = __rt__process_child_pid(child.handle, unsafe { &mut pid as *mut uint32 })
+    if code != 0 {
+        return .err(processError(code, "get process id"))
+    }
+    return .ok(pid)
+}
+
+public func childWait(_ child: &RawChild) -> Result[RawExitStatus, Error] {
+    var codeValue: int32 = -1
+    var signalValue: int32 = -1
+    let code = __rt__process_child_wait(
+        child.handle,
+        unsafe { &mut codeValue as *mut int32 },
+        unsafe { &mut signalValue as *mut int32 },
+    )
+    if code != 0 {
+        return .err(processError(code, "wait for process"))
+    }
+    return .ok(statusFromValues(codeValue, signalValue))
+}
+
+public func childTryWait(_ child: &RawChild) -> Result[RawExitStatus?, Error] {
+    var ready = false
+    var codeValue: int32 = -1
+    var signalValue: int32 = -1
+    let code = __rt__process_child_try_wait(
+        child.handle,
+        unsafe { &mut ready as *mut bool },
+        unsafe { &mut codeValue as *mut int32 },
+        unsafe { &mut signalValue as *mut int32 },
+    )
+    if code != 0 {
+        return .err(processError(code, "try wait for process"))
+    }
+    if !ready {
+        return .ok(.none)
+    }
+    return .ok(.some(statusFromValues(codeValue, signalValue)))
+}
+
+public func childKill(_ child: &RawChild) -> Result[(), Error] {
+    let code = __rt__process_child_kill(child.handle)
+    if code != 0 {
+        return .err(processError(code, "kill process"))
+    }
+    return .ok(())
+}
+
+public func childAbandon(_ child: RawChild) {
+    __rt__process_child_abandon(child.handle)
+}
+
+public func pipeIsValid(_ pipe: &RawPipe) -> bool {
+    pipe.fd >= 0
+}
+
+public func pipeRead(
+    _ pipe: &RawPipe,
+    _ data: *mut uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    let count = std.libc.read(pipe.fd, data, len)
+    if count < 0 {
+        return .err(std.sys.io.unix.lastError().withOperation("read process pipe"))
+    }
+    return .ok(count as usize)
+}
+
+public func pipeWrite(
+    _ pipe: &RawPipe,
+    _ data: *const uint8,
+    _ len: usize,
+) -> Result[usize, Error] {
+    let count = std.libc.write(pipe.fd, data, len)
+    if count < 0 {
+        return .err(std.sys.io.unix.lastError().withOperation("write process pipe"))
+    }
+    return .ok(count as usize)
+}
+
+public func pipeClose(_ pipe: &mut RawPipe) -> Result[(), Error] {
+    if pipe.fd < 0 {
+        return .ok(())
+    }
+
+    // Invalidate before close. POSIX leaves descriptor state unspecified on a
+    // close error, and retrying could close an unrelated descriptor after reuse.
+    let fd = pipe.fd
+    pipe.fd = -1
+    if std.libc.close(fd) < 0 {
+        return .err(std.sys.io.unix.lastError().withOperation("close process pipe"))
+    }
+    return .ok(())
+}
+
+public func pipeTake(_ pipe: &mut RawPipe) -> RawPipe {
+    let fd = pipe.fd
+    pipe.fd = -1
+    return RawPipe { fd }
+}
+
+public func pipeIntoAsyncStream(_ pipe: &mut RawPipe) -> Result[std.sys.io.RawAsyncStream, Error] {
+    if pipe.fd < 0 {
+        return .err(Error(.closed).withOperation("convert process pipe to async stream"))
+    }
+    let fd = pipe.fd
+    pipe.fd = -1
+    return std.sys.io.adoptFd(fd)
+}
+
 public func exit(_ code: int32) -> ! {
     std.libc.exit(code)
 }

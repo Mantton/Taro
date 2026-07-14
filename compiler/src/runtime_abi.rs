@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 6;
+pub const RUNTIME_ABI_REVISION: u32 = 7;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -408,6 +408,45 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
         "__rt__panic_unwind_at",
         "(string,string,usize,usize)->never",
     ),
+    additional_unix("__rt__process_child_abandon", "(usize)->void"),
+    additional_unix("__rt__process_child_kill", "(usize)->i32"),
+    additional_unix("__rt__process_child_pid", "(usize,*mut u32)->i32"),
+    additional_unix(
+        "__rt__process_child_try_wait",
+        "(usize,*mut bool,*mut i32,*mut i32)->i32",
+    ),
+    additional_unix("__rt__process_child_wait", "(usize,*mut i32,*mut i32)->i32"),
+    additional_unix("__rt__process_command_arg", "(usize,string)->i32"),
+    additional_unix("__rt__process_command_close", "(usize)->void"),
+    additional_unix("__rt__process_command_current_dir", "(usize,string)->i32"),
+    additional_unix("__rt__process_command_env", "(usize,string,string)->i32"),
+    additional_unix("__rt__process_command_open", "(string,*mut i32)->usize"),
+    additional_unix(
+        "__rt__process_command_output",
+        "(usize,bool,usize,*mut i32,*mut bool)->usize",
+    ),
+    additional_unix(
+        "__rt__process_command_spawn",
+        "(usize,*mut usize,*mut i32,*mut i32,*mut i32)->i32",
+    ),
+    additional_unix(
+        "__rt__process_command_status",
+        "(usize,*mut i32,*mut i32)->i32",
+    ),
+    additional_unix("__rt__process_command_stdio", "(usize,u8,u8,u8)->i32"),
+    additional_unix("__rt__process_output_close", "(usize)->void"),
+    additional_unix(
+        "__rt__process_output_stderr",
+        "(usize,*mut *const u8,*mut usize)->i32",
+    ),
+    additional_unix(
+        "__rt__process_output_status",
+        "(usize,*mut i32,*mut i32)->i32",
+    ),
+    additional_unix(
+        "__rt__process_output_stdout",
+        "(usize,*mut *const u8,*mut usize)->i32",
+    ),
     additional("__rt__sync_channel_close", "(*mut u8)->i32"),
     additional(
         "__rt__sync_channel_create",
@@ -513,11 +552,15 @@ mod tests {
         assert!(unix.contains("__rt__env_snapshot_open"));
         assert!(unix.contains("__rt__fs_metadata"));
         assert!(unix.contains("__rt__fs_remove_dir_all"));
+        assert!(unix.contains("__rt__process_command_spawn"));
+        assert!(unix.contains("__rt__process_child_wait"));
         assert!(!windows.contains("__rt__open2"));
         assert!(!windows.contains("__rt__env_get"));
         assert!(!windows.contains("__rt__env_snapshot_open"));
         assert!(!windows.contains("__rt__fs_metadata"));
         assert!(!windows.contains("__rt__fs_remove_dir_all"));
+        assert!(!windows.contains("__rt__process_command_spawn"));
+        assert!(!windows.contains("__rt__process_child_wait"));
     }
 
     #[test]

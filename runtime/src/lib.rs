@@ -10,6 +10,8 @@ pub mod hash_seed;
 mod io_poller;
 mod observability;
 pub mod panic_unwind;
+#[cfg(unix)]
+mod process;
 mod scalar_parse;
 mod sync;
 pub mod task;

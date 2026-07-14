@@ -20,7 +20,7 @@ use std::sync::{Mutex, MutexGuard};
 // process-wide exclusion, just as it must for native C callers.
 static PROCESS_STATE_LOCK: Mutex<()> = Mutex::new(());
 
-fn lock_process_state() -> MutexGuard<'static, ()> {
+pub(crate) fn lock_process_state() -> MutexGuard<'static, ()> {
     // None of the guarded operations intentionally panic. If an unrelated
     // panic ever poisons the lock, retaining access is safer than making all
     // future environment and cwd calls fail permanently.
