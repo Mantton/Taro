@@ -1,0 +1,177 @@
+@cfg(family("unix"))
+func restoreVariable(_ name: string, _ original: string?) {
+    match original {
+        case .some(value) => { let _ = std.env.set(name, value) }
+        case .none => { let _ = std.env.remove(name) }
+    }
+}
+
+@cfg(family("unix"))
+func withByte(_ prefix: string, _ byte: uint8, _ suffix: string) -> string {
+    var builder = std.string.Builder.new()
+    builder.writeString(prefix)
+    builder.writeByte(byte)
+    builder.writeString(suffix)
+    return builder.intoString()
+}
+
+@cfg(family("unix"))
+func snapshotValue(
+    _ entries: &std.collections.List[(string, string)],
+    _ wanted: string,
+) -> string? {
+    for entry in entries {
+        if entry.0 == wanted {
+            return .some(entry.1)
+        }
+    }
+    return .none
+}
+
+@cfg(family("unix"))
+@test
+func testEnvironmentDistinguishesMissingAndEmptyValues() {
+    let name = "TARO_STORY7_MISSING_EMPTY"
+    let original = std.env.get(name).unwrap()
+    // Taro's test harness catches panics, so restoration must be a defer rather
+    // than tail cleanup: failed assertions still unwind through this block.
+    defer { restoreVariable(name, original) }
+
+    std.testing.assertTrue(std.env.remove(name).isOk(), "removing a variable should succeed")
+    std.testing.assertTrue(std.env.get(name).unwrap().isNone(), "a removed variable should be missing")
+    std.testing.assertFalse(std.env.contains(name).unwrap(), "contains should be false for a missing variable")
+
+    std.testing.assertTrue(std.env.set(name, "").isOk(), "an empty value should be accepted")
+    match std.env.get(name).unwrap() {
+        case .some(value) => std.testing.assertEqual(value, "", "empty values should remain present")
+        case .none => std.testing.fail("an empty environment value must not become missing")
+    }
+    std.testing.assertTrue(std.env.contains(name).unwrap(), "contains should be true for an empty value")
+    std.testing.assertTrue(std.env.remove(name).isOk(), "first removal should succeed")
+    std.testing.assertTrue(std.env.remove(name).isOk(), "removing an already-missing variable should succeed")
+}
+
+@cfg(family("unix"))
+@test
+func testEnvironmentPreservesRawBytesAndSnapshotOwnership() {
+    let name = withByte("TARO_STORY7_RAW_", 0xfe_u8, "_NAME")
+    let original = std.env.get(name).unwrap()
+    defer { restoreVariable(name, original) }
+
+    let first = withByte("first-", 0xff_u8, "-value")
+    let second = withByte("second-", 0xfd_u8, "-value")
+    std.testing.assertTrue(std.env.set(name, first).isOk(), "raw Unix environment bytes should be accepted")
+    std.testing.assertEqual(std.env.get(name).unwrap().unwrap(), first, "get should preserve raw bytes")
+
+    let before = std.env.vars().unwrap()
+    std.testing.assertEqual(
+        snapshotValue(&before, name).unwrap(),
+        first,
+        "vars should preserve raw name and value bytes",
+    )
+
+    std.testing.assertTrue(std.env.set(name, second).isOk(), "the variable should be replaceable")
+    std.testing.assertEqual(
+        snapshotValue(&before, name).unwrap(),
+        first,
+        "a vars snapshot must own its point-in-time value",
+    )
+    let after = std.env.vars().unwrap()
+    std.testing.assertEqual(snapshotValue(&after, name).unwrap(), second, "a new snapshot should see the replacement")
+}
+
+@cfg(family("unix"))
+@test
+func testEnvironmentRejectsMalformedNamesAndValues() {
+    let validName = "TARO_STORY7_INVALID_INPUT"
+    let original = std.env.get(validName).unwrap()
+    defer { restoreVariable(validName, original) }
+
+    let withNul = withByte("bad", 0_u8, "input")
+    match std.env.get(withNul) {
+        case .err(error) => std.testing.assertTrue(error.isKind(.invalidInput), "get should reject embedded NUL")
+        case .ok(_) => std.testing.fail("get should reject an embedded NUL name")
+    }
+    match std.env.contains(withNul) {
+        case .err(error) => std.testing.assertTrue(error.isKind(.invalidInput), "contains should retain validation errors")
+        case .ok(_) => std.testing.fail("contains should reject an embedded NUL name")
+    }
+    match std.env.set("", "value") {
+        case .err(error) => std.testing.assertTrue(error.isKind(.invalidInput), "set should reject an empty name")
+        case .ok(_) => std.testing.fail("set should reject an empty name")
+    }
+    match std.env.set("BAD=NAME", "value") {
+        case .err(error) => std.testing.assertTrue(error.isKind(.invalidInput), "set should reject the POSIX delimiter")
+        case .ok(_) => std.testing.fail("set should reject equals in a name")
+    }
+    match std.env.set(validName, withNul) {
+        case .err(error) => std.testing.assertTrue(error.isKind(.invalidInput), "set should reject embedded NUL values")
+        case .ok(_) => std.testing.fail("set should reject an embedded NUL value")
+    }
+    match std.env.remove(withNul) {
+        case .err(error) => std.testing.assertTrue(error.isKind(.invalidInput), "remove should reject embedded NUL")
+        case .ok(_) => std.testing.fail("remove should reject an embedded NUL name")
+    }
+}
+
+@cfg(family("unix"))
+@test
+func testCurrentDirectoryChangesAndRestoresProcessState() {
+    let original = std.env.currentDir().unwrap()
+    let temp = std.fs.createTempDir(prefix: "taro-env-cwd-").unwrap()
+    // getcwd may return the physical spelling of a path (for example macOS
+    // resolves /var through /private/var), so compare canonical paths rather
+    // than requiring chdir to preserve the caller's lexical spelling.
+    let expected = std.fs.canonicalize(temp.path()).unwrap()
+    // Defers run LIFO: restore cwd before attempting to remove the directory
+    // that temporarily became the process working directory.
+    defer { let _ = temp.close() }
+    defer { let _ = std.env.setCurrentDir(original) }
+
+    std.testing.assertTrue(std.path.isAbsolute(original), "currentDir should return an absolute path")
+    std.testing.assertTrue(std.env.setCurrentDir(temp.path()).isOk(), "setCurrentDir should accept an existing directory")
+    std.testing.assertEqual(std.env.currentDir().unwrap(), expected, "currentDir should observe the process change")
+
+    let missing = temp.path().concat("/missing")
+    match std.env.setCurrentDir(missing) {
+        case .err(error) => {
+            std.testing.assertTrue(error.isKind(.notFound), "a missing cwd should report notFound")
+            match error.context() {
+                case .path(path) => std.testing.assertEqual(*path, missing, "cwd errors should retain the requested path")
+                case _ => std.testing.fail("setCurrentDir errors should carry path context")
+            }
+        }
+        case .ok(_) => std.testing.fail("setCurrentDir should reject a missing directory")
+    }
+    match std.env.setCurrentDir(withByte("bad", 0_u8, "path")) {
+        case .err(error) => std.testing.assertTrue(error.isKind(.invalidInput), "cwd should reject embedded NUL")
+        case .ok(_) => std.testing.fail("setCurrentDir should reject an embedded NUL path")
+    }
+    std.testing.assertEqual(std.env.currentDir().unwrap(), expected, "failed cwd changes should leave cwd intact")
+}
+
+@cfg(family("unix"))
+@test
+func testHomeAndTempDirectoryPoliciesPreserveBytesAndFallbacks() {
+    let originalHome = std.env.get("HOME").unwrap()
+    let originalTemp = std.env.get("TMPDIR").unwrap()
+    defer { restoreVariable("HOME", originalHome) }
+    defer { restoreVariable("TMPDIR", originalTemp) }
+
+    let rawHome = withByte("/tmp/taro-home-", 0xff_u8, "")
+    let rawTemp = withByte("/tmp/taro-temp-", 0xfe_u8, "")
+    std.testing.assertTrue(std.env.set("HOME", rawHome).isOk(), "HOME fixture should be set")
+    std.testing.assertTrue(std.env.set("TMPDIR", rawTemp).isOk(), "TMPDIR fixture should be set")
+    std.testing.assertEqual(std.env.homeDir().unwrap(), rawHome, "homeDir should prefer HOME without changing bytes")
+    std.testing.assertEqual(std.env.tempDir().unwrap(), rawTemp, "tempDir should prefer TMPDIR without changing bytes")
+
+    std.testing.assertTrue(std.env.set("HOME", "").isOk(), "empty HOME fixture should be set")
+    std.testing.assertFalse(std.env.homeDir().unwrap().isEmpty(), "empty HOME should fall back to the passwd database")
+    std.testing.assertTrue(std.env.remove("HOME").isOk(), "HOME fixture should be removable")
+    std.testing.assertFalse(std.env.homeDir().unwrap().isEmpty(), "missing HOME should fall back to the passwd database")
+
+    std.testing.assertTrue(std.env.set("TMPDIR", "").isOk(), "empty TMPDIR fixture should be set")
+    std.testing.assertEqual(std.env.tempDir().unwrap(), "/tmp", "empty TMPDIR should use the Unix fallback")
+    std.testing.assertTrue(std.env.remove("TMPDIR").isOk(), "TMPDIR fixture should be removable")
+    std.testing.assertEqual(std.env.tempDir().unwrap(), "/tmp", "missing TMPDIR should use the Unix fallback")
+}

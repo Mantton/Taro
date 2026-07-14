@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 5;
+pub const RUNTIME_ABI_REVISION: u32 = 6;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -346,6 +346,23 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     additional("__rt__executor_abort_rootless", "()->void"),
     additional("__rt__executor_finish_rootless", "()->void"),
+    additional_unix("__rt__env_current_dir", "(*mut *mut u8,*mut usize)->i32"),
+    additional_unix(
+        "__rt__env_get",
+        "(string,*mut *mut u8,*mut usize,*mut bool)->i32",
+    ),
+    additional_unix("__rt__env_home_dir", "(*mut *mut u8,*mut usize)->i32"),
+    additional_unix("__rt__env_owned_bytes_free", "(*mut u8)->void"),
+    additional_unix("__rt__env_remove", "(string)->i32"),
+    additional_unix("__rt__env_set", "(string,string)->i32"),
+    additional_unix("__rt__env_set_current_dir", "(string)->i32"),
+    additional_unix(
+        "__rt__env_snapshot_at",
+        "(usize,usize,*mut *const u8,*mut usize,*mut *const u8,*mut usize)->i32",
+    ),
+    additional_unix("__rt__env_snapshot_close", "(usize)->void"),
+    additional_unix("__rt__env_snapshot_open", "(*mut usize)->usize"),
+    additional_unix("__rt__env_temp_dir", "(*mut *mut u8,*mut usize)->i32"),
     additional_unix(
         "__rt__fs_canonicalize",
         "(string,*mut *mut u8,*mut usize)->i32",
@@ -492,9 +509,13 @@ mod tests {
         let unix = required_symbols_for_target("aarch64-apple-darwin").collect::<HashSet<_>>();
         let windows = required_symbols_for_target("x86_64-pc-windows-msvc").collect::<HashSet<_>>();
         assert!(unix.contains("__rt__open2"));
+        assert!(unix.contains("__rt__env_get"));
+        assert!(unix.contains("__rt__env_snapshot_open"));
         assert!(unix.contains("__rt__fs_metadata"));
         assert!(unix.contains("__rt__fs_remove_dir_all"));
         assert!(!windows.contains("__rt__open2"));
+        assert!(!windows.contains("__rt__env_get"));
+        assert!(!windows.contains("__rt__env_snapshot_open"));
         assert!(!windows.contains("__rt__fs_metadata"));
         assert!(!windows.contains("__rt__fs_remove_dir_all"));
     }

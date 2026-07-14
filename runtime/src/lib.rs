@@ -1,4 +1,6 @@
 mod cleanup;
+#[cfg(unix)]
+mod env;
 pub mod executor;
 pub mod existentials;
 #[cfg(unix)]
