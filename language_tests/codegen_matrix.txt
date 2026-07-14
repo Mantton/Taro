@@ -1,5 +1,5 @@
 # Instruction selection and intrinsics
-valid/debug_codegen_selectiondag.tr
+valid/debug_codegen_globalisel.tr
 valid/ptr_int_casts.tr
 valid/optimizer_inline_contracts.tr
 
@@ -16,6 +16,7 @@ valid/loop_alloca_stack_growth_regression.tr
 # Calls, ABI boundaries, and cross-package symbols
 valid/call_destination_liveness_regression.tr
 valid/cross_package_fn_pointer_regression.tr
+valid/globalisel_large_aggregate_abi.tr
 valid/impl_method_mangling_cross_package.tr
 valid/indirect_arg_alias_regression.tr
 valid/result_propagation_cross_package.tr
@@ -27,6 +28,7 @@ valid/async_spawn_main.tr
 valid/panic_unwind_defer_lifo.tr
 valid/panic_unwind_double_panic.tr
 valid/panic_unwind_nested_defer.tr
+valid/task_deadlock_diagnostics.tr
 
 # Existentials and data layout
 valid/existential_metadata_constraints.tr

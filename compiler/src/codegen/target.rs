@@ -15,6 +15,12 @@ use inkwell::{AddressSpace, OptimizationLevel as LlvmOptimizationLevel, context:
 use std::{ffi::CString, sync::Once};
 
 static CONFIGURE_LLVM_CODEGEN: Once = Once::new();
+const STRICT_GLOBAL_ISEL_ENV: &str = "TARO_LLVM_STRICT_GLOBAL_ISEL";
+
+unsafe extern "C" {
+    #[cfg(test)]
+    fn taro_target_machine_uses_global_isel(target_machine: *mut std::ffi::c_void) -> bool;
+}
 
 fn backend_optimization_level(
     profile: BuildProfile,
@@ -36,12 +42,16 @@ fn backend_optimization_level(
 
 fn configure_llvm_codegen() {
     CONFIGURE_LLVM_CODEGEN.call_once(|| {
-        // Keep SelectionDAG as Taro's stable instruction selector on LLVM 22.
-        // GlobalISel remains an explicit follow-up experiment: changing the
-        // selector during the LLVM compatibility upgrade would conflate
-        // backend policy with toolchain compatibility.
+        // LLVM 22's AArch64 target owns the selector policy: GlobalISel at O0
+        // with per-function SelectionDAG fallback, and SelectionDAG above O0.
+        // The certification matrix makes fallback fatal so new unsupported IR
+        // is caught without turning a production compiler fallback into a
+        // process abort.
+        if std::env::var_os(STRICT_GLOBAL_ISEL_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            return;
+        }
         let program = CString::new("taro-llvm").expect("static string has no NUL");
-        let option = CString::new("--global-isel=0").expect("static string has no NUL");
+        let option = CString::new("--global-isel-abort=1").expect("static string has no NUL");
         let overview = CString::new("Taro LLVM options").expect("static string has no NUL");
         let arguments = [program.as_ptr(), option.as_ptr()];
         unsafe {
@@ -52,6 +62,11 @@ fn configure_llvm_codegen() {
             );
         }
     });
+}
+
+#[cfg(test)]
+fn uses_global_isel(target_machine: &TargetMachine) -> bool {
+    unsafe { taro_target_machine_uses_global_isel(target_machine.as_mut_ptr().cast()) }
 }
 
 /// Wrapper around LLVM target information for layout computation.
@@ -201,6 +216,15 @@ impl TargetLayout {
         &self.target_machine
     }
 
+    /// Whether LLVM selected GlobalISel for the shared target machine.
+    ///
+    /// LLVM 22 currently enables it for supported AArch64 O0 configurations.
+    #[inline]
+    #[cfg(test)]
+    pub(crate) fn uses_global_isel(&self) -> bool {
+        uses_global_isel(&self.target_machine)
+    }
+
     /// Create a target machine for one package's optimization policy.
     ///
     /// Layout remains shared across the compilation, but backend optimization
@@ -247,7 +271,9 @@ fn pointer_abi_alignment(target_data: &TargetData) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{TargetLayout, backend_optimization_level, pointer_abi_alignment};
+    use super::{
+        TargetLayout, backend_optimization_level, pointer_abi_alignment, uses_global_isel,
+    };
     use crate::{
         compile::config::{BuildProfile, OptLevel, OptimizationMode},
         diagnostics::DiagCtx,
@@ -329,6 +355,41 @@ mod tests {
             backend_optimization_level(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O3),),
             LlvmOptimizationLevel::Aggressive
         );
+    }
+
+    #[test]
+    fn llvm_22_uses_global_isel_for_supported_aarch64_o0() {
+        let dcx = diagnostics();
+        let layout =
+            TargetLayout::new(&dcx, Some("aarch64-unknown-linux-gnu"), BuildProfile::Debug)
+                .unwrap_or_else(|_| panic!("AArch64 target layout should initialize"));
+        assert!(layout.uses_global_isel());
+
+        let o0 = layout
+            .create_target_machine(
+                &dcx,
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::O0),
+            )
+            .unwrap_or_else(|_| panic!("AArch64 O0 target machine should initialize"));
+        assert!(uses_global_isel(&o0));
+
+        let o2 = layout
+            .create_target_machine(
+                &dcx,
+                BuildProfile::Debug,
+                OptimizationMode::Level(OptLevel::O2),
+            )
+            .unwrap_or_else(|_| panic!("AArch64 O2 target machine should initialize"));
+        assert!(!uses_global_isel(&o2));
+    }
+
+    #[test]
+    fn llvm_22_keeps_x86_64_on_non_global_instruction_selection() {
+        let dcx = diagnostics();
+        let layout = TargetLayout::new(&dcx, Some("x86_64-unknown-linux-gnu"), BuildProfile::Debug)
+            .unwrap_or_else(|_| panic!("x86-64 target layout should initialize"));
+        assert!(!layout.uses_global_isel());
     }
 
     #[test]

@@ -155,6 +155,12 @@ it is omitted, debug builds retain the fast baseline pipeline and release
 builds use O2. `--release` also controls language defaults such as overflow
 checks; the profile and optimization level remain independently selectable.
 
+LLVM 22 owns instruction-selector policy. On supported AArch64 targets, O0
+uses GlobalISel with per-function SelectionDAG fallback; O1 and above retain
+SelectionDAG. Other architectures keep their LLVM target defaults. This gives
+debug builds the maintained AArch64 fast path without trading away optimized
+code quality or turning an incomplete lowering into a compiler crash.
+
 ### Create a New Package
 
 Use `taro new` to scaffold a package from a full package identifier:
@@ -669,7 +675,7 @@ To verify the compiler implementation, use the command that matches the test sur
 - `cargo test --workspace`: Rust unit/integration/doctests for workspace crates.
 - `make llvm-tests`: Focused tests for LLVM 22.1 discovery, validation, and build environment setup.
 - `python3 development/scripts/language_tests.py`: Taro language E2E tests in `language_tests/source_files`. Runs in parallel by default using `min(selected_tests, CPU core count)` workers; `--jobs` is only needed to override (for example, `--jobs 1` for serial mode). Bootstraps an isolated distribution via `build_dist.py` (release by default; pass `--debug` for debug bootstrap).
-- `make codegen-matrix`: Runs the high-risk LLVM codegen manifest with both debug and release generated-program profiles.
+- `make codegen-matrix`: Runs the high-risk LLVM codegen manifest with both debug and release generated-program profiles. On targets where LLVM selects GlobalISel, `TARO_LLVM_STRICT_GLOBAL_ISEL=1` makes any per-function fallback fail the matrix.
 - `make codegen-benchmark`: Compares the retained release baseline with O2 for cold compile time, warmed runtime, executable size, and output equivalence.
 - `make std-tests`: Runs std package tests only (`taro test std`) via the `test_all.py` std stage.
 - `python3 development/scripts/test_all.py`: Unified fail-fast pipeline (development-script tests, cargo tests, dist build, std compile smoke, std package tests, language tests).

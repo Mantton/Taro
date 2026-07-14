@@ -93,7 +93,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed={LLVM_PREFIX_ENV}");
     println!("cargo:rerun-if-env-changed=DEP_LLVM_22_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=PATH");
-    println!("cargo:rerun-if-changed=native/thin_lto.cpp");
+    println!("cargo:rerun-if-changed=native/llvm_shims.cpp");
 
     let llvm_config = find_llvm_config();
     let include_dir = command_output(&llvm_config, &["--includedir"])
@@ -114,6 +114,6 @@ fn main() {
         .define("__STDC_CONSTANT_MACROS", None)
         .define("__STDC_FORMAT_MACROS", None)
         .define("__STDC_LIMIT_MACROS", None)
-        .file("native/thin_lto.cpp");
+        .file("native/llvm_shims.cpp");
     build.compile("taro_llvm_shims");
 }

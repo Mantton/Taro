@@ -1,0 +1,24 @@
+func main() async {
+    let mutex = match std.sync.Mutex[int32].new(7_i32) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("mutex should be created")
+    }
+    var held = match mutex.tryLock() {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("first mutex lock should succeed")
+    }
+
+    match mutex.tryLock() {
+        case .ok(_) => std.panic.panic("nested mutex lock should block")
+        case .err(err) => assert(
+            err.isKind(.wouldBlock),
+            "large aggregate arguments must preserve the error kind",
+        )
+    }
+
+    match held.unlock() {
+        case .ok(_) => {}
+        case .err(_) => std.panic.panic("mutex should unlock")
+    }
+    std.print("PASS: large aggregate arguments preserve the AArch64 ABI\n")
+}

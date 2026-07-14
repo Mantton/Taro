@@ -1,0 +1,1 @@
+PASS: large aggregate arguments preserve the AArch64 ABI

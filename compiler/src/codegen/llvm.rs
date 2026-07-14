@@ -57,7 +57,8 @@ mod witness;
 
 const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
 const AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 24;
-const DEFAULT_INDIRECT_ARG_THRESHOLD_BYTES: u64 = 2048;
+const NON_AARCH64_INDIRECT_ARG_THRESHOLD_BYTES: u64 = 2048;
+const AARCH64_INDIRECT_ARG_THRESHOLD_BYTES: u64 = 24;
 const LARGE_AGGREGATE_MOVE_MEMMOVE_THRESHOLD_BYTES: u64 = 1024;
 const ENV_ARGC_GLOBAL_NAME: &str = "__taro_env_argc";
 const ENV_ARGV_GLOBAL_NAME: &str = "__taro_env_argv";
@@ -198,6 +199,14 @@ fn indirect_return_threshold_for_triple(triple: &str) -> u64 {
         AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
     } else {
         NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+    }
+}
+
+fn indirect_arg_threshold_for_triple(triple: &str) -> u64 {
+    if target_is_aarch64(triple) {
+        AARCH64_INDIRECT_ARG_THRESHOLD_BYTES
+    } else {
+        NON_AARCH64_INDIRECT_ARG_THRESHOLD_BYTES
     }
 }
 
@@ -496,7 +505,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let default_indirect_return_threshold =
             indirect_return_threshold_for_triple(target_triple_str);
         let indirect_return_threshold_bytes = default_indirect_return_threshold;
-        let indirect_arg_threshold_bytes = DEFAULT_INDIRECT_ARG_THRESHOLD_BYTES;
+        let indirect_arg_threshold_bytes = indirect_arg_threshold_for_triple(target_triple_str);
         let usize_ty = context.ptr_sized_int_type(&target_data, None);
         let opaque_ptr = context.ptr_type(AddressSpace::default());
         let gc_desc_ty = context.struct_type(
@@ -7383,10 +7392,12 @@ fn build_byte_offset_ptr<'llvm>(
 #[cfg(test)]
 mod struct_layout_tests {
     use super::{
-        AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, LlvmOptimizationPipeline,
+        AARCH64_INDIRECT_ARG_THRESHOLD_BYTES, AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
+        LlvmOptimizationPipeline, NON_AARCH64_INDIRECT_ARG_THRESHOLD_BYTES,
         NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, add_llvm_enum_function_attribute,
         build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_bitcode_magic,
-        has_llvm_function_body, indirect_return_threshold_for_triple, llvm_inline_attribute_name,
+        has_llvm_function_body, indirect_arg_threshold_for_triple,
+        indirect_return_threshold_for_triple, llvm_inline_attribute_name,
         llvm_optimization_pipeline, logical_to_physical_map, packed_field_order,
         static_initializer_value_for_codegen, target_is_aarch64, write_llvm_bitcode,
     };
@@ -7496,6 +7507,18 @@ mod struct_layout_tests {
         assert_eq!(
             indirect_return_threshold_for_triple("x86_64-unknown-linux-gnu"),
             NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES
+        );
+    }
+
+    #[test]
+    fn indirect_argument_threshold_tracks_target_family() {
+        assert_eq!(
+            indirect_arg_threshold_for_triple("arm64e-apple-darwin"),
+            AARCH64_INDIRECT_ARG_THRESHOLD_BYTES
+        );
+        assert_eq!(
+            indirect_arg_threshold_for_triple("x86_64-unknown-linux-gnu"),
+            NON_AARCH64_INDIRECT_ARG_THRESHOLD_BYTES
         );
     }
 

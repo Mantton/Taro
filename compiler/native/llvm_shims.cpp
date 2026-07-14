@@ -8,7 +8,9 @@
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
 #include "llvm-c/Core.h"
+#include "llvm-c/TargetMachine.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -59,6 +61,14 @@ std::uint8_t taro_llvm_global_prefix(LLVMModuleRef module) {
     return 0;
   return static_cast<std::uint8_t>(
       llvm::unwrap(module)->getDataLayout().getGlobalPrefix());
+}
+
+bool taro_target_machine_uses_global_isel(LLVMTargetMachineRef target_machine) {
+  if (target_machine == nullptr)
+    return false;
+  auto *native_target_machine =
+      reinterpret_cast<llvm::TargetMachine *>(target_machine);
+  return native_target_machine->Options.EnableGlobalISel;
 }
 
 TaroThinLTOCodeGenerator *taro_thin_lto_create() {

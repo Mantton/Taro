@@ -44,7 +44,7 @@ help:
 	@echo "  make language-tests           Run language tests"
 	@echo "  make language-tests JOBS=4"
 	@echo "  make language-tests FILTER=optional"
-	@echo "  make codegen-matrix           Run high-risk codegen tests in debug and release"
+	@echo "  make codegen-matrix           Run high-risk codegen tests with strict GlobalISel fallback checks"
 	@echo "  make codegen-matrix JOBS=4"
 	@echo "  make codegen-matrix OPT_LEVEL=2"
 	@echo "  make std-tests                Run std package test files"
@@ -108,7 +108,7 @@ language-tests:
 	$(PYTHON) $(LANGUAGE_TESTS) $(if $(FILTER),--filter $(FILTER),) $(if $(JOBS),--jobs $(JOBS),)
 
 codegen-matrix:
-	$(PYTHON) $(LANGUAGE_TESTS) --manifest $(CODEGEN_MATRIX) --codegen-profile both $(if $(OPT_LEVEL),--opt-level $(OPT_LEVEL),) $(if $(JOBS),--jobs $(JOBS),)
+	TARO_LLVM_STRICT_GLOBAL_ISEL=1 $(PYTHON) $(LANGUAGE_TESTS) --manifest $(CODEGEN_MATRIX) --codegen-profile both $(if $(OPT_LEVEL),--opt-level $(OPT_LEVEL),) $(if $(JOBS),--jobs $(JOBS),)
 
 std-tests: dist
 	$(PYTHON) $(TEST_ALL) --skip-cargo-tests --skip-build-dist --skip-language-tests
