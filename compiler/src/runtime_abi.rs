@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 3;
+pub const RUNTIME_ABI_REVISION: u32 = 4;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,6 +361,8 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__logical_stack_push", "(string)->void"),
     additional_unix("__rt__open2", "(*const u8,i32)->i32"),
     additional_unix("__rt__open3", "(*const u8,i32,i32)->i32"),
+    additional("__rt__parse_f32", "(string,*mut u32)->u8"),
+    additional("__rt__parse_f64", "(string,*mut u64)->u8"),
     additional("__rt__panic_abort", "(string)->never"),
     additional("__rt__panic_abort_unwind", "(*mut u8)->never"),
     additional("__rt__panic_unwind", "(string)->never"),
@@ -470,5 +472,12 @@ mod tests {
         let windows = required_symbols_for_target("x86_64-pc-windows-msvc").collect::<HashSet<_>>();
         assert!(unix.contains("__rt__open2"));
         assert!(!windows.contains("__rt__open2"));
+    }
+
+    #[test]
+    fn scalar_parse_exports_are_part_of_the_canonical_abi() {
+        let symbols = required_symbols().collect::<HashSet<_>>();
+        assert!(symbols.contains("__rt__parse_f32"));
+        assert!(symbols.contains("__rt__parse_f64"));
     }
 }

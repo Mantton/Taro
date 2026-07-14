@@ -2,6 +2,25 @@ import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
+import std.convert.{Parse, ParseError}
+import std.result.Result
+
+func parseRune(_ input: string) -> Result[rune, ParseError] {
+    let len = std.string.stringLen(input)
+    if len == 0 {
+        return .err(ParseError(.empty, 0 as usize))
+    }
+
+    let (value, width) = std.string.decodeRune(input, 0 as usize)
+    let first = std.string.stringData(input).read()
+    if width == 1 && first >= 0x80_u8 {
+        return .err(ParseError(.invalidFormat, 0 as usize))
+    }
+    if width != len {
+        return .err(ParseError(.invalidFormat, width))
+    }
+    return .ok(value)
+}
 
 impl Hashable for rune {
     public func hash[H: Hasher](&self, into hasher: &mut H) {
@@ -35,5 +54,18 @@ impl Ord for rune {
         } else {
             .greater
         }
+    }
+}
+
+impl Parse for rune {
+    public func parse(_ input: string) -> Result[rune, ParseError] {
+        parseRune(input)
+    }
+}
+
+impl rune {
+    /// Parse exactly one valid UTF-8 scalar value.
+    public func parse(_ input: string) -> Result[rune, ParseError] {
+        parseRune(input)
     }
 }

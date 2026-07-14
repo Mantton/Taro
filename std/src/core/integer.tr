@@ -2,9 +2,130 @@ import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
+import std.convert.{Parse, ParseError, ParseErrorKind}
+import std.result.Result
 
 func usizeMax() -> usize {
     0xffffffffffffffff_u64 as usize
+}
+
+func integerDigitValue(_ byte: uint8) -> uint32 {
+    if byte >= ('0' as uint8) && byte <= ('9' as uint8) {
+        return (byte - ('0' as uint8)) as uint32
+    }
+    if byte >= ('a' as uint8) && byte <= ('z' as uint8) {
+        return ((byte - ('a' as uint8)) + 10_u8) as uint32
+    }
+    if byte >= ('A' as uint8) && byte <= ('Z' as uint8) {
+        return ((byte - ('A' as uint8)) + 10_u8) as uint32
+    }
+    return 0xffffffff_u32
+}
+
+func validIntegerRadix(_ radix: uint32) -> bool {
+    radix >= 2_u32 && radix <= 36_u32
+}
+
+func parseIntegerMagnitude(
+    _ input: string,
+    _ start: usize,
+    _ radix: uint32,
+    _ limit: uint64,
+    _ rangeKind: ParseErrorKind,
+) -> Result[uint64, ParseError] {
+    let len = std.string.stringLen(input)
+    let data = std.string.stringData(input)
+    let base = radix as uint64
+    var value: uint64 = 0
+    var index = start
+
+    while index < len {
+        let digit = integerDigitValue(data.add(index).read())
+        if digit >= radix {
+            return .err(ParseError(.invalidDigit, index))
+        }
+
+        let digitValue = digit as uint64
+        if digitValue > limit || value > (limit - digitValue) / base {
+            return .err(ParseError(rangeKind, index))
+        }
+
+        value = value * base + digitValue
+        index += 1
+    }
+
+    return .ok(value)
+}
+
+func negativeMagnitude(_ magnitude: uint64) -> int64 {
+    if magnitude == 0_u64 {
+        return 0_i64
+    }
+
+    // Form the two's-complement representation without negating int64::MIN.
+    return (0xffffffffffffffff_u64 - (magnitude - 1_u64)) as int64
+}
+
+func parseSignedInteger(
+    _ input: string,
+    _ radix: uint32,
+    _ positiveLimit: uint64,
+    _ negativeLimit: uint64,
+) -> Result[int64, ParseError] {
+    if !validIntegerRadix(radix) {
+        return .err(ParseError(.invalidFormat, 0 as usize))
+    }
+
+    let len = std.string.stringLen(input)
+    if len == 0 {
+        return .err(ParseError(.empty, 0 as usize))
+    }
+
+    let data = std.string.stringData(input)
+    var index: usize = 0
+    var negative = false
+    let first = data.read()
+    if first == ('+' as uint8) || first == ('-' as uint8) {
+        negative = first == ('-' as uint8)
+        index = 1
+        if index == len {
+            return .err(ParseError(.invalidFormat, index))
+        }
+    }
+
+    let limit = if negative { negativeLimit } else { positiveLimit }
+    let rangeKind: ParseErrorKind = if negative { .underflow } else { .overflow }
+    match parseIntegerMagnitude(input, index, radix, limit, rangeKind) {
+        case .ok(magnitude) => {
+            if negative {
+                return .ok(negativeMagnitude(magnitude))
+            }
+            return .ok(magnitude as int64)
+        }
+        case .err(error) => return .err(error)
+    }
+}
+
+func parseUnsignedInteger(
+    _ input: string,
+    _ radix: uint32,
+    _ limit: uint64,
+) -> Result[uint64, ParseError] {
+    if !validIntegerRadix(radix) {
+        return .err(ParseError(.invalidFormat, 0 as usize))
+    }
+
+    let len = std.string.stringLen(input)
+    if len == 0 {
+        return .err(ParseError(.empty, 0 as usize))
+    }
+
+    let first = std.string.stringData(input).read()
+    if first == ('+' as uint8) || first == ('-' as uint8) {
+        return .err(ParseError(.invalidFormat, 0 as usize))
+    }
+
+    return parseIntegerMagnitude(input, 0 as usize, radix, limit, .overflow)
 }
 
 // Hash integers as little-endian bytes for stable, explicit byte feeds.
@@ -358,5 +479,209 @@ impl usize {
             return .none
         }
         return .some(self * rhs)
+    }
+}
+
+impl Parse for int8 {
+    public func parse(_ input: string) -> Result[int8, ParseError] {
+        int8.parseRadix(input, 10_u32)
+    }
+}
+
+impl int8 {
+    /// Parse a signed decimal integer.
+    public func parse(_ input: string) -> Result[int8, ParseError] {
+        int8.parseRadix(input, 10_u32)
+    }
+
+    /// Parse a signed integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int8, ParseError] {
+        match parseSignedInteger(input, radix, 0x7f_u64, 0x80_u64) {
+            case .ok(value) => .ok(value as int8)
+            case .err(error) => .err(error)
+        }
+    }
+}
+
+impl Parse for int16 {
+    public func parse(_ input: string) -> Result[int16, ParseError] {
+        int16.parseRadix(input, 10_u32)
+    }
+}
+
+impl int16 {
+    /// Parse a signed decimal integer.
+    public func parse(_ input: string) -> Result[int16, ParseError] {
+        int16.parseRadix(input, 10_u32)
+    }
+
+    /// Parse a signed integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int16, ParseError] {
+        match parseSignedInteger(input, radix, 0x7fff_u64, 0x8000_u64) {
+            case .ok(value) => .ok(value as int16)
+            case .err(error) => .err(error)
+        }
+    }
+}
+
+impl Parse for int32 {
+    public func parse(_ input: string) -> Result[int32, ParseError] {
+        int32.parseRadix(input, 10_u32)
+    }
+}
+
+impl int32 {
+    /// Parse a signed decimal integer.
+    public func parse(_ input: string) -> Result[int32, ParseError] {
+        int32.parseRadix(input, 10_u32)
+    }
+
+    /// Parse a signed integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int32, ParseError] {
+        match parseSignedInteger(input, radix, 0x7fffffff_u64, 0x80000000_u64) {
+            case .ok(value) => .ok(value as int32)
+            case .err(error) => .err(error)
+        }
+    }
+}
+
+impl Parse for int64 {
+    public func parse(_ input: string) -> Result[int64, ParseError] {
+        int64.parseRadix(input, 10_u32)
+    }
+}
+
+impl int64 {
+    /// Parse a signed decimal integer.
+    public func parse(_ input: string) -> Result[int64, ParseError] {
+        int64.parseRadix(input, 10_u32)
+    }
+
+    /// Parse a signed integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[int64, ParseError] {
+        parseSignedInteger(input, radix, 0x7fffffffffffffff_u64, 0x8000000000000000_u64)
+    }
+}
+
+impl Parse for isize {
+    public func parse(_ input: string) -> Result[isize, ParseError] {
+        isize.parseRadix(input, 10_u32)
+    }
+}
+
+impl isize {
+    /// Parse a signed decimal integer.
+    public func parse(_ input: string) -> Result[isize, ParseError] {
+        isize.parseRadix(input, 10_u32)
+    }
+
+    /// Parse a signed pointer-sized integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[isize, ParseError] {
+        match parseSignedInteger(input, radix, 0x7fffffffffffffff_u64, 0x8000000000000000_u64) {
+            case .ok(value) => .ok(value as isize)
+            case .err(error) => .err(error)
+        }
+    }
+}
+
+impl Parse for uint8 {
+    public func parse(_ input: string) -> Result[uint8, ParseError] {
+        uint8.parseRadix(input, 10_u32)
+    }
+}
+
+impl uint8 {
+    /// Parse an unsigned decimal integer.
+    public func parse(_ input: string) -> Result[uint8, ParseError] {
+        uint8.parseRadix(input, 10_u32)
+    }
+
+    /// Parse an unsigned integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint8, ParseError] {
+        match parseUnsignedInteger(input, radix, 0xff_u64) {
+            case .ok(value) => .ok(value as uint8)
+            case .err(error) => .err(error)
+        }
+    }
+}
+
+impl Parse for uint16 {
+    public func parse(_ input: string) -> Result[uint16, ParseError] {
+        uint16.parseRadix(input, 10_u32)
+    }
+}
+
+impl uint16 {
+    /// Parse an unsigned decimal integer.
+    public func parse(_ input: string) -> Result[uint16, ParseError] {
+        uint16.parseRadix(input, 10_u32)
+    }
+
+    /// Parse an unsigned integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint16, ParseError] {
+        match parseUnsignedInteger(input, radix, 0xffff_u64) {
+            case .ok(value) => .ok(value as uint16)
+            case .err(error) => .err(error)
+        }
+    }
+}
+
+impl Parse for uint32 {
+    public func parse(_ input: string) -> Result[uint32, ParseError] {
+        uint32.parseRadix(input, 10_u32)
+    }
+}
+
+impl uint32 {
+    /// Parse an unsigned decimal integer.
+    public func parse(_ input: string) -> Result[uint32, ParseError] {
+        uint32.parseRadix(input, 10_u32)
+    }
+
+    /// Parse an unsigned integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint32, ParseError] {
+        match parseUnsignedInteger(input, radix, 0xffffffff_u64) {
+            case .ok(value) => .ok(value as uint32)
+            case .err(error) => .err(error)
+        }
+    }
+}
+
+impl Parse for uint64 {
+    public func parse(_ input: string) -> Result[uint64, ParseError] {
+        uint64.parseRadix(input, 10_u32)
+    }
+}
+
+impl uint64 {
+    /// Parse an unsigned decimal integer.
+    public func parse(_ input: string) -> Result[uint64, ParseError] {
+        uint64.parseRadix(input, 10_u32)
+    }
+
+    /// Parse an unsigned integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[uint64, ParseError] {
+        parseUnsignedInteger(input, radix, 0xffffffffffffffff_u64)
+    }
+}
+
+impl Parse for usize {
+    public func parse(_ input: string) -> Result[usize, ParseError] {
+        usize.parseRadix(input, 10_u32)
+    }
+}
+
+impl usize {
+    /// Parse an unsigned decimal integer.
+    public func parse(_ input: string) -> Result[usize, ParseError] {
+        usize.parseRadix(input, 10_u32)
+    }
+
+    /// Parse an unsigned pointer-sized integer using an explicit radix from 2 through 36.
+    public func parseRadix(_ input: string, _ radix: uint32) -> Result[usize, ParseError] {
+        match parseUnsignedInteger(input, radix, 0xffffffffffffffff_u64) {
+            case .ok(value) => .ok(value as usize)
+            case .err(error) => .err(error)
+        }
     }
 }

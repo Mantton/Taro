@@ -1,3 +1,5 @@
+import std.fmt.Display
+
 /// Interface for constructing a value from another type.
 ///
 /// `From[T]` provides a standard way to create a value of the implementing
@@ -37,4 +39,83 @@ public interface From[T] {
 /// ```
 public interface Into[T] {
     func into(self) -> T
+}
+
+/// The category of a scalar parsing failure.
+public enum ParseErrorKind: std.marker.Copy, std.ops.PartialEq {
+    /// The input contains no bytes.
+    case empty
+    /// A byte is not a digit in the requested radix.
+    case invalidDigit
+    /// The input does not match the scalar's accepted syntax.
+    case invalidFormat
+    /// The parsed value is greater than the type can represent.
+    case overflow
+    /// The parsed value is less than the type can represent.
+    case underflow
+}
+
+/// A typed scalar parsing failure with its offending byte index.
+///
+/// The index points at the first invalid or range-crossing byte. When a
+/// required component is missing at the end of the input, the index equals
+/// the input's byte length.
+public struct ParseError: std.marker.Copy {
+    kindValue: ParseErrorKind
+    indexValue: usize
+}
+
+impl ParseError {
+    /// Construct a parse error for `kind` at `index`.
+    public func new(_ kind: ParseErrorKind, _ index: usize) -> Self {
+        ParseError {
+            kindValue: kind,
+            indexValue: index,
+        }
+    }
+
+    /// Return the category of this parsing failure.
+    public func kind(&self) -> ParseErrorKind {
+        self.kindValue
+    }
+
+    /// Return the offending byte index.
+    public func index(&self) -> usize {
+        self.indexValue
+    }
+}
+
+impl std.fmt.Display for ParseErrorKind {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .empty => into.writeString("empty input")
+            case .invalidDigit => into.writeString("invalid digit")
+            case .invalidFormat => into.writeString("invalid format")
+            case .overflow => into.writeString("value overflows target type")
+            case .underflow => into.writeString("value underflows target type")
+        }
+    }
+}
+
+impl std.fmt.Display for ParseError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        self.kindValue.display(into)
+        into.writeString(" at byte ")
+        self.indexValue.display(into)
+    }
+}
+
+impl std.error.Error for ParseError {}
+
+/// Interface for constructing a value from its textual representation.
+///
+/// Implementations do not trim input implicitly. Invalid user input is
+/// returned as `ParseError` and must not panic.
+public interface Parse {
+    func parse(_ input: string) -> std.result.Result[Self, ParseError]
+}
+
+/// Parse `input` as `T` using its `Parse` implementation.
+public func parse[T: Parse](_ input: string) -> std.result.Result[T, ParseError] {
+    T.parse(input)
 }

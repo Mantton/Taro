@@ -2,6 +2,46 @@ import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd, Ord}
 import std.optional.Optional
+import std.convert.{Parse, ParseError}
+import std.result.Result
+
+func boolLiteralErrorIndex(_ input: string, _ expected: string) -> usize {
+    let inputLen = std.string.stringLen(input)
+    let expectedLen = std.string.stringLen(expected)
+    let inputData = std.string.stringData(input)
+    let expectedData = std.string.stringData(expected)
+    var index: usize = 0
+    while index < inputLen && index < expectedLen {
+        if inputData.add(index).read() != expectedData.add(index).read() {
+            return index
+        }
+        index += 1
+    }
+    return index
+}
+
+func parseBool(_ input: string) -> Result[bool, ParseError] {
+    let len = std.string.stringLen(input)
+    if len == 0 {
+        return .err(ParseError(.empty, 0 as usize))
+    }
+    if input == "true" {
+        return .ok(true)
+    }
+    if input == "false" {
+        return .ok(false)
+    }
+
+    let first = std.string.stringData(input).read()
+    let index = if first == ('t' as uint8) {
+        boolLiteralErrorIndex(input, "true")
+    } else if first == ('f' as uint8) {
+        boolLiteralErrorIndex(input, "false")
+    } else {
+        0 as usize
+    }
+    return .err(ParseError(.invalidFormat, index))
+}
 
 impl Hashable for bool {
     public func hash[H: Hasher](&self, into hasher: &mut H) {
@@ -31,5 +71,18 @@ impl Ord for bool {
         } else {
             .greater
         }
+    }
+}
+
+impl Parse for bool {
+    public func parse(_ input: string) -> Result[bool, ParseError] {
+        parseBool(input)
+    }
+}
+
+impl bool {
+    /// Parse the exact lowercase spelling `true` or `false`.
+    public func parse(_ input: string) -> Result[bool, ParseError] {
+        parseBool(input)
     }
 }

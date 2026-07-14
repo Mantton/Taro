@@ -1,0 +1,163 @@
+import std.convert.{Parse, ParseError, ParseErrorKind}
+import std.result.Result
+
+func assertParseError[Value](
+    _ result: Result[Value, ParseError],
+    _ kind: ParseErrorKind,
+    _ index: usize,
+    _ message: string,
+) {
+    match result {
+        case .ok(_) => std.testing.fail(message)
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), kind, message)
+            std.testing.assertEqual(error.index(), index, message)
+        }
+    }
+}
+
+@test
+func testGenericParseAndParseErrorDisplay() {
+    let value = std.convert.parse[int32]("42").unwrap()
+    std.testing.assertEqual(value, 42_i32, "generic parse should dispatch through Parse")
+
+    let error = ParseError(.invalidDigit, 3 as usize)
+    std.testing.assertEqual(error.kind(), .invalidDigit, "ParseError should expose its kind")
+    std.testing.assertEqual(error.index(), 3 as usize, "ParseError should expose its byte index")
+    std.testing.assertEqual(
+        std.sprintf("%v", error),
+        "invalid digit at byte 3",
+        "ParseError display should be actionable",
+    )
+}
+
+@test
+func testSignedIntegerParsingAndBounds() {
+    std.testing.assertEqual(int8.parse("+127").unwrap(), 127_i8, "int8 should accept a leading plus")
+    std.testing.assertEqual(int8.parse("-128").unwrap(), 0x80_u8 as int8, "int8 should parse its minimum")
+    std.testing.assertEqual(int16.parse("32767").unwrap(), 32767_i16, "int16 should parse its maximum")
+    std.testing.assertEqual(int16.parse("-32768").unwrap(), 0x8000_u16 as int16, "int16 should parse its minimum")
+    std.testing.assertEqual(int32.parse("2147483647").unwrap(), 2147483647_i32, "int32 should parse its maximum")
+    std.testing.assertEqual(int32.parse("-2147483648").unwrap(), (-2147483648_i64) as int32, "int32 should parse its minimum")
+    std.testing.assertEqual(int64.parse("9223372036854775807").unwrap(), 0x7fffffffffffffff_u64 as int64, "int64 should parse its maximum")
+    std.testing.assertEqual(int64.parse("-9223372036854775808").unwrap(), 0x8000000000000000_u64 as int64, "int64 should parse its minimum")
+    std.testing.assertEqual(isize.parse("-42").unwrap(), (-42) as isize, "isize should parse signed decimal input")
+
+    assertParseError(int8.parse("128"), .overflow, 2 as usize, "int8 overflow should identify its crossing digit")
+    assertParseError(int8.parse("-129"), .underflow, 3 as usize, "int8 underflow should identify its crossing digit")
+    assertParseError(
+        int64.parse("9223372036854775808"),
+        .overflow,
+        18 as usize,
+        "int64 overflow should remain typed",
+    )
+    assertParseError(
+        int64.parse("-9223372036854775809"),
+        .underflow,
+        19 as usize,
+        "int64 underflow should remain typed",
+    )
+}
+
+@test
+func testUnsignedIntegerParsingAndBounds() {
+    std.testing.assertEqual(uint8.parse("255").unwrap(), 255_u8, "uint8 should parse its maximum")
+    std.testing.assertEqual(uint16.parse("65535").unwrap(), 65535_u16, "uint16 should parse its maximum")
+    std.testing.assertEqual(uint32.parse("4294967295").unwrap(), 0xffffffff_u32, "uint32 should parse its maximum")
+    std.testing.assertEqual(
+        uint64.parse("18446744073709551615").unwrap(),
+        0xffffffffffffffff_u64,
+        "uint64 should parse its maximum",
+    )
+    std.testing.assertEqual(usize.parse("42").unwrap(), 42 as usize, "usize should parse decimal input")
+
+    assertParseError(uint8.parse("256"), .overflow, 2 as usize, "uint8 overflow should identify its crossing digit")
+    assertParseError(uint32.parse("+1"), .invalidFormat, 0 as usize, "unsigned integers should reject a plus sign")
+    assertParseError(uint32.parse("-1"), .invalidFormat, 0 as usize, "unsigned integers should reject a minus sign")
+    assertParseError(
+        uint64.parse("18446744073709551616"),
+        .overflow,
+        19 as usize,
+        "uint64 overflow should remain typed",
+    )
+}
+
+@test
+func testIntegerRadixAndMalformedInput() {
+    std.testing.assertEqual(int32.parseRadix("-101", 2_u32).unwrap(), -5_i32, "binary signed parsing should work")
+    std.testing.assertEqual(uint32.parseRadix("FF", 16_u32).unwrap(), 255_u32, "uppercase hexadecimal digits should work")
+    std.testing.assertEqual(uint32.parseRadix("z", 36_u32).unwrap(), 35_u32, "radix 36 should accept lowercase digits")
+
+    assertParseError(int32.parse(""), .empty, 0 as usize, "empty integers should report empty input")
+    assertParseError(int32.parse("+"), .invalidFormat, 1 as usize, "a sign requires a following digit")
+    assertParseError(int32.parseRadix("10z", 16_u32), .invalidDigit, 2 as usize, "invalid radix digits should identify their byte")
+    assertParseError(int32.parseRadix("0xff", 16_u32), .invalidDigit, 1 as usize, "explicit radix parsing should reject prefixes")
+    assertParseError(int32.parseRadix("10", 1_u32), .invalidFormat, 0 as usize, "radices below two should be rejected")
+    assertParseError(int32.parseRadix("10", 37_u32), .invalidFormat, 0 as usize, "radices above 36 should be rejected")
+    assertParseError(int32.parse(" 1"), .invalidDigit, 0 as usize, "integer parsing should not trim input")
+    assertParseError(int32.parse("1_0"), .invalidDigit, 1 as usize, "integer parsing should reject separators")
+}
+
+@test
+func testBooleanParsingIsStrictAndIndexed() {
+    std.testing.assertTrue(bool.parse("true").unwrap(), "bool should parse true")
+    std.testing.assertFalse(bool.parse("false").unwrap(), "bool should parse false")
+
+    assertParseError(bool.parse(""), .empty, 0 as usize, "empty booleans should report empty input")
+    assertParseError(bool.parse("True"), .invalidFormat, 0 as usize, "boolean parsing should be case-sensitive")
+    assertParseError(bool.parse("truE"), .invalidFormat, 3 as usize, "boolean errors should identify the first mismatch")
+    assertParseError(bool.parse("falsex"), .invalidFormat, 5 as usize, "boolean suffixes should identify the extra byte")
+    assertParseError(bool.parse(" true"), .invalidFormat, 0 as usize, "boolean parsing should not trim input")
+    assertParseError(bool.parse("1"), .invalidFormat, 0 as usize, "boolean parsing should reject numeric aliases")
+}
+
+@test
+func testRuneParsingRequiresOneValidScalar() {
+    std.testing.assertEqual(rune.parse("a").unwrap(), 'a', "rune should parse ASCII")
+    std.testing.assertEqual(rune.parse("π").unwrap(), 'π', "rune should parse a multibyte scalar")
+    std.testing.assertEqual(rune.parse("�").unwrap(), '�', "the encoded replacement scalar should remain valid")
+
+    assertParseError(rune.parse(""), .empty, 0 as usize, "empty runes should report empty input")
+    assertParseError(rune.parse("ab"), .invalidFormat, 1 as usize, "a rune must contain exactly one scalar")
+    assertParseError(rune.parse("πx"), .invalidFormat, 2 as usize, "extra rune data should use a byte index")
+
+    var invalid = std.string.Builder()
+    invalid.writeByte(0xff_u8)
+    assertParseError(
+        rune.parse(invalid.intoString()),
+        .invalidFormat,
+        0 as usize,
+        "invalid UTF-8 must return a typed rune error",
+    )
+}
+
+@test
+func testFloatParsingAcceptsFiniteDecimalGrammar() {
+    std.testing.assertEqual(float.parse("0.1").unwrap(), 0.1 as float, "float parsing should be correctly rounded")
+    std.testing.assertEqual(float.parse("1.").unwrap(), 1.0 as float, "float parsing should allow a trailing decimal point")
+    std.testing.assertEqual(float.parse("+.5").unwrap(), 0.5 as float, "float parsing should allow a leading decimal point")
+    std.testing.assertEqual(double.parse("-1.25e+3").unwrap(), -1250.0 as double, "double parsing should support exponents")
+    std.testing.assertEqual(double.parse("0e-999").unwrap(), 0.0 as double, "mathematical zero should not underflow")
+}
+
+@test
+func testFloatSyntaxErrorsAreTypedAndIndexed() {
+    assertParseError(double.parse(""), .empty, 0 as usize, "empty floats should report empty input")
+    assertParseError(double.parse("."), .invalidFormat, 0 as usize, "a decimal point requires a digit")
+    assertParseError(double.parse("1e"), .invalidFormat, 2 as usize, "an exponent requires digits")
+    assertParseError(double.parse("1e+"), .invalidFormat, 3 as usize, "an exponent sign requires digits")
+    assertParseError(double.parse("1_0"), .invalidFormat, 1 as usize, "float parsing should reject separators")
+    assertParseError(double.parse(" 1"), .invalidFormat, 0 as usize, "float parsing should not trim input")
+    assertParseError(double.parse("NaN"), .invalidFormat, 0 as usize, "float parsing should initially reject NaN")
+    assertParseError(double.parse("Inf"), .invalidFormat, 0 as usize, "float parsing should initially reject infinity")
+    assertParseError(double.parse("0x1"), .invalidFormat, 1 as usize, "float parsing should reject hexadecimal syntax")
+    assertParseError(double.parse("1e2x"), .invalidFormat, 3 as usize, "float parsing should identify trailing bytes")
+}
+
+@test
+func testFloatRangeErrorsAreTyped() {
+    assertParseError(float.parse("3.5e38"), .overflow, 5 as usize, "float overflow should report the final determining byte")
+    assertParseError(float.parse("1e-100"), .underflow, 5 as usize, "float underflow should report the final determining byte")
+    assertParseError(double.parse("1e309"), .overflow, 4 as usize, "double overflow should remain typed")
+    assertParseError(double.parse("1e-400"), .underflow, 5 as usize, "double underflow should remain typed")
+}

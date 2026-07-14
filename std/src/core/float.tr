@@ -2,6 +2,8 @@ import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 import std.cmp.{Ordering, PartialOrd}
 import std.optional.Optional
+import std.convert.{Parse, ParseError}
+import std.result.Result
 import std.intrinsic.{
     __intrinsic_sqrt_f32,
     __intrinsic_sin_f32,
@@ -67,6 +69,133 @@ import std.intrinsic.{
     __intrinsic_maximumnum_f64,
 }
 
+extern "taro_rt" {
+    func __rt__parse_f32(_ input: string, _ bitsOut: *mut uint32) -> uint8
+    func __rt__parse_f64(_ input: string, _ bitsOut: *mut uint64) -> uint8
+}
+
+const FLOAT_PARSE_OK: uint8 = 0
+const FLOAT_PARSE_INVALID: uint8 = 1
+const FLOAT_PARSE_OVERFLOW: uint8 = 2
+const FLOAT_PARSE_UNDERFLOW: uint8 = 3
+
+func isDecimalDigit(_ byte: uint8) -> bool {
+    byte >= ('0' as uint8) && byte <= ('9' as uint8)
+}
+
+/// Validate the locale-independent decimal grammar before entering the
+/// runtime's correctly-rounded IEEE conversion routine.
+func validateFloatSyntax(_ input: string) -> Result[(), ParseError] {
+    let len = std.string.stringLen(input)
+    if len == 0 {
+        return .err(ParseError(.empty, 0 as usize))
+    }
+
+    let data = std.string.stringData(input)
+    var index: usize = 0
+    if data.read() == ('+' as uint8) || data.read() == ('-' as uint8) {
+        index += 1
+        if index == len {
+            return .err(ParseError(.invalidFormat, index))
+        }
+    }
+
+    let significandStart = index
+    var hasDigit = false
+    while index < len && isDecimalDigit(data.add(index).read()) {
+        hasDigit = true
+        index += 1
+    }
+
+    if index < len && data.add(index).read() == ('.' as uint8) {
+        index += 1
+        while index < len && isDecimalDigit(data.add(index).read()) {
+            hasDigit = true
+            index += 1
+        }
+    }
+
+    if !hasDigit {
+        return .err(ParseError(.invalidFormat, significandStart))
+    }
+
+    if index < len {
+        let byte = data.add(index).read()
+        if byte == ('e' as uint8) || byte == ('E' as uint8) {
+            index += 1
+            if index < len {
+                let exponentSign = data.add(index).read()
+                if exponentSign == ('+' as uint8) || exponentSign == ('-' as uint8) {
+                    index += 1
+                }
+            }
+
+            let exponentStart = index
+            while index < len && isDecimalDigit(data.add(index).read()) {
+                index += 1
+            }
+            if index == exponentStart {
+                return .err(ParseError(.invalidFormat, exponentStart))
+            }
+        }
+    }
+
+    if index != len {
+        return .err(ParseError(.invalidFormat, index))
+    }
+    return .ok(())
+}
+
+func floatRangeErrorIndex(_ input: string) -> usize {
+    std.string.stringLen(input) - (1 as usize)
+}
+
+func parseFloat(_ input: string) -> Result[float, ParseError] {
+    match validateFloatSyntax(input) {
+        case .ok(_) => {}
+        case .err(error) => return .err(error)
+    }
+
+    var bits: uint32 = 0
+    let status = __rt__parse_f32(input, unsafe { &mut bits as *mut uint32 })
+    if status == FLOAT_PARSE_OK {
+        return .ok(floatFromBits(bits))
+    }
+    if status == FLOAT_PARSE_OVERFLOW {
+        return .err(ParseError(.overflow, floatRangeErrorIndex(input)))
+    }
+    if status == FLOAT_PARSE_UNDERFLOW {
+        return .err(ParseError(.underflow, floatRangeErrorIndex(input)))
+    }
+    if status == FLOAT_PARSE_INVALID {
+        return .err(ParseError(.invalidFormat, 0 as usize))
+    }
+    return .err(ParseError(.invalidFormat, 0 as usize))
+}
+
+func parseDouble(_ input: string) -> Result[double, ParseError] {
+    match validateFloatSyntax(input) {
+        case .ok(_) => {}
+        case .err(error) => return .err(error)
+    }
+
+    var bits: uint64 = 0
+    let status = __rt__parse_f64(input, unsafe { &mut bits as *mut uint64 })
+    if status == FLOAT_PARSE_OK {
+        return .ok(doubleFromBits(bits))
+    }
+    if status == FLOAT_PARSE_OVERFLOW {
+        return .err(ParseError(.overflow, floatRangeErrorIndex(input)))
+    }
+    if status == FLOAT_PARSE_UNDERFLOW {
+        return .err(ParseError(.underflow, floatRangeErrorIndex(input)))
+    }
+    if status == FLOAT_PARSE_INVALID {
+        return .err(ParseError(.invalidFormat, 0 as usize))
+    }
+    return .err(ParseError(.invalidFormat, 0 as usize))
+}
+
 func hashU32[H: Hasher](_ hasher: &mut H, _ value: uint32) {
     let bytes: [uint8; 4] = [
         (value & 0xff_u32) as uint8,
@@ -96,12 +225,25 @@ func floatToBits(_ value: float) -> uint32 {
     bitsPtr.read()
 }
 
+func floatFromBits(_ bits: uint32) -> float {
+    let valuePtr = unsafe { (&bits as *const uint32) as *const float }
+    valuePtr.read()
+}
+
 func doubleToBits(_ value: double) -> uint64 {
     let bitsPtr = unsafe { (&value as *const double) as *const uint64 }
     bitsPtr.read()
 }
 
+func doubleFromBits(_ bits: uint64) -> double {
+    let valuePtr = unsafe { (&bits as *const uint64) as *const double }
+    valuePtr.read()
+}
+
 impl float {
+    /// Parse a finite decimal value using locale-independent IEEE-754 rounding.
+    public func parse(_ input: string) -> Result[float, ParseError] { parseFloat(input) }
+
     public func sqrt(self) -> float { unsafe { __intrinsic_sqrt_f32(self) } }
     public func sin(self) -> float { unsafe { __intrinsic_sin_f32(self) } }
     public func cos(self) -> float { unsafe { __intrinsic_cos_f32(self) } }
@@ -200,6 +342,9 @@ impl PartialOrd for double {
 }
 
 impl double {
+    /// Parse a finite decimal value using locale-independent IEEE-754 rounding.
+    public func parse(_ input: string) -> Result[double, ParseError] { parseDouble(input) }
+
     public func sqrt(self) -> double { unsafe { __intrinsic_sqrt_f64(self) } }
     public func sin(self) -> double { unsafe { __intrinsic_sin_f64(self) } }
     public func cos(self) -> double { unsafe { __intrinsic_cos_f64(self) } }
@@ -231,4 +376,16 @@ impl double {
     public func maximum(self, _ y: double) -> double { unsafe { __intrinsic_maximum_f64(self, y) } }
     public func minimumnum(self, _ y: double) -> double { unsafe { __intrinsic_minimumnum_f64(self, y) } }
     public func maximumnum(self, _ y: double) -> double { unsafe { __intrinsic_maximumnum_f64(self, y) } }
+}
+
+impl Parse for float {
+    public func parse(_ input: string) -> Result[float, ParseError] {
+        parseFloat(input)
+    }
+}
+
+impl Parse for double {
+    public func parse(_ input: string) -> Result[double, ParseError] {
+        parseDouble(input)
+    }
 }
