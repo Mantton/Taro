@@ -206,8 +206,9 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
                         continue;
                     }
 
-                    let stmt_result =
+                    let mut stmt_result =
                         self.analyze_stmt(stmt_id, &state, loop_depth, check_initialization);
+                    self.apply_active_cleanups_to_exits(&mut stmt_result, &cleanups);
                     self.merge_child_into(&mut result, stmt_result, &mut current);
                 }
                 None => {
@@ -221,8 +222,9 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         if let Some(expr_id) = block.expr {
             match current.clone() {
                 Some(state) => {
-                    let expr_result =
+                    let mut expr_result =
                         self.analyze_expr(expr_id, &state, loop_depth, check_initialization);
+                    self.apply_active_cleanups_to_exits(&mut expr_result, &cleanups);
                     self.merge_child_into(&mut result, expr_result, &mut current);
                 }
                 None => {
@@ -234,7 +236,11 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         }
 
         result.normal = current;
-        self.apply_block_cleanups(result, &cleanups)
+        for &cleanup in cleanups.iter().rev() {
+            result.normal =
+                self.apply_cleanup_to_exit(result.normal.take(), cleanup, &mut result.poisoned);
+        }
+        result
     }
 
     fn merge_child_into(
@@ -250,10 +256,8 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         *current = child.normal;
     }
 
-    fn apply_block_cleanups(&mut self, mut result: FlowResult, cleanups: &[BlockId]) -> FlowResult {
+    fn apply_active_cleanups_to_exits(&mut self, result: &mut FlowResult, cleanups: &[BlockId]) {
         for &cleanup in cleanups.iter().rev() {
-            result.normal =
-                self.apply_cleanup_to_exit(result.normal.take(), cleanup, &mut result.poisoned);
             result.returns =
                 self.apply_cleanup_to_exit(result.returns.take(), cleanup, &mut result.poisoned);
             result.breaks =
@@ -261,7 +265,6 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             result.continues =
                 self.apply_cleanup_to_exit(result.continues.take(), cleanup, &mut result.poisoned);
         }
-        result
     }
 
     fn apply_cleanup_to_exit(

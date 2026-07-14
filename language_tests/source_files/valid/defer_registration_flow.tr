@@ -1,0 +1,25 @@
+func fallibleValue(_ succeeds: bool) -> std.result.Result[int32, string] {
+    if succeeds {
+        return .ok(41_i32)
+    }
+    return .err("no value")
+}
+
+func consume(_ succeeds: bool) -> int32 {
+    var raw = match fallibleValue(succeeds) {
+        case .ok(value) => value
+        case .err(_) => return -1_i32
+    }
+
+    // This defer is registered only after the initializer completes. The
+    // early return inside the match must not retroactively execute or analyze
+    // it with `raw` uninitialized.
+    defer { assert(raw == 41_i32, "defer should observe initialized local") }
+    return raw
+}
+
+func main() {
+    assert(consume(false) == -1_i32, "early initializer return should skip later defer")
+    assert(consume(true) == 41_i32, "normal exit should run registered defer")
+    print("PASS: defer registration flow\n")
+}
