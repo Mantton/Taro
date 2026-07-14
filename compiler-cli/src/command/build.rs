@@ -45,9 +45,9 @@ pub fn run(
 }
 
 fn validate_build_modes(emit: BuildEmit, lto: Lto) -> Result<(), &'static str> {
-    if matches!((emit, lto), (BuildEmit::LlvmBitcode, Lto::Full)) {
+    if matches!(emit, BuildEmit::LlvmBitcode) && lto.is_enabled() {
         return Err(
-            "--emit llvm-bc cannot be combined with --lto full; LLVM bitcode output is package-scoped",
+            "--emit llvm-bc cannot be combined with LTO; LLVM bitcode output is package-scoped",
         );
     }
     Ok(())
@@ -216,7 +216,7 @@ fn run_single_file(
 
     if reused {
         match emit {
-            BuildEmit::Link => link_emitted_modules(compiler.context, lto),
+            BuildEmit::Link => link_emitted_modules(compiler.context, lto, incremental_enabled),
             BuildEmit::LlvmBitcode => {
                 let artifact = cached_module_artifact(compiler.context)?;
                 publish_bitcode(&artifact, bitcode_output).map(Some)
@@ -226,7 +226,7 @@ fn run_single_file(
         let output = match emit {
             BuildEmit::Link => match lto {
                 Lto::Off => compiler.build()?,
-                Lto::Full => {
+                Lto::Full | Lto::Thin => {
                     let _ = compiler.emit_module()?;
                     None
                 }
@@ -246,8 +246,8 @@ fn run_single_file(
                 file_stem, e
             );
         }
-        if matches!((emit, lto), (BuildEmit::Link, Lto::Full)) {
-            link_emitted_modules(compiler.context, lto)
+        if matches!(emit, BuildEmit::Link) && lto.is_enabled() {
+            link_emitted_modules(compiler.context, lto, incremental_enabled)
         } else {
             Ok(output)
         }
@@ -503,7 +503,7 @@ fn run_package(
                         Lto::Off => codegen::link::link_executable(compiler.context)?,
                         // Finalization happens below after both cold and cached
                         // paths have restored every participating module.
-                        Lto::Full => None,
+                        Lto::Full | Lto::Thin => None,
                     },
                     BuildEmit::LlvmBitcode => {
                         let artifact = cached_module_artifact(compiler.context)?;
@@ -522,7 +522,7 @@ fn run_package(
             let exe_path = match emit {
                 BuildEmit::Link => match lto {
                     Lto::Off => compiler.build()?,
-                    Lto::Full => {
+                    Lto::Full | Lto::Thin => {
                         let _ = compiler.emit_module()?;
                         None
                     }
@@ -553,10 +553,10 @@ fn run_package(
         };
 
         let exe_path = if is_root
-            && matches!(lto, Lto::Full)
+            && lto.is_enabled()
             && matches!(config.kind, PackageKind::Executable | PackageKind::Both)
         {
-            link_emitted_modules(compiler.context, lto)?
+            link_emitted_modules(compiler.context, lto, incremental_enabled)?
         } else {
             exe_path
         };
@@ -576,10 +576,19 @@ fn run_package(
 fn link_emitted_modules(
     context: GlobalContext<'_>,
     lto: Lto,
+    incremental_enabled: bool,
 ) -> Result<Option<PathBuf>, ReportedError> {
-    if matches!(lto, Lto::Full) {
-        let artifact = codegen::lto::emit_full_lto_object(context)?;
-        context.store.add_link_input(artifact.path);
+    match lto {
+        Lto::Off => {}
+        Lto::Full => {
+            let artifact = codegen::lto::emit_full_lto_object(context)?;
+            context.store.add_link_input(artifact.path);
+        }
+        Lto::Thin => {
+            for artifact in codegen::lto::emit_thin_lto_objects(context, incremental_enabled)? {
+                context.store.add_link_input(artifact.path);
+            }
+        }
     }
     codegen::link::link_executable(context)
 }
@@ -1361,10 +1370,13 @@ mod target_runtime_tests {
     }
 
     #[test]
-    fn full_lto_rejects_package_scoped_bitcode_output() {
+    fn lto_rejects_package_scoped_bitcode_output() {
         assert!(validate_build_modes(BuildEmit::Link, Lto::Full).is_ok());
-        let error = validate_build_modes(BuildEmit::LlvmBitcode, Lto::Full).unwrap_err();
-        assert!(error.contains("package-scoped"));
+        assert!(validate_build_modes(BuildEmit::Link, Lto::Thin).is_ok());
+        for lto in [Lto::Full, Lto::Thin] {
+            let error = validate_build_modes(BuildEmit::LlvmBitcode, lto).unwrap_err();
+            assert!(error.contains("package-scoped"));
+        }
     }
 
     #[test]

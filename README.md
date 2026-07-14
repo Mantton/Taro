@@ -6,6 +6,7 @@ Taro is an experimental programming language that draws inspiration from Rust, S
 
 - **Rust**: Latest stable version
 - **LLVM**: Version 22.1.x (22.1.8 is the certified development version)
+- **C++**: A C++17 compiler for Taro's narrow LLVM ThinLTO shim
 
 ### LLVM Setup
 
@@ -140,7 +141,7 @@ Common flags:
 | `--linker <PATH>` | Use a Clang-compatible linker driver for the selected target. |
 | `--sysroot <PATH>` | Use a target SDK/sysroot while linking. |
 | `--emit <link\|llvm-bc>` | Select the final `build` artifact; defaults to a normal linked output. |
-| `--lto <off\|full>` | Apply full LTO to participating Taro packages for `build`/`run`; defaults to off. |
+| `--lto <off\|full\|thin>` | Apply the selected LTO mode to participating Taro packages for `build`/`run`; defaults to off. |
 | `--timings` | Print compiler phase timings. |
 | `--optimization-remarks <PASS_REGEX>` | Print LLVM passed, missed, and analysis remarks for matching pass names. |
 | `--dump-mir` / `--dump-llvm` | Dump intermediate compiler output for debugging. |
@@ -299,6 +300,32 @@ whole-program optimization and native link. `--lto full` cannot be combined
 with `--emit llvm-bc`: the latter intentionally requests one package-scoped
 bitcode artifact rather than a whole-program linked output.
 
+### Thin Link-Time Optimization
+
+`taro build --lto thin` and `taro run --lto thin` retain the same package-level
+bitcode boundary as full LTO, but LLVM summarizes the modules, imports useful
+definitions across package boundaries, and generates native objects in
+parallel. It is the preferred LTO mode when compile-time and incremental-build
+cost matter:
+
+```bash
+taro build . --release --lto thin
+```
+
+ThinLTO uses a profile-scoped cache under
+`target/<profile>/objects/thinlto-cache/`. Unchanged package metadata and
+bitcode are reused first; LLVM then reuses cached native ThinLTO backends where
+their module summary, target CPU/features, optimization level, and preserved
+symbol set still match. `--no-incremental` bypasses both package reuse and the
+ThinLTO cache without deleting existing cache entries.
+
+Generated linker inputs live under
+`target/<profile>/objects/thinlto-objects/` and are refreshed for every final
+link. Externally visible Taro definitions remain exported because attached std,
+the runtime, and other native objects are opaque to ThinLTO. As with full LTO,
+no system linker plugin is required and `--emit llvm-bc` cannot be combined
+with an enabled LTO mode.
+
 ### Incremental Compilation
 
 Incremental dependency reuse is enabled by default for:
@@ -312,8 +339,10 @@ Per dependency package, the compiler emits:
 
 - `target/<profile>/metadata/<package-identifier>.taro_meta`
 - `target/<profile>/objects/<package-identifier>.o` (linked build/run/test paths)
-- `target/<profile>/objects/<package-identifier>.bc` (`--emit llvm-bc` and full-LTO inputs)
+- `target/<profile>/objects/<package-identifier>.bc` (`--emit llvm-bc` and LTO inputs)
 - `target/<profile>/objects/<root-identifier>.lto.o` (full-LTO linked builds)
+- `target/<profile>/objects/thinlto-objects/*.o` (ThinLTO linker inputs)
+- `target/<profile>/objects/thinlto-cache/llvmcache-*` (incremental ThinLTO backends)
 
 Reuse is mode-aware:
 
@@ -321,6 +350,8 @@ Reuse is mode-aware:
 - Bitcode builds reuse dependency metadata + bitcode artifacts; artifact kinds
   cannot satisfy one another's cache entries.
 - Full-LTO builds reuse package bitcode, then regenerate the final LTO object.
+- ThinLTO builds reuse package bitcode and matching LLVM backend cache entries,
+  then refresh their final linker-input objects.
 - `check` reuses dependency semantic metadata only (no object requirement).
 
 ### Attached Std Artifacts (Strict)

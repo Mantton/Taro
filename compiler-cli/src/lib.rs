@@ -184,7 +184,9 @@ impl BuildEmit {
     pub(crate) const fn module_artifact_kind(self, lto: Lto) -> ModuleArtifactKind {
         match (self, lto) {
             (Self::Link, Lto::Off) => ModuleArtifactKind::Object,
-            (Self::Link, Lto::Full) | (Self::LlvmBitcode, _) => ModuleArtifactKind::LlvmBitcode,
+            (Self::Link, Lto::Full | Lto::Thin) | (Self::LlvmBitcode, _) => {
+                ModuleArtifactKind::LlvmBitcode
+            }
         }
     }
 }
@@ -194,13 +196,19 @@ pub enum Lto {
     #[default]
     Off,
     Full,
+    Thin,
 }
 
 impl Lto {
+    pub(crate) const fn is_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
     pub(crate) const fn mode(self) -> LtoMode {
         match self {
             Self::Off => LtoMode::Off,
             Self::Full => LtoMode::Full,
+            Self::Thin => LtoMode::Thin,
         }
     }
 }
@@ -392,9 +400,9 @@ mod tests {
     }
 
     #[test]
-    fn build_and_run_parse_full_lto_without_changing_the_default() {
+    fn build_and_run_parse_lto_modes_without_changing_the_default() {
         let build = Cli::parse_from(["taro", "build", "examples/hello.tr", "--lto", "full"]);
-        let run = Cli::parse_from(["taro", "run", "examples/hello.tr", "--lto", "full"]);
+        let run = Cli::parse_from(["taro", "run", "examples/hello.tr", "--lto", "thin"]);
         let default = Cli::parse_from(["taro", "build", "examples/hello.tr"]);
 
         match build.command {
@@ -409,7 +417,10 @@ mod tests {
             other => panic!("expected build command, got {other:?}"),
         }
         match run.command {
-            CliCommand::Run(run) => assert_eq!(run.lto, Lto::Full),
+            CliCommand::Run(run) => {
+                assert_eq!(run.lto, Lto::Thin);
+                assert_eq!(run.lto.mode(), LtoMode::Thin);
+            }
             other => panic!("expected run command, got {other:?}"),
         }
         match default.command {

@@ -79,6 +79,7 @@ pub enum LtoMode {
     #[default]
     Off,
     Full,
+    Thin,
 }
 
 /// Code-generation policy for a package.

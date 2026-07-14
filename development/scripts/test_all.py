@@ -58,6 +58,14 @@ def is_llvm_bitcode(contents: bytes) -> bool:
     )
 
 
+def file_snapshot(directory: Path) -> dict[str, tuple[int, int]]:
+    return {
+        path.name: (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in sorted(directory.iterdir())
+        if path.is_file()
+    }
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
@@ -88,7 +96,7 @@ def main() -> int:
         repo_root / "language_tests" / "package_fixtures" / "default_params"
     )
 
-    stage_count = 7
+    stage_count = 8
     current_stage = "startup"
 
     try:
@@ -304,8 +312,100 @@ def main() -> int:
                             f"full-LTO input has invalid bitcode magic: {artifact}"
                         )
 
+        current_stage = "ThinLTO smoke"
+        print_stage(6, stage_count, "ThinLTO cache smoke")
+        if args.skip_lto_smoke:
+            print("SKIPPED: disabled via --skip-lto-smoke")
+        else:
+            if not taro_bin.exists():
+                print(
+                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
+                )
+                return 1
+
+            env = os.environ.copy()
+            env["TARO_HOME"] = str(dist_dir)
+            with tempfile.TemporaryDirectory(prefix="taro_thin_lto_smoke_") as temp:
+                copied_fixture = Path(temp) / "default_params"
+                shutil.copytree(package_fixture, copied_fixture)
+                output = Path(temp) / "default-params-thin-lto"
+                command = [
+                    str(taro_bin),
+                    "build",
+                    str(copied_fixture / "app"),
+                    "--std-path",
+                    str(std_path),
+                    "--release",
+                    "--lto",
+                    "thin",
+                    "-o",
+                    str(output),
+                ]
+
+                cold = run_command_capture(command, cwd=repo_root, env=env)
+                if "Thin LTO – 2 modules, 2 objects" not in cold.stderr:
+                    raise RuntimeError(
+                        "cold package build did not process both ThinLTO modules"
+                    )
+
+                object_root = (
+                    copied_fixture / "app" / "target" / "release" / "objects"
+                )
+                cache_dir = object_root / "thinlto-cache"
+                generated_dir = object_root / "thinlto-objects"
+                if not cache_dir.is_dir():
+                    raise RuntimeError("ThinLTO build did not create its backend cache")
+                cache_entries = list(cache_dir.glob("llvmcache-*"))
+                cache_entries = [
+                    path for path in cache_entries if path.name != "llvmcache.timestamp"
+                ]
+                if len(cache_entries) != 2:
+                    raise RuntimeError(
+                        f"ThinLTO expected two backend cache entries, found {len(cache_entries)}"
+                    )
+                cold_cache = file_snapshot(cache_dir)
+
+                reused = run_command_capture(command, cwd=repo_root, env=env)
+                if "Reusing (metadata+bitcode)" not in reused.stderr:
+                    raise RuntimeError("second ThinLTO build did not reuse package bitcode")
+                if "Thin LTO – 2 modules, 2 objects" not in reused.stderr:
+                    raise RuntimeError("cached package build did not rerun ThinLTO")
+                if file_snapshot(cache_dir) != cold_cache:
+                    raise RuntimeError("cached ThinLTO build rewrote its backend cache")
+
+                uncached = run_command_capture(
+                    [*command, "--no-incremental"], cwd=repo_root, env=env
+                )
+                if "Reusing (metadata+bitcode)" in uncached.stderr:
+                    raise RuntimeError("--no-incremental reused package bitcode")
+                if "Thin LTO – 2 modules, 2 objects" not in uncached.stderr:
+                    raise RuntimeError("--no-incremental did not run ThinLTO")
+                if file_snapshot(cache_dir) != cold_cache:
+                    raise RuntimeError("--no-incremental modified the ThinLTO cache")
+
+                executed = run_command_capture([str(output)], cwd=repo_root, env=env)
+                if "PASS: cross-package closure default" not in executed.stdout:
+                    raise RuntimeError("ThinLTO executable produced unexpected output")
+
+                bitcode_inputs = list(object_root.glob("*.bc"))
+                generated_objects = list(generated_dir.glob("*.o"))
+                top_level_objects = list(object_root.glob("*.o"))
+                if len(bitcode_inputs) != 2:
+                    raise RuntimeError(
+                        f"ThinLTO expected two package bitcode inputs, found {len(bitcode_inputs)}"
+                    )
+                if len(generated_objects) != 2 or top_level_objects:
+                    raise RuntimeError(
+                        "ThinLTO did not isolate exactly two generated linker objects"
+                    )
+                for artifact in bitcode_inputs:
+                    if not is_llvm_bitcode(artifact.read_bytes()):
+                        raise RuntimeError(
+                            f"ThinLTO input has invalid bitcode magic: {artifact}"
+                        )
+
         current_stage = "std package tests"
-        print_stage(6, stage_count, "Std package tests")
+        print_stage(7, stage_count, "Std package tests")
         if args.skip_std_package_tests:
             print("SKIPPED: disabled via --skip-std-package-tests")
         else:
@@ -333,7 +433,7 @@ def main() -> int:
                 )
 
         current_stage = "language tests"
-        print_stage(7, stage_count, "Language tests")
+        print_stage(8, stage_count, "Language tests")
         if args.skip_language_tests:
             print("SKIPPED: disabled via --skip-language-tests")
         else:

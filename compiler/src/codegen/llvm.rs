@@ -95,6 +95,32 @@ fn llvm_optimization_pipeline(
         (LtoMode::Full, OptimizationMode::Level(OptLevel::Oz)) => {
             LlvmOptimizationPipeline::Module("lto-pre-link<Oz>")
         }
+        // ThinLTO keeps modules separate. Its pre-link pipeline prepares each
+        // package for summary analysis and later cross-module importing.
+        (LtoMode::Thin, OptimizationMode::Baseline) => match profile {
+            BuildProfile::Debug => {
+                LlvmOptimizationPipeline::Module("function(mem2reg),thinlto-pre-link<O0>")
+            }
+            BuildProfile::Release => LlvmOptimizationPipeline::Module("thinlto-pre-link<O2>"),
+        },
+        (LtoMode::Thin, OptimizationMode::Level(OptLevel::O0)) => {
+            LlvmOptimizationPipeline::Module("function(mem2reg),thinlto-pre-link<O0>")
+        }
+        (LtoMode::Thin, OptimizationMode::Level(OptLevel::O1)) => {
+            LlvmOptimizationPipeline::Module("thinlto-pre-link<O1>")
+        }
+        (LtoMode::Thin, OptimizationMode::Level(OptLevel::O2)) => {
+            LlvmOptimizationPipeline::Module("thinlto-pre-link<O2>")
+        }
+        (LtoMode::Thin, OptimizationMode::Level(OptLevel::O3)) => {
+            LlvmOptimizationPipeline::Module("thinlto-pre-link<O3>")
+        }
+        (LtoMode::Thin, OptimizationMode::Level(OptLevel::Os)) => {
+            LlvmOptimizationPipeline::Module("thinlto-pre-link<Os>")
+        }
+        (LtoMode::Thin, OptimizationMode::Level(OptLevel::Oz)) => {
+            LlvmOptimizationPipeline::Module("thinlto-pre-link<Oz>")
+        }
         // Keep the certified pre-rollout pipelines available as a comparison
         // baseline until Story 4 promotes release builds to LLVM O2.
         (_, OptimizationMode::Baseline) => match profile {
@@ -2370,7 +2396,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 // Inkwell's path-based bitcode writer requires Unicode and
                 // panics for other paths. Writing LLVM's memory buffer through
                 // std::fs keeps valid platform paths diagnostic-safe.
-                write_llvm_bitcode(&self.module, &path).map_err(|error| {
+                let written = if self.gcx.config.codegen.lto == LtoMode::Thin {
+                    crate::codegen::lto::write_thin_lto_bitcode(&self.module, &path)
+                } else {
+                    write_llvm_bitcode(&self.module, &path).map_err(|error| error.to_string())
+                };
+                written.map_err(|error| {
                     self.gcx
                         .dcx()
                         .emit_error(format!("failed to write LLVM bitcode: {error}"), None);
@@ -7517,6 +7548,22 @@ mod struct_layout_tests {
                 LtoMode::Full,
             ),
             LlvmOptimizationPipeline::Module("lto-pre-link<O2>")
+        );
+        assert_eq!(
+            llvm_optimization_pipeline(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::O2),
+                LtoMode::Thin,
+            ),
+            LlvmOptimizationPipeline::Module("thinlto-pre-link<O2>")
+        );
+        assert_eq!(
+            llvm_optimization_pipeline(
+                BuildProfile::Debug,
+                OptimizationMode::Baseline,
+                LtoMode::Thin,
+            ),
+            LlvmOptimizationPipeline::Module("function(mem2reg),thinlto-pre-link<O0>")
         );
     }
 

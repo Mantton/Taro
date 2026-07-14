@@ -19,7 +19,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 17;
+const META_FORMAT_VERSION: u32 = 18;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -172,6 +172,7 @@ fn lto_name(mode: LtoMode) -> &'static str {
     match mode {
         LtoMode::Off => "off",
         LtoMode::Full => "full",
+        LtoMode::Thin => "thin",
     }
 }
 
@@ -1219,6 +1220,13 @@ mod tests {
         assert_eq!(decoded.artifact_kind, header.artifact_kind);
         assert_eq!(decoded.artifact_relpath, header.artifact_relpath);
         assert_eq!(decoded_payload, payload);
+    }
+
+    #[test]
+    fn metadata_names_all_lto_modes() {
+        assert_eq!(lto_name(LtoMode::Off), "off");
+        assert_eq!(lto_name(LtoMode::Full), "full");
+        assert_eq!(lto_name(LtoMode::Thin), "thin");
     }
 
     #[test]

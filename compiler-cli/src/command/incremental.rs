@@ -174,6 +174,7 @@ fn lto_mode_tag(mode: LtoMode) -> u8 {
     match mode {
         LtoMode::Off => 0,
         LtoMode::Full => 1,
+        LtoMode::Thin => 2,
     }
 }
 
@@ -511,10 +512,13 @@ mod tests {
     fn lto_mode_changes_compilation_fingerprint() {
         with_context(|context, source| {
             let mut off = base_config(source.clone());
-            let mut full = base_config(source);
+            let mut full = base_config(source.clone());
+            let mut thin = base_config(source);
             off.codegen.artifact = ModuleArtifactKind::LlvmBitcode;
             full.codegen.artifact = ModuleArtifactKind::LlvmBitcode;
             full.codegen.lto = LtoMode::Full;
+            thin.codegen.artifact = ModuleArtifactKind::LlvmBitcode;
+            thin.codegen.lto = LtoMode::Thin;
             let known = FxHashMap::default();
 
             let off = compute_package_fingerprint_input(context, &off, &known)
@@ -523,7 +527,12 @@ mod tests {
             let full = compute_package_fingerprint_input(context, &full, &known)
                 .unwrap()
                 .package_fingerprint;
+            let thin = compute_package_fingerprint_input(context, &thin, &known)
+                .unwrap()
+                .package_fingerprint;
             assert_ne!(off, full);
+            assert_ne!(off, thin);
+            assert_ne!(full, thin);
         });
     }
 
