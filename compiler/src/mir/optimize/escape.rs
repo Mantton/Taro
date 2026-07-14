@@ -803,9 +803,18 @@ fn rewrite_statement<'ctx>(
     heapified: &[Option<Ty<'ctx>>],
     param_replacements: &[Option<LocalId>],
 ) {
-    if let StatementKind::Assign(place, rvalue) = &mut stmt.kind {
-        rewrite_place(place, heapified, param_replacements);
-        rewrite_rvalue(rvalue, heapified, param_replacements);
+    match &mut stmt.kind {
+        StatementKind::Assign(place, rvalue) => {
+            rewrite_place(place, heapified, param_replacements);
+            rewrite_rvalue(rvalue, heapified, param_replacements);
+        }
+        StatementKind::SetDiscriminant { place, .. } => {
+            // Enum aggregate lowering runs before escape analysis. Once an
+            // address-taken enum local is heapified, its already-lowered tag
+            // write must target the pointee just like an ordinary assignment.
+            rewrite_place(place, heapified, param_replacements);
+        }
+        StatementKind::ShadowResync(_) | StatementKind::GcSafepoint | StatementKind::Nop => {}
     }
 }
 
