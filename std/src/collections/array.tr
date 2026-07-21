@@ -1,6 +1,7 @@
 import std.optional.Optional
 import std.mem.{MaybeUninit, Span, MutableSpan, sizeOf}
 import std.iter.{Iterator, Iterable}
+import std.ops.PartialEq
 import std.panic.panic
 
 public type Array[Element, const Size: usize] = [Element; Size]
@@ -54,6 +55,19 @@ impl[Element, const Size: usize] Array[Element, Size] {
     public func asSpan(&mut self) -> MutableSpan[Element] {
         let ptr = unsafe { self as *mut Element }
         return MutableSpan[Element].from(ptr, Size)
+    }
+}
+
+impl[Element: PartialEq[Element], const Size: usize] PartialEq[[Element; Size]] for [Element; Size] {
+    public func eq(&self, _ other: &[Element; Size]) -> bool {
+        var index: usize = 0
+        while index < Size {
+            if *self.at(index) != *other.at(index) {
+                return false
+            }
+            index += 1
+        }
+        return true
     }
 }
 

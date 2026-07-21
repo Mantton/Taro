@@ -44,3 +44,16 @@ func testArrayEmptyIteration() {
     }
     std.testing.assertEqual(count, 0 as usize, "empty array should yield no elements")
 }
+
+@test
+func testArrayConditionalEquality() {
+    let left: [int32; 3] = [1, 2, 3]
+    let equal: [int32; 3] = [1, 2, 3]
+    let different: [int32; 3] = [1, 2, 4]
+    let emptyLeft: [int32; 0] = []
+    let emptyRight: [int32; 0] = []
+
+    std.testing.assertTrue(left == equal, "arrays with equal elements should compare equal")
+    std.testing.assertTrue(left != different, "arrays should stop at the first unequal element")
+    std.testing.assertTrue(emptyLeft == emptyRight, "empty arrays should compare equal")
+}
