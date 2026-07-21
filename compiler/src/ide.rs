@@ -4575,6 +4575,10 @@ mod tests {
     }
 
     #[test]
+    // This deliberately analyzes the real standard library, so its cost grows
+    // with std and belongs in an explicit integration run rather than every
+    // compiler unit-test invocation.
+    #[ignore = "slow real-std integration coverage; run explicitly when changing IDE package analysis"]
     fn real_std_package_navigation_is_available() {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
