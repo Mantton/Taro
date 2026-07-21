@@ -1,0 +1,9 @@
+func main() {
+    let left: [int32; 3] = [1, 2, 3]
+    let equal: [int32; 3] = [1, 2, 3]
+    let different: [int32; 3] = [1, 2, 4]
+
+    assert(left == equal, "const-generic PartialEq should specialize")
+    assert(left != different, "const-generic default neq should specialize")
+    print("PASS: const-generic operator codegen\n")
+}

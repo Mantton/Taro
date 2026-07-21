@@ -146,9 +146,9 @@ fn resolve_interface_method_for_concrete<'ctx>(
                     crate::sema::models::SyntheticMethodKind::ClosureCall
                         | crate::sema::models::SyntheticMethodKind::ClosureCallMut
                         | crate::sema::models::SyntheticMethodKind::ClosureCallOnce
-                ) && call_args.len() > 1
-                {
-                    final_args.extend_from_slice(&call_args[1..]);
+                ) {
+                    let own_method_args = own_method_call_args(gcx, method_id, call_args);
+                    final_args.extend_from_slice(&own_method_args);
                 }
                 let final_args = gcx.store.interners.intern_generic_args(final_args);
                 let final_args =
@@ -168,16 +168,14 @@ fn resolve_interface_method_for_concrete<'ctx>(
                 if let Some(deduced_args) =
                     crate::sema::impl_engine::deduce_impl_subst(gcx, impl_id, self_ty, &[])
                 {
-                    // call_args are [Self, ...method_generics]
-                    // We want [deduced_impl_args..., ...method_generics]
-                    let method_generics = if call_args.len() > 0 {
-                        &call_args[1..]
-                    } else {
-                        &[]
-                    };
+                    // Interface-owned arguments (including Self) describe the
+                    // selected conformance. Only arguments declared directly
+                    // by the requirement method belong after the deduced impl
+                    // arguments in the concrete implementation instance.
+                    let method_generics = own_method_call_args(gcx, method_id, call_args);
 
                     let mut final_args = deduced_args.to_vec();
-                    final_args.extend_from_slice(method_generics);
+                    final_args.extend_from_slice(&method_generics);
                     let final_args = gcx.store.interners.intern_generic_args(final_args);
                     let final_args =
                         complete_instance_args_for_def(gcx, impl_func_id, final_args, call_args);
@@ -298,8 +296,16 @@ fn complete_instance_args_for_def<'ctx>(
 ) -> GenericArguments<'ctx> {
     let generics = gcx.generics_of(def_id);
     let expected = generics.parent_count + generics.total_count();
-    if candidate.len() >= expected {
+    if candidate.len() == expected {
         return candidate;
+    }
+    if candidate.len() > expected {
+        // Extra interface arguments are not generics of the concrete impl
+        // method and must not become part of its specialization identity.
+        return gcx
+            .store
+            .interners
+            .intern_generic_args_slice(&candidate[..expected]);
     }
 
     let mut out: Vec<_> = candidate.iter().copied().collect();
@@ -321,6 +327,17 @@ fn complete_instance_args_for_def<'ctx>(
     }
 
     gcx.store.interners.intern_generic_args(out)
+}
+
+fn own_method_call_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    method_id: DefinitionID,
+    call_args: GenericArguments<'ctx>,
+) -> GenericArguments<'ctx> {
+    let inherited = gcx.generics_of(method_id).parent_count.min(call_args.len());
+    gcx.store
+        .interners
+        .intern_generic_args_slice(&call_args[inherited..])
 }
 
 fn ensure_monomorphized_instance_args<'ctx>(

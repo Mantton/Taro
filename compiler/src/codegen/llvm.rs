@@ -6754,7 +6754,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             mir::Operand::Copy(place)
             | mir::Operand::Move(place)
             | mir::Operand::CopyWith(place, _) => self.place_ty(body, place),
-            mir::Operand::Constant(c) => c.ty,
+            mir::Operand::Constant(c) => match c.value {
+                mir::ConstantKind::Function(_, call_args, function_ty) => {
+                    // Function-item types live in the callee's generic index
+                    // space, while their recorded call arguments can still
+                    // refer to the caller's parameters. Resolve those two
+                    // layers in that order. Applying the caller substitution
+                    // directly can otherwise map a callee type parameter onto
+                    // an unrelated caller const parameter at the same index.
+                    instantiate_ty_with_args(self.gcx, function_ty, call_args)
+                }
+                _ => c.ty,
+            },
         };
 
         self.substitute_ty_current(ty)
