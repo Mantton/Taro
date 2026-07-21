@@ -396,12 +396,25 @@ impl<'ctx> Compiler<'ctx> {
 
         let branch_var = self.branch_variable(&rows);
 
-        // Peel off reference to get the actual type for matching
-        // This handles match ergonomics where scrutinee is &T but patterns match T
-        let match_ty = match branch_var.ty.kind() {
-            TyKind::Reference(inner, _) => inner,
-            _ => branch_var.ty,
-        };
+        if let TyKind::Reference(inner, _) = branch_var.ty.kind() {
+            // Nested match-ergonomic patterns can introduce a reference-typed
+            // constructor variable without an explicit PatternKind::Deref.
+            // Merely inspecting the pointee type below made the decision tree
+            // look correct while leaving MIR to read the discriminant from the
+            // reference itself. Materialize a dereference variable and rewrite
+            // every remaining column before compiling the constructor switch.
+            let deref_var = self.deref_variable(branch_var, inner);
+            for row in &mut rows {
+                for column in &mut row.columns {
+                    if column.variable == branch_var {
+                        column.variable = deref_var;
+                    }
+                }
+            }
+            return self.compile_rows(rows);
+        }
+
+        let match_ty = branch_var.ty;
 
         match match_ty.kind() {
             TyKind::Bool => {

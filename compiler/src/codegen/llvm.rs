@@ -3602,8 +3602,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         (def, args)
                     }
                     _ => panic!(
-                        "ICE: discriminant on non-enum type {}",
-                        place_ty.format(self.gcx)
+                        "ICE: discriminant on non-enum type {} while lowering {}",
+                        place_ty.format(self.gcx),
+                        self.gcx
+                            .symbol_text(self.gcx.definition_ident(body.owner).symbol),
                     ),
                 };
                 let layout = self.enum_layout_for(def.id, adt_args);

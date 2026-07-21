@@ -1,0 +1,32 @@
+enum RecursiveMatchValue {
+    case leaf(int32)
+    case children(std.collections.List[RecursiveMatchValue])
+}
+
+func readLeaf(_ value: &RecursiveMatchValue) -> int32 {
+    match value {
+        case .leaf(number) => *number
+        case .children(_) => -1
+    }
+}
+
+func readOptionalLeaf(_ value: RecursiveMatchValue?) -> int32 {
+    let borrowed: std.optional.Optional[&RecursiveMatchValue] = match value {
+        case .some(inner) => .some(&inner)
+        case .none => .none
+    }
+    match borrowed {
+        case .some(.leaf(number)) => *number
+        case _ => -1
+    }
+}
+
+func main() {
+    let value = RecursiveMatchValue.leaf(42)
+    assert(readLeaf(&value) == 42, "matching a recursive enum reference should dereference its discriminant")
+    assert(
+        readOptionalLeaf(.some(RecursiveMatchValue.leaf(7))) == 7,
+        "nested patterns should dereference an enum reference payload",
+    )
+    print("PASS: recursive enum reference match regression\n")
+}
