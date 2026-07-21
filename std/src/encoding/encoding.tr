@@ -1,0 +1,60 @@
+import std.fmt.Display
+
+/// The category of a textual binary-decoding failure.
+public enum DecodeErrorKind: std.marker.Copy, std.ops.PartialEq {
+    /// The encoded byte count cannot represent a complete value.
+    case invalidLength
+    /// A byte does not belong to the selected encoding alphabet.
+    case invalidByte
+    /// Padding is missing, misplaced, or forbidden by the selected encoding.
+    case invalidPadding
+    /// Unused trailing bits are non-zero, so the text is not canonical.
+    case nonCanonical
+}
+
+/// A typed decoding failure with its exact offending byte index.
+///
+/// When required data or padding is missing at end of input, `index()` equals
+/// the input byte length.
+public struct DecodeError: std.marker.Copy {
+    kindValue: DecodeErrorKind
+    indexValue: usize
+}
+
+impl DecodeError {
+    public func new(_ kind: DecodeErrorKind, _ index: usize) -> Self {
+        DecodeError {
+            kindValue: kind,
+            indexValue: index,
+        }
+    }
+
+    public func kind(&self) -> DecodeErrorKind {
+        self.kindValue
+    }
+
+    public func index(&self) -> usize {
+        self.indexValue
+    }
+}
+
+impl std.fmt.Display for DecodeErrorKind {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .invalidLength => into.writeString("invalid encoded length")
+            case .invalidByte => into.writeString("invalid encoded byte")
+            case .invalidPadding => into.writeString("invalid encoding padding")
+            case .nonCanonical => into.writeString("non-canonical trailing bits")
+        }
+    }
+}
+
+impl std.fmt.Display for DecodeError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        self.kindValue.display(into)
+        into.writeString(" at byte ")
+        self.indexValue.display(into)
+    }
+}
+
+impl std.error.Error for DecodeError {}

@@ -1,0 +1,324 @@
+import std.collections.{List, __list_from_raw_parts}
+import std.io.{Error, Reader, Writer}
+import std.mem.{MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity, setBufferLen}
+import std.result.Result
+
+const BUFFER_INITIAL_CAPACITY: usize = 64
+
+func bufferCapacityError() -> Error {
+    Error(.resourceExhausted).withOperation("grow byte buffer")
+}
+
+func nextBufferCapacity(_ current: usize, _ required: usize) -> usize? {
+    let maximum = maxBufferCapacity[uint8]()
+    if required > maximum {
+        return .none
+    }
+
+    var next = if current == 0 { BUFFER_INITIAL_CAPACITY } else { current }
+    if next > maximum {
+        next = required
+    }
+    while next < required {
+        match next.checkedMul(2 as usize) {
+            case .some(doubled) => {
+                if doubled > maximum {
+                    next = required
+                } else {
+                    next = doubled
+                }
+            }
+            case .none => next = required
+        }
+    }
+    return .some(next)
+}
+
+/// A growable in-memory byte stream.
+///
+/// Reads advance an internal cursor while writes append to the unread data.
+/// Consumed storage is compacted only when a later write needs the space.
+/// `Buffer` owns GC-managed storage and is moved, rather than implicitly
+/// copied, so transferring it between tasks preserves exclusive mutation.
+public struct Buffer {
+    buffer: *mut uint8
+    readStart: usize
+    writeEnd: usize
+    capacityValue: usize
+}
+
+impl std.marker.Sendable for Buffer {}
+
+impl Buffer {
+    /// Create an empty buffer without allocating.
+    public func new() -> Self {
+        Buffer {
+            buffer: unsafe { 0 as *mut uint8 },
+            readStart: 0,
+            writeEnd: 0,
+            capacityValue: 0,
+        }
+    }
+
+    /// Create a buffer containing an independent copy of `bytes`.
+    public func new(_ bytes: Span[uint8]) -> Self {
+        let len = bytes.len()
+        if len == 0 {
+            return Buffer()
+        }
+
+        let storage = makeBuffer[uint8](0, len)
+        let source = unsafe { bytes.at(0) as *const uint8 }
+        source.copyToNonoverlapping(storage, len)
+        setBufferLen[uint8](storage, len)
+        return Buffer {
+            buffer: storage,
+            readStart: 0,
+            writeEnd: len,
+            capacityValue: len,
+        }
+    }
+
+    /// Create a buffer containing an independent copy of the string's bytes.
+    /// Bytes are preserved exactly; UTF-8 validation is not performed.
+    public func new(_ value: string) -> Self {
+        let len = std.string.stringLen(value)
+        if len == 0 {
+            return Buffer()
+        }
+
+        let storage = makeBuffer[uint8](0, len)
+        std.string.stringData(value).copyToNonoverlapping(storage, len)
+        setBufferLen[uint8](storage, len)
+        return Buffer {
+            buffer: storage,
+            readStart: 0,
+            writeEnd: len,
+            capacityValue: len,
+        }
+    }
+
+    /// Return the number of unread bytes.
+    public func len(&self) -> usize {
+        self.writeEnd - self.readStart
+    }
+
+    public func isEmpty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Return the reusable capacity available after compaction.
+    public func capacity(&self) -> usize {
+        self.capacityValue
+    }
+
+    /// Borrow the unread bytes.
+    ///
+    /// The returned span is invalidated by any mutable buffer operation and
+    /// must not outlive the buffer. Returning a span instead of a mutable view
+    /// prevents callers from changing bytes behind the read cursor.
+    public func bytes(&self) -> Span[uint8] {
+        let ptr = if self.len() == 0 {
+            unsafe { self.buffer as *const uint8 }
+        } else {
+            unsafe { self.buffer.add(self.readStart) as *const uint8 }
+        }
+        return Span[uint8].from(ptr, self.len())
+    }
+
+    /// Ensure capacity for at least `minCapacity` unread bytes.
+    ///
+    /// Existing bytes and the read cursor are preserved. Capacity arithmetic
+    /// failures are typed resource errors rather than library panics.
+    public func reserve(&mut self, _ minCapacity: usize) -> Result[(), Error] {
+        if minCapacity <= self.capacityValue {
+            return .ok(())
+        }
+
+        let next = match nextBufferCapacity(self.capacityValue, minCapacity) {
+            case .some(value) => value
+            case .none => return .err(bufferCapacityError())
+        }
+
+        self.compact()
+        self.buffer = growBuffer[uint8](self.buffer, self.writeEnd, next)
+        self.capacityValue = next
+        return .ok(())
+    }
+
+    /// Discard all content while retaining allocated capacity.
+    public func reset(&mut self) {
+        self.readStart = 0
+        self.writeEnd = 0
+        if self.capacityValue > 0 {
+            setBufferLen[uint8](self.buffer, 0)
+        }
+    }
+
+    /// Append one byte.
+    public func writeByte(&mut self, _ value: uint8) -> Result[(), Error] {
+        let bytes: [uint8; 1] = [value]
+        match self.write(bytes.asSpan()) {
+            case .ok(_) => return .ok(())
+            case .err(error) => return .err(error)
+        }
+    }
+
+    /// Append every byte in `value` without requiring valid UTF-8.
+    public func writeString(&mut self, _ value: string) -> Result[(), Error] {
+        let len = std.string.stringLen(value)
+        if len == 0 {
+            return .ok(())
+        }
+        let bytes = Span[uint8].from(std.string.stringData(value), len)
+        match self.write(bytes) {
+            case .ok(_) => return .ok(())
+            case .err(error) => return .err(error)
+        }
+    }
+
+    /// Consume the buffer and transfer its unread storage into a byte list.
+    ///
+    /// A consumed prefix is compacted in place; no final allocation or
+    /// full-buffer copy is performed.
+    public func intoBytes(self) -> List[uint8] {
+        var owned = self
+        owned.compact()
+        if owned.writeEnd == 0 {
+            return List[uint8]()
+        }
+        return __list_from_raw_parts[uint8](
+            owned.buffer,
+            owned.writeEnd,
+            owned.capacityValue,
+        )
+    }
+
+    /// Consume the buffer and transfer its unread storage into a string.
+    /// Invalid UTF-8 bytes are preserved, matching Taro string semantics.
+    public func intoString(self) -> string {
+        var owned = self
+        owned.compact()
+        if owned.writeEnd == 0 {
+            return ""
+        }
+        return std.string.stringFromParts(owned.buffer, owned.writeEnd)
+    }
+
+    func compact(&mut self) {
+        if self.readStart == 0 {
+            return
+        }
+
+        let unread = self.len()
+        if unread > 0 {
+            let source = unsafe { self.buffer.add(self.readStart) as *const uint8 }
+            source.copyTo(self.buffer, unread)
+        }
+        self.readStart = 0
+        self.writeEnd = unread
+        setBufferLen[uint8](self.buffer, unread)
+    }
+
+    func ensureWritable(&mut self, _ additional: usize) -> Result[(), Error] {
+        let required = match self.len().checkedAdd(additional) {
+            case .some(value) => value
+            case .none => return .err(bufferCapacityError())
+        }
+        if required > maxBufferCapacity[uint8]() {
+            return .err(bufferCapacityError())
+        }
+
+        // Avoid `writeEnd + additional`, which could itself overflow for a
+        // fabricated extreme span. Subtraction is safe under buffer invariants.
+        if additional <= self.capacityValue - self.writeEnd {
+            return .ok(())
+        }
+
+        self.compact()
+        if required <= self.capacityValue {
+            return .ok(())
+        }
+        return self.reserve(required)
+    }
+
+    func unreadAliasOffset(&self, _ bytes: Span[uint8]) -> usize? {
+        if bytes.len() == 0 || self.len() == 0 {
+            return .none
+        }
+
+        let source = unsafe { bytes.at(0) as *const uint8 }
+        let sourceAddress = unsafe { source as usize }
+        let unreadStart = unsafe { self.buffer.add(self.readStart) as usize }
+        if sourceAddress < unreadStart {
+            return .none
+        }
+
+        let offset = sourceAddress - unreadStart
+        let unread = self.len()
+        if offset > unread || bytes.len() > (unread - offset) {
+            return .none
+        }
+        return .some(offset)
+    }
+}
+
+impl Reader for Buffer {
+    public func read(&mut self, _ destination: MutableSpan[uint8]) -> Result[usize, Error] {
+        if destination.len() == 0 || self.isEmpty() {
+            return .ok(0)
+        }
+
+        let count = if destination.len() < self.len() {
+            destination.len()
+        } else {
+            self.len()
+        }
+        let source = unsafe { self.buffer.add(self.readStart) as *const uint8 }
+        var writable = destination
+        let target = unsafe { writable.at(0) as *mut uint8 }
+        // memmove semantics make even deliberately overlapping reads defined.
+        source.copyTo(target, count)
+
+        self.readStart += count
+        if self.readStart == self.writeEnd {
+            self.reset()
+        }
+        return .ok(count)
+    }
+}
+
+impl Writer for Buffer {
+    public func write(&mut self, _ bytes: Span[uint8]) -> Result[usize, Error] {
+        let count = bytes.len()
+        if count == 0 {
+            return .ok(0)
+        }
+
+        // A Span does not own storage, so remember aliases before compaction or
+        // growth. This makes `buffer.write(buffer.bytes())` copy the intended
+        // unread range even when reclaiming a consumed prefix moves the bytes.
+        let aliasOffset = self.unreadAliasOffset(bytes)
+        let originalSource = unsafe { bytes.at(0) as *const uint8 }
+        match self.ensureWritable(count) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+
+        let source = match aliasOffset {
+            case .some(offset) => unsafe {
+                self.buffer.add(self.readStart + offset) as *const uint8
+            }
+            case .none => originalSource
+        }
+        let target = self.buffer.add(self.writeEnd)
+        source.copyTo(target, count)
+        self.writeEnd += count
+        setBufferLen[uint8](self.buffer, self.writeEnd)
+        return .ok(count)
+    }
+
+    public func flush(&mut self) -> Result[(), Error] {
+        return .ok(())
+    }
+}

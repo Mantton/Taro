@@ -1,0 +1,150 @@
+func base64StringBytes(_ value: string) -> std.mem.Span[uint8] {
+    return std.mem.Span[uint8].from(std.string.stringData(value), value.byteLen())
+}
+
+func assertBase64Bytes(
+    _ actual: &std.collections.List[uint8],
+    _ expected: std.mem.Span[uint8],
+    _ message: string,
+) {
+    std.testing.assertEqual(actual.len(), expected.len(), message)
+    var index: usize = 0
+    while index < actual.len() {
+        std.testing.assertEqual(*actual.at(index), *expected.at(index), message)
+        index += 1
+    }
+}
+
+func assertBase64DecodeError(
+    _ encoding: std.encoding.base64.Encoding,
+    _ input: string,
+    _ kind: std.encoding.DecodeErrorKind,
+    _ index: usize,
+) {
+    match encoding.decode(input) {
+        case .ok(_) => std.testing.fail("malformed Base64 should fail")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), kind, "Base64 error kind should be precise")
+            std.testing.assertEqual(error.index(), index, "Base64 error byte index should be precise")
+        }
+    }
+}
+
+func assertBase64Vector(_ plain: string, _ encoded: string) {
+    std.testing.assertEqual(
+        std.encoding.base64.encode(base64StringBytes(plain)),
+        encoded,
+        "standard Base64 should match RFC 4648 vectors",
+    )
+    let decoded = std.encoding.base64.decode(encoded).unwrap()
+    assertBase64Bytes(&decoded, base64StringBytes(plain), "standard Base64 should round-trip vectors")
+}
+
+func assertBase64RoundTrip(
+    _ encoding: std.encoding.base64.Encoding,
+    _ source: &std.collections.List[uint8],
+) {
+    let encoded = encoding.encode(source.asSpan())
+    let decoded = encoding.decode(encoded).unwrap()
+    assertBase64Bytes(&decoded, source.asSpan(), "Base64 mode should round-trip binary input")
+}
+
+@test
+func base64StandardMatchesRfc4648Vectors() {
+    assertBase64Vector("", "")
+    assertBase64Vector("f", "Zg==")
+    assertBase64Vector("fo", "Zm8=")
+    assertBase64Vector("foo", "Zm9v")
+    assertBase64Vector("foob", "Zm9vYg==")
+    assertBase64Vector("fooba", "Zm9vYmE=")
+    assertBase64Vector("foobar", "Zm9vYmFy")
+}
+
+@test
+func base64SupportsStandardUrlSafeAndRawPolicies() {
+    let bytes: [uint8; 2] = [251_u8, 255_u8]
+    let standard: std.encoding.base64.Encoding = .standard
+    let rawStandard: std.encoding.base64.Encoding = .rawStandard
+    let urlSafe: std.encoding.base64.Encoding = .urlSafe
+    let rawUrlSafe: std.encoding.base64.Encoding = .rawUrlSafe
+
+    std.testing.assertEqual(standard.encode(bytes.asSpan()), "+/8=", "standard alphabet should use plus and slash")
+    std.testing.assertEqual(rawStandard.encode(bytes.asSpan()), "+/8", "raw standard should omit padding")
+    std.testing.assertEqual(urlSafe.encode(bytes.asSpan()), "-_8=", "URL-safe alphabet should use dash and underscore")
+    std.testing.assertEqual(rawUrlSafe.encode(bytes.asSpan()), "-_8", "raw URL-safe should omit padding")
+
+    assertBase64Bytes(&standard.decode("+/8=").unwrap(), bytes.asSpan(), "standard text should decode")
+    assertBase64Bytes(&rawStandard.decode("+/8").unwrap(), bytes.asSpan(), "raw standard text should decode")
+    assertBase64Bytes(&urlSafe.decode("-_8=").unwrap(), bytes.asSpan(), "URL-safe text should decode")
+    assertBase64Bytes(&rawUrlSafe.decode("-_8").unwrap(), bytes.asSpan(), "raw URL-safe text should decode")
+}
+
+@test
+func base64StrictDecodeReportsAlphabetAndPaddingOffsets() {
+    let standard: std.encoding.base64.Encoding = .standard
+    let raw: std.encoding.base64.Encoding = .rawStandard
+    let urlSafe: std.encoding.base64.Encoding = .urlSafe
+
+    assertBase64DecodeError(standard, "Zm$=", .invalidByte, 2 as usize)
+    assertBase64DecodeError(urlSafe, "+/8=", .invalidByte, 0 as usize)
+    assertBase64DecodeError(standard, "Zg", .invalidPadding, 2 as usize)
+    assertBase64DecodeError(standard, "AAA==", .invalidPadding, 4 as usize)
+    assertBase64DecodeError(standard, "AA=A", .invalidPadding, 3 as usize)
+    assertBase64DecodeError(raw, "Zg==", .invalidPadding, 2 as usize)
+    assertBase64DecodeError(raw, "A", .invalidLength, 1 as usize)
+    assertBase64DecodeError(standard, "Zm 8=", .invalidByte, 2 as usize)
+}
+
+@test
+func base64RejectsNonCanonicalTrailingBits() {
+    let standard: std.encoding.base64.Encoding = .standard
+    let raw: std.encoding.base64.Encoding = .rawStandard
+
+    assertBase64DecodeError(standard, "Zh==", .nonCanonical, 1 as usize)
+    assertBase64DecodeError(standard, "Zm9=", .nonCanonical, 2 as usize)
+    assertBase64DecodeError(raw, "Zh", .nonCanonical, 1 as usize)
+    assertBase64DecodeError(raw, "Zm9", .nonCanonical, 2 as usize)
+}
+
+@test
+func base64LengthCalculationsHonorPaddingAndOverflow() {
+    let standard: std.encoding.base64.Encoding = .standard
+    let raw: std.encoding.base64.Encoding = .rawStandard
+
+    std.testing.assertEqual(standard.encodedLen(1 as usize).unwrap(), 4 as usize, "padded output uses a full quantum")
+    std.testing.assertEqual(raw.encodedLen(1 as usize).unwrap(), 2 as usize, "raw output omits two padding bytes")
+    std.testing.assertEqual(standard.maxDecodedLen(4 as usize).unwrap(), 3 as usize, "padded maximum is three bytes")
+    std.testing.assertEqual(raw.maxDecodedLen(3 as usize).unwrap(), 2 as usize, "raw remainder three decodes to two bytes")
+    std.testing.assertTrue(standard.maxDecodedLen(2 as usize).isNone(), "padded input length must be a multiple of four")
+    std.testing.assertTrue(raw.maxDecodedLen(1 as usize).isNone(), "a single raw symbol cannot encode data")
+
+    let maximum = 0xffffffffffffffff_u64 as usize
+    std.testing.assertTrue(standard.encodedLen(maximum).isNone(), "Base64 encoded length overflow should be detected")
+}
+
+@test
+func base64OutputDoesNotAliasMutableInput() {
+    var bytes = std.collections.List[uint8]()
+    bytes.append('f' as uint8)
+    bytes.append('o' as uint8)
+    bytes.append('o' as uint8)
+    let encoded = std.encoding.base64.encode(bytes.asSpan())
+    bytes.set(0, 'b' as uint8)
+
+    std.testing.assertEqual(encoded, "Zm9v", "encoded output should own an independent copy")
+}
+
+@test
+func base64AllPoliciesRoundTripEveryTailLength() {
+    var source = std.collections.List[uint8]()
+    var length: usize = 0
+    while length <= (64 as usize) {
+        assertBase64RoundTrip(.standard, &source)
+        assertBase64RoundTrip(.rawStandard, &source)
+        assertBase64RoundTrip(.urlSafe, &source)
+        assertBase64RoundTrip(.rawUrlSafe, &source)
+
+        source.append(((length * (37 as usize) + (11 as usize)) % (256 as usize)) as uint8)
+        length += 1
+    }
+}

@@ -1,0 +1,101 @@
+func assertHexBytes(
+    _ actual: &std.collections.List[uint8],
+    _ expected: std.mem.Span[uint8],
+    _ message: string,
+) {
+    std.testing.assertEqual(actual.len(), expected.len(), message)
+    var index: usize = 0
+    while index < actual.len() {
+        std.testing.assertEqual(*actual.at(index), *expected.at(index), message)
+        index += 1
+    }
+}
+
+func assertHexDecodeError(
+    _ input: string,
+    _ kind: std.encoding.DecodeErrorKind,
+    _ index: usize,
+) {
+    match std.encoding.hex.decode(input) {
+        case .ok(_) => std.testing.fail("malformed hexadecimal should fail")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), kind, "hex error kind should be precise")
+            std.testing.assertEqual(error.index(), index, "hex error byte index should be precise")
+        }
+    }
+}
+
+@test
+func hexOneShotEncodingUsesCanonicalLowercase() {
+    var bytes = std.collections.List[uint8]()
+    bytes.append(0_u8)
+    bytes.append(1_u8)
+    bytes.append(2_u8)
+    bytes.append(171_u8)
+    bytes.append(205_u8)
+    bytes.append(239_u8)
+
+    let encoded = std.encoding.hex.encode(bytes.asSpan())
+    bytes.set(0, 255_u8)
+    std.testing.assertEqual(encoded, "000102abcdef", "hex encode should be lowercase and independently owned")
+    std.testing.assertEqual(
+        std.encoding.hex.encode([0_u8; 0].asSpan()),
+        "",
+        "empty bytes should encode as empty text",
+    )
+}
+
+@test
+func hexOneShotDecodingAcceptsBothCases() {
+    let decoded = std.encoding.hex.decode("00AaFf10").unwrap()
+    let expected: [uint8; 4] = [0_u8, 170_u8, 255_u8, 16_u8]
+    assertHexBytes(&decoded, expected.asSpan(), "hex decode should accept uppercase and lowercase digits")
+
+    let empty = std.encoding.hex.decode("").unwrap()
+    std.testing.assertTrue(empty.isEmpty(), "empty hex text should decode to empty bytes")
+}
+
+@test
+func hexDecodeErrorsReportExactOffsetsWithoutPartialOutput() {
+    assertHexDecodeError("abc", .invalidLength, 2 as usize)
+    assertHexDecodeError("abx0", .invalidByte, 2 as usize)
+    assertHexDecodeError("0x12", .invalidByte, 1 as usize)
+    assertHexDecodeError("ab cd", .invalidByte, 2 as usize)
+
+    match std.encoding.hex.decode("ab x0") {
+        case .ok(_) => std.testing.fail("whitespace should not be silently ignored")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .invalidByte, "even malformed input should retain its kind")
+            std.testing.assertEqual(error.index(), 2 as usize, "validation should identify the first bad byte")
+            std.testing.assertEqual(
+                std.sprintf("%v", error),
+                "invalid encoded byte at byte 2",
+                "decode errors should be actionable when displayed",
+            )
+        }
+    }
+}
+
+@test
+func hexLengthCalculationsAreChecked() {
+    std.testing.assertEqual(std.encoding.hex.encodedLen(3 as usize).unwrap(), 6 as usize, "hex doubles input length")
+    std.testing.assertEqual(std.encoding.hex.decodedLen(6 as usize).unwrap(), 3 as usize, "hex halves even input")
+    std.testing.assertTrue(std.encoding.hex.decodedLen(5 as usize).isNone(), "odd input has no decoded size")
+
+    let maximum = 0xffffffffffffffff_u64 as usize
+    std.testing.assertTrue(std.encoding.hex.encodedLen(maximum).isNone(), "encoded length overflow should be detected")
+}
+
+@test
+func hexRoundTripsEveryByteValue() {
+    var source = std.collections.List[uint8](withCapacity: 256 as usize)
+    var value: usize = 0
+    while value < (256 as usize) {
+        source.append(value as uint8)
+        value += 1
+    }
+
+    let encoded = std.encoding.hex.encode(source.asSpan())
+    let decoded = std.encoding.hex.decode(encoded).unwrap()
+    assertHexBytes(&decoded, source.asSpan(), "hex should round-trip every possible byte")
+}

@@ -4,6 +4,8 @@ import std.io
 import std.fs
 import std.path
 import std.net
+import std.bytes
+import std.encoding
 import std.time
 import std.fmt
 import std.default

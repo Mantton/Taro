@@ -1,0 +1,138 @@
+import std.io.{Reader, Writer}
+
+func assertBufferSpanEquals(
+    _ actual: std.mem.Span[uint8],
+    _ expected: string,
+    _ message: string,
+) {
+    std.testing.assertEqual(actual.len(), expected.byteLen(), message)
+    var index: usize = 0
+    while index < actual.len() {
+        std.testing.assertEqual(*actual.at(index), expected.byteAt(index), message)
+        index += 1
+    }
+}
+
+func assertBufferListEquals(
+    _ actual: &std.collections.List[uint8],
+    _ expected: string,
+    _ message: string,
+) {
+    std.testing.assertEqual(actual.len(), expected.byteLen(), message)
+    var index: usize = 0
+    while index < actual.len() {
+        std.testing.assertEqual(*actual.at(index), expected.byteAt(index), message)
+        index += 1
+    }
+}
+
+@test
+func byteBufferReadCursorAndAppendPreserveUnreadData() {
+    var buffer = std.bytes.Buffer("abcdef")
+    var destination: [uint8; 2] = [0_u8; 2]
+    var writable: std.mem.MutableSpan[uint8] = destination.asSpan()
+    let count = buffer.read(writable).unwrap()
+
+    std.testing.assertEqual(count, 2 as usize, "read should fill the requested destination")
+    std.testing.assertEqual(*destination.at(0), 'a' as uint8, "read should copy the first byte")
+    std.testing.assertEqual(*destination.at(1), 'b' as uint8, "read should copy the second byte")
+    std.testing.assertEqual(buffer.len(), 4 as usize, "len should count only unread bytes")
+    assertBufferSpanEquals(buffer.bytes(), "cdef", "bytes should expose only unread data")
+
+    buffer.writeString("-tail").unwrap()
+    std.testing.assertEqual(
+        buffer.intoString(),
+        "cdef-tail",
+        "writes should append after cursor-aware compaction",
+    )
+}
+
+@test
+func byteBufferSupportsAliasedUnreadWrites() {
+    var buffer = std.bytes.Buffer("abcdef")
+    var discarded: [uint8; 2] = [0_u8; 2]
+    var discardedSpan: std.mem.MutableSpan[uint8] = discarded.asSpan()
+    let _ = buffer.read(discardedSpan).unwrap()
+
+    let unread = buffer.bytes()
+    std.testing.assertEqual(
+        buffer.write(unread).unwrap(),
+        4 as usize,
+        "an aliased write should consume the full source",
+    )
+    std.testing.assertEqual(
+        buffer.intoString(),
+        "cdefcdef",
+        "compaction must rebind an aliased unread span",
+    )
+}
+
+@test
+func byteBufferReserveResetAndReuseAreTyped() {
+    var buffer = std.bytes.Buffer()
+    buffer.reserve(128 as usize).unwrap()
+    let reserved = buffer.capacity()
+    std.testing.assertTrue(reserved >= (128 as usize), "reserve should establish requested capacity")
+
+    buffer.writeString("discarded").unwrap()
+    std.runtime.collect()
+    buffer.reset()
+    std.testing.assertTrue(buffer.isEmpty(), "reset should discard all bytes")
+    std.testing.assertEqual(buffer.capacity(), reserved, "reset should retain reusable capacity")
+
+    buffer.writeByte('o' as uint8).unwrap()
+    buffer.writeByte('k' as uint8).unwrap()
+    std.testing.assertEqual(buffer.intoString(), "ok", "reset storage should remain writable")
+
+    var overflowing = std.bytes.Buffer()
+    let tooLarge = std.mem.maxBufferCapacity[uint8]() + (1 as usize)
+    match overflowing.reserve(tooLarge) {
+        case .ok(_) => std.testing.fail("capacity overflow should not succeed")
+        case .err(error) => {
+            std.testing.assertTrue(error.isKind(.resourceExhausted), "capacity overflow should be typed")
+        }
+    }
+}
+
+@test
+func byteBufferImplementsReaderAndWriter() {
+    var source = std.bytes.Buffer("copy through std.io")
+    var destination = std.bytes.Buffer()
+    let copied = std.io.copy(&mut source, &mut destination).unwrap()
+
+    std.testing.assertEqual(copied, 19 as usize, "io.copy should report the transferred byte count")
+    std.testing.assertTrue(source.isEmpty(), "Reader should advance through all source bytes")
+    destination.flush().unwrap()
+    std.testing.assertEqual(
+        destination.intoString(),
+        "copy through std.io",
+        "Writer should retain copied bytes and flush as a no-op",
+    )
+}
+
+@test
+func byteBufferTransfersUnreadOwnershipToBytes() {
+    var buffer = std.bytes.Buffer("prefix-payload")
+    var prefix: [uint8; 7] = [0_u8; 7]
+    var prefixSpan: std.mem.MutableSpan[uint8] = prefix.asSpan()
+    let _ = buffer.read(prefixSpan).unwrap()
+    std.runtime.collect()
+
+    var bytes = buffer.intoBytes()
+    std.runtime.collect()
+    assertBufferListEquals(&bytes, "payload", "intoBytes should transfer only unread bytes")
+    bytes.set(0, 'P' as uint8)
+    std.testing.assertEqual(*bytes.at(0), 'P' as uint8, "transferred storage should remain independently usable")
+}
+
+@test
+func byteBufferIntoStringPreservesInvalidUtf8() {
+    let input: [uint8; 2] = [0xff_u8, 'x' as uint8]
+    let buffer = std.bytes.Buffer(input.asSpan())
+    let output = buffer.intoString()
+    std.runtime.collect()
+
+    std.testing.assertEqual(output.byteLen(), 2 as usize, "intoString should preserve raw byte count")
+    std.testing.assertEqual(output.byteAt(0), 0xff_u8, "intoString should preserve invalid UTF-8 bytes")
+    std.testing.assertEqual(output.byteAt(1), 'x' as uint8, "intoString should preserve following bytes")
+}

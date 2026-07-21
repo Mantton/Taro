@@ -1,0 +1,103 @@
+import std.collections.List
+import std.encoding.{DecodeError, DecodeErrorKind}
+import std.mem.Span
+import std.result.Result
+import std.string.Builder
+
+const ASCII_ZERO: uint8 = 48_u8
+const ASCII_NINE: uint8 = 57_u8
+const ASCII_LOWER_A: uint8 = 97_u8
+const ASCII_LOWER_F: uint8 = 102_u8
+const ASCII_UPPER_A: uint8 = 65_u8
+const ASCII_UPPER_F: uint8 = 70_u8
+
+func decodeNibble(_ byte: uint8) -> int32 {
+    if byte >= ASCII_ZERO && byte <= ASCII_NINE {
+        return (byte - ASCII_ZERO) as int32
+    }
+    if byte >= ASCII_LOWER_A && byte <= ASCII_LOWER_F {
+        return (byte - ASCII_LOWER_A + 10_u8) as int32
+    }
+    if byte >= ASCII_UPPER_A && byte <= ASCII_UPPER_F {
+        return (byte - ASCII_UPPER_A + 10_u8) as int32
+    }
+    return -1_i32
+}
+
+func encodeNibble(_ value: uint8) -> uint8 {
+    if value < 10_u8 {
+        return ASCII_ZERO + value
+    }
+    return ASCII_LOWER_A + (value - 10_u8)
+}
+
+/// Return the encoded byte count, or none when `inputLen * 2` overflows.
+public func encodedLen(_ inputLen: usize) -> usize? {
+    return inputLen.checkedMul(2 as usize)
+}
+
+/// Return the exact decoded byte count for an even-length input.
+public func decodedLen(_ inputLen: usize) -> usize? {
+    if inputLen % (2 as usize) != 0 {
+        return .none
+    }
+    return .some(inputLen / (2 as usize))
+}
+
+/// Encode bytes as canonical lowercase hexadecimal text.
+///
+/// Output owns independent storage and never aliases `bytes`. Capacity
+/// overflow can occur only for an impossible-to-materialize input span and is
+/// treated consistently with other standard-library allocation primitives.
+public func encode(_ bytes: Span[uint8]) -> string {
+    let outputLen = match encodedLen(bytes.len()) {
+        case .some(value) => value
+        case .none => std.panic.panic("hex encoded length overflow")
+    }
+    if outputLen == 0 {
+        return ""
+    }
+
+    var out = Builder()
+    out.reserve(outputLen)
+    var index: usize = 0
+    while index < bytes.len() {
+        let value = *bytes.at(index)
+        out.writeByte(encodeNibble(value >> 4_u8))
+        out.writeByte(encodeNibble(value & 15_u8))
+        index += 1
+    }
+    return out.intoString()
+}
+
+/// Decode strict hexadecimal text.
+///
+/// Uppercase and lowercase digits are accepted. Prefixes, whitespace, and a
+/// dangling half-byte are rejected. Failure is atomic: no partial output is
+/// returned when an invalid byte is found.
+public func decode(_ input: string) -> Result[List[uint8], DecodeError] {
+    let len = input.byteLen()
+    // Validate bytes before length so an earlier malformed character is not
+    // hidden by a later dangling half-byte.
+    var validationIndex: usize = 0
+    while validationIndex < len {
+        if decodeNibble(input.byteAt(validationIndex)) < 0 {
+            return .err(DecodeError(.invalidByte, validationIndex))
+        }
+        validationIndex += 1
+    }
+    let outputLen = match decodedLen(len) {
+        case .some(value) => value
+        case .none => return .err(DecodeError(.invalidLength, len - (1 as usize)))
+    }
+
+    var out = List[uint8](withCapacity: outputLen)
+    var index: usize = 0
+    while index < len {
+        let high = decodeNibble(input.byteAt(index))
+        let low = decodeNibble(input.byteAt(index + (1 as usize)))
+        out.append(((high as uint8) << 4_u8) | (low as uint8))
+        index += 2
+    }
+    return .ok(out)
+}
