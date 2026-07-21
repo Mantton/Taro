@@ -65,6 +65,27 @@ impl<'ctx> ParamEnv<'ctx> {
             .max(8)
     }
 
+    /// Materialize this environment for the interface-selection engine.
+    ///
+    /// The constraint solver keeps bounds split by kind for fast lookup, while
+    /// `InterfaceGoal` carries a canonical slice so recursive obligations from
+    /// conditional conformances can consult the caller's generic assumptions.
+    pub fn constraints(&self) -> Vec<Constraint<'ctx>> {
+        let mut constraints =
+            Vec::with_capacity(self.type_equalities.len().saturating_add(self.bounds.len()));
+        constraints.extend(
+            self.type_equalities
+                .iter()
+                .map(|&(lhs, rhs)| Constraint::TypeEquality(lhs, rhs)),
+        );
+        constraints.extend(
+            self.bounds
+                .iter()
+                .map(|&(ty, interface)| Constraint::Bound { ty, interface }),
+        );
+        constraints
+    }
+
     /// Get all interface bounds for a given type (considering type equalities).
     pub fn bounds_for(&self, ty: Ty<'ctx>) -> Vec<InterfaceReference<'ctx>> {
         if self.bounds.is_empty() {

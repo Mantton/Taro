@@ -59,6 +59,9 @@ pub struct ConstraintSystem<'ctx> {
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     compiler_call_contexts: FxHashMap<NodeID, CompilerCallContext>,
     current_def: crate::sema::resolve::models::DefinitionID,
+    /// Canonical interface-selection view of bounds declared by the definition
+    /// being checked. Unlike `env`, this is not extended with callee requirements.
+    assumption_constraints: &'ctx [Constraint<'ctx>],
     env: ParamEnv<'ctx>,
     /// Traits (interfaces) visible in the current scope (for trait method lookup)
     visible_traits: Rc<FxHashSet<DefinitionID>>,
@@ -98,6 +101,12 @@ impl<'ctx> ConstraintSystem<'ctx> {
     ) -> ConstraintSystem<'ctx> {
         let error_count_at_start = context.dcx().error_count();
 
+        let assumptions = Self::build_param_env(context, current_def);
+        let assumption_constraints = context
+            .store
+            .arenas
+            .global
+            .alloc_slice_clone(&assumptions.constraints());
         ConstraintSystem {
             infer_cx,
             obligations: Default::default(),
@@ -114,7 +123,8 @@ impl<'ctx> ConstraintSystem<'ctx> {
             instantiation_args: Default::default(),
             compiler_call_contexts: Default::default(),
             current_def,
-            env: Self::build_param_env(context, current_def),
+            assumption_constraints,
+            env: assumptions,
             visible_traits,
             error_count_at_start,
         }
@@ -413,6 +423,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             instantiation_args: std::mem::take(&mut self.instantiation_args),
             compiler_call_contexts: self.compiler_call_contexts.clone(),
             current_def: self.current_def,
+            assumption_constraints: self.assumption_constraints,
             param_env: self.env.clone(),
             visible_traits: self.visible_traits.clone(),
         };
@@ -565,6 +576,7 @@ struct ConstraintSolver<'ctx> {
     instantiation_args: FxHashMap<NodeID, GenericArguments<'ctx>>,
     compiler_call_contexts: FxHashMap<NodeID, CompilerCallContext>,
     current_def: crate::sema::resolve::models::DefinitionID,
+    assumption_constraints: &'ctx [Constraint<'ctx>],
     param_env: ParamEnv<'ctx>,
     visible_traits: Rc<FxHashSet<DefinitionID>>,
 }
@@ -981,6 +993,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             instantiation_args: FxHashMap::default(),
             compiler_call_contexts: self.compiler_call_contexts.clone(),
             current_def: self.current_def,
+            assumption_constraints: self.assumption_constraints,
             param_env: self.param_env.clone(),
             visible_traits: self.visible_traits.clone(),
         }

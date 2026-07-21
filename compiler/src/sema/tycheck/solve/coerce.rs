@@ -758,7 +758,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         let self_ty = interface.self_ty().unwrap_or(ty);
-        let goal = interface.to_goal_with_self_ty(self.gcx(), &[], self_ty);
+        // Conditional conformances can introduce recursive obligations over a
+        // caller parameter (for example `Wrapper[T]: Input where T: Reader`).
+        // Passing an empty environment here discarded the in-scope `T: Reader`
+        // proof, so the declared conformance was incorrectly rejected inside
+        // generic function bodies. Pass the definition's canonical assumptions
+        // so selection can discharge those obligations through ParamEnv.
+        // Only definition-level assumptions belong here. Requirements from a
+        // generic callee are added to `param_env` as obligations during call
+        // checking; treating those as assumptions would let an invalid call
+        // prove its own required conformance.
+        let goal = interface.to_goal_with_self_ty(self.gcx(), self.assumption_constraints, self_ty);
         match self
             .gcx()
             .build_conformance_witness(goal, SelectionMode::Typecheck)

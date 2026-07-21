@@ -1,0 +1,44 @@
+interface ConditionalSource {
+    func value(&self) -> int32
+}
+
+interface ConditionalAdapter {
+    func adapted(&self) -> int32
+}
+
+struct ConditionalWrapper[Source: ConditionalSource] {
+    source: Source
+}
+
+impl[Source: ConditionalSource] ConditionalAdapter for ConditionalWrapper[Source] {
+    func adapted(&self) -> int32 {
+        self.source.value()
+    }
+}
+
+func requireAdapter[Adapter: ConditionalAdapter](_ adapter: &Adapter) -> int32 {
+    adapter.adapted()
+}
+
+struct ConditionalConcreteSource {
+    stored: int32
+}
+
+impl ConditionalSource for ConditionalConcreteSource {
+    func value(&self) -> int32 {
+        self.stored
+    }
+}
+
+// Regression: selection of ConditionalWrapper[Source]: ConditionalAdapter
+// must use the Source: ConditionalSource bound from this generic body.
+func adaptGeneric[Source: ConditionalSource](_ source: Source) -> int32 {
+    let wrapper = ConditionalWrapper[Source] { source }
+    requireAdapter(&wrapper)
+}
+
+func main() {
+    let result = adaptGeneric(ConditionalConcreteSource { stored: 42 })
+    assert(result == 42, "conditional conformance should use caller parameter environment")
+    print("PASS: conditional conformance parameter environment regression\n")
+}
