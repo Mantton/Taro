@@ -181,7 +181,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let op_kind = unary_op_to_operator_kind(data.operator)?;
 
         // Look up operator candidates on the operand type
-        let candidates = self.lookup_operator_candidates(operand_ty, op_kind);
+        let candidates = self.lookup_operator_candidates(operand_ty, op_kind, None);
         if candidates.is_empty() {
             return None;
         }
@@ -442,7 +442,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         // Look up operator candidates on the original LHS type (not the reference)
         // because that's where the impl is defined (e.g., `impl PartialEq for string`)
-        let candidates = self.lookup_operator_candidates(lhs, op_kind);
+        let candidates = self.lookup_operator_candidates(lhs, op_kind, Some(rhs));
         if candidates.is_empty() {
             return None;
         }
@@ -468,6 +468,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         TyKind::Reference(inner, Mutability::Immutable) => {
                             inner == lhs
                                 || inner.is_infer()
+                                || inner.needs_instantiation()
                                 || matches!(inner.kind(), TyKind::Parameter(_))
                         }
                         TyKind::Parameter(_) => true,
@@ -478,6 +479,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                         TyKind::Reference(inner, Mutability::Immutable) => {
                             inner == rhs
                                 || inner.is_infer()
+                                || inner.needs_instantiation()
                                 || matches!(inner.kind(), TyKind::Parameter(_))
                         }
                         TyKind::Parameter(_) => true,
@@ -579,7 +581,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         op_kind: OperatorKind,
     ) -> Option<SolverResult<'ctx>> {
         // Look up operator candidates on the LHS type
-        let candidates = self.lookup_operator_candidates(lhs, op_kind);
+        let candidates = self.lookup_operator_candidates(lhs, op_kind, Some(rhs));
         if candidates.is_empty() {
             return None;
         }
@@ -598,6 +600,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 // because we can't easily check equality without instantiation.
                 if rhs == rhs_param_ty
                     || rhs.is_infer()
+                    || rhs_param_ty.needs_instantiation()
                     || matches!(rhs_param_ty.kind(), TyKind::Parameter(_))
                 {
                     matching_candidates.push(candidate);
@@ -1015,7 +1018,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let op_kind = binary_op_to_assign_operator_kind(data.operator)?;
 
         // Look up assign operator candidates on the LHS type
-        let candidates = self.lookup_operator_candidates(lhs, op_kind);
+        let candidates = self.lookup_operator_candidates(lhs, op_kind, Some(rhs));
         if candidates.is_empty() {
             return None;
         }

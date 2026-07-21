@@ -1,0 +1,21 @@
+import std.ops.PartialEq
+
+struct ConditionalOperatorBox[Value] {
+    value: Value
+}
+
+impl[Value: PartialEq[Value]] PartialEq[ConditionalOperatorBox[Value]] for ConditionalOperatorBox[Value] {
+    func eq(&self, _ other: &ConditionalOperatorBox[Value]) -> bool {
+        self.value == other.value
+    }
+}
+
+func main() {
+    let left = ConditionalOperatorBox[int32] { value: 42 }
+    let equal = ConditionalOperatorBox[int32] { value: 42 }
+    let different = ConditionalOperatorBox[int32] { value: 7 }
+
+    assert(left == equal, "conditional generic operator impl should be discoverable")
+    assert(left != different, "conditional generic operator default methods should be callable")
+    print("PASS: conditional generic operator implementation\n")
+}

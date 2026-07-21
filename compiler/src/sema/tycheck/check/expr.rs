@@ -1156,6 +1156,30 @@ impl<'ctx> Checker<'ctx> {
                             cs,
                         )
                     }
+                    DefinitionKind::TypeAlias => {
+                        let Some((nominal, constructor_args)) =
+                            self.type_alias_constructor_target(*id, instantiation_args)
+                        else {
+                            let name = self.gcx().definition_ident(*id).symbol;
+                            self.gcx().dcx().emit_error(
+                                format!(
+                                    "type alias '{}' does not name a constructible struct",
+                                    self.gcx().symbol_text(name)
+                                )
+                                .into(),
+                                Some(span),
+                            );
+                            return Ty::error(self.gcx());
+                        };
+                        self.synth_constructor_value_expression(
+                            node_id,
+                            nominal,
+                            span,
+                            expectation,
+                            constructor_args,
+                            cs,
+                        )
+                    }
                     DefinitionKind::ConstParameter => {
                         let Some(owner) = self.gcx().definition_parent(*id) else {
                             return Ty::error(self.gcx());
@@ -2587,6 +2611,36 @@ impl<'ctx> Checker<'ctx> {
             }
             _ => None,
         }
+    }
+
+    fn type_alias_constructor_target(
+        &self,
+        alias_id: DefinitionID,
+        alias_args: Option<GenericArguments<'ctx>>,
+    ) -> Option<(DefinitionID, Option<GenericArguments<'ctx>>)> {
+        let gcx = self.gcx();
+        let mut target = gcx.try_get_alias_type(alias_id)?;
+        if let Some(args) = alias_args {
+            target = instantiate_ty_with_args(gcx, target, args);
+        }
+        target = crate::sema::tycheck::utils::normalize_aliases(gcx, target);
+
+        let TyKind::Adt(def, target_args) = target.kind() else {
+            return None;
+        };
+        if def.kind != crate::sema::models::AdtKind::Struct {
+            return None;
+        }
+
+        // Constructor methods inherit the target struct's generic parameters, not
+        // the alias's. Forward the normalized target arguments so aliases that
+        // reorder or fix parameters bind the same constructor as the named struct.
+        let target_args = if target_args.is_empty() {
+            None
+        } else {
+            Some(target_args)
+        };
+        Some((def.id, target_args))
     }
 
     pub(super) fn bind_constructor_overload_set(

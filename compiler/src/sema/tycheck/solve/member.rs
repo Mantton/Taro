@@ -8,8 +8,8 @@ use crate::{
     sema::{
         error::TypeError,
         models::{
-            GenericArguments, InterfacePropertyRequirement, InterfaceReference, StructField, Ty,
-            TyKind,
+            GenericArgument, GenericArguments, InterfacePropertyRequirement, InterfaceReference,
+            StructField, Ty, TyKind,
         },
         resolve::models::{DefinitionID, DefinitionKind, PrimaryType, TypeHead, VariantCtorKind},
         tycheck::{
@@ -1125,9 +1125,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
         &self,
         ty: Ty<'ctx>,
         kind: OperatorKind,
+        rhs: Option<Ty<'ctx>>,
     ) -> Vec<DefinitionID> {
         if let Some(head) = self.type_head_from_type(ty) {
-            return self.lookup_operator_candidates_visible(head, kind);
+            return self.lookup_operator_candidates_visible(head, ty, kind, rhs);
         }
 
         // If no primary type head (e.g. generic parameter), resolve operators from
@@ -1206,7 +1207,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
     fn lookup_operator_candidates_visible(
         &self,
         head: TypeHead,
+        receiver: Ty<'ctx>,
         kind: OperatorKind,
+        rhs: Option<Ty<'ctx>>,
     ) -> Vec<DefinitionID> {
         let gcx = self.gcx();
         let mut members = Vec::new();
@@ -1232,7 +1235,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         // Then, look up through interface conformance (new path)
-        if let Some(candidates) = self.lookup_operator_via_interface(head, kind) {
+        if let Some(candidates) = self.lookup_operator_via_interface(head, receiver, kind, rhs) {
             for id in candidates {
                 if seen.insert(id) {
                     members.push(id);
@@ -1251,7 +1254,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
     fn lookup_operator_via_interface(
         &self,
         head: TypeHead,
+        receiver: Ty<'ctx>,
         kind: OperatorKind,
+        rhs: Option<Ty<'ctx>>,
     ) -> Option<Vec<DefinitionID>> {
         let gcx = self.gcx();
 
@@ -1271,6 +1276,60 @@ impl<'ctx> ConstraintSolver<'ctx> {
             .iter()
             .find(|method| method.name == method_symbol)?;
 
+        let mut out = Vec::new();
+        let mut seen = FxHashSet::default();
+
+        // Concrete methods from generic impls cannot be selected from their raw
+        // conformance header: it still contains the impl's type/const parameters.
+        // Feed those methods to overload resolution directly; binding the method
+        // later instantiates its parent impl arguments and checks its constraints.
+        let mut collect_concrete = |db: &crate::compile::context::TypeDatabase<'ctx>| {
+            let Some(index) = db.type_head_to_members.get(&head) else {
+                return;
+            };
+            let Some(set) = index.trait_methods.get(&(interface_id, method_symbol)) else {
+                return;
+            };
+            for &method in &set.members {
+                if seen.insert(method) {
+                    out.push(method);
+                }
+            }
+        };
+        gcx.with_session_type_database(|db| collect_concrete(db));
+        for package in gcx.visible_packages() {
+            gcx.with_type_database(package, |db| collect_concrete(db));
+        }
+
+        // Comparison interfaces have only Self and Rhs parameters, both of
+        // which are known at a binary operator site. Selecting that concrete
+        // conformance makes default methods such as PartialEq.neq available
+        // for conditional generic impls as well as explicit methods.
+        if let Some(rhs) = rhs
+            && gcx.generics_of(interface_id).total_count() == 2
+        {
+            let interface = InterfaceReference {
+                id: interface_id,
+                arguments: gcx.store.interners.intern_generic_args(vec![
+                    GenericArgument::Type(receiver),
+                    GenericArgument::Type(rhs),
+                ]),
+                bindings: &[],
+            };
+            if let Some(witness) = resolve_conformance_witness(gcx, interface)
+                && let Some(method_witness) = witness.method_witnesses.get(&method_req.id)
+            {
+                let method = match method_witness.implementation {
+                    crate::sema::models::MethodImplementation::Concrete(impl_id)
+                    | crate::sema::models::MethodImplementation::Default(impl_id) => impl_id,
+                    crate::sema::models::MethodImplementation::Synthetic(_, _) => method_req.id,
+                };
+                if seen.insert(method) {
+                    out.push(method);
+                }
+            }
+        }
+
         let records = gcx.collect_from_databases(|db| {
             db.conformance_by_interface_head
                 .get(&(interface_id, head))
@@ -1281,13 +1340,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 })
         });
 
-        let mut out = Vec::new();
-        let mut seen = FxHashSet::default();
-
         for record in records {
-            if !seen.insert(record.interface) {
-                continue;
-            }
             let Some(witness) = resolve_conformance_witness(gcx, record.interface) else {
                 continue;
             };
@@ -1297,10 +1350,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             match method_witness.implementation {
                 crate::sema::models::MethodImplementation::Concrete(impl_id)
                 | crate::sema::models::MethodImplementation::Default(impl_id) => {
-                    out.push(impl_id);
+                    if seen.insert(impl_id) {
+                        out.push(impl_id);
+                    }
                 }
                 crate::sema::models::MethodImplementation::Synthetic(_, _) => {
-                    out.push(method_req.id);
+                    if seen.insert(method_req.id) {
+                        out.push(method_req.id);
+                    }
                 }
             }
         }
