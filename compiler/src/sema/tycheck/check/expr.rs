@@ -2396,8 +2396,26 @@ impl<'ctx> Checker<'ctx> {
                         expects_async_callable: bound.expects_async_callable,
                     });
                 } else {
-                    let expectation_ty =
-                        self.freshen_method_expectation_ty(def_id, instantiated_ty, name.span, cs);
+                    // A method-local type parameter is inferred by the selected
+                    // call candidate. Creating an unrelated inference variable
+                    // here only supplies a speculative argument expectation;
+                    // it is not shared with overload selection and can survive
+                    // as a false "could not be inferred" diagnostic even when
+                    // the real candidate is fully determined by the argument.
+                    // Callable bounds take the branch above because closures do
+                    // need their parameter/result types before their bodies are
+                    // checked. Ordinary generic values are synthesized without
+                    // an expectation and constrained by the Apply goal instead.
+                    let own_generics = self.gcx().generics_of(def_id);
+                    let mentions_method_parameter = own_generics
+                        .parameters
+                        .iter()
+                        .any(|param| type_mentions_generic_parameter(instantiated_ty, param.index));
+                    if mentions_method_parameter {
+                        return None;
+                    }
+
+                    let expectation_ty = instantiated_ty;
                     input_expectations.push(ArgumentExpectation {
                         ty: expectation_ty,
                         expects_async_callable: self.ty_is_known_async_callable(expectation_ty),
@@ -3679,5 +3697,73 @@ impl<'ctx> Checker<'ctx> {
         }
 
         result_ty
+    }
+}
+
+fn type_mentions_generic_parameter<'ctx>(ty: Ty<'ctx>, index: usize) -> bool {
+    fn const_mentions_generic_parameter<'ctx>(value: Const<'ctx>, index: usize) -> bool {
+        matches!(value.kind, ConstKind::Param(parameter) if parameter.index == index)
+            || type_mentions_generic_parameter(value.ty, index)
+    }
+
+    fn argument_mentions_generic_parameter<'ctx>(
+        argument: GenericArgument<'ctx>,
+        index: usize,
+    ) -> bool {
+        match argument {
+            GenericArgument::Type(ty) => type_mentions_generic_parameter(ty, index),
+            GenericArgument::Const(value) => const_mentions_generic_parameter(value, index),
+        }
+    }
+
+    match ty.kind() {
+        TyKind::Parameter(parameter) => parameter.index == index,
+        TyKind::Array { element, len } => {
+            type_mentions_generic_parameter(element, index)
+                || const_mentions_generic_parameter(len, index)
+        }
+        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
+            type_mentions_generic_parameter(inner, index)
+        }
+        TyKind::Tuple(items) => items
+            .iter()
+            .any(|item| type_mentions_generic_parameter(*item, index)),
+        TyKind::FnPointer { inputs, output } => {
+            inputs
+                .iter()
+                .any(|input| type_mentions_generic_parameter(*input, index))
+                || type_mentions_generic_parameter(output, index)
+        }
+        TyKind::Closure {
+            captured_generics,
+            inputs,
+            output,
+            ..
+        } => {
+            captured_generics
+                .iter()
+                .any(|argument| argument_mentions_generic_parameter(*argument, index))
+                || inputs
+                    .iter()
+                    .any(|input| type_mentions_generic_parameter(*input, index))
+                || type_mentions_generic_parameter(output, index)
+        }
+        TyKind::Adt(_, arguments)
+        | TyKind::Alias {
+            args: arguments, ..
+        } => arguments
+            .iter()
+            .any(|argument| argument_mentions_generic_parameter(*argument, index)),
+        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|interface| {
+            interface
+                .arguments
+                .iter()
+                .any(|argument| argument_mentions_generic_parameter(*argument, index))
+                || interface
+                    .bindings
+                    .iter()
+                    .any(|binding| type_mentions_generic_parameter(binding.ty, index))
+        }),
+        _ => false,
     }
 }
