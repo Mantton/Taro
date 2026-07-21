@@ -1,0 +1,10 @@
+import std.intrinsic.__intrinsic_black_box
+
+/// Return `value` while making it opaque to compiler optimization.
+///
+/// This is a best-effort benchmarking aid. It must not be used for program
+/// correctness, object lifetime, cryptographic constant-time behavior, or
+/// synchronization; use `std.runtime.keepAlive` for GC reachability instead.
+public func blackBox[T](_ value: T) -> T {
+    return __intrinsic_black_box[T](value)
+}

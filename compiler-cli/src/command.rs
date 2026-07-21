@@ -4,6 +4,7 @@ use compiler::error::ReportedError;
 
 use crate::{Cli, CliCommand};
 
+mod bench;
 mod build;
 mod check;
 mod compile_paths;
@@ -53,6 +54,7 @@ fn signal_exit_code(_status: &ExitStatus) -> Option<i32> {
 
 pub fn handle(arguments: Cli) -> CommandResult {
     match arguments.command {
+        CliCommand::Bench(arguments) => return bench::run(arguments),
         CliCommand::Build(arguments) => {
             build::run(arguments.common, false, arguments.emit, arguments.lto)?;
             ()

@@ -3,7 +3,7 @@ use compiler::compile::config::{
     BuildProfile, CodegenOptions, DebugInfo, LtoMode, ModuleArtifactKind, OptLevel,
     OptimizationMode,
 };
-use std::{path::PathBuf, process::exit};
+use std::{path::PathBuf, process::exit, str::FromStr, time::Duration};
 
 mod command;
 mod package;
@@ -37,6 +37,7 @@ pub enum CliCommand {
     Check(CheckArgs),
     Run(RunArgs),
     Test(TestArgs),
+    Bench(BenchArgs),
     New(NewArgs),
     #[command(hide = true)]
     RuntimeManifest(RuntimeManifestArgs),
@@ -91,6 +92,105 @@ pub struct TestArgs {
 }
 
 #[derive(Args, Clone, Debug)]
+pub struct BenchArgs {
+    #[command(flatten)]
+    pub common: CommonCompileArgs,
+    /// List matching benchmark cases without running them.
+    #[arg(long = "list")]
+    pub list: bool,
+    /// Case-insensitive substring filter against qualified benchmark names.
+    #[arg(long = "filter")]
+    pub filter: Option<String>,
+    /// Case-insensitive benchmark tag filter. Repeat to match any requested tag.
+    #[arg(long = "tag")]
+    pub tag: Vec<String>,
+    /// Warmup and calibration duration before measured samples.
+    #[arg(long = "warmup", default_value = "250ms")]
+    pub warmup: BenchDuration,
+    /// Total target time divided across measured samples.
+    #[arg(long = "time", default_value = "1s")]
+    pub measurement_time: BenchDuration,
+    /// Number of independent measured samples.
+    #[arg(long = "samples", default_value_t = 20)]
+    pub samples: usize,
+    /// Maximum wall time for each isolated benchmark process.
+    #[arg(long = "timeout", default_value = "30s")]
+    pub timeout: BenchDuration,
+    /// Select human-readable or stable machine-readable output.
+    #[arg(long = "format", value_enum, default_value_t = BenchOutputFormat::Human)]
+    pub format: BenchOutputFormat,
+    /// Compile benchmarks with the debug profile instead of release/O2.
+    #[arg(long = "debug", conflicts_with = "release")]
+    pub debug: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum BenchOutputFormat {
+    #[default]
+    Human,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BenchDuration(u64);
+
+impl BenchDuration {
+    pub const fn as_nanos(self) -> u64 {
+        self.0
+    }
+
+    pub const fn as_duration(self) -> Duration {
+        Duration::from_nanos(self.0)
+    }
+}
+
+impl FromStr for BenchDuration {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.trim();
+        let unit_start = value
+            .char_indices()
+            .find_map(|(index, character)| {
+                (!character.is_ascii_digit() && character != '.').then_some(index)
+            })
+            .ok_or_else(|| "duration requires a unit: ns, us, ms, s, or m".to_string())?;
+        let (number, unit) = value.split_at(unit_start);
+        let number: f64 = number
+            .parse()
+            .map_err(|_| format!("invalid duration value {value:?}"))?;
+        if !number.is_finite() || number < 0.0 {
+            return Err(format!(
+                "duration must be a finite non-negative value, got {value:?}"
+            ));
+        }
+        let nanos_per_unit = match unit {
+            "ns" => 1.0,
+            "us" | "µs" | "μs" => 1_000.0,
+            "ms" => 1_000_000.0,
+            "s" => 1_000_000_000.0,
+            "m" => 60_000_000_000.0,
+            _ => {
+                return Err(format!(
+                    "unsupported duration unit {unit:?}; use ns, us, ms, s, or m"
+                ));
+            }
+        };
+        let nanos = number * nanos_per_unit;
+        if nanos > u64::MAX as f64 {
+            return Err(format!("duration {value:?} is too large"));
+        }
+        let rounded = nanos.round();
+        if (nanos - rounded).abs() > 0.000_001 {
+            return Err(format!(
+                "duration {value:?} is more precise than one nanosecond"
+            ));
+        }
+        Ok(Self(rounded as u64))
+    }
+}
+
+#[derive(Args, Clone, Debug)]
 pub struct NewArgs {
     pub package: String,
     #[arg(long = "kind", value_enum, default_value_t = NewProjectKind::Executable)]
@@ -133,7 +233,7 @@ pub struct CommonCompileArgs {
     /// Target SDK/sysroot passed to the linker driver.
     #[arg(long = "sysroot")]
     pub sysroot: Option<PathBuf>,
-    /// Build with release profile (default is debug).
+    /// Build with the release profile (bench defaults to release; other commands default to debug).
     #[arg(long = "release")]
     pub release: bool,
     /// Select the LLVM optimization level independently of the build profile.
@@ -349,6 +449,32 @@ impl TestArgs {
     }
 }
 
+impl BenchArgs {
+    pub fn normalized_filter(&self) -> Option<String> {
+        self.filter
+            .as_ref()
+            .map(|filter| filter.trim())
+            .filter(|filter| !filter.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    pub fn normalized_tags(&self) -> Vec<String> {
+        let mut normalized = Vec::new();
+        for tag in &self.tag {
+            let tag = tag.trim();
+            if tag.is_empty()
+                || normalized
+                    .iter()
+                    .any(|existing: &String| existing.eq_ignore_ascii_case(tag))
+            {
+                continue;
+            }
+            normalized.push(tag.to_owned());
+        }
+        normalized
+    }
+}
+
 fn ci_env_is_strict() -> bool {
     let Ok(value) = std::env::var("CI") else {
         return false;
@@ -376,11 +502,14 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{BuildEmit, Cli, CliCommand, Lto, NewProjectKind};
+    use super::{
+        BenchDuration, BenchOutputFormat, BuildEmit, Cli, CliCommand, Lto, NewProjectKind,
+    };
     use clap::Parser;
     use compiler::compile::config::{
         BuildProfile, DebugInfo, LtoMode, ModuleArtifactKind, OptLevel, OptimizationMode,
     };
+    use std::str::FromStr;
 
     #[test]
     fn build_defaults_to_link_and_parses_llvm_bitcode_output() {
@@ -483,6 +612,53 @@ mod tests {
             }
             other => panic!("expected test command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_benchmark_controls_and_defaults_to_human_output() {
+        let args = Cli::parse_from([
+            "taro",
+            "bench",
+            "std",
+            "--filter",
+            "json.parse",
+            "--tag",
+            "smoke",
+            "--warmup",
+            "1.5s",
+            "--time",
+            "2s",
+            "--samples",
+            "12",
+            "--timeout",
+            "1m",
+        ]);
+        let CliCommand::Bench(bench) = args.command else {
+            panic!("expected bench command");
+        };
+        assert_eq!(bench.normalized_filter().as_deref(), Some("json.parse"));
+        assert_eq!(bench.normalized_tags(), vec!["smoke"]);
+        assert_eq!(bench.warmup.as_nanos(), 1_500_000_000);
+        assert_eq!(bench.measurement_time.as_nanos(), 2_000_000_000);
+        assert_eq!(bench.samples, 12);
+        assert_eq!(bench.timeout.as_nanos(), 60_000_000_000);
+        assert_eq!(bench.format, BenchOutputFormat::Human);
+    }
+
+    #[test]
+    fn benchmark_duration_parser_rejects_missing_unknown_and_subnanosecond_units() {
+        assert!(BenchDuration::from_str("10").is_err());
+        assert!(BenchDuration::from_str("10fortnights").is_err());
+        assert!(BenchDuration::from_str("0.1ns").is_err());
+        assert_eq!(
+            BenchDuration::from_str("250us").unwrap().as_nanos(),
+            250_000
+        );
+    }
+
+    #[test]
+    fn benchmark_debug_and_release_flags_conflict() {
+        assert!(Cli::try_parse_from(["taro", "bench", "std", "--debug", "--release"]).is_err());
     }
 
     #[test]

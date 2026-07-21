@@ -14,6 +14,7 @@ extern "taro_intrinsic" {
     func __intrinsic_size_of[T]() -> usize
     func __intrinsic_align_of[T]() -> usize
     func __intrinsic_maybe_uninit[T]() -> std.mem.MaybeUninit[T]
+    func __intrinsic_black_box[T](_ value: T) -> T
 
     // Checked integer arithmetic. The compiler emits calls to these when
     // overflow checks are enabled; they panic (unwinding, so defers run)

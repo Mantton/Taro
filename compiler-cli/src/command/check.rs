@@ -119,7 +119,7 @@ fn run_single_file(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
             timings: arguments.timings,
             debug_info: compile_options.debug_info,
         },
-        test_mode: false,
+        harness_mode: Default::default(),
         std_mode: StdMode::FullStd,
         is_std_provider: false,
     });
@@ -328,7 +328,7 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
                 timings: arguments.timings,
                 debug_info: compile_options.debug_info,
             },
-            test_mode: false,
+            harness_mode: Default::default(),
             std_mode: if is_std_package {
                 StdMode::BootstrapStd
             } else {

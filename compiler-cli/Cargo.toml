@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
 serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0"
 compiler = { path = "../compiler" }
 fs_extra = "1.3.0"
 git2 = "0.20.0"

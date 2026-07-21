@@ -1,0 +1,10 @@
+// BENCH
+// EXPECT_EXIT: 101
+// EXPECT_STDOUT_CONTAINS: "status": "failed"
+// EXPECT_STDOUT_CONTAINS: "error": "benchmark panicked"
+
+@bench
+func benchmarkPanic(benchmark: &mut std.bench.Benchmark) {
+    let _ = benchmark.next()
+    panic("benchmark panic fixture")
+}

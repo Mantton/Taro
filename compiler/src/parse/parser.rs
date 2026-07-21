@@ -1790,7 +1790,7 @@ impl Parser {
         Ok(self.build_expr(kind, lo.to(self.hi_span())))
     }
 
-    /// Parse a cfg predicate expression: `os("macos") && !arch("arm")`
+    /// Parse a cfg expression: `bench && !os("windows")`.
     fn parse_cfg_expr(&mut self) -> R<CfgExpr> {
         self.parse_cfg_or_expr()
     }
@@ -1858,9 +1858,17 @@ impl Parser {
             return Ok(inner);
         }
 
-        // Parse predicate: `os("macos")` or `arch("x86_64")`
+        // Parse a boolean flag (`bench`) or a valued predicate
+        // (`os("macos")`). Flags are needed by both `@cfg(bench)` and
+        // expression-form `#cfg(bench)`.
         let lo = self.lo_span();
         let name = self.parse_identifier()?;
+        if !self.matches(Token::LParen) {
+            return Ok(CfgExpr::Flag {
+                name,
+                span: lo.to(self.hi_span()),
+            });
+        }
         self.expect(Token::LParen)?;
 
         // Parse string value
@@ -7477,13 +7485,16 @@ mod tests {
     fn test_attribute_with_flag() {
         let (decl, symbols) = parse_one_decl_with_symbols("@cfg(test) func foo() {}");
         assert_eq!(decl.attributes.len(), 1);
-        let args = decl.attributes[0].args.as_ref().expect("Expected args");
-        assert_eq!(args.items.len(), 1);
-        match &args.items[0] {
-            AttributeArg::Flag { key, .. } => {
-                assert_eq!(symbol_text(&symbols, key.symbol.clone()), "test")
+        assert!(decl.attributes[0].args.is_none());
+        match decl.attributes[0]
+            .cfg_expr
+            .as_ref()
+            .expect("Expected cfg expression")
+        {
+            CfgExpr::Flag { name, .. } => {
+                assert_eq!(symbol_text(&symbols, name.symbol.clone()), "test")
             }
-            _ => panic!("Expected flag arg"),
+            _ => panic!("Expected cfg flag expression"),
         }
     }
 

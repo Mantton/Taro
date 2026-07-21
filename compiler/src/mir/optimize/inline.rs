@@ -75,16 +75,33 @@ impl Inline {
                     unwind,
                 } = &terminator.kind
                 {
-                    if !matches!(unwind, CallUnwindAction::Terminate) {
-                        return None;
-                    }
                     let (callee_id, gen_args) = if let Some(hint) = devirt_hint {
                         (hint.impl_def_id, hint.impl_args)
                     } else {
                         extract_callee(func)?
                     };
 
+                    // Cleanup-edge inlining exercises unwind and destination
+                    // remapping that heuristic inlining did not previously use.
+                    // Keep that expanded surface tied to an explicit source
+                    // contract; ordinary small functions retain the established
+                    // terminate-edge heuristic.
+                    if matches!(unwind, CallUnwindAction::Cleanup(_))
+                        && !has_inline_attribute(gcx, callee_id)
+                    {
+                        return None;
+                    }
+
                     if self.should_inline(gcx, callee_id, gen_args) {
+                        let callee = resolve_callee_body(gcx, callee_id)?;
+                        // An unwindful callee must resume into the cleanup edge
+                        // that originally belonged to the call site. A
+                        // terminate-only site has no such continuation.
+                        if body_has_unwind(callee)
+                            && !matches!(unwind, CallUnwindAction::Cleanup(_))
+                        {
+                            return None;
+                        }
                         return Some(CallSite {
                             caller_block: bb_id,
                             callee_id,
@@ -92,6 +109,7 @@ impl Inline {
                             args: args.clone(),
                             destination: destination.clone(),
                             target: *target,
+                            unwind: *unwind,
                             span: terminator.span,
                         });
                     }
@@ -123,6 +141,15 @@ impl Inline {
             return false;
         }
 
+        // The interprocedural package still contains source-form async bodies
+        // while global passes run. Inlining one at a call site would splice the
+        // source body (whose return place is the awaited value) where the
+        // lowered constructor handle is required. Async constructors can become
+        // candidates once MIR lowering is package-phased rather than per-body.
+        if gcx.definition_is_async(callee_id) {
+            return false;
+        }
+
         // Check function signature for ABI restrictions
         let sig = gcx.get_signature(callee_id);
         match sig.abi {
@@ -136,9 +163,6 @@ impl Inline {
         // types that need instantiation. This happens when calling methods on
         // generic types where not all type parameters are available.
         if let Some(callee_body) = resolve_callee_body(gcx, callee_id) {
-            if body_has_unwind(callee_body) {
-                return false;
-            }
             for local in callee_body.locals.iter() {
                 let substituted = instantiate_mono_ty(gcx, local.ty, gen_args);
                 if substituted.needs_instantiation() {
@@ -177,13 +201,22 @@ impl Inline {
     ) {
         let gen_args = site.gen_args;
 
+        let (mapped_return_local, return_target) = prepare_inline_return(
+            gcx,
+            caller,
+            &callee.locals[callee.return_local],
+            &site.destination,
+            gen_args,
+            site.target,
+            site.span,
+        );
+
         // Copy callee's locals (except return place, which maps to destination)
         // Substitute generic types with concrete types from call site
         let mut local_map: Vec<LocalId> = Vec::with_capacity(callee.locals.len());
         for (callee_local_id, local_decl) in callee.locals.iter_enumerated() {
             if callee_local_id == callee.return_local {
-                // Return local maps to the destination's base local
-                local_map.push(site.destination.local);
+                local_map.push(mapped_return_local);
             } else {
                 // Substitute types in the local declaration
                 let substituted_ty = instantiate_mono_ty(gcx, local_decl.ty, gen_args);
@@ -262,9 +295,10 @@ impl Inline {
                     term,
                     &local_map,
                     &block_map,
-                    site.target,
+                    return_target,
                     callee.return_local,
                     gen_args,
+                    site.unwind,
                 );
                 caller.basic_blocks[new_bb_id].terminator = Some(new_term);
             }
@@ -289,6 +323,59 @@ impl Inline {
     }
 }
 
+/// Prepare the place used for an inlined callee's return local.
+///
+/// A call may write through a projection such as `*frame.await_handle`. Mapping
+/// the callee return local to only that place's base local loses the projection
+/// and can overwrite the frame pointer itself. Projected destinations therefore
+/// use a temporary and one continuation assignment that preserves the complete
+/// original destination.
+fn prepare_inline_return<'ctx>(
+    gcx: Gcx<'ctx>,
+    caller: &mut Body<'ctx>,
+    callee_return: &LocalDecl<'ctx>,
+    destination: &Place<'ctx>,
+    gen_args: GenericArguments<'ctx>,
+    target: BasicBlockId,
+    span: crate::span::Span,
+) -> (LocalId, BasicBlockId) {
+    if destination.projection.is_empty() {
+        return (destination.local, target);
+    }
+
+    let return_local = caller.locals.push(LocalDecl {
+        ty: instantiate_mono_ty(gcx, callee_return.ty, gen_args),
+        kind: LocalKind::Temp,
+        mutable: true,
+        name: callee_return.name,
+        span: callee_return.span,
+    });
+    caller.escape_locals.push(false);
+
+    let return_target = caller.basic_blocks.push(BasicBlockData {
+        note: Some("inlined return destination".into()),
+        statements: vec![Statement {
+            kind: StatementKind::Assign(
+                destination.clone(),
+                Rvalue::Use(Operand::move_(Place::from_local(return_local))),
+            ),
+            span,
+        }],
+        terminator: Some(Terminator {
+            kind: TerminatorKind::Goto { target },
+            span,
+        }),
+    });
+
+    (return_local, return_target)
+}
+
+fn has_inline_attribute(gcx: Gcx<'_>, callee_id: DefinitionID) -> bool {
+    gcx.attributes_of(callee_id)
+        .iter()
+        .any(|attr| matches!(attr.as_known(gcx), Some(KnownAttribute::Inline)))
+}
+
 /// Information about a call site that may be inlined.
 struct CallSite<'ctx> {
     caller_block: BasicBlockId,
@@ -298,6 +385,7 @@ struct CallSite<'ctx> {
     args: Vec<Operand<'ctx>>,
     destination: Place<'ctx>,
     target: BasicBlockId,
+    unwind: CallUnwindAction,
     span: crate::span::Span,
 }
 
@@ -391,6 +479,7 @@ fn remap_terminator<'ctx>(
     return_target: BasicBlockId,
     _return_local: LocalId,
     gen_args: GenericArguments<'ctx>,
+    caller_unwind: CallUnwindAction,
 ) -> Terminator<'ctx> {
     let kind = match &term.kind {
         TerminatorKind::Goto { target } => TerminatorKind::Goto {
@@ -416,7 +505,10 @@ fn remap_terminator<'ctx>(
             }
         }
         TerminatorKind::Unreachable => TerminatorKind::Unreachable,
-        TerminatorKind::ResumeUnwind => TerminatorKind::ResumeUnwind,
+        TerminatorKind::ResumeUnwind => match caller_unwind {
+            CallUnwindAction::Cleanup(target) => TerminatorKind::Goto { target },
+            CallUnwindAction::Terminate => TerminatorKind::ResumeUnwind,
+        },
         TerminatorKind::Call {
             func,
             args,
@@ -697,4 +789,83 @@ fn instantiate_mono_ty<'ctx>(
     // parameters in the remapped MIR, so post-monomorphization normalization is
     // too strong here.
     instantiate_ty_with_args(gcx, ty, args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prepare_inline_return, remap_terminator};
+    use crate::mir::{
+        CallUnwindAction, LocalDecl, LocalKind, Operand, Place, PlaceElem, Rvalue, StatementKind,
+        Terminator, TerminatorKind, test_support,
+    };
+    use crate::sema::models::GenericArguments;
+
+    #[test]
+    fn inlined_resume_targets_the_callers_cleanup_edge() {
+        test_support::with_test_gcx(|gcx| {
+            let body = test_support::minimal_body(gcx);
+            let cleanup = body.start_block;
+            let term = Terminator {
+                kind: TerminatorKind::ResumeUnwind,
+                span: body.locals[body.return_local].span,
+            };
+            let remapped = remap_terminator(
+                gcx,
+                &term,
+                &[],
+                &[],
+                body.start_block,
+                body.return_local,
+                GenericArguments::empty(),
+                CallUnwindAction::Cleanup(cleanup),
+            );
+            assert!(matches!(
+                remapped.kind,
+                TerminatorKind::Goto { target } if target == cleanup
+            ));
+        });
+    }
+
+    #[test]
+    fn projected_call_destination_is_preserved_after_inlining() {
+        test_support::with_test_gcx(|gcx| {
+            let mut caller = test_support::minimal_body(gcx);
+            let target = caller.start_block;
+            let base = test_support::push_temp(&mut caller, gcx.types.void);
+            let destination = Place {
+                local: base,
+                projection: vec![PlaceElem::Deref],
+            };
+            let callee_return = LocalDecl {
+                ty: gcx.types.void,
+                kind: LocalKind::Return,
+                mutable: true,
+                name: None,
+                span: caller.locals[caller.return_local].span,
+            };
+
+            let (mapped_return, return_target) = prepare_inline_return(
+                gcx,
+                &mut caller,
+                &callee_return,
+                &destination,
+                GenericArguments::empty(),
+                target,
+                callee_return.span,
+            );
+
+            assert_ne!(mapped_return, destination.local);
+            let block = &caller.basic_blocks[return_target];
+            assert!(matches!(
+                &block.statements[0].kind,
+                StatementKind::Assign(place, Rvalue::Use(Operand::Move(source)))
+                    if place == &destination
+                        && *source == Place::from_local(mapped_return)
+            ));
+            assert!(matches!(
+                block.terminator.as_ref().map(|term| &term.kind),
+                Some(TerminatorKind::Goto { target: actual }) if *actual == target
+            ));
+        });
+    }
 }

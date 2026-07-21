@@ -916,6 +916,15 @@ pub extern "C" fn __rt__test_panic_finish(
     __rt__panic_clear();
 }
 
+/// Report and clear a panic caught by a non-test language harness.
+///
+/// Benchmarking deliberately reuses the same catch boundary as tests so Taro
+/// panics cannot unwind through Rust FFI. Keeping the status constant private
+/// to this module prevents the benchmark driver from duplicating that ABI.
+pub(crate) fn finish_unexpected_harness_panic() {
+    __rt__test_panic_finish(TEST_PANIC_UNEXPECTED, std::ptr::null(), 0);
+}
+
 /// Clears the panic state after a caught panic so the next test can run cleanly.
 ///
 /// Called by `__rt__test_panic_finish` and kept as a small public runtime ABI

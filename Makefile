@@ -19,7 +19,7 @@ DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests benchmark codegen-benchmark
+.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests bench benchmark codegen-benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -53,6 +53,8 @@ help:
 	@echo "  make all-tests JOBS=4"
 	@echo ""
 	@echo "Benchmarks:"
+	@echo "  make bench PACKAGE=path       Run Taro @bench functions"
+	@echo "  make bench PACKAGE=path BENCH_ARGS='--filter parse --time 2s'"
 	@echo "  make benchmark PACKAGE=std"
 	@echo "  make benchmark PACKAGE=std RUNS=10"
 	@echo "  make codegen-benchmark        Compare release baseline and O2 code generation"
@@ -118,6 +120,13 @@ runtime-stress:
 
 all-tests:
 	$(PYTHON) $(TEST_ALL) $(if $(JOBS),--jobs $(JOBS),)
+
+bench: dist
+	@if [ -z "$(PACKAGE)" ]; then \
+		echo "error: PACKAGE is required (example: make bench PACKAGE=path/to/package)"; \
+		exit 1; \
+	fi
+	TARO_HOME=$(DIST_DIR) $(TARO) bench $(PACKAGE) --std-path $(STD_PATH) $(BENCH_ARGS)
 
 benchmark:
 	@if [ -z "$(PACKAGE)" ]; then \

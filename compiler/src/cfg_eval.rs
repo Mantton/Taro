@@ -177,6 +177,11 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
                             return false;
                         }
                     }
+                    "bench" => {
+                        if !target.bench_mode {
+                            return false;
+                        }
+                    }
                     _ => return false,
                 }
             }
@@ -189,6 +194,15 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
 
 fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo, gcx: GlobalContext<'_>) -> bool {
     match expr {
+        ast::CfgExpr::Flag { name, .. } => {
+            let name = gcx.symbol_text(name.symbol);
+            match name.as_str() {
+                "debug" => target.matches_profile("debug"),
+                "test" => target.test_mode,
+                "bench" => target.bench_mode,
+                _ => false,
+            }
+        }
         ast::CfgExpr::Predicate { name, value, .. } => {
             let name_text = gcx.symbol_text(name.symbol);
             let name_str = name_text.as_str();

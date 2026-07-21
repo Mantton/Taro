@@ -1,7 +1,7 @@
 use compiler::{
     compile::{
         config::{
-            BuildProfile, Config, DebugInfo, LtoMode, ModuleArtifactKind, OptLevel,
+            BuildProfile, Config, DebugInfo, HarnessMode, LtoMode, ModuleArtifactKind, OptLevel,
             OptimizationMode, PackageKind, StdMode,
         },
         context::CompilerContext,
@@ -80,7 +80,7 @@ pub fn compute_package_fingerprint_input_with_test_selection(
     hasher.update(&[
         config.overflow_checks as u8,
         config.no_std_prelude as u8,
-        config.test_mode as u8,
+        harness_mode_tag(config.harness_mode),
         config.is_script as u8,
         config.is_std_provider as u8,
         config.debug.dump_mir as u8,
@@ -178,6 +178,14 @@ fn lto_mode_tag(mode: LtoMode) -> u8 {
     }
 }
 
+fn harness_mode_tag(mode: HarnessMode) -> u8 {
+    match mode {
+        HarnessMode::None => 0,
+        HarnessMode::Test => 1,
+        HarnessMode::Bench => 2,
+    }
+}
+
 fn std_mode_tag(mode: StdMode) -> u8 {
     match mode {
         StdMode::BootstrapStd => 0,
@@ -190,7 +198,7 @@ fn hash_test_selection(
     selection: Option<&TestSelection>,
     hasher: &mut blake3::Hasher,
 ) -> Result<(), String> {
-    if !config.test_mode {
+    if !config.harness_mode.is_test() {
         if selection.is_some() {
             return Err("test selection supplied for a non-test compilation".into());
         }
@@ -341,8 +349,8 @@ mod tests {
         PackageIndex,
         compile::{
             config::{
-                BuildProfile, Config, DebugInfo, DebugOptions, LtoMode, ModuleArtifactKind,
-                OptLevel, OptimizationMode, PackageKind, StdMode,
+                BuildProfile, Config, DebugInfo, DebugOptions, HarnessMode, LtoMode,
+                ModuleArtifactKind, OptLevel, OptimizationMode, PackageKind, StdMode,
             },
             context::{CompilerArenas, CompilerContext, CompilerStore},
             test_collector::TestSelection,
@@ -388,7 +396,7 @@ mod tests {
             codegen: Default::default(),
             overflow_checks: true,
             debug: DebugOptions::default(),
-            test_mode: false,
+            harness_mode: HarnessMode::None,
             std_mode: StdMode::BootstrapStd,
             is_std_provider: true,
         }
@@ -540,7 +548,7 @@ mod tests {
     fn normalized_test_selection_changes_test_fingerprint() {
         with_context(|context, source| {
             let mut config = base_config(source);
-            config.test_mode = true;
+            config.harness_mode = HarnessMode::Test;
             let known = FxHashMap::default();
             let alpha = TestSelection::new(Some(" Alpha ".into()), vec!["SMOKE".into()]);
             let alpha_equivalent = TestSelection::new(Some("alpha".into()), vec!["smoke".into()]);
@@ -573,6 +581,24 @@ mod tests {
 
             assert_eq!(alpha, alpha_equivalent);
             assert_ne!(alpha, beta);
+        });
+    }
+
+    #[test]
+    fn benchmark_mode_is_fingerprinted_without_runtime_selection() {
+        with_context(|context, source| {
+            let normal = base_config(source.clone());
+            let mut benchmark = base_config(source);
+            benchmark.harness_mode = HarnessMode::Bench;
+            let known = FxHashMap::default();
+
+            let normal = compute_package_fingerprint_input(context, &normal, &known)
+                .unwrap()
+                .package_fingerprint;
+            let benchmark = compute_package_fingerprint_input(context, &benchmark, &known)
+                .unwrap()
+                .package_fingerprint;
+            assert_ne!(normal, benchmark);
         });
     }
 

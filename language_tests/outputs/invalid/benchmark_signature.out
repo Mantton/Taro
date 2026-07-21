@@ -1,0 +1,6 @@
+error: @bench functions must take exactly one `&mut std.bench.Benchmark` parameter
+ -> language_tests/source_files/invalid/benchmark_signature.tr:3:0
+@bench
+^^^^^^
+func benchmarkWithoutParameter() {}
+                                   ^

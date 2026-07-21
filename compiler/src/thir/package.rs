@@ -30,8 +30,8 @@ pub fn build_package<'ctx>(
     gcx: GlobalContext<'ctx>,
     results: TypeCheckResults<'ctx>,
 ) -> CompileResult<ThirPackage<'ctx>> {
-    // In test mode the harness provides its own entry point; skip main validation.
-    let entry = if gcx.config.test_mode {
+    // Generated test and benchmark harnesses provide their own entry points.
+    let entry = if gcx.config.harness_mode.is_enabled() {
         None
     } else {
         validate_entry_point(&package, gcx)?

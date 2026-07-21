@@ -71,6 +71,8 @@ pub enum KnownAttribute {
     Cfg,
     /// `@test` - marks a function as a test case
     Test,
+    /// `@bench` - marks a function as a benchmark case
+    Bench,
     /// `@tag(...)` - test tag metadata on namespaces and test functions
     Tag,
     /// `@skip` or `@skip("reason")` - skip this test
@@ -90,6 +92,7 @@ impl KnownAttribute {
             "noinline" => Some(KnownAttribute::NoInline),
             "cfg" => Some(KnownAttribute::Cfg),
             "test" => Some(KnownAttribute::Test),
+            "bench" => Some(KnownAttribute::Bench),
             "tag" => Some(KnownAttribute::Tag),
             "skip" => Some(KnownAttribute::Skip),
             "expectPanic" => Some(KnownAttribute::ExpectPanic),
@@ -175,6 +178,14 @@ mod tests {
     #[test]
     fn known_attribute_recognizes_tag() {
         assert_eq!(KnownAttribute::from_name("tag"), Some(KnownAttribute::Tag));
+    }
+
+    #[test]
+    fn known_attribute_recognizes_bench() {
+        assert_eq!(
+            KnownAttribute::from_name("bench"),
+            Some(KnownAttribute::Bench)
+        );
     }
 
     #[test]
@@ -944,6 +955,7 @@ pub enum StdItem {
     ClosedRange,
     MaybeUninit,
     Span,
+    Benchmark,
 
     // Interfaces
     Copy,
@@ -1019,6 +1031,7 @@ impl StdItem {
             StdItem::ClosedRange => Some("ClosedRange"),
             StdItem::MaybeUninit => Some("MaybeUninit"),
             StdItem::Span => Some("Span"),
+            StdItem::Benchmark => Some("Benchmark"),
             StdItem::Copy => Some("Copy"),
             StdItem::Clone => Some("Clone"),
             StdItem::Sendable => Some("Sendable"),
@@ -1086,6 +1099,7 @@ impl StdItem {
             "ClosedRange" => Some(Self::ClosedRange),
             "MaybeUninit" => Some(Self::MaybeUninit),
             "Span" => Some(Self::Span),
+            "Benchmark" => Some(Self::Benchmark),
             "Copy" => Some(Self::Copy),
             "Clone" => Some(Self::Clone),
             "Sendable" => Some(Self::Sendable),
@@ -1144,6 +1158,7 @@ impl StdItem {
             | StdItem::ClosedRange
             | StdItem::MaybeUninit
             | StdItem::Span
+            | StdItem::Benchmark
             | StdItem::Task
             | StdItem::PanicPayload => Some(DefinitionKind::Struct),
             StdItem::Copy
@@ -1219,6 +1234,7 @@ impl StdItem {
                 | StdItem::ClosedRange
                 | StdItem::MaybeUninit
                 | StdItem::Span
+                | StdItem::Benchmark
                 | StdItem::Copy
                 | StdItem::Clone
                 | StdItem::Sendable
@@ -1274,7 +1290,7 @@ impl StdItem {
         )
     }
 
-    pub const ALL_REQUIRED: [StdItem; 61] = [
+    pub const ALL_REQUIRED: [StdItem; 62] = [
         StdItem::Optional,
         StdItem::Result,
         StdItem::List,
@@ -1284,6 +1300,7 @@ impl StdItem {
         StdItem::ClosedRange,
         StdItem::MaybeUninit,
         StdItem::Span,
+        StdItem::Benchmark,
         StdItem::Copy,
         StdItem::Clone,
         StdItem::Sendable,

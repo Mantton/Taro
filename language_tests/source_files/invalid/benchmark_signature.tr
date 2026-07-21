@@ -1,0 +1,4 @@
+// BENCH
+
+@bench
+func benchmarkWithoutParameter() {}

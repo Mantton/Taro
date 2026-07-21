@@ -127,6 +127,7 @@ Use `dist/bin/taro` with `TARO_HOME=$(pwd)/dist` for repo-local development. Use
 | Run a file with arguments | `dist/bin/taro run examples/hello.tr --std-path std -- foo bar` |
 | Run tests in a file | `dist/bin/taro test std/src/tests/testing/testing_tests.tr --std-path std` |
 | Run package tests | `dist/bin/taro test std --std-path std` |
+| Run benchmarks | `dist/bin/taro bench path/to/package --std-path std` |
 | Create a package | `dist/bin/taro new github.com/acme/app` |
 
 Common flags:
@@ -567,6 +568,60 @@ let p = Point {
     y: 20, // explicit comma required here if '}' is on next line
 }
 ```
+
+## Benchmarking
+
+Taro has a first-class benchmark harness. A benchmark is a synchronous,
+non-generic `@bench` function that accepts exactly one mutable `Benchmark`:
+
+```rust
+@bench
+@tag("json", "smoke")
+func parseSmall(benchmark: &mut std.bench.Benchmark) {
+    let input = loadFixtureBeforeTiming()
+    benchmark.setBytes(input.len())
+
+    while benchmark.next() {
+        let value = parse(input)
+        std.hint.blackBox(value)
+    }
+
+    cleanupAfterTiming()
+}
+```
+
+Code before the first `next()` call and after it returns `false` is outside the
+measured region. `std.hint.blackBox(value)` is an explicit, best-effort
+optimization barrier for inputs or results that LLVM could otherwise remove;
+it is not a lifetime, synchronization, security, or constant-time primitive.
+Use `std.runtime.keepAlive` for GC reachability.
+
+```bash
+taro bench my-package
+taro bench my-package --list
+taro bench my-package --filter json.parse --tag smoke
+taro bench my-package --warmup 500ms --time 2s --samples 30
+taro bench my-package --format json
+```
+
+Benchmarks compile as release/O2 by default; use `--debug` only when debugging
+the benchmark itself. The default measurement policy is 250 ms of warmup, one
+second divided over 20 measured samples, and a 30-second timeout per case.
+Each selected case runs in a fresh process to isolate GC and global state and
+to make timeouts enforceable. Name/tag selection and timing controls occur at
+runtime, so changing them reuses the same incremental benchmark artifact.
+
+Human output reports median time/op, nearest-rank p95, MAD, iterations per
+sample, and throughput when `setBytes` is present. `--format json` adds raw
+samples and uses a versioned machine-readable schema; benchmark stdout is
+suppressed in that mode so it cannot corrupt the JSON document. Panics,
+timeouts, malformed harness results, and a benchmark that never calls `next()`
+are failures. Async, parallel, allocation-counting, sub-benchmark, and saved
+baseline APIs are intentionally not part of this first harness.
+
+For repository development, `make bench PACKAGE=path/to/package` builds the
+local distribution and runs the language harness. The existing
+`make benchmark PACKAGE=...` target remains the cold compiler-timing tool.
 
 ## Testing
 

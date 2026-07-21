@@ -13,6 +13,8 @@ pub struct TargetInfo {
     pub profile: String,
     /// True when compiling in test mode (`taro test`)
     pub test_mode: bool,
+    /// True when compiling in benchmark mode (`taro bench`)
+    pub bench_mode: bool,
 }
 
 impl TargetInfo {
@@ -42,6 +44,7 @@ impl TargetInfo {
             family,
             profile: "debug".to_string(),
             test_mode: false,
+            bench_mode: false,
         }
     }
 

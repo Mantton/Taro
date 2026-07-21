@@ -347,7 +347,7 @@ mod tests {
                 timings: false,
                 debug_info: Default::default(),
             },
-            test_mode: false,
+            harness_mode: Default::default(),
             std_mode: StdMode::BootstrapStd,
             is_std_provider: false,
         });

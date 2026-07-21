@@ -2,7 +2,7 @@ use crate::{
     PackageIndex,
     compile::{
         Compiler, IdeAnalysisMode,
-        config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
+        config::{BuildProfile, Config, DebugOptions, HarnessMode, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
     diagnostics::{DiagCtx, DiagnosticRecord},
@@ -62,7 +62,7 @@ pub(crate) fn make_script_config<'a>(
             timings: false,
             debug_info: Default::default(),
         },
-        test_mode: true,
+        harness_mode: HarnessMode::Test,
         std_mode: StdMode::BootstrapStd,
         is_std_provider: false,
     })
@@ -92,7 +92,7 @@ pub(crate) fn make_package_config<'a>(
             timings: false,
             debug_info: Default::default(),
         },
-        test_mode: true,
+        harness_mode: HarnessMode::Test,
         std_mode: StdMode::BootstrapStd,
         is_std_provider: false,
     })

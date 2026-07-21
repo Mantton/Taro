@@ -216,16 +216,26 @@ impl<'a, 'c> Actor<'a, 'c> {
     /// Check if a declaration should be included based on @cfg attributes.
     /// Returns true if all @cfg conditions pass (or if there are no @cfg attrs).
     fn should_include_declaration(&self, attributes: &ast::AttributeList) -> bool {
-        // In normal builds, test declarations are ignored unless test mode is active.
-        if !self.context.config.test_mode {
-            for attr in attributes {
-                let sym = attr.identifier.symbol;
-                if self.context.symbol_eq(sym, "test")
-                    || self.context.symbol_eq(sym, "skip")
-                    || self.context.symbol_eq(sym, "expectPanic")
-                {
-                    return false;
-                }
+        // Harness declarations are compiled only for their matching command.
+        // `@skip` belongs to both harnesses, while expected panics only make
+        // sense for tests.
+        for attr in attributes {
+            let sym = attr.identifier.symbol;
+            if self.context.symbol_eq(sym, "test") && !self.context.config.harness_mode.is_test() {
+                return false;
+            }
+            if self.context.symbol_eq(sym, "bench") && !self.context.config.harness_mode.is_bench()
+            {
+                return false;
+            }
+            if self.context.symbol_eq(sym, "expectPanic")
+                && !self.context.config.harness_mode.is_enabled()
+            {
+                return false;
+            }
+            if self.context.symbol_eq(sym, "skip") && !self.context.config.harness_mode.is_enabled()
+            {
+                return false;
             }
         }
 
@@ -329,6 +339,16 @@ impl<'a, 'c> Actor<'a, 'c> {
                                 return false;
                             }
                         }
+                        "test" => {
+                            if !self.context.config.harness_mode.is_test() {
+                                return false;
+                            }
+                        }
+                        "bench" => {
+                            if !self.context.config.harness_mode.is_bench() {
+                                return false;
+                            }
+                        }
                         _ => {
                             // Unknown flag - treat as not matching
                             return false;
@@ -355,11 +375,22 @@ impl<'a, 'c> Actor<'a, 'c> {
             crate::compile::config::BuildProfile::Debug => "debug".to_string(),
             crate::compile::config::BuildProfile::Release => "release".to_string(),
         };
+        target.test_mode = self.context.config.harness_mode.is_test();
+        target.bench_mode = self.context.config.harness_mode.is_bench();
         self.eval_cfg_expr_inner(expr, &target)
     }
 
     fn eval_cfg_expr_inner(&self, expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
         match expr {
+            ast::CfgExpr::Flag { name, .. } => {
+                let name = self.context.symbol_text(name.symbol);
+                match name.as_str() {
+                    "debug" => target.matches_profile("debug"),
+                    "test" => target.test_mode,
+                    "bench" => target.bench_mode,
+                    _ => false,
+                }
+            }
             ast::CfgExpr::Predicate { name, value, .. } => {
                 let name_text = self.context.symbol_text(name.symbol);
                 let name_str = name_text.as_str();
@@ -3588,7 +3619,7 @@ mod tests {
                 timings: false,
                 debug_info: Default::default(),
             },
-            test_mode: false,
+            harness_mode: Default::default(),
             std_mode: StdMode::BootstrapStd,
             is_std_provider: false,
         });

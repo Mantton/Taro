@@ -2,7 +2,10 @@ use crate::{
     PackageIndex,
     codegen::artifact::ModuleArtifact,
     compile::{
-        config::{BuildProfile, Config, LtoMode, ModuleArtifactKind, OptLevel, OptimizationMode},
+        config::{
+            BuildProfile, Config, HarnessMode, LtoMode, ModuleArtifactKind, OptLevel,
+            OptimizationMode,
+        },
         context::GlobalContext,
     },
     hir::{Abi, DefinitionID, DefinitionKind, KnownAttribute},
@@ -19,7 +22,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 18;
+const META_FORMAT_VERSION: u32 = 19;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -53,7 +56,7 @@ struct MetadataHeader {
     lto: String,
     overflow_checks: bool,
     no_std_prelude: bool,
-    test_mode: bool,
+    harness_mode: HarnessMode,
     package_fingerprint: String,
     dependency_fingerprints: Vec<DependencyFingerprint>,
     artifact_kind: Option<ModuleArtifactKind>,
@@ -288,7 +291,7 @@ pub fn write_package_metadata<'ctx>(
         lto: lto_name(config.codegen.lto).to_string(),
         overflow_checks: config.overflow_checks,
         no_std_prelude: config.no_std_prelude,
-        test_mode: config.test_mode,
+        harness_mode: config.harness_mode,
         package_fingerprint: fp.package_fingerprint.clone(),
         dependency_fingerprints: fp.dependencies.clone(),
         artifact_kind,
@@ -374,7 +377,7 @@ pub fn try_load_package_metadata<'ctx>(
     }
     if header.overflow_checks != config.overflow_checks
         || header.no_std_prelude != config.no_std_prelude
-        || header.test_mode != config.test_mode
+        || header.harness_mode != config.harness_mode
     {
         return MetadataLoadStatus::Miss("metadata compile option mismatch".into());
     }
@@ -963,7 +966,7 @@ fn encode_header(header: &MetadataHeader) -> Vec<u8> {
     write_string(&mut out, &header.lto);
     out.push(header.overflow_checks as u8);
     out.push(header.no_std_prelude as u8);
-    out.push(header.test_mode as u8);
+    out.push(harness_mode_tag(header.harness_mode));
     write_string(&mut out, &header.package_fingerprint);
 
     out.extend_from_slice(&(header.dependency_fingerprints.len() as u32).to_le_bytes());
@@ -996,7 +999,7 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
 
     let overflow_checks = read_bool(&mut cursor)?;
     let no_std_prelude = read_bool(&mut cursor)?;
-    let test_mode = read_bool(&mut cursor)?;
+    let harness_mode = read_harness_mode(&mut cursor)?;
 
     let package_fingerprint = read_string(&mut cursor)?;
 
@@ -1029,7 +1032,7 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
         lto,
         overflow_checks,
         no_std_prelude,
-        test_mode,
+        harness_mode,
         package_fingerprint,
         dependency_fingerprints,
         artifact_kind,
@@ -1094,6 +1097,25 @@ fn read_optional_artifact_kind(input: &mut dyn Read) -> io::Result<Option<Module
     }
 }
 
+fn harness_mode_tag(mode: HarnessMode) -> u8 {
+    match mode {
+        HarnessMode::None => 0,
+        HarnessMode::Test => 1,
+        HarnessMode::Bench => 2,
+    }
+}
+
+fn read_harness_mode(input: &mut dyn Read) -> io::Result<HarnessMode> {
+    match read_u8(input)? {
+        0 => Ok(HarnessMode::None),
+        1 => Ok(HarnessMode::Test),
+        2 => Ok(HarnessMode::Bench),
+        other => Err(io::Error::other(format!(
+            "invalid harness mode tag: {other}",
+        ))),
+    }
+}
+
 fn read_u8(input: &mut dyn Read) -> io::Result<u8> {
     let mut buf = [0u8; 1];
     input.read_exact(&mut buf)?;
@@ -1132,7 +1154,7 @@ mod tests {
             lto: "off".into(),
             overflow_checks: false,
             no_std_prelude: true,
-            test_mode: false,
+            harness_mode: HarnessMode::None,
             package_fingerprint: "pkg-fp".into(),
             dependency_fingerprints: vec![],
             artifact_kind: Some(ModuleArtifactKind::Object),
@@ -1217,6 +1239,7 @@ mod tests {
         assert_eq!(decoded.target_features, header.target_features);
         assert_eq!(decoded.optimization, header.optimization);
         assert_eq!(decoded.lto, header.lto);
+        assert_eq!(decoded.harness_mode, header.harness_mode);
         assert_eq!(decoded.artifact_kind, header.artifact_kind);
         assert_eq!(decoded.artifact_relpath, header.artifact_relpath);
         assert_eq!(decoded_payload, payload);

@@ -108,9 +108,12 @@ pub enum AttributeArg {
 }
 
 /// Configuration predicate expression for `@cfg(...)` and `#cfg(...)`
-/// Supports: `os("macos")`, `arch("x86_64")`, `&&`, `||`, `!`
+/// Supports boolean flags such as `bench`/`test`, valued predicates such as
+/// `os("macos")`, and `&&`, `||`, `!` composition.
 #[derive(Debug, Clone)]
 pub enum CfgExpr {
+    /// Boolean harness/profile predicate such as `test`, `bench`, or `debug`.
+    Flag { name: Identifier, span: Span },
     /// `os("macos")` or `arch("x86_64")`
     Predicate {
         name: Identifier,

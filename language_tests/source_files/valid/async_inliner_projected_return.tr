@@ -1,0 +1,9 @@
+@inline
+func immediateValue() async -> int32 {
+    return 7
+}
+
+func main() async {
+    let value = await immediateValue()
+    std.assert(value == 7, "async calls must use the lowered constructor body")
+}

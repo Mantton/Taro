@@ -48,7 +48,7 @@ pub(crate) fn with_test_gcx<R>(f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
         codegen: Default::default(),
         overflow_checks: true,
         debug: DebugOptions::default(),
-        test_mode: false,
+        harness_mode: Default::default(),
         std_mode: StdMode::BootstrapStd,
         is_std_provider: true,
     });

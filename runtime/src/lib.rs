@@ -1,3 +1,4 @@
+mod benchmark;
 mod cleanup;
 #[cfg(unix)]
 mod env;

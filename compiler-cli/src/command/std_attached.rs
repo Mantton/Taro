@@ -74,7 +74,7 @@ pub fn compile_std<'a>(
             // carries no per-invocation source metadata.
             debug_info: compiler::compile::config::DebugInfo::None,
         },
-        test_mode: false,
+        harness_mode: Default::default(),
         std_mode: StdMode::BootstrapStd,
         is_std_provider: true,
     });

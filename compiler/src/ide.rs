@@ -511,7 +511,7 @@ fn analyze_script_owner<'a>(
             timings: false,
             debug_info: Default::default(),
         },
-        test_mode: false,
+        harness_mode: Default::default(),
         std_mode: StdMode::FullStd,
         is_std_provider: false,
     });
@@ -606,7 +606,7 @@ fn analyze_package_owner<'a>(
                 timings: false,
                 debug_info: Default::default(),
             },
-            test_mode: false,
+            harness_mode: Default::default(),
             std_mode: if is_std_provider {
                 StdMode::BootstrapStd
             } else {
@@ -3522,7 +3522,7 @@ fn compile_std_for_ide<'a>(
             timings: false,
             debug_info: Default::default(),
         },
-        test_mode: false,
+        harness_mode: Default::default(),
         std_mode: StdMode::BootstrapStd,
         is_std_provider: true,
     });
@@ -3707,7 +3707,7 @@ mod tests {
                 timings: false,
                 debug_info: Default::default(),
             },
-            test_mode: false,
+            harness_mode: Default::default(),
             std_mode: StdMode::BootstrapStd,
             is_std_provider: false,
         });
@@ -3754,7 +3754,7 @@ mod tests {
                 timings: false,
                 debug_info: Default::default(),
             },
-            test_mode: false,
+            harness_mode: Default::default(),
             std_mode: StdMode::BootstrapStd,
             is_std_provider: false,
         });
@@ -3861,7 +3861,7 @@ mod tests {
                 timings: false,
                 debug_info: Default::default(),
             },
-            test_mode: false,
+            harness_mode: Default::default(),
             std_mode: if is_std_provider {
                 StdMode::BootstrapStd
             } else {

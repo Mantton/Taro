@@ -15,7 +15,8 @@ use compiler::{
     codegen::artifact::ModuleArtifact,
     compile::{
         Compiler,
-        config::{Config, DebugOptions, ModuleArtifactKind, PackageKind, StdMode},
+        bench_collector::BenchmarkSelection,
+        config::{Config, DebugOptions, HarnessMode, ModuleArtifactKind, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore, GlobalContext},
         test_collector::TestSelection,
     },
@@ -157,7 +158,7 @@ fn run_single_file(
             timings: arguments.timings,
             debug_info: compile_options.debug_info,
         },
-        test_mode: false,
+        harness_mode: HarnessMode::None,
         std_mode: StdMode::FullStd,
         is_std_provider: false,
     });
@@ -423,7 +424,7 @@ fn run_package(
                 timings: arguments.timings,
                 debug_info: compile_options.debug_info,
             },
-            test_mode: false,
+            harness_mode: HarnessMode::None,
             std_mode: if is_std_package {
                 StdMode::BootstrapStd
             } else {
@@ -863,15 +864,81 @@ pub fn run_test_mode(arguments: TestArgs) -> Result<Option<std::path::PathBuf>, 
     let arguments = arguments.common;
 
     if arguments.is_single_file() {
-        run_single_file_test(arguments, &selection)
+        run_single_file_harness(arguments, HarnessBuild::Test(&selection))
     } else {
-        run_package_test(arguments, &selection)
+        run_package_harness(arguments, HarnessBuild::Test(&selection))
     }
 }
 
-fn run_single_file_test(
+/// Compile a benchmark artifact containing every discovered case. Runtime
+/// filtering deliberately happens after compilation so selection and timing
+/// changes do not invalidate incremental package artifacts.
+pub fn run_bench_mode(
     arguments: CommonCompileArgs,
-    selection: &TestSelection,
+) -> Result<Option<std::path::PathBuf>, ReportedError> {
+    let selection = BenchmarkSelection::default();
+    if arguments.is_single_file() {
+        run_single_file_harness(arguments, HarnessBuild::Bench(&selection))
+    } else {
+        run_package_harness(arguments, HarnessBuild::Bench(&selection))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HarnessBuild<'a> {
+    Test(&'a TestSelection),
+    Bench(&'a BenchmarkSelection),
+}
+
+impl HarnessBuild<'_> {
+    const fn mode(self) -> HarnessMode {
+        match self {
+            Self::Test(_) => HarnessMode::Test,
+            Self::Bench(_) => HarnessMode::Bench,
+        }
+    }
+
+    const fn plural_label(self) -> &'static str {
+        match self {
+            Self::Test(_) => "tests",
+            Self::Bench(_) => "benchmarks",
+        }
+    }
+
+    fn fingerprint_input(
+        self,
+        context: &CompilerContext<'_>,
+        config: &Config,
+        package_fingerprints: &FxHashMap<String, String>,
+    ) -> Result<metadata::PackageFingerprintInput, String> {
+        match self {
+            Self::Test(selection) => {
+                incremental::compute_package_fingerprint_input_with_test_selection(
+                    context,
+                    config,
+                    package_fingerprints,
+                    Some(selection),
+                )
+            }
+            Self::Bench(_) => incremental::compute_package_fingerprint_input(
+                context,
+                config,
+                package_fingerprints,
+            ),
+        }
+    }
+
+    fn compile(self, compiler: &mut Compiler<'_>) -> Result<Option<PathBuf>, ReportedError> {
+        match self {
+            Self::Test(selection) => compiler.test(selection),
+            Self::Bench(selection) => compiler.bench(selection),
+        }
+    }
+}
+
+fn run_single_file_harness(
+    arguments: CommonCompileArgs,
+    harness: HarnessBuild<'_>,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
@@ -956,28 +1023,26 @@ fn run_single_file_test(
             timings: arguments.timings,
             debug_info: compile_options.debug_info,
         },
-        test_mode: true,
+        harness_mode: harness.mode(),
         std_mode: StdMode::FullStd,
         is_std_provider: false,
     });
 
     let mut compiler = Compiler::new(&icx, config);
-    let fingerprint_input = incremental::compute_package_fingerprint_input_with_test_selection(
-        &icx,
-        config,
-        &package_fingerprints,
-        Some(selection),
-    )
-    .map_err(|e| {
-        icx.dcx.emit_error(
-            format!(
-                "failed to compute test fingerprint for script '{}': {}",
-                file_stem, e
-            ),
-            None,
-        );
-        ReportedError
-    })?;
+    let fingerprint_input = harness
+        .fingerprint_input(&icx, config, &package_fingerprints)
+        .map_err(|e| {
+            icx.dcx.emit_error(
+                format!(
+                    "failed to compute {} fingerprint for script '{}': {}",
+                    harness.plural_label(),
+                    file_stem,
+                    e
+                ),
+                None,
+            );
+            ReportedError
+        })?;
 
     let reused = if incremental_enabled {
         match metadata::try_load_package_metadata(
@@ -991,13 +1056,19 @@ fn run_single_file_test(
                 ReuseMode::CodegenRoot,
             ) {
                 Ok(()) => {
-                    eprintln!("Reusing tests (metadata+object) – {}", file_stem);
+                    eprintln!(
+                        "Reusing {} (metadata+object) – {}",
+                        harness.plural_label(),
+                        file_stem
+                    );
                     true
                 }
                 Err(e) => {
                     eprintln!(
-                        "Compiling tests – {} (metadata hydrate miss: {})",
-                        file_stem, e
+                        "Compiling {} – {} (metadata hydrate miss: {})",
+                        harness.plural_label(),
+                        file_stem,
+                        e
                     );
                     false
                 }
@@ -1005,41 +1076,45 @@ fn run_single_file_test(
             MetadataLoadStatus::Miss(reason) => {
                 if compiler.context.config.debug.timings {
                     eprintln!(
-                        "Compiling tests – {} (metadata miss: {})",
-                        file_stem, reason
+                        "Compiling {} – {} (metadata miss: {})",
+                        harness.plural_label(),
+                        file_stem,
+                        reason
                     );
                 } else {
-                    eprintln!("Compiling tests – {}", file_stem);
+                    eprintln!("Compiling {} – {}", harness.plural_label(), file_stem);
                 }
                 false
             }
         }
     } else {
-        eprintln!("Compiling tests – {}", file_stem);
+        eprintln!("Compiling {} – {}", harness.plural_label(), file_stem);
         false
     };
 
     if reused {
         codegen::link::link_executable(compiler.context)
     } else {
-        let exe = compiler.test(selection)?;
+        let exe = harness.compile(&mut compiler)?;
         if let Err(e) = metadata::write_package_metadata(
             compiler.context,
             &fingerprint_input,
             ReuseMode::CodegenRoot,
         ) {
             eprintln!(
-                "warning: failed to write test metadata for '{}': {}",
-                file_stem, e
+                "warning: failed to write {} metadata for '{}': {}",
+                harness.plural_label(),
+                file_stem,
+                e
             );
         }
         Ok(exe)
     }
 }
 
-fn run_package_test(
+fn run_package_harness(
     arguments: CommonCompileArgs,
-    selection: &TestSelection,
+    harness: HarnessBuild<'_>,
 ) -> Result<Option<std::path::PathBuf>, ReportedError> {
     let compile_options = arguments.compile_mode_options();
     let profile_dir = profile_dir_name(compile_options.profile);
@@ -1166,8 +1241,12 @@ fn run_package_test(
                 ReportedError
             })?;
 
-        // Root package gets test mode; dependencies are compiled normally
-        let test_mode = is_root;
+        // Only the root emits the test harness; dependencies compile normally.
+        let harness_mode = if is_root {
+            harness.mode()
+        } else {
+            HarnessMode::None
+        };
         let kind = if is_root {
             PackageKind::Executable
         } else {
@@ -1195,7 +1274,7 @@ fn run_package_test(
                 timings: arguments.timings,
                 debug_info: compile_options.debug_info,
             },
-            test_mode,
+            harness_mode,
             std_mode: if is_std_package {
                 StdMode::BootstrapStd
             } else {
@@ -1205,12 +1284,7 @@ fn run_package_test(
         });
 
         let fingerprint_input = if is_root {
-            incremental::compute_package_fingerprint_input_with_test_selection(
-                &icx,
-                config,
-                &package_fingerprints,
-                Some(selection),
-            )
+            harness.fingerprint_input(&icx, config, &package_fingerprints)
         } else {
             incremental::compute_package_fingerprint_input(&icx, config, &package_fingerprints)
         }
@@ -1242,7 +1316,8 @@ fn run_package_test(
                         Ok(()) => {
                             if is_root {
                                 eprintln!(
-                                    "Reusing tests (metadata+object) – {}",
+                                    "Reusing {} (metadata+object) – {}",
+                                    harness.plural_label(),
                                     package.package.0
                                 );
                             } else if compiler.context.config.debug.timings {
@@ -1253,8 +1328,10 @@ fn run_package_test(
                         Err(e) => {
                             if is_root {
                                 eprintln!(
-                                    "Compiling tests – {} (metadata hydrate miss: {})",
-                                    package.package.0, e
+                                    "Compiling {} – {} (metadata hydrate miss: {})",
+                                    harness.plural_label(),
+                                    package.package.0,
+                                    e
                                 );
                             } else {
                                 eprintln!(
@@ -1270,11 +1347,17 @@ fn run_package_test(
                     if is_root {
                         if compiler.context.config.debug.timings {
                             eprintln!(
-                                "Compiling tests – {} (metadata miss: {})",
-                                package.package.0, reason
+                                "Compiling {} – {} (metadata miss: {})",
+                                harness.plural_label(),
+                                package.package.0,
+                                reason
                             );
                         } else {
-                            eprintln!("Compiling tests – {}", package.package.0);
+                            eprintln!(
+                                "Compiling {} – {}",
+                                harness.plural_label(),
+                                package.package.0
+                            );
                         }
                     } else if compiler.context.config.debug.timings {
                         eprintln!(
@@ -1289,7 +1372,11 @@ fn run_package_test(
             }
         } else {
             if is_root {
-                eprintln!("Compiling tests – {}", package.package.0);
+                eprintln!(
+                    "Compiling {} – {}",
+                    harness.plural_label(),
+                    package.package.0
+                );
             } else {
                 eprintln!("Compiling – {}", package.package.0);
             }
@@ -1304,7 +1391,7 @@ fn run_package_test(
             }
         } else {
             let exe_path = if is_root {
-                compiler.test(selection)?
+                harness.compile(&mut compiler)?
             } else {
                 compiler.build()?
             };

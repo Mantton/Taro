@@ -97,6 +97,8 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // TARGET: <triple>          — cross-compile for the given target triple
       // CHECK_ONLY                — compile with `taro check` (no run, no output compare)
       // TEST                      — run with `taro test` instead of `taro run`; passes if exit 0
+      // BENCH                     — run a short `taro bench`; passes if exit 0
+      // BENCH_RELEASE             — run the short benchmark in its default release/O2 profile
       // ARGS: <values...>         — forward runtime args to `taro run` after `--`
       // ENV: KEY=value …          — set environment variables for compile/run
       // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
@@ -110,6 +112,8 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "target": None,
         "check_only": False,
         "run_as_test": False,
+        "run_as_bench": False,
+        "bench_release": False,
         "args": [],
         "env": {},
         "expect_exit": None,
@@ -132,6 +136,11 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     result["check_only"] = True
                 elif line.startswith("// TEST"):
                     result["run_as_test"] = True
+                elif line.startswith("// BENCH_RELEASE"):
+                    result["run_as_bench"] = True
+                    result["bench_release"] = True
+                elif line.startswith("// BENCH"):
+                    result["run_as_bench"] = True
                 elif line.startswith("// ARGS:"):
                     values = line[len("// ARGS:") :].strip()
                     result["args"] = shlex.split(values)
@@ -208,6 +217,8 @@ def run_test(
         target_triple = directives["target"]
         is_check_only = directives["check_only"]
         is_run_as_test = directives["run_as_test"]
+        is_run_as_bench = directives["run_as_bench"]
+        is_bench_release = directives["bench_release"]
         program_args = directives["args"]
         environment = directives["env"]
         expected_exit = directives["expect_exit"]
@@ -234,11 +245,14 @@ def run_test(
         # Choose sub-command:
         #   "check"  — CHECK_ONLY: type-check only, no binary produced
         #   "test"   — TEST: compile & run as a test binary (exit 0 = all pass)
+        #   "bench"  — BENCH: compile & run a bounded benchmark smoke test
         #   "run"    — default: compile & run normally
         if is_check_only:
             command = "check"
         elif is_run_as_test:
             command = "test"
+        elif is_run_as_bench:
+            command = "bench"
         else:
             command = "run"
 
@@ -260,8 +274,30 @@ def run_test(
 
         if codegen_profile == "release":
             cmd.append("--release")
+        elif is_run_as_bench and not is_bench_release:
+            # `taro bench` defaults to release/O2; preserve the language-test
+            # matrix's requested debug profile when it asks for one.
+            cmd.append("--debug")
         if opt_level is not None:
             cmd.append(f"-O{opt_level}")
+
+        if is_run_as_bench:
+            # Keep the regression in the normal language suite without adding
+            # the production benchmark defaults to every test run.
+            cmd.extend(
+                [
+                    "--warmup",
+                    "0ms",
+                    "--time",
+                    "1ms",
+                    "--samples",
+                    "2",
+                    "--timeout",
+                    "10s",
+                    "--format",
+                    "json",
+                ]
+            )
 
         if program_args:
             if command != "run":
@@ -366,7 +402,7 @@ def run_test(
                     )
             # CHECK_ONLY and TEST files have no output snapshot to compare —
             # a clean exit code is the entire success criterion.
-            if is_check_only or is_run_as_test:
+            if is_check_only or is_run_as_test or is_run_as_bench:
                 return True, "Passed", None
             # Only capture stdout for normal run output comparison
             actual_output = result.stdout

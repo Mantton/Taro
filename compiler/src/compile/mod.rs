@@ -11,9 +11,11 @@ use crate::{
 use rustc_hash::FxHashSet;
 use std::time::{Duration, Instant};
 
+pub mod bench_collector;
 pub mod config;
 pub mod context;
 pub mod entry;
+pub mod harness;
 pub mod test_collector;
 
 pub struct Compiler<'state> {
@@ -272,6 +274,82 @@ impl<'state> Compiler<'state> {
         result
     }
 
+    /// Build in benchmark mode: discover validated `@bench` functions and
+    /// replace the normal entry point with the generated benchmark harness.
+    pub fn bench(
+        &mut self,
+        selection: &bench_collector::BenchmarkSelection,
+    ) -> CompileResult<Option<std::path::PathBuf>> {
+        let total_started_at = Instant::now();
+        let package_name = self.context.config.name.to_string();
+        let mut timings = TimingReport::default();
+
+        let result = (|| -> CompileResult<Option<std::path::PathBuf>> {
+            let (package, results) = self.analyze_with_timings(&mut timings)?;
+
+            let phase_started_at = Instant::now();
+            let discovered = bench_collector::collect_benchmarks(&package, self.context)?;
+            let benchmarks = bench_collector::filter_benchmarks(discovered, selection);
+            timings.push_elapsed("bench.collect", phase_started_at);
+
+            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
+            let phase_started_at = Instant::now();
+            let package = mir::package::build_package(thir, self.context)?;
+            timings.push_elapsed("mir.build", phase_started_at);
+
+            let phase_started_at = Instant::now();
+            specialize::collect::collect_instances(package, self.context);
+            timings.push_elapsed("specialize.collect_instances", phase_started_at);
+
+            let compiled_before_codegen = self.context.store.compiled_instances.borrow().clone();
+            let phase_started_at = Instant::now();
+            let (_, codegen_timings) =
+                codegen::llvm::emit_bench_package_with_timings(package, self.context, &benchmarks)?;
+            timings.push_elapsed("codegen.llvm_bench", phase_started_at);
+            timings.push_duration("codegen.llvm_bench.setup", codegen_timings.module_setup);
+            timings.push_duration(
+                "codegen.llvm_bench.declare_instances",
+                codegen_timings.declare_instances,
+            );
+            timings.push_duration(
+                "codegen.llvm_bench.lower_instances",
+                codegen_timings.lower_instances,
+            );
+            timings.push_duration(
+                "codegen.llvm_bench.emit_harness",
+                codegen_timings.emit_entry_or_harness,
+            );
+            timings.push_duration("codegen.llvm_bench.verify", codegen_timings.verify);
+            timings.push_duration(
+                "codegen.llvm_bench.optimize_ir",
+                codegen_timings.optimize_ir,
+            );
+            timings.push_duration(
+                "codegen.llvm_bench.emit_artifact",
+                codegen_timings.emit_artifact,
+            );
+
+            let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
+            let emitted_instances = compiled_after_codegen
+                .difference(&compiled_before_codegen)
+                .cloned()
+                .collect();
+            self.context
+                .cache_emitted_instances(self.context.package_index(), emitted_instances);
+            self.context.dcx().ok()?;
+
+            let phase_started_at = Instant::now();
+            let executable = codegen::link::link_executable(self.context)?;
+            timings.push_elapsed("link.executable", phase_started_at);
+            Ok(executable)
+        })();
+
+        if self.context.config.debug.timings {
+            timings.emit(&package_name, "bench", total_started_at.elapsed());
+        }
+        result
+    }
+
     pub fn check(&mut self) -> CompileResult<hir::Package> {
         let total_started_at = Instant::now();
         let package_name = self.context.config.name.to_string();
@@ -413,7 +491,7 @@ impl<'state> Compiler<'state> {
         sema::validate::validate_post_typecheck(&package, self.context, &results)?;
         timings.push_elapsed("sema.validate_post", phase_started_at);
 
-        if !self.context.config.test_mode {
+        if !self.context.config.harness_mode.is_enabled() {
             let phase_started_at = Instant::now();
             let _ = entry::validate_entry_point(&package, self.context)?;
             timings.push_elapsed("entry.validate", phase_started_at);
@@ -442,7 +520,7 @@ impl<'state> Compiler<'state> {
             let _ = sema::validate::validate_post_typecheck(&package, self.context, results);
             timings.push_elapsed("sema.validate_post", phase_started_at);
 
-            if !self.context.config.test_mode {
+            if !self.context.config.harness_mode.is_enabled() {
                 let phase_started_at = Instant::now();
                 let _ = entry::validate_entry_point(&package, self.context);
                 timings.push_elapsed("entry.validate", phase_started_at);
@@ -518,7 +596,8 @@ impl<'state> Compiler<'state> {
             crate::compile::config::BuildProfile::Debug => "debug".to_string(),
             crate::compile::config::BuildProfile::Release => "release".to_string(),
         };
-        target.test_mode = self.context.config.test_mode;
+        target.test_mode = self.context.config.harness_mode.is_test();
+        target.bench_mode = self.context.config.harness_mode.is_bench();
 
         let phase_started_at = Instant::now();
         let mut package = parse::parser::parse_package(package, &self.context.dcx)?;

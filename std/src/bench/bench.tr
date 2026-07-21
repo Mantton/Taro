@@ -1,0 +1,37 @@
+extern "taro_rt" {
+    func __rt__bench_next_batch() -> usize
+    func __rt__bench_set_bytes(_ bytes: usize)
+}
+
+/// Measurement control passed to an `@bench` function by `taro bench`.
+///
+/// Code before the first `next` call and after it returns false is outside the
+/// measured region. Values cannot be constructed by user code because the
+/// runtime must install matching process-local measurement state first.
+@lang("Benchmark")
+public struct Benchmark {
+    remaining: usize
+}
+
+impl Benchmark {
+    /// Return true while the benchmark body should execute another iteration.
+    /// The inline fast path is only a decrement; timing and calibration cross
+    /// into the runtime once per batch rather than once per operation.
+    @inline
+    public func next(&mut self) -> bool {
+        if self.remaining == 0 {
+            self.remaining = __rt__bench_next_batch()
+            if self.remaining == 0 {
+                return false
+            }
+        }
+        self.remaining -= 1
+        return true
+    }
+
+    /// Declare the number of input bytes processed by one measured iteration.
+    /// The harness uses this to report throughput alongside time per operation.
+    public func setBytes(&mut self, _ bytes: usize) {
+        __rt__bench_set_bytes(bytes)
+    }
+}

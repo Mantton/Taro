@@ -128,6 +128,33 @@ pub struct DebugOptions {
     pub debug_info: DebugInfo,
 }
 
+/// Selects whether compilation emits a generated execution harness instead of
+/// validating and lowering the package's ordinary entry point.
+///
+/// Keeping this as one enum avoids configurations that accidentally enable
+/// test and benchmark behavior at the same time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HarnessMode {
+    #[default]
+    None,
+    Test,
+    Bench,
+}
+
+impl HarnessMode {
+    pub const fn is_test(self) -> bool {
+        matches!(self, Self::Test)
+    }
+
+    pub const fn is_bench(self) -> bool {
+        matches!(self, Self::Bench)
+    }
+
+    pub const fn is_enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub name: EcoString,
@@ -145,8 +172,8 @@ pub struct Config {
     pub overflow_checks: bool,
     /// Debug options for dumps
     pub debug: DebugOptions,
-    /// True when building in test mode (`taro test`)
-    pub test_mode: bool,
+    /// Generated harness selected for this compilation.
+    pub harness_mode: HarnessMode,
     /// Controls std *availability semantics* during compilation:
     /// - `BootstrapStd`: compile may proceed without an externally-registered std provider.
     /// - `FullStd`: compile expects a std provider to be available for std lookups.

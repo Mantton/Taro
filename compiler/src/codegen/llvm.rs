@@ -422,6 +422,80 @@ pub fn emit_test_package_with_timings<'gcx>(
     Ok((artifact, timings))
 }
 
+/// Lower MIR for a package and generate a benchmark harness instead of a
+/// normal entry shim.
+pub fn emit_bench_package_with_timings<'gcx>(
+    package: &'gcx mir::MirPackage<'gcx>,
+    gcx: GlobalContext<'gcx>,
+    benchmarks: &[crate::compile::bench_collector::BenchmarkCase],
+) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
+    let mut timings = CodegenPhaseTimings::default();
+
+    let phase_started_at = Instant::now();
+    let context = Context::create();
+    let module = context.create_module(&gcx.config.identifier);
+    let builder = context.create_builder();
+
+    let target_layout = &gcx.store.target_layout;
+    module.set_data_layout(&target_layout.data_layout());
+    module.set_triple(&target_layout.triple());
+    timings.module_setup = phase_started_at.elapsed();
+
+    let mut emitter = Emitter::new(&context, module, builder, gcx)?;
+    let phase_started_at = Instant::now();
+    emitter.declare_instances();
+    timings.declare_instances = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
+    emitter.lower_instances(package)?;
+    timings.lower_instances = phase_started_at.elapsed();
+
+    emitter.emit_static_root_registration_ctor();
+
+    let phase_started_at = Instant::now();
+    emitter.emit_bench_harness(benchmarks);
+    timings.emit_entry_or_harness = phase_started_at.elapsed();
+
+    emitter.finalize_debug_info();
+
+    let phase_started_at = Instant::now();
+    if let Err(error) = emitter.module.verify() {
+        gcx.dcx()
+            .emit_error(format!("invalid LLVM module: {}", error.to_string()), None);
+        return Err(crate::error::ReportedError);
+    }
+    timings.verify = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
+    emitter.run_optimization_passes()?;
+    timings.optimize_ir = phase_started_at.elapsed();
+
+    let phase_started_at = Instant::now();
+    if let Err(error) = emitter.module.verify() {
+        gcx.dcx().emit_error(
+            format!(
+                "LLVM passes produced an invalid module: {}",
+                error.to_string()
+            ),
+            None,
+        );
+        return Err(crate::error::ReportedError);
+    }
+    timings.verify += phase_started_at.elapsed();
+
+    if gcx.config.debug.dump_llvm {
+        eprintln!("\n=== LLVM IR for {} ===", gcx.config.name);
+        eprintln!("{}", emitter.module.print_to_string().to_string());
+        eprintln!("=== End LLVM Dump ===\n");
+    }
+
+    let phase_started_at = Instant::now();
+    let artifact = emitter.emit_module_artifact()?;
+    timings.emit_artifact = phase_started_at.elapsed();
+    gcx.cache_module_artifact(artifact.clone());
+    Ok((artifact, timings))
+}
+
 struct Emitter<'llvm, 'gcx> {
     context: &'llvm Context,
     module: Module<'llvm>,
@@ -1943,6 +2017,231 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .map(|v| v.into_int_value())
             .unwrap_or_else(|| i32_ty.const_int(0, false));
         mb.build_return(Some(&ret)).unwrap();
+    }
+
+    /// Emit the small static side of the benchmark harness.
+    ///
+    /// Timing and sampling intentionally stay in the runtime. Codegen's only
+    /// responsibilities are preserving canonical case metadata, adapting the
+    /// typed `&mut Benchmark` function to a `void()` callback, and forwarding
+    /// every case to the runtime driver. This keeps backend details out of the
+    /// statistical contract exposed by `taro bench`.
+    fn emit_bench_harness(
+        &mut self,
+        benchmarks: &[crate::compile::bench_collector::BenchmarkCase],
+    ) {
+        let i32_ty = self.context.i32_type();
+        let i8_ty = self.context.i8_type();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let run_case_fn = self.declare_bench_run_case_fn();
+        let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
+        let abort_rootless_fn = self.declare_executor_abort_rootless_fn();
+
+        let start_ty = i32_ty.fn_type(&[], false);
+        let start_fn = self.module.add_function("taro_start", start_ty, None);
+        let builder = self.context.create_builder();
+        let entry = self.context.append_basic_block(start_fn, "entry");
+        builder.position_at_end(entry);
+
+        let failures = builder.build_alloca(i32_ty, "bench_failures").unwrap();
+        builder.build_store(failures, i32_ty.const_zero()).unwrap();
+
+        for (index, benchmark) in benchmarks.iter().enumerate() {
+            let instance = Instance::item(benchmark.id, GenericArguments::empty());
+            let Some(&function) = self.functions.get(&instance) else {
+                continue;
+            };
+            let function_abi = self
+                .fn_abis
+                .get(&instance)
+                .expect("declared benchmark function must have a computed ABI");
+            let wrapper =
+                self.emit_bench_wrapper(function, function_abi, finish_rootless_fn, index);
+
+            let name =
+                self.build_global_cstring(&benchmark.display_name, &format!("bench_name_{index}"));
+            let encoded_tags = benchmark.tags.join("\0");
+            let tags = self.build_global_cstring(&encoded_tags, &format!("bench_tags_{index}"));
+            let reason_text = benchmark.skip_reason.as_deref().unwrap_or("");
+            let reason = self.build_global_cstring(reason_text, &format!("bench_reason_{index}"));
+
+            let failed = builder
+                .build_call(
+                    run_case_fn,
+                    &[
+                        wrapper.into(),
+                        name.into(),
+                        self.usize_ty
+                            .const_int(benchmark.display_name.len() as u64, false)
+                            .into(),
+                        tags.into(),
+                        self.usize_ty
+                            .const_int(encoded_tags.len() as u64, false)
+                            .into(),
+                        self.context
+                            .bool_type()
+                            .const_int(u64::from(benchmark.skipped), false)
+                            .into(),
+                        reason.into(),
+                        self.usize_ty
+                            .const_int(reason_text.len() as u64, false)
+                            .into(),
+                    ],
+                    "bench_case_status",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .expect("benchmark runtime returns a status")
+                .into_int_value();
+            builder
+                .build_call(abort_rootless_fn, &[], "bench_executor_abort")
+                .unwrap();
+            let current = builder
+                .build_load(i32_ty, failures, "bench_failure_count")
+                .unwrap()
+                .into_int_value();
+            let failed = builder
+                .build_int_z_extend(failed, i32_ty, "bench_failed_i32")
+                .unwrap();
+            let updated = builder
+                .build_int_add(current, failed, "bench_failure_count_next")
+                .unwrap();
+            builder.build_store(failures, updated).unwrap();
+        }
+
+        let failures = builder
+            .build_load(i32_ty, failures, "bench_failures_final")
+            .unwrap()
+            .into_int_value();
+        let has_failures = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                failures,
+                i32_ty.const_zero(),
+                "bench_has_failures",
+            )
+            .unwrap();
+        let exit_code = builder
+            .build_select(
+                has_failures,
+                i32_ty.const_int(101, false),
+                i32_ty.const_zero(),
+                "bench_exit_code",
+            )
+            .unwrap()
+            .into_int_value();
+        builder.build_return(Some(&exit_code)).unwrap();
+
+        // Keep argv available to setup/cleanup code in benchmark functions,
+        // matching normal programs and the test harness.
+        let main_ty = i32_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false);
+        let main_fn = self.module.add_function("main", main_ty, None);
+        let main_entry = self.context.append_basic_block(main_fn, "entry");
+        let main_builder = self.context.create_builder();
+        main_builder.position_at_end(main_entry);
+        let argc = main_fn
+            .get_nth_param(0)
+            .expect("main argc parameter missing")
+            .into_int_value();
+        let argv = main_fn
+            .get_nth_param(1)
+            .expect("main argv parameter missing")
+            .into_pointer_value();
+        self.get_or_create_env_argc_global();
+        self.get_or_create_env_argv_global();
+        self.store_process_args_from_main(&main_builder, argc, argv);
+        let status = main_builder
+            .build_call(start_fn, &[], "bench_status")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .expect("benchmark start returns a status")
+            .into_int_value();
+        main_builder.build_return(Some(&status)).unwrap();
+
+        // Keep this assertion close to the declaration: the runtime status is
+        // deliberately byte-sized so it has a stable C ABI on every target.
+        debug_assert_eq!(run_case_fn.get_type().get_return_type(), Some(i8_ty.into()));
+    }
+
+    fn declare_bench_run_case_fn(&self) -> FunctionValue<'llvm> {
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let function_type = self.context.i8_type().fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                self.usize_ty.into(),
+                ptr_ty.into(),
+                self.usize_ty.into(),
+                self.context.bool_type().into(),
+                ptr_ty.into(),
+                self.usize_ty.into(),
+            ],
+            false,
+        );
+        self.module
+            .get_function("__rt__bench_run_case")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "__rt__bench_run_case",
+                    function_type,
+                    Some(Linkage::External),
+                )
+            })
+    }
+
+    fn emit_bench_wrapper(
+        &self,
+        benchmark_fn: FunctionValue<'llvm>,
+        benchmark_abi: &abi::FnAbi<'gcx>,
+        finish_rootless_fn: FunctionValue<'llvm>,
+        index: usize,
+    ) -> PointerValue<'llvm> {
+        assert!(
+            matches!(benchmark_abi.ret.mode, abi::PassMode::Ignore),
+            "@bench functions must return void"
+        );
+        assert!(
+            matches!(benchmark_abi.args.as_slice(), [arg] if matches!(arg.mode, abi::PassMode::Direct)),
+            "@bench functions must take one direct &mut Benchmark argument"
+        );
+
+        let wrapper_type = self.context.void_type().fn_type(&[], false);
+        let wrapper = self.module.add_function(
+            &format!("__taro_bench_wrapper_{index}"),
+            wrapper_type,
+            Some(Linkage::Private),
+        );
+        let builder = self.context.create_builder();
+        let entry = self.context.append_basic_block(wrapper, "entry");
+        builder.position_at_end(entry);
+
+        let TyKind::Reference(benchmark_ty, hir::Mutability::Mutable) =
+            benchmark_abi.args[0].ty.kind()
+        else {
+            panic!("validated @bench argument must be a mutable reference");
+        };
+        let benchmark_ty = self
+            .lower_ty(benchmark_ty)
+            .expect("Benchmark language item must have a runtime representation");
+        // Derive storage from the canonical std type itself. This lets std
+        // evolve private fast-path fields without duplicating their layout in
+        // either codegen or the Rust runtime.
+        let argument = builder
+            .build_alloca(benchmark_ty, "benchmark_argument")
+            .unwrap();
+        builder
+            .build_store(argument, benchmark_ty.const_zero())
+            .unwrap();
+        builder
+            .build_call(benchmark_fn, &[argument.as_basic_value_enum().into()], "")
+            .unwrap();
+        builder
+            .build_call(finish_rootless_fn, &[], "finish_rootless")
+            .unwrap();
+        builder.build_return(None).unwrap();
+        wrapper.as_global_value().as_pointer_value()
     }
 
     fn build_global_ptr_array(
@@ -5073,6 +5372,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             return Ok(true);
         }
         match name {
+            "__intrinsic_black_box" => {
+                self.lower_intrinsic_black_box(body, locals, args, destination)?;
+                Ok(true)
+            }
             "__intrinsic_array_read_unchecked" => {
                 self.lower_intrinsic_array_read(body, locals, args, destination)?;
                 Ok(true)
@@ -5380,6 +5683,63 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 Ok(true)
             }
         }
+    }
+
+    /// Materialize an arbitrary value across an opaque runtime call, then
+    /// reload it. The runtime preserves the bytes, but LLVM cannot prove that
+    /// through the separately compiled ABI boundary, which gives benchmark
+    /// authors the identity-style optimization barrier they expect.
+    fn lower_intrinsic_black_box(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        args: &[Operand<'gcx>],
+        destination: &Place<'gcx>,
+    ) -> CompileResult<()> {
+        assert_eq!(
+            args.len(),
+            1,
+            "__intrinsic_black_box requires exactly one argument"
+        );
+        let argument = &args[0];
+        let Some(llvm_ty) = self.lower_ty(self.operand_ty(body, argument)) else {
+            // Zero-sized values have no runtime representation to obscure.
+            return Ok(());
+        };
+        let Some(value) = self.eval_operand(body, locals, argument)? else {
+            return Ok(());
+        };
+
+        let temporary = self.build_entry_alloca(llvm_ty, "black_box_value");
+        self.builder.build_store(temporary, value).unwrap();
+        let pointer_ty = self.context.ptr_type(AddressSpace::default());
+        let function_ty = self
+            .context
+            .void_type()
+            .fn_type(&[pointer_ty.into(), self.usize_ty.into()], false);
+        let black_box = self
+            .module
+            .get_function("__rt__black_box")
+            .unwrap_or_else(|| {
+                self.module
+                    .add_function("__rt__black_box", function_ty, Some(Linkage::External))
+            });
+        let size = self.target_data.get_store_size(&llvm_ty);
+        self.builder
+            .build_call(
+                black_box,
+                &[
+                    temporary.into(),
+                    self.usize_ty.const_int(size, false).into(),
+                ],
+                "",
+            )
+            .unwrap();
+        let result = self
+            .builder
+            .build_load(llvm_ty, temporary, "black_box_result")
+            .unwrap();
+        self.store_place(destination, body, locals, result)
     }
 
     fn try_lower_typed_math_intrinsic(

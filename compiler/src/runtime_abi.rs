@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 8;
+pub const RUNTIME_ABI_REVISION: u32 = 9;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -323,6 +323,13 @@ impl RuntimeSymbolAvailability {
 /// ABI entries referenced directly by codegen or declared by the standard
 /// library rather than synthesized through `RuntimeAbiFunction`.
 pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
+    additional("__rt__bench_next_batch", "()->usize"),
+    additional(
+        "__rt__bench_run_case",
+        "(fn()->void,*const u8,usize,*const u8,usize,bool,*const u8,usize)->u8",
+    ),
+    additional("__rt__bench_set_bytes", "(usize)->void"),
+    additional("__rt__black_box", "(*mut u8,usize)->void"),
     additional("__gc__alloc", "(usize,*const gc_desc)->*mut u8"),
     additional("__gc__collect", "()->void"),
     additional(

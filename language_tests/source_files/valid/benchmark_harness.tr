@@ -1,0 +1,32 @@
+// BENCH_RELEASE
+// EXPECT_STDOUT_CONTAINS: "name": "benchmarkHarness"
+// EXPECT_STDOUT_CONTAINS: "status": "ok"
+// EXPECT_STDOUT_CONTAINS: "status": "skipped"
+
+struct BenchmarkPair {
+    left: uint64
+    right: uint64
+}
+
+@cfg(bench)
+@bench
+@tag("smoke", "language")
+func benchmarkHarness(benchmark: &mut std.bench.Benchmark) {
+    std.assert(#cfg(bench), "benchmark harness must set #cfg(bench)")
+    benchmark.setBytes(16 as usize)
+    var value: uint64 = 1
+    while benchmark.next() {
+        let pair = std.hint.blackBox(BenchmarkPair {
+            left: value,
+            right: 0x9e3779b97f4a7c15_u64,
+        })
+        value = std.hint.blackBox(pair.left ^ pair.right)
+    }
+    std.hint.blackBox(value)
+}
+
+@bench
+@skip("fixture skip reason")
+func skippedBenchmark(benchmark: &mut std.bench.Benchmark) {
+    while benchmark.next() {}
+}
