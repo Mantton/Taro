@@ -1,0 +1,1122 @@
+import std.collections.List
+import std.io.Reader
+import std.mem.MutableSpan
+import std.result.Result
+import std.string.Builder
+
+const INPUT_BUFFER_SIZE: usize = 4096
+const ROOT_PATH: string = "$"
+
+struct Position: std.marker.Copy {
+    offset: usize
+    line: usize
+    column: usize
+}
+
+struct PositionTracker {
+    value: Position
+}
+
+impl PositionTracker {
+    func new() -> Self {
+        PositionTracker {
+            value: Position { offset: 0, line: 1, column: 1 },
+        }
+    }
+
+    func advance(&mut self, _ byte: uint8) {
+        // A named mutable borrow keeps all tracker updates on an assignable
+        // place; nested field projections are values in Taro today.
+        let position = &mut self.value
+        position.offset += 1
+        if byte == ('\n' as uint8) {
+            position.line += 1
+            position.column = 1
+        } else {
+            position.column += 1
+        }
+    }
+}
+
+interface JsonInput {
+    func peek(&mut self) -> Result[uint8?, std.io.Error]
+    func advance(&mut self, _ byte: uint8)
+    func position(&self) -> Position
+}
+
+struct StringInput {
+    source: string
+    index: usize
+    tracker: PositionTracker
+}
+
+impl StringInput {
+    func new(_ source: string) -> Self {
+        StringInput { source, index: 0, tracker: PositionTracker() }
+    }
+}
+
+impl JsonInput for StringInput {
+    func peek(&mut self) -> Result[uint8?, std.io.Error] {
+        if self.index >= self.source.byteLen() {
+            return .ok(.none)
+        }
+        return .ok(.some(self.source.byteAt(self.index)))
+    }
+
+    func advance(&mut self, _ byte: uint8) {
+        self.index += 1
+        self.tracker.advance(byte)
+    }
+
+    func position(&self) -> Position {
+        self.tracker.value
+    }
+}
+
+struct ReaderInput[Source: Reader] {
+    source: Source
+    storage: [uint8; INPUT_BUFFER_SIZE]
+    start: usize
+    end: usize
+    reachedEof: bool
+    tracker: PositionTracker
+}
+
+impl[Source: Reader] ReaderInput[Source] {
+    func new(_ source: Source) -> Self {
+        ReaderInput[Source] {
+            source,
+            storage: [0_u8; INPUT_BUFFER_SIZE],
+            start: 0,
+            end: 0,
+            reachedEof: false,
+            tracker: PositionTracker(),
+        }
+    }
+}
+
+impl[Source: Reader] JsonInput for ReaderInput[Source] {
+    func peek(&mut self) -> Result[uint8?, std.io.Error] {
+        if self.start < self.end {
+            return .ok(.some(*self.storage.at(self.start)))
+        }
+        if self.reachedEof {
+            return .ok(.none)
+        }
+
+        let storagePtr = unsafe {
+            (&mut self.storage as *mut [uint8; INPUT_BUFFER_SIZE]) as *mut uint8
+        }
+        let writable = MutableSpan[uint8].from(storagePtr, INPUT_BUFFER_SIZE)
+        let count = match self.source.read(writable) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+
+        if count > INPUT_BUFFER_SIZE {
+            return .err(std.io.Error(.invalidData).withOperation("read JSON input"))
+        }
+        self.start = 0
+        self.end = count
+        if count == 0 {
+            self.reachedEof = true
+            return .ok(.none)
+        }
+        return .ok(.some(*self.storage.at(0)))
+    }
+
+    func advance(&mut self, _ byte: uint8) {
+        self.start += 1
+        self.tracker.advance(byte)
+    }
+
+    func position(&self) -> Position {
+        self.tracker.value
+    }
+}
+
+struct ParseState: std.marker.Copy {
+    options: Options
+    valueStart: usize
+}
+
+impl ParseState {
+    func new(_ options: Options, _ valueStart: usize) -> Self {
+        ParseState { options, valueStart }
+    }
+}
+
+func errorAt(_ kind: ErrorKind, _ message: string, _ position: Position, _ path: string) -> Error {
+    Error.at(kind, message, position.offset, position.line, position.column, path)
+}
+
+func peekByte[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+) -> Result[uint8?, Error] {
+    let next = match input.peek() {
+        case .ok(value) => value
+        case .err(cause) => {
+            let position = input.position()
+            return .err(Error.fromIo(cause, position.offset, position.line, position.column, path))
+        }
+    }
+
+    match next {
+        case .some(_) => {
+            let position = input.position()
+            if position.offset - state.valueStart >= state.options.maxInputBytes() {
+                return .err(errorAt(
+                    .inputLimit,
+                    "JSON value exceeds the configured byte limit",
+                    position,
+                    path,
+                ))
+            }
+        }
+        case .none => {}
+    }
+    return .ok(next)
+}
+
+func takeByte[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+) -> Result[uint8?, Error] {
+    match peekByte(input, state, path) {
+        case .err(error) => return .err(error)
+        case .ok(.none) => return .ok(.none)
+        case .ok(.some(byte)) => {
+            input.advance(byte)
+            return .ok(.some(byte))
+        }
+    }
+}
+
+func requiredByte[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+    _ message: string,
+) -> Result[uint8, Error] {
+    match takeByte(input, state, path) {
+        case .err(error) => return .err(error)
+        case .ok(.some(byte)) => return .ok(byte)
+        case .ok(.none) => {
+            return .err(errorAt(.unexpectedEof, message, input.position(), path))
+        }
+    }
+}
+
+func isWhitespace(_ byte: uint8) -> bool {
+    byte == (' ' as uint8)
+        || byte == ('\t' as uint8)
+        || byte == ('\n' as uint8)
+        || byte == ('\r' as uint8)
+}
+
+func skipWhitespace[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+) -> Result[(), Error] {
+    loop {
+        match peekByte(input, state, path) {
+            case .err(error) => return .err(error)
+            case .ok(.some(byte)) => {
+                if !isWhitespace(byte) {
+                    return .ok(())
+                }
+                input.advance(byte)
+            }
+            case .ok(.none) => return .ok(())
+        }
+    }
+}
+
+func hexDigit(_ byte: uint8) -> uint32? {
+    if byte >= ('0' as uint8) && byte <= ('9' as uint8) {
+        return .some((byte - ('0' as uint8)) as uint32)
+    }
+    if byte >= ('a' as uint8) && byte <= ('f' as uint8) {
+        return .some((byte - ('a' as uint8) + 10_u8) as uint32)
+    }
+    if byte >= ('A' as uint8) && byte <= ('F' as uint8) {
+        return .some((byte - ('A' as uint8) + 10_u8) as uint32)
+    }
+    return .none
+}
+
+func appendHexByte(_ into: &mut Builder, _ byte: uint8) {
+    let digits = "0123456789ABCDEF"
+    into.writeByte(digits.byteAt((byte >> 4) as usize))
+    into.writeByte(digits.byteAt((byte & 0x0f_u8) as usize))
+}
+
+/// Build an unambiguous byte-oriented JSONPath segment. Non-ASCII bytes use
+/// `\xNN`, keeping the diagnostic path valid even when an encoder is reporting
+/// malformed UTF-8 in a caller-created object key.
+func childPathForKey(_ parent: string, _ key: string) -> string {
+    var result = Builder()
+    result.writeString(parent)
+    result.writeString("[\"")
+    var index: usize = 0
+    while index < key.byteLen() {
+        let byte = key.byteAt(index)
+        if byte == ('\"' as uint8) {
+            result.writeString("\\\"")
+        } else if byte == ('\\' as uint8) {
+            result.writeString("\\\\")
+        } else if byte < 0x20_u8 || byte >= 0x7f_u8 {
+            result.writeString("\\x")
+            appendHexByte(&mut result, byte)
+        } else {
+            result.writeByte(byte)
+        }
+        index += 1
+    }
+    result.writeString("\"]")
+    return result.intoString()
+}
+
+func childPathForIndex(_ parent: string, _ index: usize) -> string {
+    var result = Builder()
+    result.writeString(parent)
+    result.writeByte('[' as uint8)
+    result.writeString(std.sprintf("%d", index))
+    result.writeByte(']' as uint8)
+    return result.intoString()
+}
+
+func parseHexQuad[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+) -> Result[uint32, Error] {
+    var value: uint32 = 0
+    var count: usize = 0
+    while count < 4 {
+        let position = input.position()
+        let byte = match requiredByte(
+            input,
+            state,
+            path,
+            "expected four hexadecimal digits after \\u",
+        ) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        let digit = match hexDigit(byte) {
+            case .some(value) => value
+            case .none => {
+                return .err(errorAt(
+                    .invalidUnicodeEscape,
+                    "expected a hexadecimal digit in Unicode escape",
+                    position,
+                    path,
+                ))
+            }
+        }
+        value = (value << 4) | digit
+        count += 1
+    }
+    return .ok(value)
+}
+
+func writeEscapedUnicode[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+    _ escapePosition: Position,
+    _ into: &mut Builder,
+) -> Result[(), Error] {
+    let first = match parseHexQuad(input, state, path) {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+
+    var scalar = first
+    if first >= 0xD800_u32 && first <= 0xDBFF_u32 {
+        let slashPosition = input.position()
+        let slash = match requiredByte(
+            input,
+            state,
+            path,
+            "high surrogate must be followed by a low surrogate",
+        ) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if slash != ('\\' as uint8) {
+            return .err(errorAt(
+                .invalidUnicodeEscape,
+                "high surrogate must be followed by a low surrogate",
+                slashPosition,
+                path,
+            ))
+        }
+
+        let markerPosition = input.position()
+        let marker = match requiredByte(
+            input,
+            state,
+            path,
+            "high surrogate must be followed by a low surrogate",
+        ) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if marker != ('u' as uint8) {
+            return .err(errorAt(
+                .invalidUnicodeEscape,
+                "high surrogate must be followed by a low surrogate",
+                markerPosition,
+                path,
+            ))
+        }
+
+        let second = match parseHexQuad(input, state, path) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if second < 0xDC00_u32 || second > 0xDFFF_u32 {
+            return .err(errorAt(
+                .invalidUnicodeEscape,
+                "high surrogate must be followed by a low surrogate",
+                escapePosition,
+                path,
+            ))
+        }
+        scalar = 0x10000_u32 + ((first - 0xD800_u32) << 10) + (second - 0xDC00_u32)
+    } else if first >= 0xDC00_u32 && first <= 0xDFFF_u32 {
+        return .err(errorAt(
+            .invalidUnicodeEscape,
+            "low surrogate has no preceding high surrogate",
+            escapePosition,
+            path,
+        ))
+    }
+
+    match std.rune.fromU32(scalar) {
+        case .some(value) => {
+            into.writeRune(value)
+            return .ok(())
+        }
+        case .none => {
+            return .err(errorAt(
+                .invalidUnicodeEscape,
+                "Unicode escape does not encode a scalar value",
+                escapePosition,
+                path,
+            ))
+        }
+    }
+}
+
+func writeUnescapedUtf8[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+    _ lead: uint8,
+    _ leadPosition: Position,
+    _ into: &mut Builder,
+) -> Result[(), Error] {
+    var continuationCount: usize = 0
+    if lead >= 0xC2_u8 && lead <= 0xDF_u8 {
+        continuationCount = 1
+    } else if lead >= 0xE0_u8 && lead <= 0xEF_u8 {
+        continuationCount = 2
+    } else if lead >= 0xF0_u8 && lead <= 0xF4_u8 {
+        continuationCount = 3
+    } else {
+        return .err(errorAt(
+            .invalidUtf8,
+            "invalid UTF-8 leading byte in JSON string",
+            leadPosition,
+            path,
+        ))
+    }
+
+    into.writeByte(lead)
+    var index: usize = 0
+    while index < continuationCount {
+        let position = input.position()
+        let byte = match takeByte(input, state, path) {
+            case .err(error) => return .err(error)
+            case .ok(.none) => {
+                return .err(errorAt(
+                    .invalidUtf8,
+                    "truncated UTF-8 sequence in JSON string",
+                    position,
+                    path,
+                ))
+            }
+            case .ok(.some(value)) => value
+        }
+
+        if byte < 0x80_u8 || byte > 0xBF_u8 {
+            return .err(errorAt(
+                .invalidUtf8,
+                "invalid UTF-8 continuation byte in JSON string",
+                position,
+                path,
+            ))
+        }
+        if index == 0 {
+            if lead == 0xE0_u8 && byte < 0xA0_u8 {
+                return .err(errorAt(.invalidUtf8, "overlong UTF-8 sequence", position, path))
+            }
+            if lead == 0xED_u8 && byte > 0x9F_u8 {
+                return .err(errorAt(.invalidUtf8, "UTF-8 sequence encodes a surrogate", position, path))
+            }
+            if lead == 0xF0_u8 && byte < 0x90_u8 {
+                return .err(errorAt(.invalidUtf8, "overlong UTF-8 sequence", position, path))
+            }
+            if lead == 0xF4_u8 && byte > 0x8F_u8 {
+                return .err(errorAt(.invalidUtf8, "UTF-8 scalar is out of range", position, path))
+            }
+        }
+        into.writeByte(byte)
+        index += 1
+    }
+    return .ok(())
+}
+
+func parseStringValue[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+) -> Result[string, Error] {
+    let openingPosition = input.position()
+    let opening = match requiredByte(input, state, path, "expected a JSON string") {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+    if opening != ('\"' as uint8) {
+        return .err(errorAt(.unexpectedToken, "expected a JSON string", openingPosition, path))
+    }
+
+    var result = Builder()
+    loop {
+        let position = input.position()
+        let byte = match requiredByte(input, state, path, "unterminated JSON string") {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+
+        if byte == ('\"' as uint8) {
+            return .ok(result.intoString())
+        }
+        if byte == ('\\' as uint8) {
+            let escapePosition = input.position()
+            let escaped = match requiredByte(input, state, path, "unterminated JSON escape") {
+                case .ok(value) => value
+                case .err(error) => return .err(error)
+            }
+            match escaped {
+                case 0x22 => result.writeByte(0x22_u8)
+                case 0x5c => result.writeByte(0x5c_u8)
+                case 0x2f => result.writeByte(0x2f_u8)
+                case 0x62 => result.writeByte(0x08_u8)
+                case 0x66 => result.writeByte(0x0c_u8)
+                case 0x6e => result.writeByte(0x0a_u8)
+                case 0x72 => result.writeByte(0x0d_u8)
+                case 0x74 => result.writeByte(0x09_u8)
+                case 0x75 => {
+                    match writeEscapedUnicode(input, state, path, escapePosition, &mut result) {
+                        case .ok(_) => {}
+                        case .err(error) => return .err(error)
+                    }
+                }
+                case _ => {
+                    return .err(errorAt(
+                        .invalidEscape,
+                        "escape is not defined by JSON",
+                        escapePosition,
+                        path,
+                    ))
+                }
+            }
+            continue
+        }
+        if byte < 0x20_u8 {
+            return .err(errorAt(
+                .unescapedControlCharacter,
+                "control characters must be escaped in JSON strings",
+                position,
+                path,
+            ))
+        }
+        if byte < 0x80_u8 {
+            result.writeByte(byte)
+            continue
+        }
+        match writeUnescapedUtf8(input, state, path, byte, position, &mut result) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+    }
+}
+
+func parseLiteral[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+    _ expected: string,
+) -> Result[(), Error] {
+    var index: usize = 0
+    while index < expected.byteLen() {
+        let position = input.position()
+        let byte = match requiredByte(input, state, path, "incomplete JSON literal") {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if byte != expected.byteAt(index) {
+            return .err(errorAt(.unexpectedToken, "invalid JSON literal", position, path))
+        }
+        index += 1
+    }
+    return .ok(())
+}
+
+func isNumberTerminator(_ byte: uint8) -> bool {
+    isWhitespace(byte)
+        || byte == (',' as uint8)
+        || byte == (']' as uint8)
+        || byte == ('}' as uint8)
+}
+
+func consumeDigits[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+    _ into: &mut Builder,
+) -> Result[(), Error] {
+    loop {
+        match peekByte(input, state, path) {
+            case .err(error) => return .err(error)
+            case .ok(.some(byte)) => {
+                if !isDigit(byte) {
+                    return .ok(())
+                }
+                input.advance(byte)
+                into.writeByte(byte)
+            }
+            case .ok(.none) => return .ok(())
+        }
+    }
+}
+
+func requireDigit[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+    _ into: &mut Builder,
+) -> Result[(), Error] {
+    let position = input.position()
+    match takeByte(input, state, path) {
+        case .err(error) => return .err(error)
+        case .ok(.some(byte)) => {
+            if !isDigit(byte) {
+                return .err(errorAt(.invalidNumber, "expected a decimal digit", position, path))
+            }
+            into.writeByte(byte)
+            return .ok(())
+        }
+        case .ok(.none) => {
+            return .err(errorAt(.invalidNumber, "expected a decimal digit", position, path))
+        }
+    }
+}
+
+func parseNumberValue[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ path: string,
+) -> Result[Number, Error] {
+    let start = input.position()
+    var result = Builder()
+
+    var next = match peekByte(input, state, path) {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+    match next {
+        case .some(byte) => {
+            if byte == ('-' as uint8) {
+                input.advance(byte)
+                result.writeByte(byte)
+            }
+        }
+        case .none => {}
+    }
+
+    let integerPosition = input.position()
+    let first = match requiredByte(input, state, path, "incomplete JSON number") {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+    if first == ('0' as uint8) {
+        result.writeByte(first)
+        match peekByte(input, state, path) {
+            case .err(error) => return .err(error)
+            case .ok(.some(byte)) => {
+                if isDigit(byte) {
+                    return .err(errorAt(
+                        .invalidNumber,
+                        "leading zero is not allowed in a JSON number",
+                        input.position(),
+                        path,
+                    ))
+                }
+            }
+            case .ok(.none) => {}
+        }
+    } else if first >= ('1' as uint8) && first <= ('9' as uint8) {
+        result.writeByte(first)
+        match consumeDigits(input, state, path, &mut result) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+    } else {
+        return .err(errorAt(.invalidNumber, "expected an integer digit", integerPosition, path))
+    }
+
+    next = match peekByte(input, state, path) {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+    match next {
+        case .some(byte) => {
+            if byte == ('.' as uint8) {
+                input.advance(byte)
+                result.writeByte(byte)
+                match requireDigit(input, state, path, &mut result) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+                match consumeDigits(input, state, path, &mut result) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+            }
+        }
+        case .none => {}
+    }
+
+    next = match peekByte(input, state, path) {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+    match next {
+        case .some(byte) => {
+            if byte == ('e' as uint8) || byte == ('E' as uint8) {
+                input.advance(byte)
+                result.writeByte(byte)
+                match peekByte(input, state, path) {
+                    case .err(error) => return .err(error)
+                    case .ok(.some(sign)) => {
+                        if sign == ('+' as uint8) || sign == ('-' as uint8) {
+                            input.advance(sign)
+                            result.writeByte(sign)
+                        }
+                    }
+                    case .ok(.none) => {}
+                }
+                match requireDigit(input, state, path, &mut result) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+                match consumeDigits(input, state, path, &mut result) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+            }
+        }
+        case .none => {}
+    }
+
+    match peekByte(input, state, path) {
+        case .err(error) => return .err(error)
+        case .ok(.some(byte)) => {
+            if !isNumberTerminator(byte) {
+                return .err(errorAt(
+                    .invalidNumber,
+                    "invalid byte after JSON number",
+                    input.position(),
+                    path,
+                ))
+            }
+        }
+        case .ok(.none) => {}
+    }
+
+    let text = result.intoString()
+    match Number.parse(text) {
+        case .ok(number) => return .ok(number)
+        case .err(_) => {
+            return .err(errorAt(.invalidNumber, "invalid JSON number", start, path))
+        }
+    }
+}
+
+func parseArray[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ depth: usize,
+    _ path: string,
+) -> Result[Value, Error] {
+    if depth >= state.options.maxDepth() {
+        return .err(errorAt(
+            .depthLimit,
+            "array exceeds the configured nesting depth",
+            input.position(),
+            path,
+        ))
+    }
+    input.advance('[' as uint8)
+    match skipWhitespace(input, state, path) {
+        case .ok(_) => {}
+        case .err(error) => return .err(error)
+    }
+
+    match peekByte(input, state, path) {
+        case .err(error) => return .err(error)
+        case .ok(.some(byte)) => {
+            if byte == (']' as uint8) {
+                input.advance(byte)
+                return .ok(.array(List[Value]()))
+            }
+        }
+        case .ok(.none) => {
+            return .err(errorAt(.unexpectedEof, "unterminated JSON array", input.position(), path))
+        }
+    }
+
+    var values = List[Value]()
+    var index: usize = 0
+    loop {
+        let childPath = childPathForIndex(path, index)
+        let value = match parseValue(input, state, depth + 1, childPath) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        values.append(value)
+        index += 1
+
+        match skipWhitespace(input, state, path) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        let position = input.position()
+        let delimiter = match requiredByte(input, state, path, "unterminated JSON array") {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if delimiter == (']' as uint8) {
+            return .ok(.array(values))
+        }
+        if delimiter != (',' as uint8) {
+            return .err(errorAt(
+                .unexpectedToken,
+                "expected ',' or ']' after array element",
+                position,
+                path,
+            ))
+        }
+        match skipWhitespace(input, state, path) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+    }
+}
+
+func parseObject[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ depth: usize,
+    _ path: string,
+) -> Result[Value, Error] {
+    if depth >= state.options.maxDepth() {
+        return .err(errorAt(
+            .depthLimit,
+            "object exceeds the configured nesting depth",
+            input.position(),
+            path,
+        ))
+    }
+    input.advance('{' as uint8)
+    match skipWhitespace(input, state, path) {
+        case .ok(_) => {}
+        case .err(error) => return .err(error)
+    }
+
+    match peekByte(input, state, path) {
+        case .err(error) => return .err(error)
+        case .ok(.some(byte)) => {
+            if byte == ('}' as uint8) {
+                input.advance(byte)
+                return .ok(.object(Object()))
+            }
+        }
+        case .ok(.none) => {
+            return .err(errorAt(.unexpectedEof, "unterminated JSON object", input.position(), path))
+        }
+    }
+
+    var object = Object()
+    loop {
+        let keyPosition = input.position()
+        let key = match parseStringValue(input, state, path) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        let childPath = childPathForKey(path, key)
+
+        let alreadyPresent = object.contains(key)
+        if alreadyPresent {
+            match state.options.duplicateKeys() {
+                case .reject => {
+                    return .err(errorAt(
+                        .duplicateKey,
+                        "object member name appears more than once",
+                        keyPosition,
+                        childPath,
+                    ))
+                }
+                case _ => {}
+            }
+        }
+
+        match skipWhitespace(input, state, childPath) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        let colonPosition = input.position()
+        let colon = match requiredByte(input, state, childPath, "expected ':' after object key") {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if colon != (':' as uint8) {
+            return .err(errorAt(
+                .unexpectedToken,
+                "expected ':' after object key",
+                colonPosition,
+                childPath,
+            ))
+        }
+        match skipWhitespace(input, state, childPath) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        let value = match parseValue(input, state, depth + 1, childPath) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+
+        if !alreadyPresent {
+            let _ = object.insert(key, value)
+        } else {
+            match state.options.duplicateKeys() {
+                case .useLast => object.set(key, value)
+                case _ => {}
+            }
+        }
+
+        match skipWhitespace(input, state, path) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        let delimiterPosition = input.position()
+        let delimiter = match requiredByte(input, state, path, "unterminated JSON object") {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if delimiter == ('}' as uint8) {
+            return .ok(.object(object))
+        }
+        if delimiter != (',' as uint8) {
+            return .err(errorAt(
+                .unexpectedToken,
+                "expected ',' or '}' after object member",
+                delimiterPosition,
+                path,
+            ))
+        }
+        match skipWhitespace(input, state, path) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+    }
+}
+
+func parseValue[Input: JsonInput](
+    _ input: &mut Input,
+    _ state: ParseState,
+    _ depth: usize,
+    _ path: string,
+) -> Result[Value, Error] {
+    let byte = match peekByte(input, state, path) {
+        case .err(error) => return .err(error)
+        case .ok(.some(value)) => value
+        case .ok(.none) => {
+            return .err(errorAt(.unexpectedEof, "expected a JSON value", input.position(), path))
+        }
+    }
+
+    match byte {
+        case 0x6e => {
+            match parseLiteral(input, state, path, "null") {
+                case .ok(_) => return .ok(.null)
+                case .err(error) => return .err(error)
+            }
+        }
+        case 0x74 => {
+            match parseLiteral(input, state, path, "true") {
+                case .ok(_) => return .ok(.boolean(true))
+                case .err(error) => return .err(error)
+            }
+        }
+        case 0x66 => {
+            match parseLiteral(input, state, path, "false") {
+                case .ok(_) => return .ok(.boolean(false))
+                case .err(error) => return .err(error)
+            }
+        }
+        case 0x22 => {
+            match parseStringValue(input, state, path) {
+                case .ok(value) => return .ok(.string(value))
+                case .err(error) => return .err(error)
+            }
+        }
+        case 0x5b => return parseArray(input, state, depth, path)
+        case 0x7b => return parseObject(input, state, depth, path)
+        case _ => {
+            if byte == ('-' as uint8) || isDigit(byte) {
+                match parseNumberValue(input, state, path) {
+                    case .ok(value) => return .ok(.number(value))
+                    case .err(error) => return .err(error)
+                }
+            }
+            return .err(errorAt(
+                .unexpectedToken,
+                "byte cannot begin a JSON value",
+                input.position(),
+                path,
+            ))
+        }
+    }
+}
+
+/// A parser for one complete JSON string.
+public struct Parser {
+    input: StringInput
+    options: Options
+}
+
+impl Parser {
+    public func new(_ input: string) -> Self {
+        Parser { input: StringInput(input), options: Options() }
+    }
+
+    public func withOptions(_ input: string, _ options: Options) -> Self {
+        Parser { input: StringInput(input), options }
+    }
+
+    public func parse(&mut self) -> Result[Value, Error] {
+        let state = ParseState(self.options, 0)
+        match skipWhitespace(&mut self.input, state, ROOT_PATH) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        let value = match parseValue(&mut self.input, state, 0, ROOT_PATH) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        match skipWhitespace(&mut self.input, state, ROOT_PATH) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        match peekByte(&mut self.input, state, ROOT_PATH) {
+            case .err(error) => return .err(error)
+            case .ok(.none) => return .ok(value)
+            case .ok(.some(_)) => {
+                return .err(errorAt(
+                    .trailingData,
+                    "JSON text contains data after its root value",
+                    self.input.position(),
+                    ROOT_PATH,
+                ))
+            }
+        }
+    }
+}
+
+/// Parse one complete JSON text using safe defaults.
+public func parse(_ input: string) -> Result[Value, Error] {
+    var parser = Parser(input)
+    parser.parse()
+}
+
+/// Parse one complete JSON text using explicit resource and duplicate controls.
+public func parseWithOptions(_ input: string, _ options: Options) -> Result[Value, Error] {
+    var parser = Parser.withOptions(input, options)
+    parser.parse()
+}
+
+/// An incremental JSON decoder over any byte `Reader`.
+///
+/// `next` can decode a whitespace-separated sequence without retaining prior
+/// values. Only a fixed input window and the current DOM remain live.
+public struct Decoder[Source: Reader] {
+    input: ReaderInput[Source]
+    options: Options
+}
+
+impl[Source: Reader] Decoder[Source] {
+    public func new(_ source: Source) -> Self {
+        Decoder[Source] { input: ReaderInput(source), options: Options() }
+    }
+
+    public func withOptions(_ source: Source, _ options: Options) -> Self {
+        Decoder[Source] { input: ReaderInput(source), options }
+    }
+
+    /// Decode the next value, returning `.none` at clean end of input.
+    public func next(&mut self) -> Result[Value?, Error] {
+        let start = self.input.position().offset
+        let state = ParseState(self.options, start)
+        match skipWhitespace(&mut self.input, state, ROOT_PATH) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        match peekByte(&mut self.input, state, ROOT_PATH) {
+            case .err(error) => return .err(error)
+            case .ok(.none) => return .ok(.none)
+            case .ok(.some(_)) => {}
+        }
+        match parseValue(&mut self.input, state, 0, ROOT_PATH) {
+            case .ok(value) => return .ok(.some(value))
+            case .err(error) => return .err(error)
+        }
+    }
+
+    /// Decode one required value. Empty input is a typed unexpected-EOF error.
+    public func decode(&mut self) -> Result[Value, Error] {
+        match self.next() {
+            case .ok(.some(value)) => return .ok(value)
+            case .err(error) => return .err(error)
+            case .ok(.none) => {
+                return .err(errorAt(
+                    .unexpectedEof,
+                    "expected a JSON value",
+                    self.input.position(),
+                    ROOT_PATH,
+                ))
+            }
+        }
+    }
+}

@@ -1,0 +1,345 @@
+import std.collections.List
+import std.fmt.Display
+
+/// The category of a JSON number construction failure.
+public enum NumberErrorKind: std.marker.Copy, std.ops.PartialEq {
+    case empty
+    case invalidSyntax
+}
+
+/// A failure to construct an exact JSON number from text.
+public struct NumberError: std.marker.Copy {
+    kindValue: NumberErrorKind
+    indexValue: usize
+}
+
+impl NumberError {
+    func new(_ kind: NumberErrorKind, _ index: usize) -> Self {
+        NumberError { kindValue: kind, indexValue: index }
+    }
+
+    public func kind(&self) -> NumberErrorKind {
+        self.kindValue
+    }
+
+    public func index(&self) -> usize {
+        self.indexValue
+    }
+}
+
+impl Display for NumberErrorKind {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .empty => into.writeString("empty JSON number")
+            case .invalidSyntax => into.writeString("invalid JSON number syntax")
+        }
+    }
+}
+
+impl Display for NumberError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        self.kindValue.display(into)
+        into.writeString(" at byte ")
+        self.indexValue.display(into)
+    }
+}
+
+impl std.error.Error for NumberError {}
+
+func isDigit(_ byte: uint8) -> bool {
+    byte >= ('0' as uint8) && byte <= ('9' as uint8)
+}
+
+func validateNumberText(_ text: string) -> NumberError? {
+    let len = text.byteLen()
+    if len == 0 {
+        return .some(NumberError(.empty, 0))
+    }
+
+    var index: usize = 0
+    if text.byteAt(index) == ('-' as uint8) {
+        index += 1
+        if index == len {
+            return .some(NumberError(.invalidSyntax, index))
+        }
+    }
+
+    if text.byteAt(index) == ('0' as uint8) {
+        index += 1
+        if index < len && isDigit(text.byteAt(index)) {
+            return .some(NumberError(.invalidSyntax, index))
+        }
+    } else {
+        let first = text.byteAt(index)
+        if first < ('1' as uint8) || first > ('9' as uint8) {
+            return .some(NumberError(.invalidSyntax, index))
+        }
+        index += 1
+        while index < len && isDigit(text.byteAt(index)) {
+            index += 1
+        }
+    }
+
+    if index < len && text.byteAt(index) == ('.' as uint8) {
+        index += 1
+        if index == len || !isDigit(text.byteAt(index)) {
+            return .some(NumberError(.invalidSyntax, index))
+        }
+        while index < len && isDigit(text.byteAt(index)) {
+            index += 1
+        }
+    }
+
+    if index < len {
+        let byte = text.byteAt(index)
+        if byte == ('e' as uint8) || byte == ('E' as uint8) {
+            index += 1
+            if index < len {
+                let sign = text.byteAt(index)
+                if sign == ('+' as uint8) || sign == ('-' as uint8) {
+                    index += 1
+                }
+            }
+            if index == len || !isDigit(text.byteAt(index)) {
+                return .some(NumberError(.invalidSyntax, index))
+            }
+            while index < len && isDigit(text.byteAt(index)) {
+                index += 1
+            }
+        }
+    }
+
+    if index != len {
+        return .some(NumberError(.invalidSyntax, index))
+    }
+    return .none
+}
+
+/// An exact JSON number.
+///
+/// The validated lexical form is retained instead of converting through a
+/// floating-point type, so large integers and significant exponent spelling
+/// survive a parse/encode round trip unchanged.
+public struct Number {
+    textValue: string
+}
+
+impl Number {
+    public func parse(_ text: string) -> std.result.Result[Self, NumberError] {
+        match validateNumberText(text) {
+            case .some(error) => return .err(error)
+            case .none => return .ok(Number { textValue: text })
+        }
+    }
+
+    public func text(&self) -> string {
+        self.textValue
+    }
+
+    public func asInt64(&self) -> std.result.Result[int64, std.convert.ParseError] {
+        int64.parse(self.textValue)
+    }
+
+    public func asUint64(&self) -> std.result.Result[uint64, std.convert.ParseError] {
+        uint64.parse(self.textValue)
+    }
+
+    public func asDouble(&self) -> std.result.Result[double, std.convert.ParseError] {
+        double.parse(self.textValue)
+    }
+}
+
+impl std.marker.Clone for Number {
+    public func clone(&self) -> Self {
+        Number { textValue: self.textValue }
+    }
+}
+
+impl Display for Number {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        into.writeString(self.textValue)
+    }
+}
+
+struct ObjectMember {
+    keyValue: string
+    valueValue: Value
+}
+
+/// An insertion-ordered JSON object.
+///
+/// JSON objects are ordered here deliberately: it gives callers stable output
+/// and lets duplicate-key policy remain independent from hash-table behavior.
+public struct Object {
+    members: List[ObjectMember]
+}
+
+impl Object {
+    public func new() -> Self {
+        Object { members: List[ObjectMember]() }
+    }
+
+    public func len(&self) -> usize {
+        self.members.len()
+    }
+
+    public func isEmpty(&self) -> bool {
+        self.members.isEmpty()
+    }
+
+    public func contains(&self, _ key: string) -> bool {
+        self.indexOf(key).isSome()
+    }
+
+    public func get(&self, _ key: string) -> std.optional.Optional[&Value] {
+        match self.indexOf(key) {
+            case .some(index) => return .some(&self.members.at(index).valueValue)
+            case .none => return .none
+        }
+    }
+
+    public func keyAt(&self, _ index: usize) -> string {
+        self.members.at(index).keyValue
+    }
+
+    public func valueAt(&self, _ index: usize) -> &Value {
+        &self.members.at(index).valueValue
+    }
+
+    /// Insert a member only when its key is not already present.
+    public func insert(&mut self, _ key: string, _ value: Value) -> bool {
+        if self.contains(key) {
+            return false
+        }
+        self.members.append(ObjectMember { keyValue: key, valueValue: value })
+        return true
+    }
+
+    /// Insert or replace a member without changing its original position.
+    public func set(&mut self, _ key: string, _ value: Value) {
+        match self.indexOf(key) {
+            case .some(index) => {
+                // Bind the mutable member before projecting its field; method
+                // call results are values and are not assignment expressions.
+                let member = self.members.at(index)
+                member.valueValue = value
+            }
+            case .none => self.members.append(ObjectMember { keyValue: key, valueValue: value })
+        }
+    }
+
+    func indexOf(&self, _ key: string) -> usize? {
+        var index: usize = 0
+        while index < self.members.len() {
+            if self.members.at(index).keyValue == key {
+                return .some(index)
+            }
+            index += 1
+        }
+        return .none
+    }
+}
+
+impl std.marker.Clone for Object {
+    public func clone(&self) -> Self {
+        var result = Object()
+        var index: usize = 0
+        while index < self.members.len() {
+            let member = self.members.at(index)
+            result.members.append(ObjectMember {
+                keyValue: member.keyValue,
+                valueValue: member.valueValue.clone(),
+            })
+            index += 1
+        }
+        return result
+    }
+}
+
+/// The kind of a JSON DOM value.
+public enum ValueKind: std.marker.Copy, std.ops.PartialEq {
+    case null
+    case boolean
+    case number
+    case string
+    case array
+    case object
+}
+
+/// A JSON DOM value.
+public enum Value {
+    case null
+    case boolean(bool)
+    case number(Number)
+    case string(string)
+    case array(List[Value])
+    case object(Object)
+}
+
+impl Value {
+    public func kind(&self) -> ValueKind {
+        match self {
+            case .null => .null
+            case .boolean(_) => .boolean
+            case .number(_) => .number
+            case .string(_) => .string
+            case .array(_) => .array
+            case .object(_) => .object
+        }
+    }
+
+    public func asBool(&self) -> bool? {
+        match self {
+            case .boolean(value) => .some(*value)
+            case _ => .none
+        }
+    }
+
+    public func asNumber(&self) -> Number? {
+        match self {
+            case .number(value) => .some(value.clone())
+            case _ => .none
+        }
+    }
+
+    public func asString(&self) -> string? {
+        match self {
+            case .string(value) => .some(*value)
+            case _ => .none
+        }
+    }
+
+    public func arrayLen(&self) -> usize? {
+        match self {
+            case .array(value) => .some(value.len())
+            case _ => .none
+        }
+    }
+
+    public func arrayAt(&self, _ index: usize) -> std.optional.Optional[&Value] {
+        match self {
+            case .array(value) => value.get(index)
+            case _ => .none
+        }
+    }
+
+    public func asObject(&self) -> std.optional.Optional[&Object] {
+        match self {
+            case .object(value) => .some(value)
+            case _ => .none
+        }
+    }
+}
+
+impl std.marker.Clone for Value {
+    public func clone(&self) -> Self {
+        match self {
+            case .null => .null
+            case .boolean(value) => .boolean(*value)
+            case .number(value) => .number(value.clone())
+            case .string(value) => .string(*value)
+            case .array(value) => .array(value.clone())
+            case .object(value) => .object(value.clone())
+        }
+    }
+}

@@ -1,0 +1,398 @@
+import std.io.Writer
+import std.fmt.Display
+import std.mem.Span
+import std.result.Result
+import std.string.Builder
+
+/// A stable category for JSON output failures.
+public enum EncodeErrorKind: std.marker.Copy, std.ops.PartialEq {
+    case invalidUtf8
+    case depthLimit
+    case io
+}
+
+/// A JSON output failure with value-path context.
+public struct EncodeError {
+    kindValue: EncodeErrorKind
+    messageValue: string
+    pathValue: string
+    stringByteIndexValue: usize?
+    ioErrorValue: std.io.Error?
+}
+
+impl EncodeError {
+    func invalidUtf8(_ path: string, _ index: usize) -> Self {
+        let stringByteIndexValue: usize? = .some(index)
+        EncodeError {
+            kindValue: .invalidUtf8,
+            messageValue: "string contains invalid UTF-8",
+            pathValue: path,
+            stringByteIndexValue,
+            ioErrorValue: .none,
+        }
+    }
+
+    func depth(_ path: string) -> Self {
+        EncodeError {
+            kindValue: .depthLimit,
+            messageValue: "value exceeds the configured nesting depth",
+            pathValue: path,
+            stringByteIndexValue: .none,
+            ioErrorValue: .none,
+        }
+    }
+
+    func fromIo(_ path: string, _ cause: std.io.Error) -> Self {
+        let ioErrorValue: std.io.Error? = .some(cause)
+        EncodeError {
+            kindValue: .io,
+            messageValue: "I/O failure while writing JSON",
+            pathValue: path,
+            stringByteIndexValue: .none,
+            ioErrorValue,
+        }
+    }
+
+    public func kind(&self) -> EncodeErrorKind {
+        self.kindValue
+    }
+
+    public func message(&self) -> string {
+        self.messageValue
+    }
+
+    public func path(&self) -> string {
+        self.pathValue
+    }
+
+    /// Return the byte index within the offending string, when applicable.
+    public func stringByteIndex(&self) -> usize? {
+        self.stringByteIndexValue
+    }
+
+    public func ioError(&self) -> std.optional.Optional[&std.io.Error] {
+        match &self.ioErrorValue {
+            case .some(cause) => return .some(cause)
+            case .none => return .none
+        }
+    }
+}
+
+impl std.fmt.Display for EncodeErrorKind {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .invalidUtf8 => into.writeString("invalid UTF-8 in JSON output")
+            case .depthLimit => into.writeString("JSON output nesting limit exceeded")
+            case .io => into.writeString("JSON output I/O failure")
+        }
+    }
+}
+
+impl std.fmt.Display for EncodeError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        self.kindValue.display(into)
+        into.writeString(" at ")
+        into.writeString(self.pathValue)
+        match self.stringByteIndexValue {
+            case .some(index) => {
+                into.writeString(" (string byte ")
+                index.display(into)
+                into.writeByte(')' as uint8)
+            }
+            case .none => {}
+        }
+        into.writeString(": ")
+        into.writeString(self.messageValue)
+        match &self.ioErrorValue {
+            case .some(cause) => {
+                into.writeString(": ")
+                cause.display(into)
+            }
+            case .none => {}
+        }
+    }
+}
+
+impl std.error.Error for EncodeError {}
+
+func writeOutput[Sink: Writer](
+    _ sink: &mut Sink,
+    _ text: string,
+    _ path: string,
+) -> Result[(), EncodeError] {
+    match std.io.writeString(sink, text) {
+        case .ok(_) => return .ok(())
+        case .err(cause) => return .err(EncodeError.fromIo(path, cause))
+    }
+}
+
+func writeOutputBytes[Sink: Writer](
+    _ sink: &mut Sink,
+    _ bytes: Span[uint8],
+    _ path: string,
+) -> Result[(), EncodeError] {
+    match std.io.writeAll(sink, bytes) {
+        case .ok(_) => return .ok(())
+        case .err(cause) => return .err(EncodeError.fromIo(path, cause))
+    }
+}
+
+/// Validate one UTF-8 sequence and return its width. The error payload is the
+/// exact invalid byte index, including `len` for a truncated final sequence.
+func utf8WidthAt(_ value: string, _ index: usize) -> Result[usize, usize] {
+    let len = value.byteLen()
+    let lead = value.byteAt(index)
+    if lead < 0x80_u8 {
+        return .ok(1)
+    }
+
+    var width: usize = 0
+    if lead >= 0xC2_u8 && lead <= 0xDF_u8 {
+        width = 2
+    } else if lead >= 0xE0_u8 && lead <= 0xEF_u8 {
+        width = 3
+    } else if lead >= 0xF0_u8 && lead <= 0xF4_u8 {
+        width = 4
+    } else {
+        return .err(index)
+    }
+
+    if width > len - index {
+        return .err(len)
+    }
+    var offset: usize = 1
+    while offset < width {
+        let continuation = value.byteAt(index + offset)
+        if continuation < 0x80_u8 || continuation > 0xBF_u8 {
+            return .err(index + offset)
+        }
+        if offset == 1 {
+            if lead == 0xE0_u8 && continuation < 0xA0_u8 {
+                return .err(index + offset)
+            }
+            if lead == 0xED_u8 && continuation > 0x9F_u8 {
+                return .err(index + offset)
+            }
+            if lead == 0xF0_u8 && continuation < 0x90_u8 {
+                return .err(index + offset)
+            }
+            if lead == 0xF4_u8 && continuation > 0x8F_u8 {
+                return .err(index + offset)
+            }
+        }
+        offset += 1
+    }
+    return .ok(width)
+}
+
+func writeEscapedString[Sink: Writer](
+    _ sink: &mut Sink,
+    _ value: string,
+    _ path: string,
+) -> Result[(), EncodeError] {
+    match writeOutput(sink, "\"", path) {
+        case .ok(_) => {}
+        case .err(error) => return .err(error)
+    }
+
+    var index: usize = 0
+    while index < value.byteLen() {
+        let byte = value.byteAt(index)
+        if byte == ('\"' as uint8) {
+            match writeOutput(sink, "\\\"", path) {
+                case .ok(_) => {}
+                case .err(error) => return .err(error)
+            }
+            index += 1
+            continue
+        }
+        if byte == ('\\' as uint8) {
+            match writeOutput(sink, "\\\\", path) {
+                case .ok(_) => {}
+                case .err(error) => return .err(error)
+            }
+            index += 1
+            continue
+        }
+        if byte < 0x20_u8 {
+            let escaped = match byte {
+                case 0x08 => "\\b"
+                case 0x09 => "\\t"
+                case 0x0a => "\\n"
+                case 0x0c => "\\f"
+                case 0x0d => "\\r"
+                case _ => ""
+            }
+            if escaped.byteLen() > 0 {
+                match writeOutput(sink, escaped, path) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+            } else {
+                var sequence = Builder()
+                sequence.writeString("\\u00")
+                appendHexByte(&mut sequence, byte)
+                match writeOutput(sink, sequence.intoString(), path) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+            }
+            index += 1
+            continue
+        }
+
+        let width = match utf8WidthAt(value, index) {
+            case .ok(value) => value
+            case .err(invalidIndex) => return .err(EncodeError.invalidUtf8(path, invalidIndex))
+        }
+        let bytes = Span[uint8].from(std.string.stringData(value).add(index), width)
+        match writeOutputBytes(sink, bytes, path) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        index += width
+    }
+
+    return writeOutput(sink, "\"", path)
+}
+
+func writeJsonValue[Sink: Writer](
+    _ sink: &mut Sink,
+    _ value: &Value,
+    _ options: Options,
+    _ depth: usize,
+    _ path: string,
+) -> Result[(), EncodeError] {
+    match value {
+        case .null => return writeOutput(sink, "null", path)
+        case .boolean(flag) => {
+            if *flag {
+                return writeOutput(sink, "true", path)
+            }
+            return writeOutput(sink, "false", path)
+        }
+        case .number(number) => return writeOutput(sink, number.text(), path)
+        case .string(text) => return writeEscapedString(sink, *text, path)
+        case .array(values) => {
+            if depth >= options.maxDepth() {
+                return .err(EncodeError.depth(path))
+            }
+            match writeOutput(sink, "[", path) {
+                case .ok(_) => {}
+                case .err(error) => return .err(error)
+            }
+            var index: usize = 0
+            while index < values.len() {
+                if index > 0 {
+                    match writeOutput(sink, ",", path) {
+                        case .ok(_) => {}
+                        case .err(error) => return .err(error)
+                    }
+                }
+                let childPath = childPathForIndex(path, index)
+                match writeJsonValue(sink, values.at(index), options, depth + 1, childPath) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+                index += 1
+            }
+            return writeOutput(sink, "]", path)
+        }
+        case .object(object) => {
+            if depth >= options.maxDepth() {
+                return .err(EncodeError.depth(path))
+            }
+            match writeOutput(sink, "{", path) {
+                case .ok(_) => {}
+                case .err(error) => return .err(error)
+            }
+            var index: usize = 0
+            while index < object.len() {
+                if index > 0 {
+                    match writeOutput(sink, ",", path) {
+                        case .ok(_) => {}
+                        case .err(error) => return .err(error)
+                    }
+                }
+                let key = object.keyAt(index)
+                let childPath = childPathForKey(path, key)
+                match writeEscapedString(sink, key, childPath) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+                match writeOutput(sink, ":", childPath) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+                match writeJsonValue(
+                    sink,
+                    object.valueAt(index),
+                    options,
+                    depth + 1,
+                    childPath,
+                ) {
+                    case .ok(_) => {}
+                    case .err(error) => return .err(error)
+                }
+                index += 1
+            }
+            return writeOutput(sink, "}", path)
+        }
+    }
+}
+
+/// A streaming JSON encoder over any byte `Writer`.
+public struct Encoder[Sink: Writer] {
+    sink: Sink
+    options: Options
+}
+
+impl[Sink: Writer] Encoder[Sink] {
+    public func new(_ sink: Sink) -> Self {
+        Encoder[Sink] { sink, options: Options() }
+    }
+
+    public func withOptions(_ sink: Sink, _ options: Options) -> Self {
+        Encoder[Sink] { sink, options }
+    }
+
+    /// Write one compact JSON value without an implicit separator.
+    public func encode(&mut self, _ value: &Value) -> Result[(), EncodeError] {
+        writeJsonValue(&mut self.sink, value, self.options, 0, ROOT_PATH)
+    }
+
+    /// Write one compact value followed by a newline for JSON stream framing.
+    public func encodeLine(&mut self, _ value: &Value) -> Result[(), EncodeError] {
+        match self.encode(value) {
+            case .ok(_) => return writeOutput(&mut self.sink, "\n", ROOT_PATH)
+            case .err(error) => return .err(error)
+        }
+    }
+
+    public func flush(&mut self) -> Result[(), EncodeError] {
+        match self.sink.flush() {
+            case .ok(_) => return .ok(())
+            case .err(cause) => return .err(EncodeError.fromIo(ROOT_PATH, cause))
+        }
+    }
+
+    /// Consume the encoder and return its writer. Call `flush` first when the
+    /// underlying writer buffers data.
+    public func intoInner(self) -> Sink {
+        self.sink
+    }
+}
+
+/// Serialize one JSON DOM value into a compact string.
+public func stringify(_ value: &Value) -> Result[string, EncodeError] {
+    stringifyWithOptions(value, Options())
+}
+
+/// Serialize one JSON DOM value with an explicit nesting limit.
+public func stringifyWithOptions(_ value: &Value, _ options: Options) -> Result[string, EncodeError] {
+    var encoder = Encoder.withOptions(std.bytes.Buffer(), options)
+    match encoder.encode(value) {
+        case .ok(_) => return .ok(encoder.intoInner().intoString())
+        case .err(error) => return .err(error)
+    }
+}

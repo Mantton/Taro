@@ -1,0 +1,452 @@
+import std.collections.List
+import std.convert.Parse
+import std.fmt.Display
+import std.io.{Reader, Writer}
+import std.result.Result
+
+/// The category of a manual JSON value-conversion failure.
+public enum CodecErrorKind: std.marker.Copy, std.ops.PartialEq {
+    case typeMismatch
+    case missingField
+    case invalidValue
+    case custom
+}
+
+/// A typed manual-codec failure with JSONPath context.
+public struct CodecError {
+    kindValue: CodecErrorKind
+    messageValue: string
+    pathValue: string
+}
+
+impl CodecError {
+    /// Construct an error at the root value.
+    public func new(_ kind: CodecErrorKind, _ message: string) -> Self {
+        CodecError { kindValue: kind, messageValue: message, pathValue: ROOT_PATH }
+    }
+
+    /// Construct an error at an explicit JSONPath.
+    public func at(_ kind: CodecErrorKind, _ path: string, _ message: string) -> Self {
+        CodecError { kindValue: kind, messageValue: message, pathValue: path }
+    }
+
+    public func kind(&self) -> CodecErrorKind {
+        self.kindValue
+    }
+
+    public func message(&self) -> string {
+        self.messageValue
+    }
+
+    public func path(&self) -> string {
+        self.pathValue
+    }
+
+    /// Rebase a child codec's root-relative path beneath a container path.
+    func rebased(self, _ parent: string) -> Self {
+        var suffix = self.pathValue
+        if suffix.byteLen() > 0 && suffix.byteAt(0) == ('$' as uint8) {
+            suffix = suffix.sliceBytes(1, suffix.byteLen() - 1)
+        }
+        CodecError {
+            kindValue: self.kindValue,
+            messageValue: self.messageValue,
+            pathValue: parent.concat(suffix),
+        }
+    }
+}
+
+impl std.fmt.Display for CodecErrorKind {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .typeMismatch => into.writeString("JSON value has the wrong type")
+            case .missingField => into.writeString("required JSON field is missing")
+            case .invalidValue => into.writeString("JSON value is invalid for the target type")
+            case .custom => into.writeString("custom JSON codec failure")
+        }
+    }
+}
+
+impl std.fmt.Display for CodecError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        self.kindValue.display(into)
+        into.writeString(" at ")
+        into.writeString(self.pathValue)
+        into.writeString(": ")
+        into.writeString(self.messageValue)
+    }
+}
+
+impl std.error.Error for CodecError {}
+
+/// Convert a value into the stable JSON DOM contract.
+///
+/// The first codec API is intentionally value-based rather than tied to an
+/// encoder implementation. Manual codecs therefore remain compatible when
+/// compiler-derived codecs are added later.
+public interface EncodeJson {
+    func encodeJson(&self) -> Result[Value, CodecError]
+}
+
+/// Construct a value from the stable JSON DOM contract.
+public interface DecodeJson {
+    func decodeJson(_ value: &Value) -> Result[Self, CodecError]
+}
+
+func typeMismatch(_ expected: string) -> CodecError {
+    CodecError(.typeMismatch, "expected JSON ".concat(expected))
+}
+
+func numberFromText(_ text: string) -> Result[Value, CodecError] {
+    match Number.parse(text) {
+        case .ok(value) => return .ok(.number(value))
+        case .err(_) => {
+            return .err(CodecError(
+                .invalidValue,
+                "numeric value cannot be represented by JSON",
+            ))
+        }
+    }
+}
+
+func decodeNumberAs[Target: Parse](_ value: &Value) -> Result[Target, CodecError] {
+    let text = match value {
+        case .number(number) => number.text()
+        case _ => return .err(typeMismatch("number"))
+    }
+    match Target.parse(text) {
+        case .ok(result) => return .ok(result)
+        case .err(_) => {
+            return .err(CodecError(
+                .invalidValue,
+                "JSON number is outside the target type or has an incompatible form",
+            ))
+        }
+    }
+}
+
+impl EncodeJson for Value {
+    public func encodeJson(&self) -> Result[Value, CodecError] {
+        .ok(self.clone())
+    }
+}
+
+impl DecodeJson for Value {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
+        .ok(value.clone())
+    }
+}
+
+impl EncodeJson for () {
+    public func encodeJson(&self) -> Result[Value, CodecError] {
+        .ok(.null)
+    }
+}
+
+impl DecodeJson for () {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
+        match value {
+            case .null => .ok(())
+            case _ => .err(typeMismatch("null"))
+        }
+    }
+}
+
+impl EncodeJson for bool {
+    public func encodeJson(&self) -> Result[Value, CodecError] {
+        .ok(.boolean(*self))
+    }
+}
+
+impl DecodeJson for bool {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
+        match value {
+            case .boolean(result) => .ok(*result)
+            case _ => .err(typeMismatch("boolean"))
+        }
+    }
+}
+
+impl EncodeJson for string {
+    public func encodeJson(&self) -> Result[Value, CodecError] {
+        .ok(.string(*self))
+    }
+}
+
+impl DecodeJson for string {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
+        match value {
+            case .string(result) => .ok(*result)
+            case _ => .err(typeMismatch("string"))
+        }
+    }
+}
+
+impl EncodeJson for Number {
+    public func encodeJson(&self) -> Result[Value, CodecError] {
+        .ok(.number(self.clone()))
+    }
+}
+
+impl DecodeJson for Number {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
+        match value {
+            case .number(result) => .ok(result.clone())
+            case _ => .err(typeMismatch("number"))
+        }
+    }
+}
+
+impl EncodeJson for int8 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for int8 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int8](value) }
+}
+impl EncodeJson for int16 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for int16 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int16](value) }
+}
+impl EncodeJson for int32 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for int32 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int32](value) }
+}
+impl EncodeJson for int64 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for int64 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int64](value) }
+}
+impl EncodeJson for isize {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for isize {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[isize](value) }
+}
+impl EncodeJson for uint8 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for uint8 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint8](value) }
+}
+impl EncodeJson for uint16 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for uint16 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint16](value) }
+}
+impl EncodeJson for uint32 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for uint32 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint32](value) }
+}
+impl EncodeJson for uint64 {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for uint64 {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint64](value) }
+}
+impl EncodeJson for usize {
+    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
+}
+impl DecodeJson for usize {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[usize](value) }
+}
+impl DecodeJson for float {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[float](value) }
+}
+impl DecodeJson for double {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[double](value) }
+}
+
+impl[Wrapped: EncodeJson] EncodeJson for std.optional.Optional[Wrapped] {
+    public func encodeJson(&self) -> Result[Value, CodecError] {
+        match self {
+            case .some(value) => value.encodeJson()
+            case .none => .ok(.null)
+        }
+    }
+}
+
+impl[Wrapped: DecodeJson] DecodeJson for std.optional.Optional[Wrapped] {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
+        match value {
+            case .null => .ok(.none)
+            case _ => {
+                match Wrapped.decodeJson(value) {
+                    case .ok(result) => return .ok(.some(result))
+                    case .err(error) => return .err(error)
+                }
+            }
+        }
+    }
+}
+
+impl[Element: EncodeJson] EncodeJson for List[Element] {
+    public func encodeJson(&self) -> Result[Value, CodecError] {
+        var values = List[Value](withCapacity: self.len())
+        var index: usize = 0
+        while index < self.len() {
+            match self.at(index).encodeJson() {
+                case .ok(value) => values.append(value)
+                case .err(error) => {
+                    return .err(error.rebased(childPathForIndex(ROOT_PATH, index)))
+                }
+            }
+            index += 1
+        }
+        return .ok(.array(values))
+    }
+}
+
+impl[Element: DecodeJson] DecodeJson for List[Element] {
+    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
+        match value {
+            case .array(values) => {
+                var result = List[Element](withCapacity: values.len())
+                var index: usize = 0
+                while index < values.len() {
+                    match Element.decodeJson(values.at(index)) {
+                        case .ok(element) => result.append(element)
+                        case .err(error) => {
+                            return .err(error.rebased(childPathForIndex(ROOT_PATH, index)))
+                        }
+                    }
+                    index += 1
+                }
+                return .ok(result)
+            }
+            case _ => return .err(typeMismatch("array"))
+        }
+    }
+}
+
+/// A combined failure from a manual codec and the JSON serializer.
+public enum JsonEncodeError {
+    case codec(CodecError)
+    case output(EncodeError)
+}
+
+impl std.fmt.Display for JsonEncodeError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .codec(error) => error.display(into)
+            case .output(error) => error.display(into)
+        }
+    }
+}
+
+impl std.error.Error for JsonEncodeError {}
+
+/// A combined failure from the JSON parser and a manual codec.
+public enum JsonDecodeError {
+    case syntax(Error)
+    case codec(CodecError)
+}
+
+impl std.fmt.Display for JsonDecodeError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .syntax(error) => error.display(into)
+            case .codec(error) => error.display(into)
+        }
+    }
+}
+
+impl std.error.Error for JsonDecodeError {}
+
+/// Encode any manually encodable value to a compact JSON string.
+public func encode[Source: EncodeJson](_ source: &Source) -> Result[string, JsonEncodeError] {
+    let value = match source.encodeJson() {
+        case .ok(value) => value
+        case .err(error) => return .err(.codec(error))
+    }
+    match stringify(&value) {
+        case .ok(text) => return .ok(text)
+        case .err(error) => return .err(.output(error))
+    }
+}
+
+/// Decode one complete string through a manual codec.
+public func decode[Target: DecodeJson](_ input: string) -> Result[Target, JsonDecodeError] {
+    decodeWithOptions[Target](input, Options())
+}
+
+public func decodeWithOptions[Target: DecodeJson](
+    _ input: string,
+    _ options: Options,
+) -> Result[Target, JsonDecodeError] {
+    let value = match parseWithOptions(input, options) {
+        case .ok(value) => value
+        case .err(error) => return .err(.syntax(error))
+    }
+    match Target.decodeJson(&value) {
+        case .ok(result) => return .ok(result)
+        case .err(error) => return .err(.codec(error))
+    }
+}
+
+impl[Sink: Writer] Encoder[Sink] {
+    public func encodeJson[Source: EncodeJson](
+        &mut self,
+        _ source: &Source,
+    ) -> Result[(), JsonEncodeError] {
+        let value = match source.encodeJson() {
+            case .ok(value) => value
+            case .err(error) => return .err(.codec(error))
+        }
+        match self.encode(&value) {
+            case .ok(_) => return .ok(())
+            case .err(error) => return .err(.output(error))
+        }
+    }
+
+    public func encodeJsonLine[Source: EncodeJson](
+        &mut self,
+        _ source: &Source,
+    ) -> Result[(), JsonEncodeError] {
+        let value = match source.encodeJson() {
+            case .ok(value) => value
+            case .err(error) => return .err(.codec(error))
+        }
+        match self.encodeLine(&value) {
+            case .ok(_) => return .ok(())
+            case .err(error) => return .err(.output(error))
+        }
+    }
+}
+
+impl[Source: Reader] Decoder[Source] {
+    public func nextJson[Target: DecodeJson](&mut self) -> Result[Target?, JsonDecodeError] {
+        let value = match self.next() {
+            case .ok(value) => value
+            case .err(error) => return .err(.syntax(error))
+        }
+        match value {
+            case .none => return .ok(.none)
+            case .some(value) => {
+                match Target.decodeJson(&value) {
+                    case .ok(result) => return .ok(.some(result))
+                    case .err(error) => return .err(.codec(error))
+                }
+            }
+        }
+    }
+
+    public func decodeJson[Target: DecodeJson](&mut self) -> Result[Target, JsonDecodeError] {
+        match self.decode() {
+            case .err(error) => return .err(.syntax(error))
+            case .ok(value) => {
+                match Target.decodeJson(&value) {
+                    case .ok(result) => return .ok(result)
+                    case .err(error) => return .err(.codec(error))
+                }
+            }
+        }
+    }
+}

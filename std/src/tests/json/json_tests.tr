@@ -1,0 +1,480 @@
+import std.io.{Reader, Writer}
+import std.fmt.Display
+
+func requireValue(_ input: string) -> std.json.Value {
+    match std.json.parse(input) {
+        case .ok(value) => value
+        case .err(_) => {
+            std.testing.fail("expected valid JSON")
+            return .null
+        }
+    }
+}
+
+func requireObject(_ value: &std.json.Value) -> &std.json.Object {
+    match value {
+        case .object(object) => object
+        case _ => {
+            std.testing.fail("expected JSON object")
+            return unsafe { 0 as &std.json.Object }
+        }
+    }
+}
+
+func requireNumberText(_ value: &std.json.Value) -> string {
+    match value {
+        case .number(number) => number.text()
+        case _ => {
+            std.testing.fail("expected JSON number")
+            return ""
+        }
+    }
+}
+
+func assertParseError(
+    _ input: string,
+    _ kind: std.json.ErrorKind,
+    _ message: string,
+) -> std.json.Error {
+    match std.json.parse(input) {
+        case .ok(_) => {
+            std.panic.panic(message)
+        }
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), kind, message)
+            return error
+        }
+    }
+}
+
+@test
+func jsonDomPreservesExactNumbersOrderAndUnicode() {
+    let source = "{\"big\":9007199254740993123456789,\"text\":\"line\\n\\uD83D\\uDE80\",\"items\":[true,null,-1.20e+3]}"
+    let value = requireValue(source)
+    let object = requireObject(&value)
+
+    std.testing.assertEqual(object.len(), 3 as usize, "object should retain all members")
+    std.testing.assertEqual(object.keyAt(0), "big", "object should preserve insertion order")
+    std.testing.assertEqual(object.keyAt(1), "text", "object order should be deterministic")
+
+    match object.get("big") {
+        case .some(number) => {
+            std.testing.assertEqual(
+                requireNumberText(number),
+                "9007199254740993123456789",
+                "large integer spelling must not round through double",
+            )
+        }
+        case .none => std.testing.fail("big member should exist")
+    }
+    match object.get("text") {
+        case .some(.string(text)) => {
+            std.testing.assertEqual(*text, "line\n🚀", "escapes and surrogate pairs should decode")
+        }
+        case _ => std.testing.fail("text member should be a string")
+    }
+
+    let encoded = std.json.stringify(&value).unwrap()
+    std.testing.assertEqual(
+        encoded,
+        "{\"big\":9007199254740993123456789,\"text\":\"line\\n🚀\",\"items\":[true,null,-1.20e+3]}",
+        "serialization should be compact, ordered, and lexically exact",
+    )
+}
+
+@test
+func jsonNumberConstructionRejectsNonJsonForms() {
+    let invalid: [string; 8] = ["", "+1", "01", "1.", ".5", "1e", "NaN", "inf"]
+    var index: usize = 0
+    while index < 8 {
+        std.testing.assertTrue(
+            std.json.Number.parse(*invalid.at(index)).isErr(),
+            "Number should accept only the JSON grammar",
+        )
+        index += 1
+    }
+    std.testing.assertEqual(
+        std.json.Number.parse("-0.125E+12").unwrap().text(),
+        "-0.125E+12",
+        "valid number spelling should be retained",
+    )
+}
+
+@test
+func jsonReportsLocationAndNestedValuePath() {
+    let error = assertParseError(
+        "{\"a\":[0,\n ?]}",
+        .unexpectedToken,
+        "invalid nested value should fail",
+    )
+    std.testing.assertEqual(error.byteOffset(), 10 as usize, "error should report byte offset")
+    std.testing.assertEqual(error.line(), 2 as usize, "error should report one-based line")
+    std.testing.assertEqual(error.column(), 2 as usize, "error should report one-based byte column")
+    std.testing.assertEqual(error.path(), "$[\"a\"][1]", "error should report nested value path")
+}
+
+@test
+func jsonDuplicatePoliciesAreExplicitAndRejectByDefault() {
+    let rejected = assertParseError(
+        "{\"x\":1,\"x\":2}",
+        .duplicateKey,
+        "duplicate keys should be rejected by default",
+    )
+    std.testing.assertEqual(rejected.path(), "$[\"x\"]", "duplicate should identify its member path")
+
+    let firstOptions = std.json.Options().withDuplicateKeys(.useFirst)
+    let first = std.json.parseWithOptions("{\"x\":1,\"x\":2}", firstOptions).unwrap()
+    match requireObject(&first).get("x") {
+        case .some(value) => std.testing.assertEqual(requireNumberText(value), "1", "useFirst should retain first")
+        case .none => std.testing.fail("x member should exist")
+    }
+
+    let lastOptions = std.json.Options().withDuplicateKeys(.useLast)
+    let last = std.json.parseWithOptions("{\"x\":1,\"x\":2}", lastOptions).unwrap()
+    match requireObject(&last).get("x") {
+        case .some(value) => std.testing.assertEqual(requireNumberText(value), "2", "useLast should retain last")
+        case .none => std.testing.fail("x member should exist")
+    }
+}
+
+@test
+func jsonRejectsMalformedEscapesSurrogatesAndUtf8() {
+    let _ = assertParseError("\"\\q\"", .invalidEscape, "unknown escape should fail")
+    let _ = assertParseError("\"\\uD800x\"", .invalidUnicodeEscape, "unpaired high surrogate should fail")
+    let _ = assertParseError("\"\\uDC00\"", .invalidUnicodeEscape, "unpaired low surrogate should fail")
+    let _ = assertParseError("\"line\nfeed\"", .unescapedControlCharacter, "raw control should fail")
+
+    let bytes: [uint8; 4] = ['\"' as uint8, 0xc0_u8, 0xaf_u8, '\"' as uint8]
+    let malformed = std.bytes.Buffer(bytes.asSpan()).intoString()
+    let invalid = assertParseError(malformed, .invalidUtf8, "overlong UTF-8 should fail")
+    std.testing.assertEqual(invalid.byteOffset(), 1 as usize, "UTF-8 error should identify lead byte")
+}
+
+@test
+func jsonEnforcesInputAndNestingLimits() {
+    let shallow = std.json.Options().withMaxDepth(1)
+    std.testing.assertTrue(
+        std.json.parseWithOptions("[0]", shallow).isOk(),
+        "one root container should fit depth one",
+    )
+    match std.json.parseWithOptions("[[0]]", shallow) {
+        case .ok(_) => std.testing.fail("nested container should exceed depth one")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .depthLimit, "depth limit should be typed")
+            std.testing.assertEqual(error.path(), "$[0]", "depth limit should identify nested container")
+        }
+    }
+
+    let fiveBytes = std.json.Options().withMaxInputBytes(5)
+    std.testing.assertTrue(
+        std.json.parseWithOptions("null ", fiveBytes).isOk(),
+        "value exactly at input limit should succeed",
+    )
+    match std.json.parseWithOptions("null x", fiveBytes) {
+        case .ok(_) => std.testing.fail("bytes beyond limit should fail")
+        case .err(error) => std.testing.assertEqual(error.kind(), .inputLimit, "input limit should be typed")
+    }
+}
+
+struct JsonChunkReader {
+    source: string
+    index: usize
+    chunkSize: usize
+    failAt: usize?
+}
+
+impl JsonChunkReader {
+    func new(_ source: string, _ chunkSize: usize) -> Self {
+        JsonChunkReader { source, index: 0, chunkSize, failAt: .none }
+    }
+
+    func failing(_ source: string, _ chunkSize: usize, _ failAt: usize) -> Self {
+        let failure: usize? = .some(failAt)
+        JsonChunkReader { source, index: 0, chunkSize, failAt: failure }
+    }
+}
+
+impl Reader for JsonChunkReader {
+    public func read(&mut self, _ destination: std.mem.MutableSpan[uint8]) -> std.result.Result[usize, std.io.Error] {
+        match self.failAt {
+            case .some(limit) => {
+                if self.index >= limit {
+                    return .err(std.io.Error(.unexpected).withOperation("read test JSON"))
+                }
+            }
+            case .none => {}
+        }
+        if self.index >= self.source.byteLen() || destination.len() == 0 {
+            return .ok(0)
+        }
+
+        var maximum = self.chunkSize
+        if maximum > destination.len() {
+            maximum = destination.len()
+        }
+        let remaining = self.source.byteLen() - self.index
+        if maximum > remaining {
+            maximum = remaining
+        }
+        match self.failAt {
+            case .some(limit) => {
+                let untilFailure = limit - self.index
+                if maximum > untilFailure {
+                    maximum = untilFailure
+                }
+            }
+            case .none => {}
+        }
+
+        var written: usize = 0
+        while written < maximum {
+            let slot = destination.at(written)
+            *slot = self.source.byteAt(self.index + written)
+            written += 1
+        }
+        self.index += written
+        return .ok(written)
+    }
+}
+
+struct JsonShortWriter {
+    output: std.bytes.Buffer
+    maximum: usize
+}
+
+impl JsonShortWriter {
+    func new(_ maximum: usize) -> Self {
+        JsonShortWriter { output: std.bytes.Buffer(), maximum }
+    }
+
+    func intoString(self) -> string {
+        self.output.intoString()
+    }
+}
+
+impl Writer for JsonShortWriter {
+    public func write(&mut self, _ source: std.mem.Span[uint8]) -> std.result.Result[usize, std.io.Error] {
+        if source.len() == 0 {
+            return .ok(0)
+        }
+        var count = source.len()
+        if count > self.maximum {
+            count = self.maximum
+        }
+        self.output.write(source.slice(0, count))
+    }
+
+    public func flush(&mut self) -> std.result.Result[(), std.io.Error] {
+        .ok(())
+    }
+}
+
+struct JsonFailWriter {
+    written: usize
+    failAfter: usize
+}
+
+impl Writer for JsonFailWriter {
+    public func write(&mut self, _ source: std.mem.Span[uint8]) -> std.result.Result[usize, std.io.Error] {
+        if self.written >= self.failAfter {
+            return .err(std.io.Error(.storageFull).withOperation("write test JSON"))
+        }
+        let remaining = self.failAfter - self.written
+        let count = if source.len() < remaining { source.len() } else { remaining }
+        self.written += count
+        return .ok(count)
+    }
+
+    public func flush(&mut self) -> std.result.Result[(), std.io.Error] {
+        .ok(())
+    }
+}
+
+@test
+func jsonDecoderStreamsAcrossArbitraryReaderBoundaries() {
+    let reader = JsonChunkReader(" {\"text\":\"🚀\"}\n [1,2] ", 1)
+    var decoder = std.json.Decoder(reader)
+
+    let first = decoder.next().unwrap().unwrap()
+    match requireObject(&first).get("text") {
+        case .some(.string(text)) => std.testing.assertEqual(*text, "🚀", "UTF-8 should cross reader chunks")
+        case _ => std.testing.fail("first streamed value should retain its string")
+    }
+    let second = decoder.next().unwrap().unwrap()
+    std.testing.assertEqual(second.arrayLen().unwrap(), 2 as usize, "second streamed value should decode")
+    std.testing.assertTrue(decoder.next().unwrap().isNone(), "decoder should report clean EOF")
+}
+
+@test
+func jsonDecoderResetsPerValueLimitAndPreservesAbsoluteLocations() {
+    let options = std.json.Options().withMaxInputBytes(5)
+    var decoder = std.json.Decoder.withOptions(JsonChunkReader("null 0", 2), options)
+    std.testing.assertTrue(decoder.next().unwrap().isSome(), "first value should fit")
+    std.testing.assertTrue(decoder.next().unwrap().isSome(), "limit should reset for the next value")
+
+    var invalid = std.json.Decoder(JsonChunkReader("null\n?", 1))
+    let _ = invalid.next().unwrap()
+    match invalid.next() {
+        case .ok(_) => std.testing.fail("second invalid streamed value should fail")
+        case .err(error) => {
+            std.testing.assertEqual(error.byteOffset(), 5 as usize, "stream offset should remain absolute")
+            std.testing.assertEqual(error.line(), 2 as usize, "stream line should remain absolute")
+            std.testing.assertEqual(error.column(), 1 as usize, "stream column should remain absolute")
+        }
+    }
+}
+
+@test
+func jsonDecoderPropagatesReaderFailureWithCurrentPath() {
+    var decoder = std.json.Decoder(JsonChunkReader.failing("{\"a\":", 1, 5))
+    match decoder.decode() {
+        case .ok(_) => std.testing.fail("reader failure should not become EOF")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .io, "reader failure should retain I/O category")
+            std.testing.assertEqual(error.path(), "$[\"a\"]", "reader failure should retain active value path")
+            std.testing.assertTrue(error.ioError().isSome(), "reader failure should retain its cause")
+        }
+    }
+}
+
+@test
+func jsonEncoderHandlesPartialWritersAndStreamFraming() {
+    let first = requireValue("{\"x\":1}")
+    let second = requireValue("[true,false]")
+    var encoder = std.json.Encoder(JsonShortWriter(1))
+    encoder.encodeLine(&first).unwrap()
+    encoder.encodeLine(&second).unwrap()
+    encoder.flush().unwrap()
+
+    let text = encoder.intoInner().intoString()
+    std.testing.assertEqual(text, "{\"x\":1}\n[true,false]\n", "partial writes should be retried completely")
+
+    var decoder = std.json.Decoder(JsonChunkReader(text, 3))
+    std.testing.assertTrue(decoder.next().unwrap().isSome(), "first framed value should decode")
+    std.testing.assertTrue(decoder.next().unwrap().isSome(), "second framed value should decode")
+    std.testing.assertTrue(decoder.next().unwrap().isNone(), "framed stream should end cleanly")
+}
+
+@test
+func jsonEncoderReportsUtf8DepthAndWriterFailures() {
+    let malformedBytes: [uint8; 2] = [0xff_u8, 'x' as uint8]
+    let malformedText = std.bytes.Buffer(malformedBytes.asSpan()).intoString()
+    let malformed: std.json.Value = .string(malformedText)
+    match std.json.stringify(&malformed) {
+        case .ok(_) => std.testing.fail("encoder should reject invalid UTF-8")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .invalidUtf8, "UTF-8 output error should be typed")
+            std.testing.assertEqual(error.stringByteIndex().unwrap(), 0 as usize, "UTF-8 byte index should be exact")
+        }
+    }
+
+    let nested = requireValue("[[0]]")
+    match std.json.stringifyWithOptions(&nested, std.json.Options().withMaxDepth(1)) {
+        case .ok(_) => std.testing.fail("encoder should enforce depth")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .depthLimit, "output depth error should be typed")
+            std.testing.assertEqual(error.path(), "$[0]", "output depth should identify nested value")
+        }
+    }
+
+    let object = requireValue("{\"ok\":1,\"bad\":\"x\"}")
+    var failing = std.json.Encoder(JsonFailWriter { written: 0, failAfter: 14 })
+    match failing.encode(&object) {
+        case .ok(_) => std.testing.fail("writer failure should propagate")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .io, "writer failure should retain I/O category")
+            std.testing.assertEqual(error.path(), "$[\"bad\"]", "writer failure should retain value path")
+            std.testing.assertTrue(error.ioError().isSome(), "writer failure should retain its cause")
+        }
+    }
+}
+
+struct JsonPerson {
+    name: string
+    age: uint8
+}
+
+impl std.json.EncodeJson for JsonPerson {
+    public func encodeJson(&self) -> std.result.Result[std.json.Value, std.json.CodecError] {
+        var object = std.json.Object()
+        let _ = object.insert("name", .string(self.name))
+        let ageValue = self.age as uint64
+        let age = match std.json.Number.parse(std.sprintf("%d", ageValue)) {
+            case .ok(value) => value
+            case .err(_) => return .err(std.json.CodecError(.invalidValue, "age is not encodable"))
+        }
+        let _ = object.insert("age", .number(age))
+        return .ok(.object(object))
+    }
+}
+
+impl std.json.DecodeJson for JsonPerson {
+    public func decodeJson(_ value: &std.json.Value) -> std.result.Result[Self, std.json.CodecError] {
+        let object = match value {
+            case .object(value) => value
+            case _ => return .err(std.json.CodecError(.typeMismatch, "expected person object"))
+        }
+        let name = match object.get("name") {
+            case .some(.string(value)) => *value
+            case .some(_) => return .err(std.json.CodecError.at(.typeMismatch, "$[\"name\"]", "expected string"))
+            case .none => return .err(std.json.CodecError.at(.missingField, "$[\"name\"]", "name is required"))
+        }
+        let age = match object.get("age") {
+            case .some(.number(value)) => {
+                match uint8.parse(value.text()) {
+                    case .ok(value) => value
+                    case .err(_) => return .err(std.json.CodecError.at(.invalidValue, "$[\"age\"]", "age is out of range"))
+                }
+            }
+            case .some(_) => return .err(std.json.CodecError.at(.typeMismatch, "$[\"age\"]", "expected integer"))
+            case .none => return .err(std.json.CodecError.at(.missingField, "$[\"age\"]", "age is required"))
+        }
+        return .ok(JsonPerson { name, age })
+    }
+}
+
+@test
+func jsonManualCodecsComposeWithStringsStreamsAndCollections() {
+    let person = JsonPerson { name: "Ada", age: 37 }
+    let text = std.json.encode(&person).unwrap()
+    std.testing.assertEqual(text, "{\"name\":\"Ada\",\"age\":37}", "manual encoder should preserve field order")
+
+    let decoded = std.json.decode[JsonPerson](text).unwrap()
+    std.testing.assertEqual(decoded.name, "Ada", "manual decoder should restore string field")
+    std.testing.assertEqual(decoded.age, 37_u8, "manual decoder should restore numeric field")
+
+    var numbers = std.collections.List[int32]()
+    numbers.append(1)
+    numbers.append(2)
+    numbers.append(3)
+    let encodedNumbers = std.json.encode(&numbers).unwrap()
+    std.testing.assertEqual(encodedNumbers, "[1,2,3]", "collection codec should compose element codecs")
+    let decodedNumbers = std.json.decode[std.collections.List[int32]](encodedNumbers).unwrap()
+    std.testing.assertEqual(decodedNumbers.len(), 3 as usize, "collection decoder should restore length")
+    std.testing.assertEqual(*decodedNumbers.at(2), 3, "collection decoder should restore values")
+
+    var stream = std.json.Encoder(JsonShortWriter(2))
+    stream.encodeJsonLine(&person).unwrap()
+    let streamText = stream.intoInner().intoString()
+    var reader = std.json.Decoder(JsonChunkReader(streamText, 2))
+    let streamed: JsonPerson = reader.nextJson().unwrap().unwrap()
+    std.testing.assertEqual(streamed.name, "Ada", "manual codecs should compose with streaming APIs")
+}
+
+@test
+func jsonManualCodecErrorsRemainTypedAndPathed() {
+    match std.json.decode[JsonPerson]("{\"age\":300}") {
+        case .ok(_) => std.testing.fail("invalid person should not decode")
+        case .err(.codec(error)) => {
+            std.testing.assertEqual(error.kind(), .missingField, "missing field should retain codec kind")
+            std.testing.assertEqual(error.path(), "$[\"name\"]", "missing field should retain path")
+        }
+        case .err(.syntax(_)) => std.testing.fail("valid JSON should not become syntax error")
+    }
+
+    match std.json.decode[JsonPerson]("{bad}") {
+        case .ok(_) => std.testing.fail("malformed JSON should not decode")
+        case .err(.syntax(error)) => std.testing.assertEqual(error.kind(), .unexpectedToken, "syntax kind should survive")
+        case .err(.codec(_)) => std.testing.fail("syntax error should not become codec error")
+    }
+}

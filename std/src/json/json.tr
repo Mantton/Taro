@@ -1,0 +1,225 @@
+import std.fmt.Display
+
+/// The default maximum nesting depth accepted by JSON parsers and encoders.
+public const DEFAULT_MAX_DEPTH: usize = 128
+
+/// The default maximum number of bytes accepted for one JSON text.
+public const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024
+
+/// How an object parser handles a repeated member name.
+public enum DuplicateKeyPolicy: std.marker.Copy, std.ops.PartialEq {
+    /// Reject the object. This is the default because silently choosing one
+    /// value can create security differences between downstream consumers.
+    case reject
+    /// Keep the first value and still validate the later value.
+    case useFirst
+    /// Replace the earlier value with the last value.
+    case useLast
+}
+
+/// Resource and compatibility controls shared by parsers and encoders.
+public struct Options: std.marker.Copy {
+    maxDepthValue: usize
+    maxInputBytesValue: usize
+    duplicateKeysValue: DuplicateKeyPolicy
+}
+
+impl Options {
+    /// Construct options with safe, finite defaults.
+    public func new() -> Self {
+        Options {
+            maxDepthValue: DEFAULT_MAX_DEPTH,
+            maxInputBytesValue: DEFAULT_MAX_INPUT_BYTES,
+            duplicateKeysValue: .reject,
+        }
+    }
+
+    public func maxDepth(&self) -> usize {
+        self.maxDepthValue
+    }
+
+    public func maxInputBytes(&self) -> usize {
+        self.maxInputBytesValue
+    }
+
+    public func duplicateKeys(&self) -> DuplicateKeyPolicy {
+        self.duplicateKeysValue
+    }
+
+    public func withMaxDepth(self, _ maximum: usize) -> Self {
+        Options {
+            maxDepthValue: maximum,
+            maxInputBytesValue: self.maxInputBytesValue,
+            duplicateKeysValue: self.duplicateKeysValue,
+        }
+    }
+
+    public func withMaxInputBytes(self, _ maximum: usize) -> Self {
+        Options {
+            maxDepthValue: self.maxDepthValue,
+            maxInputBytesValue: maximum,
+            duplicateKeysValue: self.duplicateKeysValue,
+        }
+    }
+
+    public func withDuplicateKeys(self, _ policy: DuplicateKeyPolicy) -> Self {
+        Options {
+            maxDepthValue: self.maxDepthValue,
+            maxInputBytesValue: self.maxInputBytesValue,
+            duplicateKeysValue: policy,
+        }
+    }
+}
+
+impl std.default.Default for Options {
+    public func default() -> Self {
+        Options()
+    }
+}
+
+/// A stable category for JSON input failures.
+public enum ErrorKind: std.marker.Copy, std.ops.PartialEq {
+    case unexpectedEof
+    case unexpectedToken
+    case trailingData
+    case invalidNumber
+    case invalidEscape
+    case invalidUnicodeEscape
+    case invalidUtf8
+    case unescapedControlCharacter
+    case duplicateKey
+    case depthLimit
+    case inputLimit
+    case io
+}
+
+/// A JSON input failure with source position and value-path context.
+///
+/// Byte offsets are zero-based. Lines and columns are one-based and columns
+/// count bytes, which makes every reported location directly seekable in the
+/// original input even when it contains malformed UTF-8.
+public struct Error {
+    kindValue: ErrorKind
+    messageValue: string
+    offsetValue: usize
+    lineValue: usize
+    columnValue: usize
+    pathValue: string
+    ioErrorValue: std.io.Error?
+}
+
+impl Error {
+    func at(
+        _ kind: ErrorKind,
+        _ message: string,
+        _ offset: usize,
+        _ line: usize,
+        _ column: usize,
+        _ path: string,
+    ) -> Self {
+        Error {
+            kindValue: kind,
+            messageValue: message,
+            offsetValue: offset,
+            lineValue: line,
+            columnValue: column,
+            pathValue: path,
+            ioErrorValue: .none,
+        }
+    }
+
+    func fromIo(
+        _ cause: std.io.Error,
+        _ offset: usize,
+        _ line: usize,
+        _ column: usize,
+        _ path: string,
+    ) -> Self {
+        let ioErrorValue: std.io.Error? = .some(cause)
+        Error {
+            kindValue: .io,
+            messageValue: "I/O failure while reading JSON",
+            offsetValue: offset,
+            lineValue: line,
+            columnValue: column,
+            pathValue: path,
+            ioErrorValue,
+        }
+    }
+
+    public func kind(&self) -> ErrorKind {
+        self.kindValue
+    }
+
+    public func message(&self) -> string {
+        self.messageValue
+    }
+
+    public func byteOffset(&self) -> usize {
+        self.offsetValue
+    }
+
+    public func line(&self) -> usize {
+        self.lineValue
+    }
+
+    public func column(&self) -> usize {
+        self.columnValue
+    }
+
+    public func path(&self) -> string {
+        self.pathValue
+    }
+
+    public func ioError(&self) -> std.optional.Optional[&std.io.Error] {
+        match &self.ioErrorValue {
+            case .some(cause) => return .some(cause)
+            case .none => return .none
+        }
+    }
+}
+
+impl Display for ErrorKind {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .unexpectedEof => into.writeString("unexpected end of JSON input")
+            case .unexpectedToken => into.writeString("unexpected JSON token")
+            case .trailingData => into.writeString("trailing data after JSON value")
+            case .invalidNumber => into.writeString("invalid JSON number")
+            case .invalidEscape => into.writeString("invalid JSON string escape")
+            case .invalidUnicodeEscape => into.writeString("invalid JSON Unicode escape")
+            case .invalidUtf8 => into.writeString("invalid UTF-8 in JSON string")
+            case .unescapedControlCharacter => into.writeString("unescaped control character in JSON string")
+            case .duplicateKey => into.writeString("duplicate JSON object key")
+            case .depthLimit => into.writeString("JSON nesting limit exceeded")
+            case .inputLimit => into.writeString("JSON input-size limit exceeded")
+            case .io => into.writeString("JSON input I/O failure")
+        }
+    }
+}
+
+impl Display for Error {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        self.kindValue.display(into)
+        into.writeString(" at ")
+        into.writeString(self.pathValue)
+        into.writeString(" (line ")
+        self.lineValue.display(into)
+        into.writeString(", column ")
+        self.columnValue.display(into)
+        into.writeString(", byte ")
+        self.offsetValue.display(into)
+        into.writeString("): ")
+        into.writeString(self.messageValue)
+
+        match &self.ioErrorValue {
+            case .some(cause) => {
+                into.writeString(": ")
+                cause.display(into)
+            }
+            case .none => {}
+        }
+    }
+}
+
+impl std.error.Error for Error {}
