@@ -69,6 +69,13 @@ enum LlvmOptimizationPipeline {
     Module(&'static str),
 }
 
+fn place_operand<'a, 'ctx>(op: &'a Operand<'ctx>) -> Option<&'a Place<'ctx>> {
+    match op {
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => Some(place),
+        Operand::Constant(_) => None,
+    }
+}
+
 fn llvm_optimization_pipeline(
     profile: BuildProfile,
     optimization: OptimizationMode,
@@ -3735,13 +3742,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         rvalue: &mir::Rvalue<'gcx>,
     ) -> CompileResult<bool> {
         let source = match rvalue {
-            mir::Rvalue::Use(op) => {
-                let Some((source, modifiers)) = op.as_copy() else {
-                    return Ok(false);
-                };
-                let _ = modifiers;
-                source
-            }
+            // A MIR move changes ownership bookkeeping, not the bytes needed
+            // at the destination. Treat it like a copy here so large moved
+            // arrays do not become giant first-class LLVM aggregate values.
+            mir::Rvalue::Use(op) => match place_operand(op) {
+                Some(source) => source,
+                None => return Ok(false),
+            },
             _ => return Ok(false),
         };
 
@@ -7779,7 +7786,7 @@ mod struct_layout_tests {
         build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_bitcode_magic,
         has_llvm_function_body, indirect_arg_threshold_for_triple,
         indirect_return_threshold_for_triple, llvm_inline_attribute_name,
-        llvm_optimization_pipeline, logical_to_physical_map, packed_field_order,
+        llvm_optimization_pipeline, logical_to_physical_map, packed_field_order, place_operand,
         static_initializer_value_for_codegen, target_is_aarch64, write_llvm_bitcode,
     };
     use crate::{
@@ -7787,6 +7794,7 @@ mod struct_layout_tests {
         compile::config::{BuildProfile, LtoMode, OptLevel, OptimizationMode},
         diagnostics::DiagCtx,
         hir::KnownAttribute,
+        mir::{CopyModifiers, Operand, Place},
         sema::models::{ConstKind, ConstValue, ConstVarID, GenericParameter},
         span::Symbol,
     };
@@ -7901,6 +7909,26 @@ mod struct_layout_tests {
             indirect_arg_threshold_for_triple("x86_64-unknown-linux-gnu"),
             NON_AARCH64_INDIRECT_ARG_THRESHOLD_BYTES
         );
+    }
+
+    #[test]
+    fn large_aggregate_copy_source_accepts_owned_moves() {
+        let place = Place::return_place();
+        let operands = [
+            Operand::Copy(place.clone()),
+            Operand::Move(place.clone()),
+            Operand::CopyWith(
+                place.clone(),
+                CopyModifiers {
+                    take: true,
+                    init: false,
+                },
+            ),
+        ];
+
+        for operand in &operands {
+            assert_eq!(place_operand(operand), Some(&place));
+        }
     }
 
     #[test]
