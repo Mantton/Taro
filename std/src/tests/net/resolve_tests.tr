@@ -1,0 +1,144 @@
+@cfg(family("unix"))
+func resolveByteSpan(_ value: &uint8) -> std.mem.Span[uint8] {
+    std.mem.Span[uint8].from(unsafe { value as *const uint8 }, 1)
+}
+
+@cfg(family("unix"))
+func resolveByteMutSpan(_ value: &mut uint8) -> std.mem.MutableSpan[uint8] {
+    std.mem.MutableSpan[uint8].from(unsafe { value as *mut uint8 }, 1)
+}
+
+@cfg(family("unix"))
+func acceptConnectHostClient(_ listener: &std.net.TcpListener) async {
+    let accepted = match await listener.accept() {
+        case .ok(value) => value.0
+        case .err(_) => std.panic.panic("connectHost server should accept")
+    }
+    var byte: uint8 = 0_u8
+    let count = (await accepted.read(resolveByteMutSpan(&mut byte))).unwrap()
+    std.testing.assertEqual(count, 1 as usize, "connectHost server should read one byte")
+    std.testing.assertEqual(byte, 73_u8, "connectHost server should receive client data")
+    let written = (await accepted.write(resolveByteSpan(&byte))).unwrap()
+    std.testing.assertEqual(written, 1 as usize, "connectHost server should echo one byte")
+    accepted.close().unwrap()
+}
+
+@cfg(family("unix"))
+@test
+func lookupHostHandlesLiteralsAndLocalResolverResults() async {
+    let literal = (await std.net.lookupHost("192.0.2.1")).unwrap()
+    std.testing.assertEqual(literal.len(), 1 as usize, "an IP literal should produce one exact result")
+    std.testing.assertEqual(
+        *literal.at(0),
+        std.net.IpAddress.ipv4([192_u8, 0_u8, 2_u8, 1_u8]),
+        "literal lookup should bypass DNS canonicalization",
+    )
+
+    let local = (await std.net.lookupHost("localhost")).unwrap()
+    std.testing.assertTrue(!local.isEmpty(), "localhost should resolve through the OS resolver")
+    var index: usize = 0
+    while index < local.len() {
+        let rendered = std.sprintf("%v", *local.at(index))
+        std.testing.assertTrue(rendered.byteLen() > 0, "every resolver result should be a usable IP")
+        index += 1
+    }
+}
+
+@cfg(family("unix"))
+@test
+func lookupHostReturnsTypedInputFailures() async {
+    match await std.net.lookupHost("") {
+        case .ok(_) => std.testing.fail("empty hosts should not resolve")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .notFound, "empty hosts should match Go's not-found contract")
+            std.testing.assertEqual(error.query(), "", "resolve errors should retain their query")
+            match error.resolverCode() {
+                case .none => {}
+                case .some(_) => std.testing.fail("locally rejected empty hosts have no resolver code")
+            }
+        }
+    }
+
+    match await std.net.lookupHost("bad\0host") {
+        case .ok(_) => std.testing.fail("embedded NUL must not be truncated by libc")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .invalidInput, "embedded NUL should be typed invalid input")
+            std.testing.assertEqual(error.query(), "bad\0host", "invalid queries should remain inspectable")
+        }
+    }
+}
+
+@cfg(family("unix"))
+@test
+func lookupAddressReverseResolvesLoopback() async {
+    let names = (await std.net.lookupAddress(std.net.IpAddress.ipv4([127_u8, 0_u8, 0_u8, 1_u8]))).unwrap()
+    std.testing.assertTrue(!names.isEmpty(), "IPv4 loopback should have a local reverse name")
+    var index: usize = 0
+    while index < names.len() {
+        std.testing.assertTrue(names.at(index).byteLen() > 0, "reverse names should never be empty")
+        index += 1
+    }
+}
+
+@cfg(family("unix"))
+@test
+func cancellingLookupAbandonsDeliverySafely() async {
+    let (readySender, readyReceiver) = std.sync.bounded[int32](1).unwrap()
+    let task = std.task.spawn(move || async {
+        (await readySender.send(1_i32)).unwrap()
+        return await std.net.lookupHost("localhost")
+    })
+
+    match await readyReceiver.recv() {
+        case .some(_) => {}
+        case .none => std.panic.panic("resolver task should signal before lookup")
+    }
+    // The child runs until lookupHost is suspended on the blocking pool before
+    // this receiver resumes. Cancellation may discard delivery, but the native
+    // call still owns and closes its snapshot before its worker returns.
+    task.cancel()
+    match await task.result() {
+        case .err(.cancelled) => {}
+        case .err(.panicked(_)) => std.testing.fail("cancelled resolution should not panic")
+        case .ok(_) => std.testing.fail("cancelled resolution should abandon result delivery")
+    }
+
+    let followup = await std.net.lookupHost("localhost")
+    std.testing.assertTrue(followup.isOk(), "resolver should remain usable after cancellation")
+}
+
+@cfg(family("unix"))
+@test
+func connectHostConnectsAndSeparatesResolverErrors() async {
+    let listener = std.net.TcpListener.bind(std.net.SocketAddress.localhost(0_u16)).unwrap()
+    let address = listener.localAddress().unwrap()
+
+    let client = match await std.net.TcpStream.connectHost("127.0.0.1", address.port()) {
+        case .ok(value) => value
+        case .err(_) => std.panic.panic("connectHost should connect to a numeric host")
+    }
+    var byte: uint8 = 73_u8
+    std.testing.assertEqual(
+        (await client.write(resolveByteSpan(&byte))).unwrap(),
+        1 as usize,
+        "connectHost client should write",
+    )
+    await acceptConnectHostClient(&listener)
+    byte = 0_u8
+    std.testing.assertEqual(
+        (await client.read(resolveByteMutSpan(&mut byte))).unwrap(),
+        1 as usize,
+        "connectHost client should read",
+    )
+    std.testing.assertEqual(byte, 73_u8, "connectHost should yield an ordinary TCP stream")
+    client.close().unwrap()
+    listener.close().unwrap()
+
+    match await std.net.TcpStream.connectHost("", 80_u16) {
+        case .ok(_) => std.testing.fail("connectHost should reject an empty host")
+        case .err(.resolve(error)) => {
+            std.testing.assertEqual(error.kind(), .notFound, "connectHost should preserve resolver errors")
+        }
+        case .err(.connect(_)) => std.testing.fail("name failures must not look like connect failures")
+    }
+}

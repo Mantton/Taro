@@ -8,6 +8,8 @@ mod fs;
 pub mod garbage_collector;
 pub mod hash_seed;
 mod io_poller;
+#[cfg(unix)]
+mod net;
 mod observability;
 pub mod panic_unwind;
 #[cfg(unix)]

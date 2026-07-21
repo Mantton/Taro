@@ -1,0 +1,253 @@
+@cfg(family("unix"))
+func assertAddressParseError(
+    _ result: std.result.Result[std.net.IpAddress, std.convert.ParseError],
+    _ kind: std.convert.ParseErrorKind,
+    _ index: usize,
+    _ message: string,
+) {
+    match result {
+        case .ok(_) => std.testing.fail(message)
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), kind, message)
+            std.testing.assertEqual(error.index(), index, message)
+        }
+    }
+}
+
+@cfg(family("unix"))
+func assertSocketAddressParseError(
+    _ result: std.result.Result[std.net.SocketAddress, std.convert.ParseError],
+    _ kind: std.convert.ParseErrorKind,
+    _ index: usize,
+    _ message: string,
+) {
+    match result {
+        case .ok(_) => std.testing.fail(message)
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), kind, message)
+            std.testing.assertEqual(error.index(), index, message)
+        }
+    }
+}
+
+@cfg(family("unix"))
+@test
+func ipAddressParsesAndDisplaysStrictIpv4() {
+    let address = std.net.IpAddress.parse("192.0.2.1").unwrap()
+    std.testing.assertTrue(address.isIpv4(), "dotted decimal should produce IPv4")
+    std.testing.assertEqual(
+        address,
+        std.net.IpAddress.ipv4([192_u8, 0_u8, 2_u8, 1_u8]),
+        "IPv4 parsing should preserve all four octets",
+    )
+    std.testing.assertEqual(std.sprintf("%v", address), "192.0.2.1", "IPv4 display should be dotted decimal")
+    std.testing.assertEqual(
+        std.net.IpAddress.parse("0.0.0.0").unwrap().ipv4Octets().unwrap(),
+        [0_u8, 0_u8, 0_u8, 0_u8],
+        "zero IPv4 address should parse",
+    )
+    std.testing.assertEqual(
+        std.net.IpAddress.parse("255.255.255.255").unwrap().ipv4Octets().unwrap(),
+        [255_u8, 255_u8, 255_u8, 255_u8],
+        "maximum IPv4 octets should parse",
+    )
+
+    let generic: std.net.IpAddress = std.convert.parse("127.0.0.1").unwrap()
+    std.testing.assertEqual(std.sprintf("%v", generic), "127.0.0.1", "Parse should compose generically")
+}
+
+@cfg(family("unix"))
+@test
+func ipAddressRejectsMalformedIpv4AtPreciseOffsets() {
+    assertAddressParseError(std.net.IpAddress.parse(""), .empty, 0 as usize, "empty IP should be typed")
+    assertAddressParseError(
+        std.net.IpAddress.parse("192.0.2"),
+        .invalidFormat,
+        7 as usize,
+        "IPv4 requires exactly four octets",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("192.0.2.1.5"),
+        .invalidFormat,
+        9 as usize,
+        "IPv4 rejects extra octets",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("256.0.0.1"),
+        .overflow,
+        2 as usize,
+        "IPv4 reports the digit crossing 255",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("01.2.3.4"),
+        .invalidFormat,
+        1 as usize,
+        "IPv4 rejects ambiguous leading zeroes",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("1..2.3"),
+        .invalidFormat,
+        2 as usize,
+        "IPv4 reports an empty octet",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("1.x.2.3"),
+        .invalidDigit,
+        2 as usize,
+        "IPv4 reports a non-decimal byte",
+    )
+}
+
+@cfg(family("unix"))
+@test
+func ipAddressParsesCompressedAndMappedIpv6() {
+    let zero = std.net.IpAddress.parse("::").unwrap()
+    std.testing.assertTrue(zero.isIpv6(), "double colon should produce IPv6")
+    std.testing.assertEqual(std.sprintf("%v", zero), "::", "all-zero IPv6 should stay compressed")
+
+    let loopback = std.net.IpAddress.parse("::1").unwrap()
+    std.testing.assertEqual(std.sprintf("%v", loopback), "::1", "IPv6 loopback should round-trip")
+
+    let expanded = std.net.IpAddress.parse("2001:0DB8:0000:0000:0000:FF00:0042:8329").unwrap()
+    std.testing.assertEqual(
+        std.sprintf("%v", expanded),
+        "2001:db8::ff00:42:8329",
+        "IPv6 display should follow RFC 5952 case and compression",
+    )
+
+    let firstLongest = std.net.IpAddress.parse("2001:0:0:1:0:0:1:1").unwrap()
+    std.testing.assertEqual(
+        std.sprintf("%v", firstLongest),
+        "2001::1:0:0:1:1",
+        "equal zero runs should compress the first run",
+    )
+
+    let singleZero = std.net.IpAddress.parse("2001:db8:0:1:1:1:1:1").unwrap()
+    std.testing.assertEqual(
+        std.sprintf("%v", singleZero),
+        "2001:db8:0:1:1:1:1:1",
+        "a single zero group should not be compressed",
+    )
+
+    let mapped = std.net.IpAddress.parse("::ffff:192.0.2.128").unwrap()
+    std.testing.assertTrue(mapped.isIpv6(), "mapped addresses should retain their IPv6 family")
+    std.testing.assertEqual(
+        std.sprintf("%v", mapped),
+        "::ffff:192.0.2.128",
+        "mapped IPv6 should keep an explicit mapped prefix",
+    )
+
+    let embedded = std.net.IpAddress.parse("2001:db8::192.0.2.1").unwrap()
+    std.testing.assertEqual(
+        std.sprintf("%v", embedded),
+        "2001:db8::c000:201",
+        "non-mapped embedded IPv4 should canonicalize as IPv6 groups",
+    )
+}
+
+@cfg(family("unix"))
+@test
+func ipAddressRejectsMalformedIpv6AtPreciseOffsets() {
+    assertAddressParseError(
+        std.net.IpAddress.parse("2001:db8:1"),
+        .invalidFormat,
+        10 as usize,
+        "uncompressed IPv6 requires eight groups",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("2001::db8::1"),
+        .invalidFormat,
+        10 as usize,
+        "IPv6 permits only one compression marker",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("12345::1"),
+        .overflow,
+        4 as usize,
+        "IPv6 groups contain at most four digits",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("fe80::1%en0"),
+        .invalidDigit,
+        7 as usize,
+        "zones are rejected until scope IDs are represented",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("1:2:3:4:5:6:7:8::"),
+        .invalidFormat,
+        17 as usize,
+        "compression must replace at least one group",
+    )
+    assertAddressParseError(
+        std.net.IpAddress.parse("::ffff:999.0.0.1"),
+        .overflow,
+        9 as usize,
+        "embedded IPv4 errors retain absolute byte offsets",
+    )
+}
+
+@cfg(family("unix"))
+@test
+func socketAddressParsesDisplaysAndExposesParts() {
+    let ipv4 = std.net.SocketAddress.parse("192.0.2.1:8080").unwrap()
+    std.testing.assertEqual(ipv4.port(), 8080_u16, "IPv4 socket address should expose its port")
+    std.testing.assertEqual(
+        std.sprintf("%v", ipv4.ip()),
+        "192.0.2.1",
+        "IPv4 socket address should expose its IP",
+    )
+    std.testing.assertEqual(
+        std.sprintf("%v", ipv4),
+        "192.0.2.1:8080",
+        "IPv4 socket address should round-trip",
+    )
+
+    let ipv6 = std.net.SocketAddress.parse("[2001:db8::1]:443").unwrap()
+    std.testing.assertEqual(ipv6.port(), 443_u16, "IPv6 socket address should expose its port")
+    std.testing.assertEqual(
+        std.sprintf("%v", ipv6),
+        "[2001:db8::1]:443",
+        "IPv6 socket address display should retain required brackets",
+    )
+
+    let built = std.net.SocketAddress(std.net.IpAddress.parse("::1").unwrap(), 80_u16)
+    std.testing.assertEqual(std.sprintf("%v", built), "[::1]:80", "new shorthand should build typed addresses")
+
+    let generic: std.net.SocketAddress = std.convert.parse("127.0.0.1:0").unwrap()
+    std.testing.assertEqual(generic.port(), 0_u16, "generic socket parsing should accept ephemeral port zero")
+}
+
+@cfg(family("unix"))
+@test
+func socketAddressRejectsAmbiguousOrMalformedText() {
+    assertSocketAddressParseError(
+        std.net.SocketAddress.parse("::1:80"),
+        .invalidFormat,
+        1 as usize,
+        "unbracketed IPv6 plus port is ambiguous",
+    )
+    assertSocketAddressParseError(
+        std.net.SocketAddress.parse("[::1]"),
+        .invalidFormat,
+        5 as usize,
+        "bracketed IPv6 requires a port separator",
+    )
+    assertSocketAddressParseError(
+        std.net.SocketAddress.parse("[::1]:65536"),
+        .overflow,
+        10 as usize,
+        "ports must fit uint16",
+    )
+    assertSocketAddressParseError(
+        std.net.SocketAddress.parse("[127.0.0.1]:80"),
+        .invalidFormat,
+        10 as usize,
+        "brackets are reserved for IPv6",
+    )
+    assertSocketAddressParseError(
+        std.net.SocketAddress.parse("127.0.0.1:"),
+        .invalidFormat,
+        10 as usize,
+        "an empty port is invalid",
+    )
+}

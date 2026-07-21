@@ -7,12 +7,12 @@ public struct RawSocket: Copy {
     fd: int32
 }
 
-public enum IpAddress: Copy {
+public enum IpAddress: Copy, std.ops.PartialEq {
     case ipv4([uint8; 4])
     case ipv6([uint8; 16])
 }
 
-public struct SocketAddress: Copy {
+public struct SocketAddress: Copy, std.ops.PartialEq {
     ip: IpAddress
     port: uint16
 }

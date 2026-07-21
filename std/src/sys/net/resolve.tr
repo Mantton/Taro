@@ -1,0 +1,233 @@
+import std.collections.List
+import std.result.Result
+
+const RAW_RESOLVE_NOT_FOUND: uint8 = 1_u8
+const RAW_RESOLVE_TEMPORARY: uint8 = 2_u8
+const RAW_RESOLVE_INVALID_INPUT: uint8 = 3_u8
+const RAW_RESOLVE_UNSUPPORTED: uint8 = 4_u8
+const RAW_RESOLVE_RESOURCE_EXHAUSTED: uint8 = 5_u8
+const RAW_RESOLVE_SYSTEM: uint8 = 6_u8
+
+@cfg(family("unix"))
+extern "blocking" {
+    func __rt__net_lookup_host(
+        _ host: string,
+        _ lenOut: *mut usize,
+        _ kindOut: *mut uint8,
+        _ resolverCodeOut: *mut int32,
+        _ systemCodeOut: *mut int32,
+    ) -> usize
+    func __rt__net_lookup_address(
+        _ family: uint8,
+        _ address: *const uint8,
+        _ lenOut: *mut usize,
+        _ kindOut: *mut uint8,
+        _ resolverCodeOut: *mut int32,
+        _ systemCodeOut: *mut int32,
+    ) -> usize
+}
+
+@cfg(family("unix"))
+extern "taro_rt" {
+    func __rt__net_ip_snapshot_at(
+        _ handle: usize,
+        _ index: usize,
+        _ familyOut: *mut uint8,
+        _ addressOut: *mut uint8,
+    ) -> int32
+    func __rt__net_name_snapshot_at(
+        _ handle: usize,
+        _ index: usize,
+        _ dataOut: *mut *const uint8,
+        _ lenOut: *mut usize,
+    ) -> int32
+    func __rt__net_snapshot_close(_ handle: usize)
+}
+
+public enum RawResolveErrorKind: std.marker.Copy, std.ops.PartialEq {
+    case notFound
+    case temporary
+    case invalidInput
+    case unsupported
+    case resourceExhausted
+    case system
+    case unexpected
+}
+
+public struct RawResolveError: std.marker.Copy {
+    kindValue: RawResolveErrorKind
+    resolverCodeValue: int32
+    systemCodeValue: int32
+}
+
+impl RawResolveError {
+    public func kind(&self) -> RawResolveErrorKind { self.kindValue }
+    public func resolverCode(&self) -> int32 { self.resolverCodeValue }
+    public func systemCode(&self) -> int32 { self.systemCodeValue }
+}
+
+func rawResolveKind(_ value: uint8) -> RawResolveErrorKind {
+    if value == RAW_RESOLVE_NOT_FOUND { return .notFound }
+    if value == RAW_RESOLVE_TEMPORARY { return .temporary }
+    if value == RAW_RESOLVE_INVALID_INPUT { return .invalidInput }
+    if value == RAW_RESOLVE_UNSUPPORTED { return .unsupported }
+    if value == RAW_RESOLVE_RESOURCE_EXHAUSTED { return .resourceExhausted }
+    if value == RAW_RESOLVE_SYSTEM { return .system }
+    return .unexpected
+}
+
+func rawResolveError(
+    _ kind: uint8,
+    _ resolverCode: int32,
+    _ systemCode: int32,
+) -> RawResolveError {
+    RawResolveError {
+        kindValue: rawResolveKind(kind),
+        resolverCodeValue: resolverCode,
+        systemCodeValue: systemCode,
+    }
+}
+
+func snapshotFailure(_ code: int32) -> RawResolveError {
+    // Snapshot access failures indicate an ABI contract violation, not a DNS
+    // outcome. Preserve the errno for diagnostics but keep the public kind
+    // separate from ordinary system resolver failures.
+    RawResolveError {
+        kindValue: .unexpected,
+        resolverCodeValue: 0_i32,
+        systemCodeValue: code,
+    }
+}
+
+func ipAddressFromSnapshot(
+    _ family: uint8,
+    _ bytes: [uint8; 16],
+) -> Result[std.sys.net.IpAddress, RawResolveError] {
+    if family == 4_u8 {
+        return .ok(.ipv4([
+            *bytes.at(0),
+            *bytes.at(1),
+            *bytes.at(2),
+            *bytes.at(3),
+        ]))
+    }
+    if family == 6_u8 {
+        return .ok(.ipv6(bytes))
+    }
+    return .err(RawResolveError {
+        kindValue: .unsupported,
+        resolverCodeValue: 0_i32,
+        systemCodeValue: 0_i32,
+    })
+}
+
+func copySnapshotString(_ data: *const uint8, _ len: usize) -> string {
+    if len == 0 { return "" }
+    let managed = std.mem.allocBytes(len)
+    data.readBytes(managed, len)
+    return std.string.stringFromParts(managed, len)
+}
+
+/// Resolve a host synchronously and copy every result out of runtime-owned
+/// storage. The caller is responsible for placing this work on a blocking
+/// pool when invoked from async code.
+@cfg(family("unix"))
+public func resolveHost(_ host: string) -> Result[List[std.sys.net.IpAddress], RawResolveError] {
+    var len: usize = 0
+    var kind: uint8 = 0_u8
+    var resolverCode: int32 = 0_i32
+    var systemCode: int32 = 0_i32
+    let handle = __rt__net_lookup_host(
+        host,
+        unsafe { &mut len as *mut usize },
+        unsafe { &mut kind as *mut uint8 },
+        unsafe { &mut resolverCode as *mut int32 },
+        unsafe { &mut systemCode as *mut int32 },
+    )
+    if handle == 0 {
+        return .err(rawResolveError(kind, resolverCode, systemCode))
+    }
+    defer { __rt__net_snapshot_close(handle) }
+
+    var addresses = List[std.sys.net.IpAddress](withCapacity: len)
+    var index: usize = 0
+    while index < len {
+        var family: uint8 = 0_u8
+        var bytes: [uint8; 16] = [0_u8; 16]
+        let data = unsafe { (&mut bytes as *mut [uint8; 16]) as *mut uint8 }
+        let code = __rt__net_ip_snapshot_at(
+            handle,
+            index,
+            unsafe { &mut family as *mut uint8 },
+            data,
+        )
+        if code != 0 {
+            return .err(snapshotFailure(code))
+        }
+        match ipAddressFromSnapshot(family, bytes) {
+            case .ok(address) => addresses.append(address)
+            case .err(error) => return .err(error)
+        }
+        index += 1
+    }
+    return .ok(addresses)
+}
+
+/// Reverse-resolve one IP address synchronously, copying names before the
+/// runtime snapshot is released.
+@cfg(family("unix"))
+public func resolveAddress(_ address: std.sys.net.IpAddress) -> Result[List[string], RawResolveError] {
+    var bytes: [uint8; 16] = [0_u8; 16]
+    let family: uint8 = match address {
+        case .ipv4(octets) => {
+            *bytes.at(0) = *octets.at(0)
+            *bytes.at(1) = *octets.at(1)
+            *bytes.at(2) = *octets.at(2)
+            *bytes.at(3) = *octets.at(3)
+            4_u8
+        }
+        case .ipv6(octets) => {
+            bytes = octets
+            6_u8
+        }
+    }
+
+    var len: usize = 0
+    var kind: uint8 = 0_u8
+    var resolverCode: int32 = 0_i32
+    var systemCode: int32 = 0_i32
+    let data = unsafe { (&bytes as *const [uint8; 16]) as *const uint8 }
+    let handle = __rt__net_lookup_address(
+        family,
+        data,
+        unsafe { &mut len as *mut usize },
+        unsafe { &mut kind as *mut uint8 },
+        unsafe { &mut resolverCode as *mut int32 },
+        unsafe { &mut systemCode as *mut int32 },
+    )
+    if handle == 0 {
+        return .err(rawResolveError(kind, resolverCode, systemCode))
+    }
+    defer { __rt__net_snapshot_close(handle) }
+
+    var names = List[string](withCapacity: len)
+    var index: usize = 0
+    while index < len {
+        var nameData: *const uint8 = unsafe { 0 as *const uint8 }
+        var nameLen: usize = 0
+        let code = __rt__net_name_snapshot_at(
+            handle,
+            index,
+            unsafe { &mut nameData as *mut *const uint8 },
+            unsafe { &mut nameLen as *mut usize },
+        )
+        if code != 0 {
+            return .err(snapshotFailure(code))
+        }
+        // Snapshot bytes are borrowed only until close, so each hostname must
+        // become an independently managed Taro string before the next await.
+        names.append(copySnapshotString(nameData, nameLen))
+        index += 1
+    }
+    return .ok(names)
+}

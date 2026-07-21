@@ -1,0 +1,533 @@
+import std.convert.{Parse, ParseError, ParseErrorKind}
+import std.fmt.{Display, Formatter}
+import std.result.Result
+
+const ASCII_ZERO: uint8 = 48_u8
+const ASCII_NINE: uint8 = 57_u8
+const ASCII_LOWER_A: uint8 = 97_u8
+const ASCII_LOWER_F: uint8 = 102_u8
+const ASCII_UPPER_A: uint8 = 65_u8
+const ASCII_UPPER_F: uint8 = 70_u8
+const ASCII_COLON: uint8 = 58_u8
+const ASCII_DOT: uint8 = 46_u8
+const ASCII_LEFT_BRACKET: uint8 = 91_u8
+const ASCII_RIGHT_BRACKET: uint8 = 93_u8
+
+func addressParseError(_ kind: ParseErrorKind, _ index: usize) -> ParseError {
+    ParseError(kind, index)
+}
+
+func decimalDigit(_ byte: uint8) -> int32 {
+    if byte >= ASCII_ZERO && byte <= ASCII_NINE {
+        return (byte - ASCII_ZERO) as int32
+    }
+    return -1_i32
+}
+
+func hexadecimalDigit(_ byte: uint8) -> int32 {
+    if byte >= ASCII_ZERO && byte <= ASCII_NINE {
+        return (byte - ASCII_ZERO) as int32
+    }
+    if byte >= ASCII_LOWER_A && byte <= ASCII_LOWER_F {
+        return (byte - ASCII_LOWER_A + 10_u8) as int32
+    }
+    if byte >= ASCII_UPPER_A && byte <= ASCII_UPPER_F {
+        return (byte - ASCII_UPPER_A + 10_u8) as int32
+    }
+    return -1_i32
+}
+
+func parseIpv4Range(
+    _ input: string,
+    _ start: usize,
+    _ end: usize,
+) -> Result[[uint8; 4], ParseError] {
+    if start == end {
+        return .err(addressParseError(.invalidFormat, start))
+    }
+
+    var octets: [uint8; 4] = [0_u8; 4]
+    var part: usize = 0
+    var index = start
+    while part < 4 {
+        if index >= end {
+            return .err(addressParseError(.invalidFormat, end))
+        }
+
+        let firstDigit = decimalDigit(input.byteAt(index))
+        if firstDigit < 0 {
+            let kind: ParseErrorKind = if input.byteAt(index) == ASCII_DOT {
+                .invalidFormat
+            } else {
+                .invalidDigit
+            }
+            return .err(addressParseError(kind, index))
+        }
+
+        var value: uint16 = 0_u16
+        var digits: usize = 0
+        while index < end {
+            let digit = decimalDigit(input.byteAt(index))
+            if digit < 0 {
+                break
+            }
+            // Leading zeroes are rejected like Go's netip parser. Accepting
+            // them has historically invited accidental octal interpretation
+            // when the address is passed to another tool.
+            if digits == 1 && value == 0_u16 {
+                return .err(addressParseError(.invalidFormat, index))
+            }
+            value = value * 10_u16 + (digit as uint16)
+            if value > 255_u16 {
+                return .err(addressParseError(.overflow, index))
+            }
+            digits += 1
+            index += 1
+        }
+
+        *octets.at(part) = value as uint8
+        part += 1
+        if part == 4 {
+            if index != end {
+                return .err(addressParseError(.invalidFormat, index))
+            }
+            break
+        }
+
+        if index >= end || input.byteAt(index) != ASCII_DOT {
+            return .err(addressParseError(.invalidFormat, index))
+        }
+        index += 1
+        if index == end {
+            return .err(addressParseError(.invalidFormat, end))
+        }
+    }
+
+    return .ok(octets)
+}
+
+func ipv6FromGroups(_ groups: [uint16; 8]) -> IpAddress {
+    var bytes: [uint8; 16] = [0_u8; 16]
+    var index: usize = 0
+    while index < 8 {
+        let value = *groups.at(index)
+        *bytes.at(index * 2) = ((value >> 8_u16) & 255_u16) as uint8
+        *bytes.at(index * 2 + 1) = (value & 255_u16) as uint8
+        index += 1
+    }
+    return .ipv6(bytes)
+}
+
+func parseIpv6Range(
+    _ input: string,
+    _ start: usize,
+    _ end: usize,
+) -> Result[IpAddress, ParseError] {
+    if start == end {
+        return .err(addressParseError(.invalidFormat, start))
+    }
+
+    var groups: [uint16; 8] = [0_u16; 8]
+    var groupCount: usize = 0
+    var compressedAt: usize? = .none
+    var index = start
+
+    if input.byteAt(index) == ASCII_COLON {
+        if index + 1 >= end || input.byteAt(index + 1) != ASCII_COLON {
+            return .err(addressParseError(.invalidFormat, index))
+        }
+        compressedAt = .some(0)
+        index += 2
+        if index == end {
+            return .ok(ipv6FromGroups(groups))
+        }
+    }
+
+    while index < end {
+        if groupCount >= 8 {
+            return .err(addressParseError(.invalidFormat, index))
+        }
+
+        let groupStart = index
+        var value: uint16 = 0_u16
+        var digits: usize = 0
+        while index < end {
+            let digit = hexadecimalDigit(input.byteAt(index))
+            if digit < 0 {
+                break
+            }
+            if digits == 4 {
+                return .err(addressParseError(.overflow, index))
+            }
+            value = (value << 4_u16) | (digit as uint16)
+            digits += 1
+            index += 1
+        }
+
+        if index < end && input.byteAt(index) == ASCII_DOT {
+            if groupCount > 6 {
+                return .err(addressParseError(.invalidFormat, groupStart))
+            }
+            let ipv4 = match parseIpv4Range(input, groupStart, end) {
+                case .ok(octets) => octets
+                case .err(error) => return .err(error)
+            }
+            *groups.at(groupCount) =
+                ((*ipv4.at(0) as uint16) << 8_u16) | (*ipv4.at(1) as uint16)
+            *groups.at(groupCount + 1) =
+                ((*ipv4.at(2) as uint16) << 8_u16) | (*ipv4.at(3) as uint16)
+            groupCount += 2
+            index = end
+            break
+        }
+
+        if digits == 0 {
+            // A percent sign denotes an IPv6 zone. SocketAddress currently
+            // has no scope-ID field, so rejecting it is safer than silently
+            // producing a link-local address that cannot be used correctly.
+            return .err(addressParseError(.invalidFormat, index))
+        }
+        *groups.at(groupCount) = value
+        groupCount += 1
+
+        if index == end {
+            break
+        }
+        if input.byteAt(index) != ASCII_COLON {
+            return .err(addressParseError(.invalidDigit, index))
+        }
+
+        index += 1
+        if index == end {
+            return .err(addressParseError(.invalidFormat, index - 1))
+        }
+        if input.byteAt(index) == ASCII_COLON {
+            match compressedAt {
+                case .some(_) => return .err(addressParseError(.invalidFormat, index))
+                case .none => compressedAt = .some(groupCount)
+            }
+            index += 1
+            if index == end {
+                break
+            }
+        }
+    }
+
+    match compressedAt {
+        case .none => {
+            if groupCount != 8 {
+                return .err(addressParseError(.invalidFormat, end))
+            }
+        }
+        case .some(compressionIndex) => {
+            // `::` must replace at least one zero group. Without this check,
+            // an otherwise complete eight-group address could contain a
+            // meaningless ninth separator.
+            if groupCount >= 8 {
+                return .err(addressParseError(.invalidFormat, end))
+            }
+            let zeroCount = 8 - groupCount
+            var moving = groupCount
+            while moving > compressionIndex {
+                moving -= 1
+                *groups.at(moving + zeroCount) = *groups.at(moving)
+            }
+            var zeroIndex = compressionIndex
+            while zeroIndex < compressionIndex + zeroCount {
+                *groups.at(zeroIndex) = 0_u16
+                zeroIndex += 1
+            }
+        }
+    }
+
+    return .ok(ipv6FromGroups(groups))
+}
+
+func parseIpAddress(_ input: string) -> Result[IpAddress, ParseError] {
+    let len = input.byteLen()
+    if len == 0 {
+        return .err(addressParseError(.empty, 0))
+    }
+    if input.contains(":") {
+        return parseIpv6Range(input, 0, len)
+    }
+    match parseIpv4Range(input, 0, len) {
+        case .ok(octets) => return .ok(.ipv4(octets))
+        case .err(error) => return .err(error)
+    }
+}
+
+func parsePortRange(
+    _ input: string,
+    _ start: usize,
+    _ end: usize,
+) -> Result[uint16, ParseError] {
+    if start == end {
+        return .err(addressParseError(.invalidFormat, start))
+    }
+
+    var value: uint32 = 0_u32
+    var index = start
+    while index < end {
+        let digit = decimalDigit(input.byteAt(index))
+        if digit < 0 {
+            return .err(addressParseError(.invalidDigit, index))
+        }
+        value = value * 10_u32 + (digit as uint32)
+        if value > 65535_u32 {
+            return .err(addressParseError(.overflow, index))
+        }
+        index += 1
+    }
+    return .ok(value as uint16)
+}
+
+func parseSocketAddress(_ input: string) -> Result[SocketAddress, ParseError] {
+    let len = input.byteLen()
+    if len == 0 {
+        return .err(addressParseError(.empty, 0))
+    }
+
+    if input.byteAt(0) == ASCII_LEFT_BRACKET {
+        var closing: usize = 1
+        while closing < len && input.byteAt(closing) != ASCII_RIGHT_BRACKET {
+            closing += 1
+        }
+        if closing == len {
+            return .err(addressParseError(.invalidFormat, len))
+        }
+        let ip = match parseIpv6Range(input, 1, closing) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        if closing + 1 >= len || input.byteAt(closing + 1) != ASCII_COLON {
+            return .err(addressParseError(.invalidFormat, closing + 1))
+        }
+        let port = match parsePortRange(input, closing + 2, len) {
+            case .ok(value) => value
+            case .err(error) => return .err(error)
+        }
+        return .ok(SocketAddress { ip, port })
+    }
+
+    var separator = len
+    var index: usize = 0
+    while index < len {
+        if input.byteAt(index) == ASCII_COLON {
+            if separator != len {
+                // IPv6 with a port must be bracketed so the split point is
+                // unambiguous and round-trips through Display.
+                return .err(addressParseError(.invalidFormat, index))
+            }
+            separator = index
+        }
+        index += 1
+    }
+    if separator == len {
+        return .err(addressParseError(.invalidFormat, len))
+    }
+
+    let octets = match parseIpv4Range(input, 0, separator) {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+    let port = match parsePortRange(input, separator + 1, len) {
+        case .ok(value) => value
+        case .err(error) => return .err(error)
+    }
+    let ip: IpAddress = .ipv4(octets)
+    return .ok(SocketAddress { ip, port })
+}
+
+func writeIpv4(_ octets: [uint8; 4], _ into: &mut Formatter) {
+    var index: usize = 0
+    while index < 4 {
+        if index > 0 {
+            into.writeByte(ASCII_DOT)
+        }
+        (*octets.at(index)).display(into)
+        index += 1
+    }
+}
+
+func writeHexGroup(_ value: uint16, _ into: &mut Formatter) {
+    if value == 0_u16 {
+        into.writeByte(ASCII_ZERO)
+        return
+    }
+
+    var reversed: [uint8; 4] = [0_u8; 4]
+    var count: usize = 0
+    var remaining = value
+    while remaining > 0_u16 {
+        let digit = (remaining % 16_u16) as uint8
+        *reversed.at(count) = if digit < 10_u8 {
+            ASCII_ZERO + digit
+        } else {
+            ASCII_LOWER_A + (digit - 10_u8)
+        }
+        count += 1
+        remaining = remaining / 16_u16
+    }
+    while count > 0 {
+        count -= 1
+        into.writeByte(*reversed.at(count))
+    }
+}
+
+func ipv6Groups(_ octets: [uint8; 16]) -> [uint16; 8] {
+    var groups: [uint16; 8] = [0_u16; 8]
+    var index: usize = 0
+    while index < 8 {
+        *groups.at(index) =
+            ((*octets.at(index * 2) as uint16) << 8_u16)
+                | (*octets.at(index * 2 + 1) as uint16)
+        index += 1
+    }
+    return groups
+}
+
+func isIpv4Mapped(_ octets: [uint8; 16]) -> bool {
+    var index: usize = 0
+    while index < 10 {
+        if *octets.at(index) != 0_u8 {
+            return false
+        }
+        index += 1
+    }
+    return *octets.at(10) == 255_u8 && *octets.at(11) == 255_u8
+}
+
+func writeIpv6(_ octets: [uint8; 16], _ into: &mut Formatter) {
+    if isIpv4Mapped(octets) {
+        into.writeString("::ffff:")
+        let mapped: [uint8; 4] = [
+            *octets.at(12),
+            *octets.at(13),
+            *octets.at(14),
+            *octets.at(15),
+        ]
+        writeIpv4(mapped, into)
+        return
+    }
+
+    let groups = ipv6Groups(octets)
+    var bestStart: usize = 0
+    var bestLen: usize = 0
+    var index: usize = 0
+    while index < 8 {
+        if *groups.at(index) != 0_u16 {
+            index += 1
+            continue
+        }
+        let runStart = index
+        while index < 8 && *groups.at(index) == 0_u16 {
+            index += 1
+        }
+        let runLen = index - runStart
+        // RFC 5952 compresses the first longest run and never compresses a
+        // single zero group.
+        if runLen >= 2 && runLen > bestLen {
+            bestStart = runStart
+            bestLen = runLen
+        }
+    }
+
+    index = 0
+    var justCompressed = false
+    while index < 8 {
+        if bestLen > 0 && index == bestStart {
+            into.writeString("::")
+            index += bestLen
+            justCompressed = true
+            continue
+        }
+        if index > 0 && !justCompressed {
+            into.writeByte(ASCII_COLON)
+        }
+        writeHexGroup(*groups.at(index), into)
+        justCompressed = false
+        index += 1
+    }
+}
+
+impl IpAddress {
+    /// Parse strict dotted-decimal IPv4 or RFC 4291 IPv6 text.
+    public func parse(_ input: string) -> Result[IpAddress, ParseError] {
+        parseIpAddress(input)
+    }
+
+    public func isIpv4(&self) -> bool {
+        match self {
+            case .ipv4(_) => true
+            case .ipv6(_) => false
+        }
+    }
+
+    public func isIpv6(&self) -> bool { return !self.isIpv4() }
+
+    public func ipv4Octets(&self) -> [uint8; 4]? {
+        match self {
+            case .ipv4(octets) => .some(*octets)
+            case .ipv6(_) => .none
+        }
+    }
+
+    public func ipv6Octets(&self) -> [uint8; 16]? {
+        match self {
+            case .ipv4(_) => .none
+            case .ipv6(octets) => .some(*octets)
+        }
+    }
+}
+
+impl Parse for IpAddress {
+    public func parse(_ input: string) -> Result[IpAddress, ParseError] {
+        parseIpAddress(input)
+    }
+}
+
+impl Display for IpAddress {
+    public func display(&self, _ into: &mut Formatter) {
+        match self {
+            case .ipv4(octets) => writeIpv4(*octets, into)
+            case .ipv6(octets) => writeIpv6(*octets, into)
+        }
+    }
+}
+
+impl SocketAddress {
+    public func new(_ ip: IpAddress, _ port: uint16) -> Self {
+        SocketAddress { ip, port }
+    }
+
+    /// Parse `IPv4:port` or `[IPv6]:port`. Host names are intentionally not
+    /// resolved by this lexical operation; use `lookupHost` or `connectHost`.
+    public func parse(_ input: string) -> Result[SocketAddress, ParseError] {
+        parseSocketAddress(input)
+    }
+
+    public func ip(&self) -> IpAddress { self.ip }
+    public func port(&self) -> uint16 { self.port }
+}
+
+impl Parse for SocketAddress {
+    public func parse(_ input: string) -> Result[SocketAddress, ParseError] {
+        parseSocketAddress(input)
+    }
+}
+
+impl Display for SocketAddress {
+    public func display(&self, _ into: &mut Formatter) {
+        match self.ip {
+            case .ipv4(octets) => writeIpv4(octets, into)
+            case .ipv6(octets) => {
+                into.writeByte(ASCII_LEFT_BRACKET)
+                writeIpv6(octets, into)
+                into.writeByte(ASCII_RIGHT_BRACKET)
+            }
+        }
+        into.writeByte(ASCII_COLON)
+        self.port.display(into)
+    }
+}

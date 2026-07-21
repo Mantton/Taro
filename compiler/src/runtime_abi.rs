@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 7;
+pub const RUNTIME_ABI_REVISION: u32 = 8;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -397,6 +397,23 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__keep_alive", "(*const u8)->void"),
     additional("__rt__logical_stack_pop", "()->void"),
     additional("__rt__logical_stack_push", "(string)->void"),
+    additional_unix(
+        "__rt__net_ip_snapshot_at",
+        "(usize,usize,*mut u8,*mut u8)->i32",
+    ),
+    additional_unix(
+        "__rt__net_lookup_address",
+        "(u8,*const u8,*mut usize,*mut u8,*mut i32,*mut i32)->usize",
+    ),
+    additional_unix(
+        "__rt__net_lookup_host",
+        "(string,*mut usize,*mut u8,*mut i32,*mut i32)->usize",
+    ),
+    additional_unix(
+        "__rt__net_name_snapshot_at",
+        "(usize,usize,*mut *const u8,*mut usize)->i32",
+    ),
+    additional_unix("__rt__net_snapshot_close", "(usize)->void"),
     additional_unix("__rt__open2", "(*const u8,i32)->i32"),
     additional_unix("__rt__open3", "(*const u8,i32,i32)->i32"),
     additional("__rt__parse_f32", "(string,*mut u32)->u8"),
@@ -552,6 +569,8 @@ mod tests {
         assert!(unix.contains("__rt__env_snapshot_open"));
         assert!(unix.contains("__rt__fs_metadata"));
         assert!(unix.contains("__rt__fs_remove_dir_all"));
+        assert!(unix.contains("__rt__net_lookup_host"));
+        assert!(unix.contains("__rt__net_lookup_address"));
         assert!(unix.contains("__rt__process_command_spawn"));
         assert!(unix.contains("__rt__process_child_wait"));
         assert!(!windows.contains("__rt__open2"));
@@ -559,6 +578,8 @@ mod tests {
         assert!(!windows.contains("__rt__env_snapshot_open"));
         assert!(!windows.contains("__rt__fs_metadata"));
         assert!(!windows.contains("__rt__fs_remove_dir_all"));
+        assert!(!windows.contains("__rt__net_lookup_host"));
+        assert!(!windows.contains("__rt__net_lookup_address"));
         assert!(!windows.contains("__rt__process_command_spawn"));
         assert!(!windows.contains("__rt__process_child_wait"));
     }
