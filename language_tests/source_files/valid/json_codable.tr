@@ -1,0 +1,37 @@
+import std.json.{Decodable, Encodable}
+import std.convert.Parse
+
+struct JsonBox {
+    value: int32
+}
+
+impl std.json.Encodable for JsonBox {
+    func encodeJson(&self) -> std.result.Result[std.json.Value, std.json.CodecError] {
+        self.value.encodeJson()
+    }
+}
+
+impl std.json.Decodable for JsonBox {
+    func decodeJson(_ value: &std.json.Value) -> std.result.Result[Self, std.json.CodecError] {
+        match value {
+            case .number(number) => {
+                match int32.parse(number.text()) {
+                    case .ok(value) => .ok(JsonBox { value })
+                    case .err(_) => .err(std.json.CodecError(.invalidValue, "value is out of range"))
+                }
+            }
+            case _ => .err(std.json.CodecError(.typeMismatch, "expected a number"))
+        }
+    }
+}
+
+func roundTrip[Value: std.json.Codable](_ value: &Value) -> Value {
+    let encoded = std.json.encode(value).unwrap()
+    std.json.decode[Value](encoded).unwrap()
+}
+
+func main() {
+    let decoded = roundTrip(&JsonBox { value: 42 })
+    assert(decoded.value == 42, "Codable should combine both JSON codec directions")
+    std.print("ok\n")
+}

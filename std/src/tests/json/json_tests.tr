@@ -511,7 +511,7 @@ struct JsonPerson {
     age: uint8
 }
 
-impl std.json.EncodeJson for JsonPerson {
+impl std.json.Encodable for JsonPerson {
     public func encodeJson(&self) -> std.result.Result[std.json.Value, std.json.CodecError] {
         var object = std.json.Object()
         let _ = object.insert("name", .string(self.name))
@@ -525,7 +525,7 @@ impl std.json.EncodeJson for JsonPerson {
     }
 }
 
-impl std.json.DecodeJson for JsonPerson {
+impl std.json.Decodable for JsonPerson {
     public func decodeJson(_ value: &std.json.Value) -> std.result.Result[Self, std.json.CodecError] {
         let object = match value {
             case .object(value) => value
@@ -548,6 +548,22 @@ impl std.json.DecodeJson for JsonPerson {
         }
         return .ok(JsonPerson { name, age })
     }
+}
+
+func jsonRoundTrip[Value: std.json.Codable](_ value: &Value) -> Value {
+    let text = std.json.encode(value).unwrap()
+    std.json.decode[Value](text).unwrap()
+}
+
+@test
+func jsonCodableCombinesBothCodecDirections() {
+    let person = JsonPerson { name: "Grace", age: 41 }
+    let decoded = jsonRoundTrip(&person)
+    std.testing.assertEqual(decoded.name, "Grace", "Codable should include Encodable")
+    std.testing.assertEqual(decoded.age, 41_u8, "Codable should include Decodable")
+
+    let number: int32 = 42
+    std.testing.assertEqual(jsonRoundTrip(&number), 42, "built-in codecs should satisfy Codable")
 }
 
 @test

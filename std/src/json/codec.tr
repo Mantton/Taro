@@ -83,15 +83,23 @@ impl std.error.Error for CodecError {}
 ///
 /// The first codec API is intentionally value-based rather than tied to an
 /// encoder implementation. Manual codecs therefore remain compatible when
-/// compiler-derived codecs are added later.
-public interface EncodeJson {
+/// compiler-derived codecs are added later. The `encodeJson` requirement keeps
+/// the DOM conversion distinct from the string and stream `encode` APIs.
+public interface Encodable {
     func encodeJson(&self) -> Result[Value, CodecError]
 }
 
-/// Construct a value from the stable JSON DOM contract.
-public interface DecodeJson {
+/// Construct a value from the stable JSON DOM contract. `decodeJson` performs
+/// value conversion after syntax parsing, while `decode` accepts JSON text.
+public interface Decodable {
     func decodeJson(_ value: &Value) -> Result[Self, CodecError]
 }
+
+/// A type that supports both directions of the stable JSON DOM contract.
+///
+/// This transparent interface set avoids a third witness or forwarding
+/// implementation: conform to `Encodable` and `Decodable` independently.
+public type Codable = Encodable & Decodable
 
 func typeMismatch(_ expected: string) -> CodecError {
     CodecError(.typeMismatch, "expected JSON ".concat(expected))
@@ -125,25 +133,25 @@ func decodeNumberAs[Target: Parse](_ value: &Value) -> Result[Target, CodecError
     }
 }
 
-impl EncodeJson for Value {
+impl Encodable for Value {
     public func encodeJson(&self) -> Result[Value, CodecError] {
         .ok(self.clone())
     }
 }
 
-impl DecodeJson for Value {
+impl Decodable for Value {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
         .ok(value.clone())
     }
 }
 
-impl EncodeJson for () {
+impl Encodable for () {
     public func encodeJson(&self) -> Result[Value, CodecError] {
         .ok(.null)
     }
 }
 
-impl DecodeJson for () {
+impl Decodable for () {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
         match value {
             case .null => .ok(())
@@ -152,13 +160,13 @@ impl DecodeJson for () {
     }
 }
 
-impl EncodeJson for bool {
+impl Encodable for bool {
     public func encodeJson(&self) -> Result[Value, CodecError] {
         .ok(.boolean(*self))
     }
 }
 
-impl DecodeJson for bool {
+impl Decodable for bool {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
         match value {
             case .boolean(result) => .ok(*result)
@@ -167,13 +175,13 @@ impl DecodeJson for bool {
     }
 }
 
-impl EncodeJson for string {
+impl Encodable for string {
     public func encodeJson(&self) -> Result[Value, CodecError] {
         .ok(.string(*self))
     }
 }
 
-impl DecodeJson for string {
+impl Decodable for string {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
         match value {
             case .string(result) => .ok(*result)
@@ -182,13 +190,13 @@ impl DecodeJson for string {
     }
 }
 
-impl EncodeJson for Number {
+impl Encodable for Number {
     public func encodeJson(&self) -> Result[Value, CodecError] {
         .ok(.number(self.clone()))
     }
 }
 
-impl DecodeJson for Number {
+impl Decodable for Number {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
         match value {
             case .number(result) => .ok(result.clone())
@@ -197,74 +205,74 @@ impl DecodeJson for Number {
     }
 }
 
-impl EncodeJson for int8 {
+impl Encodable for int8 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for int8 {
+impl Decodable for int8 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int8](value) }
 }
-impl EncodeJson for int16 {
+impl Encodable for int16 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for int16 {
+impl Decodable for int16 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int16](value) }
 }
-impl EncodeJson for int32 {
+impl Encodable for int32 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for int32 {
+impl Decodable for int32 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int32](value) }
 }
-impl EncodeJson for int64 {
+impl Encodable for int64 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for int64 {
+impl Decodable for int64 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int64](value) }
 }
-impl EncodeJson for isize {
+impl Encodable for isize {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for isize {
+impl Decodable for isize {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[isize](value) }
 }
-impl EncodeJson for uint8 {
+impl Encodable for uint8 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for uint8 {
+impl Decodable for uint8 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint8](value) }
 }
-impl EncodeJson for uint16 {
+impl Encodable for uint16 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for uint16 {
+impl Decodable for uint16 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint16](value) }
 }
-impl EncodeJson for uint32 {
+impl Encodable for uint32 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for uint32 {
+impl Decodable for uint32 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint32](value) }
 }
-impl EncodeJson for uint64 {
+impl Encodable for uint64 {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for uint64 {
+impl Decodable for uint64 {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint64](value) }
 }
-impl EncodeJson for usize {
+impl Encodable for usize {
     public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
 }
-impl DecodeJson for usize {
+impl Decodable for usize {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[usize](value) }
 }
-impl DecodeJson for float {
+impl Decodable for float {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[float](value) }
 }
-impl DecodeJson for double {
+impl Decodable for double {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[double](value) }
 }
 
-impl[Wrapped: EncodeJson] EncodeJson for std.optional.Optional[Wrapped] {
+impl[Wrapped: Encodable] Encodable for std.optional.Optional[Wrapped] {
     public func encodeJson(&self) -> Result[Value, CodecError] {
         match self {
             case .some(value) => value.encodeJson()
@@ -273,7 +281,7 @@ impl[Wrapped: EncodeJson] EncodeJson for std.optional.Optional[Wrapped] {
     }
 }
 
-impl[Wrapped: DecodeJson] DecodeJson for std.optional.Optional[Wrapped] {
+impl[Wrapped: Decodable] Decodable for std.optional.Optional[Wrapped] {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
         match value {
             case .null => .ok(.none)
@@ -287,7 +295,7 @@ impl[Wrapped: DecodeJson] DecodeJson for std.optional.Optional[Wrapped] {
     }
 }
 
-impl[Element: EncodeJson] EncodeJson for List[Element] {
+impl[Element: Encodable] Encodable for List[Element] {
     public func encodeJson(&self) -> Result[Value, CodecError] {
         var values = List[Value](withCapacity: self.len())
         var index: usize = 0
@@ -304,7 +312,7 @@ impl[Element: EncodeJson] EncodeJson for List[Element] {
     }
 }
 
-impl[Element: DecodeJson] DecodeJson for List[Element] {
+impl[Element: Decodable] Decodable for List[Element] {
     public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
         match value {
             case .array(values) => {
@@ -361,7 +369,7 @@ impl std.fmt.Display for JsonDecodeError {
 impl std.error.Error for JsonDecodeError {}
 
 /// Encode any manually encodable value to a compact JSON string.
-public func encode[Source: EncodeJson](_ source: &Source) -> Result[string, JsonEncodeError] {
+public func encode[Source: Encodable](_ source: &Source) -> Result[string, JsonEncodeError] {
     let value = match source.encodeJson() {
         case .ok(value) => value
         case .err(error) => return .err(.codec(error))
@@ -373,11 +381,11 @@ public func encode[Source: EncodeJson](_ source: &Source) -> Result[string, Json
 }
 
 /// Decode one complete string through a manual codec.
-public func decode[Target: DecodeJson](_ input: string) -> Result[Target, JsonDecodeError] {
+public func decode[Target: Decodable](_ input: string) -> Result[Target, JsonDecodeError] {
     decodeWithOptions[Target](input, Options())
 }
 
-public func decodeWithOptions[Target: DecodeJson](
+public func decodeWithOptions[Target: Decodable](
     _ input: string,
     _ options: Options,
 ) -> Result[Target, JsonDecodeError] {
@@ -392,7 +400,7 @@ public func decodeWithOptions[Target: DecodeJson](
 }
 
 impl[Sink: Writer] Encoder[Sink] {
-    public func encodeJson[Source: EncodeJson](
+    public func encodeJson[Source: Encodable](
         &mut self,
         _ source: &Source,
     ) -> Result[(), JsonEncodeError] {
@@ -406,7 +414,7 @@ impl[Sink: Writer] Encoder[Sink] {
         }
     }
 
-    public func encodeJsonLine[Source: EncodeJson](
+    public func encodeJsonLine[Source: Encodable](
         &mut self,
         _ source: &Source,
     ) -> Result[(), JsonEncodeError] {
@@ -422,7 +430,7 @@ impl[Sink: Writer] Encoder[Sink] {
 }
 
 impl[Source: Reader] Decoder[Source] {
-    public func nextJson[Target: DecodeJson](&mut self) -> Result[Target?, JsonDecodeError] {
+    public func nextJson[Target: Decodable](&mut self) -> Result[Target?, JsonDecodeError] {
         let value = match self.next() {
             case .ok(value) => value
             case .err(error) => return .err(.syntax(error))
@@ -438,7 +446,7 @@ impl[Source: Reader] Decoder[Source] {
         }
     }
 
-    public func decodeJson[Target: DecodeJson](&mut self) -> Result[Target, JsonDecodeError] {
+    public func decodeJson[Target: Decodable](&mut self) -> Result[Target, JsonDecodeError] {
         match self.decode() {
             case .err(error) => return .err(.syntax(error))
             case .ok(value) => {
