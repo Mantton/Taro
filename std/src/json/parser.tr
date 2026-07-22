@@ -36,12 +36,34 @@ impl PositionTracker {
             position.column += 1
         }
     }
+
+    func advanceAscii(&mut self, _ count: usize) {
+        let position = &mut self.value
+        position.offset += count
+        position.column += count
+    }
+}
+
+struct ParseState: std.marker.Copy {
+    options: Options
+    valueStart: usize
+}
+
+impl ParseState {
+    func new(_ options: Options, _ valueStart: usize) -> Self {
+        ParseState { options, valueStart }
+    }
 }
 
 interface JsonInput {
     func peek(&mut self) -> Result[uint8?, std.io.Error]
     func advance(&mut self, _ byte: uint8)
     func position(&self) -> Position
+    func takeUnescapedAsciiString(
+        &mut self,
+        _ state: ParseState,
+        _ path: string,
+    ) -> Result[string?, Error]
 }
 
 struct StringInput {
@@ -71,6 +93,55 @@ impl JsonInput for StringInput {
 
     func position(&self) -> Position {
         self.tracker.value
+    }
+
+    func takeUnescapedAsciiString(
+        &mut self,
+        _ state: ParseState,
+        _ path: string,
+    ) -> Result[string?, Error] {
+        let start = self.index
+        let startPosition = self.tracker.value
+        let sourceLength = self.source.byteLen()
+        let sourceData = std.string.stringData(self.source)
+        var index = start
+        while index < sourceLength {
+            let distance = index - start
+            let position = Position {
+                offset: startPosition.offset + distance,
+                line: startPosition.line,
+                column: startPosition.column + distance,
+            }
+            if position.offset - state.valueStart >= state.options.maxInputBytes() {
+                return .err(errorAt(
+                    .inputLimit,
+                    "JSON value exceeds the configured byte limit",
+                    position,
+                    path,
+                ))
+            }
+
+            // Bounds are proven by the loop, so reading the contiguous byte
+            // pointer avoids repeating `byteAt`'s length check for every byte.
+            let byte = sourceData.add(index).read()
+            if byte == ('\"' as uint8) {
+                let value = self.source.substring(start, distance)
+                self.index = index + 1
+                self.tracker.advanceAscii(distance + 1)
+                return .ok(.some(value))
+            }
+            if byte == ('\\' as uint8) || byte < 0x20_u8 || byte >= 0x80_u8 {
+                return .ok(.none)
+            }
+            index += 1
+        }
+
+        // Advancing a safe prefix preserves the exact EOF diagnostic while
+        // avoiding a second bytewise pass over a malformed unterminated string.
+        let distance = index - start
+        self.index = index
+        self.tracker.advanceAscii(distance)
+        return .ok(.none)
     }
 }
 
@@ -134,16 +205,15 @@ impl[Source: Reader] JsonInput for ReaderInput[Source] {
     func position(&self) -> Position {
         self.tracker.value
     }
-}
 
-struct ParseState: std.marker.Copy {
-    options: Options
-    valueStart: usize
-}
-
-impl ParseState {
-    func new(_ options: Options, _ valueStart: usize) -> Self {
-        ParseState { options, valueStart }
+    func takeUnescapedAsciiString(
+        &mut self,
+        _ state: ParseState,
+        _ path: string,
+    ) -> Result[string?, Error] {
+        // Reader input owns a refillable window rather than one contiguous
+        // string, so it retains the boundary-safe bytewise path below.
+        return .ok(.none)
     }
 }
 
@@ -289,6 +359,14 @@ func childPathForIndex(_ parent: string, _ index: usize) -> string {
     result.writeString(std.sprintf("%d", index))
     result.writeByte(']' as uint8)
     return result.intoString()
+}
+
+func errorAtChildKey(_ error: Error, _ parent: string, _ key: string) -> Error {
+    return error.rebased(childPathForKey(parent, key))
+}
+
+func errorAtChildIndex(_ error: Error, _ parent: string, _ index: usize) -> Error {
+    return error.rebased(childPathForIndex(parent, index))
 }
 
 func parseHexQuad[Input: JsonInput](
@@ -499,6 +577,12 @@ func parseStringValue[Input: JsonInput](
         return .err(errorAt(.unexpectedToken, "expected a JSON string", openingPosition, path))
     }
 
+    match input.takeUnescapedAsciiString(state, path) {
+        case .ok(.some(value)) => return .ok(value)
+        case .ok(.none) => {}
+        case .err(error) => return .err(error)
+    }
+
     var result = Builder()
     loop {
         let position = input.position()
@@ -637,7 +721,6 @@ func parseNumberValue[Input: JsonInput](
     _ state: ParseState,
     _ path: string,
 ) -> Result[Number, Error] {
-    let start = input.position()
     var result = Builder()
 
     var next = match peekByte(input, state, path) {
@@ -755,12 +838,7 @@ func parseNumberValue[Input: JsonInput](
     }
 
     let text = result.intoString()
-    match Number.parse(text) {
-        case .ok(number) => return .ok(number)
-        case .err(_) => {
-            return .err(errorAt(.invalidNumber, "invalid JSON number", start, path))
-        }
-    }
+    return .ok(Number.fromValidated(text))
 }
 
 func parseArray[Input: JsonInput](
@@ -799,10 +877,9 @@ func parseArray[Input: JsonInput](
     var values = List[Value]()
     var index: usize = 0
     loop {
-        let childPath = childPathForIndex(path, index)
-        let value = match parseValue(input, state, depth + 1, childPath) {
+        let value = match parseValue(input, state, depth + 1, ROOT_PATH) {
             case .ok(value) => value
-            case .err(error) => return .err(error)
+            case .err(error) => return .err(errorAtChildIndex(error, path, index))
         }
         values.append(value)
         index += 1
@@ -874,55 +951,54 @@ func parseObject[Input: JsonInput](
             case .ok(value) => value
             case .err(error) => return .err(error)
         }
-        let childPath = childPathForKey(path, key)
-
-        let alreadyPresent = object.contains(key)
-        if alreadyPresent {
+        let existingIndex = object.indexOf(key)
+        if existingIndex.isSome() {
             match state.options.duplicateKeys() {
                 case .reject => {
                     return .err(errorAt(
                         .duplicateKey,
                         "object member name appears more than once",
                         keyPosition,
-                        childPath,
+                        childPathForKey(path, key),
                     ))
                 }
                 case _ => {}
             }
         }
 
-        match skipWhitespace(input, state, childPath) {
+        match skipWhitespace(input, state, ROOT_PATH) {
             case .ok(_) => {}
-            case .err(error) => return .err(error)
+            case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
         let colonPosition = input.position()
-        let colon = match requiredByte(input, state, childPath, "expected ':' after object key") {
+        let colon = match requiredByte(input, state, ROOT_PATH, "expected ':' after object key") {
             case .ok(value) => value
-            case .err(error) => return .err(error)
+            case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
         if colon != (':' as uint8) {
             return .err(errorAt(
                 .unexpectedToken,
                 "expected ':' after object key",
                 colonPosition,
-                childPath,
+                childPathForKey(path, key),
             ))
         }
-        match skipWhitespace(input, state, childPath) {
+        match skipWhitespace(input, state, ROOT_PATH) {
             case .ok(_) => {}
-            case .err(error) => return .err(error)
+            case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
-        let value = match parseValue(input, state, depth + 1, childPath) {
+        let value = match parseValue(input, state, depth + 1, ROOT_PATH) {
             case .ok(value) => value
-            case .err(error) => return .err(error)
+            case .err(error) => return .err(errorAtChildKey(error, path, key))
         }
 
-        if !alreadyPresent {
-            let _ = object.insert(key, value)
-        } else {
-            match state.options.duplicateKeys() {
-                case .useLast => object.set(key, value)
-                case _ => {}
+        match existingIndex {
+            case .none => object.appendKnownUnique(key, value)
+            case .some(index) => {
+                match state.options.duplicateKeys() {
+                    case .useLast => object.replaceAt(index, value)
+                    case _ => {}
+                }
             }
         }
 

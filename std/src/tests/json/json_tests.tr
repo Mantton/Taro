@@ -114,6 +114,31 @@ func jsonReportsLocationAndNestedValuePath() {
 }
 
 @test
+func jsonLazilyRebasesDeepValueAndMemberErrors() {
+    let nested = assertParseError(
+        "{\"outer\":[{\"inner\":[0,?]}]}",
+        .unexpectedToken,
+        "deep invalid value should fail",
+    )
+    std.testing.assertEqual(
+        nested.path(),
+        "$[\"outer\"][0][\"inner\"][1]",
+        "lazy error rebasing should retain every parent segment",
+    )
+
+    let missingColon = assertParseError(
+        "{\"outer\" 1}",
+        .unexpectedToken,
+        "missing member colon should fail",
+    )
+    std.testing.assertEqual(
+        missingColon.path(),
+        "$[\"outer\"]",
+        "member syntax failures should retain the pending key",
+    )
+}
+
+@test
 func jsonDuplicatePoliciesAreExplicitAndRejectByDefault() {
     let rejected = assertParseError(
         "{\"x\":1,\"x\":2}",
@@ -138,6 +163,52 @@ func jsonDuplicatePoliciesAreExplicitAndRejectByDefault() {
 }
 
 @test
+func jsonWideObjectDuplicatePoliciesPreserveIndexAndPath() {
+    var builder = std.string.Builder()
+    builder.writeByte('{' as uint8)
+    var index: usize = 0
+    while index < 128 {
+        if index > 0 {
+            builder.writeByte(',' as uint8)
+        }
+        builder.writeString("\"key-")
+        builder.writeString(std.sprintf("%d", index))
+        builder.writeString("\":")
+        builder.writeString(std.sprintf("%d", index))
+        index += 1
+    }
+    builder.writeString(",\"key-127\":999}")
+    let input = builder.intoString()
+
+    let duplicate = assertParseError(
+        input,
+        .duplicateKey,
+        "wide duplicate should be rejected by default",
+    )
+    std.testing.assertEqual(
+        duplicate.path(),
+        "$[\"key-127\"]",
+        "single-lookup duplicate detection should retain the member path",
+    )
+
+    let options = std.json.Options().withDuplicateKeys(.useLast)
+    let value = std.json.parseWithOptions(input, options).unwrap()
+    let object = requireObject(&value)
+    std.testing.assertEqual(object.len(), 128 as usize, "replacement should not append a member")
+    std.testing.assertEqual(object.keyAt(127), "key-127", "replacement should retain key order")
+    match object.get("key-127") {
+        case .some(value) => {
+            std.testing.assertEqual(
+                requireNumberText(value),
+                "999",
+                "useLast should replace through the index found by the duplicate lookup",
+            )
+        }
+        case .none => std.testing.fail("replaced member should remain available")
+    }
+}
+
+@test
 func jsonRejectsMalformedEscapesSurrogatesAndUtf8() {
     let _ = assertParseError("\"\\q\"", .invalidEscape, "unknown escape should fail")
     let _ = assertParseError("\"\\uD800x\"", .invalidUnicodeEscape, "unpaired high surrogate should fail")
@@ -148,6 +219,52 @@ func jsonRejectsMalformedEscapesSurrogatesAndUtf8() {
     let malformed = std.bytes.Buffer(bytes.asSpan()).intoString()
     let invalid = assertParseError(malformed, .invalidUtf8, "overlong UTF-8 should fail")
     std.testing.assertEqual(invalid.byteOffset(), 1 as usize, "UTF-8 error should identify lead byte")
+}
+
+@test
+func jsonContiguousAsciiFastPathPreservesLimitsAndFallbacks() {
+    let content = "a".repeat(4096)
+    let input = "\"".concat(content).concat("\"")
+    let exact = std.json.Options().withMaxInputBytes(input.byteLen())
+    match std.json.parseWithOptions(input, exact) {
+        case .ok(.string(value)) => {
+            std.testing.assertEqual(value.byteLen(), 4096 as usize, "long ASCII string should decode")
+        }
+        case .ok(_) => std.testing.fail("long ASCII fixture should remain a string")
+        case .err(_) => std.testing.fail("string exactly at the input limit should parse")
+    }
+
+    let short = std.json.Options().withMaxInputBytes(input.byteLen() - 1)
+    match std.json.parseWithOptions(input, short) {
+        case .ok(_) => std.testing.fail("closing quote beyond the limit should fail")
+        case .err(error) => {
+            std.testing.assertEqual(error.kind(), .inputLimit, "fast scan should retain input limits")
+            std.testing.assertEqual(
+                error.byteOffset(),
+                input.byteLen() - 1,
+                "fast scan should report the closing quote offset",
+            )
+        }
+    }
+
+    match std.json.parse("\"prefix\\n🚀suffix\"") {
+        case .ok(.string(value)) => {
+            std.testing.assertEqual(value, "prefix\n🚀suffix", "escape/UTF-8 fallback should decode")
+        }
+        case _ => std.testing.fail("escape/UTF-8 fallback should remain valid")
+    }
+
+    let unterminated = "\"".concat(content)
+    let error = assertParseError(
+        unterminated,
+        .unexpectedEof,
+        "unterminated fast-path candidate should fail",
+    )
+    std.testing.assertEqual(
+        error.byteOffset(),
+        unterminated.byteLen(),
+        "unterminated fast scan should advance diagnostics through its safe prefix",
+    )
 }
 
 @test

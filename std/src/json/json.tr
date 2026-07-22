@@ -147,6 +147,25 @@ impl Error {
         }
     }
 
+    /// Rebase a root-relative child error beneath an already materialized
+    /// container path. Parsers use this only while unwinding an error, keeping
+    /// successful traversal free of JSONPath allocations.
+    func rebased(self, _ parent: string) -> Self {
+        var suffix = self.pathValue
+        if suffix.byteLen() > 0 && suffix.byteAt(0) == ('$' as uint8) {
+            suffix = suffix.sliceBytes(1, suffix.byteLen() - 1)
+        }
+        Error {
+            kindValue: self.kindValue,
+            messageValue: self.messageValue,
+            offsetValue: self.offsetValue,
+            lineValue: self.lineValue,
+            columnValue: self.columnValue,
+            pathValue: parent.concat(suffix),
+            ioErrorValue: self.ioErrorValue,
+        }
+    }
+
     public func kind(&self) -> ErrorKind {
         self.kindValue
     }

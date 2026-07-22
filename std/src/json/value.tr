@@ -132,6 +132,13 @@ impl Number {
         }
     }
 
+    /// Construct from text whose complete JSON number grammar was already
+    /// checked by the streaming parser. Keeping this package-private avoids a
+    /// second scan without weakening the validating public constructor.
+    func fromValidated(_ text: string) -> Self {
+        Number { textValue: text }
+    }
+
     public func text(&self) -> string {
         self.textValue
     }
@@ -208,23 +215,18 @@ impl Object {
 
     /// Insert a member only when its key is not already present.
     public func insert(&mut self, _ key: string, _ value: Value) -> bool {
-        if self.contains(key) {
+        if self.indexOf(key).isSome() {
             return false
         }
-        self.members.append(ObjectMember { keyValue: key, valueValue: value })
+        self.appendKnownUnique(key, value)
         return true
     }
 
     /// Insert or replace a member without changing its original position.
     public func set(&mut self, _ key: string, _ value: Value) {
         match self.indexOf(key) {
-            case .some(index) => {
-                // Bind the mutable member before projecting its field; method
-                // call results are values and are not assignment expressions.
-                let member = self.members.at(index)
-                member.valueValue = value
-            }
-            case .none => self.members.append(ObjectMember { keyValue: key, valueValue: value })
+            case .some(index) => self.replaceAt(index, value)
+            case .none => self.appendKnownUnique(key, value)
         }
     }
 
@@ -237,6 +239,19 @@ impl Object {
             index += 1
         }
         return .none
+    }
+
+    /// Parser-only insertion after its single duplicate lookup.
+    func appendKnownUnique(&mut self, _ key: string, _ value: Value) {
+        self.members.append(ObjectMember { keyValue: key, valueValue: value })
+    }
+
+    /// Parser-only replacement at the index returned by `indexOf`.
+    func replaceAt(&mut self, _ index: usize, _ value: Value) {
+        // Bind the mutable member before projecting its field; method call
+        // results are values and are not assignment expressions.
+        let member = self.members.at(index)
+        member.valueValue = value
     }
 }
 
