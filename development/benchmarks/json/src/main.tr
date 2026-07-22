@@ -1,0 +1,195 @@
+import std.io.Reader
+
+const STREAM_CHUNK_SIZE: usize = 7
+
+struct BenchmarkChunkReader {
+    source: string
+    index: usize
+    chunkSize: usize
+}
+
+impl BenchmarkChunkReader {
+    func new(_ source: string, _ chunkSize: usize) -> Self {
+        BenchmarkChunkReader { source, index: 0, chunkSize }
+    }
+}
+
+impl Reader for BenchmarkChunkReader {
+    public func read(
+        &mut self,
+        _ destination: std.mem.MutableSpan[uint8],
+    ) -> std.result.Result[usize, std.io.Error] {
+        if self.index >= self.source.byteLen() || destination.len() == 0 {
+            return .ok(0)
+        }
+
+        var count = self.chunkSize
+        if count > destination.len() {
+            count = destination.len()
+        }
+        let remaining = self.source.byteLen() - self.index
+        if count > remaining {
+            count = remaining
+        }
+
+        var written: usize = 0
+        while written < count {
+            *destination.at(written) = self.source.byteAt(self.index + written)
+            written += 1
+        }
+        self.index += written
+        return .ok(written)
+    }
+}
+
+func buildMediumCatalog() -> string {
+    var builder = std.string.Builder()
+    builder.reserve(16 * 1024)
+    builder.writeString("{\"version\":1,\"products\":[")
+    var index: usize = 0
+    while index < 64 {
+        if index > 0 {
+            builder.writeByte(',' as uint8)
+        }
+        builder.writeString("{\"id\":")
+        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(",\"name\":\"product-")
+        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(
+            "\",\"available\":true,\"price\":19.95,\"tags\":[\"json\",\"benchmark\",\"catalog\"],",
+        )
+        builder.writeString("\"dimensions\":{\"width\":12,\"height\":8,\"depth\":3}}")
+        index += 1
+    }
+    builder.writeString("],\"page\":{\"number\":1,\"count\":64}}")
+    return builder.intoString()
+}
+
+func buildWideObject() -> string {
+    var builder = std.string.Builder()
+    builder.reserve(8 * 1024)
+    builder.writeByte('{' as uint8)
+    var index: usize = 0
+    while index < 256 {
+        if index > 0 {
+            builder.writeByte(',' as uint8)
+        }
+        builder.writeString("\"field_")
+        builder.writeString(std.sprintf("%d", index))
+        builder.writeString("\":")
+        builder.writeString(std.sprintf("%d", index))
+        index += 1
+    }
+    builder.writeByte('}' as uint8)
+    return builder.intoString()
+}
+
+func buildLongAsciiString() -> string {
+    var builder = std.string.Builder()
+    builder.reserve(64 * 1024 + 2)
+    builder.writeByte('"' as uint8)
+    builder.writeString("0123456789abcdef".repeat(4096))
+    builder.writeByte('"' as uint8)
+    return builder.intoString()
+}
+
+func buildEscapedUnicodeStrings() -> string {
+    var builder = std.string.Builder()
+    builder.reserve(16 * 1024)
+    builder.writeString("{\"messages\":[")
+    var index: usize = 0
+    while index < 128 {
+        if index > 0 {
+            builder.writeByte(',' as uint8)
+        }
+        builder.writeString("\"line\\n")
+        builder.writeString(std.sprintf("%d", index))
+        builder.writeString(": \\tquote=\\\" slash=\\\\ snowman=☃ rocket=🚀\"")
+        index += 1
+    }
+    builder.writeString("]}")
+    return builder.intoString()
+}
+
+func validateFixture(_ input: string, _ label: string) {
+    match std.json.parse(input) {
+        case .ok(value) => {
+            // Stringifying once outside the measured region verifies that the
+            // fixture produced a complete, traversable DOM rather than merely
+            // reaching an accepting parser prefix.
+            match std.json.stringify(&value) {
+                case .ok(encoded) => {
+                    let _ = std.hint.blackBox(encoded)
+                }
+                case .err(error) => {
+                    std.panic.panic(std.sprintf("%s fixture cannot be encoded: %v", label, error))
+                }
+            }
+        }
+        case .err(error) => {
+            std.panic.panic(std.sprintf("%s fixture is invalid: %v", label, error))
+        }
+    }
+}
+
+func measureParse(
+    _ benchmark: &mut std.bench.Benchmark,
+    _ input: string,
+    _ label: string,
+) {
+    validateFixture(input, label)
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        let result = std.json.parse(input)
+        std.hint.blackBox(result)
+    }
+}
+
+@bench
+@tag("json", "parse", "small")
+func parseSmallApplicationObject(benchmark: &mut std.bench.Benchmark) {
+    let input = "{\"user\":{\"id\":42,\"name\":\"Ada\",\"active\":true},\"roles\":[\"admin\",\"author\"],\"score\":98.5}"
+    measureParse(benchmark, input, "small application object")
+}
+
+@bench
+@tag("json", "parse", "nested")
+func parseMediumNestedCatalog(benchmark: &mut std.bench.Benchmark) {
+    let input = buildMediumCatalog()
+    measureParse(benchmark, input, "medium nested catalog")
+}
+
+@bench
+@tag("json", "parse", "object")
+func parseWideUniqueKeyObject(benchmark: &mut std.bench.Benchmark) {
+    let input = buildWideObject()
+    measureParse(benchmark, input, "wide unique-key object")
+}
+
+@bench
+@tag("json", "parse", "string")
+func parseLongUnescapedAsciiString(benchmark: &mut std.bench.Benchmark) {
+    let input = buildLongAsciiString()
+    measureParse(benchmark, input, "long unescaped ASCII string")
+}
+
+@bench
+@tag("json", "parse", "string", "escape", "unicode")
+func parseEscapedUnicodeStrings(benchmark: &mut std.bench.Benchmark) {
+    let input = buildEscapedUnicodeStrings()
+    measureParse(benchmark, input, "escaped Unicode strings")
+}
+
+@bench
+@tag("json", "parse", "stream")
+func decodeMediumCatalogAcrossBoundaries(benchmark: &mut std.bench.Benchmark) {
+    let input = buildMediumCatalog()
+    validateFixture(input, "streaming medium nested catalog")
+    benchmark.setBytes(input.byteLen())
+    while benchmark.next() {
+        let reader = BenchmarkChunkReader(input, STREAM_CHUNK_SIZE)
+        var decoder = std.json.Decoder(reader)
+        let result = decoder.decode()
+        std.hint.blackBox(result)
+    }
+}

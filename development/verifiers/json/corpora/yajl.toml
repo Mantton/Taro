@@ -1,0 +1,62 @@
+format_version = 1
+id = "yajl"
+name = "YAJL parsing cases"
+matrix = "full"
+
+[source]
+repository = "https://github.com/lloyd/yajl"
+revision = "5e3a7856e643b4d6410ddc3f84bc2f38174f2872"
+revision_date = "2015-09-24T19:16:46Z"
+license = "ISC"
+license_path = "COPYING"
+license_size = 751
+license_sha256 = "054bf2c11686c5442850b1da58ad592e3d1d2a236a362e67279b957f8e662f5a"
+fetch = "archive"
+archive_max_bytes = 2097152
+
+[expected]
+file_count = 58
+total_bytes = 6410
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "46d999d7dd8605892067dcaa511e23715cb2934ef87ae9c320dfb96e0a95f80d"
+
+[[selection]]
+root = "test/parsing/cases"
+include = ["*.json"]
+default_classification = "yes"
+
+# YAJL deliberately enables extension flags for these prefixes; strict RFC JSON
+# must reject the same comments, trailing garbage, multiple texts, and partials.
+[[selection.rule]]
+classification = "no"
+patterns = [
+    "ac_*.json",
+    "ag_*.json",
+    "am_*.json",
+    "ap_*.json",
+    "array_close.json",
+    "bogus_char.json",
+    "fg_*.json",
+    "invalid_utf8.json",
+    "leading_zero_in_number.json",
+    "lonely_minus_sign.json",
+    "map_close.json",
+    "missing_integer_after_decimal_point.json",
+    "missing_integer_after_exponent.json",
+    "multiple.json",
+    "non_utf8_char_in_string.json",
+    "np_partial_bad.json",
+    "simple_with_comments.json",
+    "string_invalid_escape.json",
+    "string_invalid_hex_char.json",
+    "string_with_invalid_newline.json",
+]
+
+[[selection.rule]]
+classification = "implementation"
+patterns = [
+    "deep_arrays.json",
+    "high_overflow.json",
+    "isolated_surrogate_marker.json",
+    "low_overflow.json",
+]

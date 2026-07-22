@@ -1,0 +1,59 @@
+format_version = 1
+id = "jansson"
+name = "Jansson parser suites"
+matrix = "full"
+
+[source]
+repository = "https://github.com/akheron/jansson"
+revision = "851a2145e3256f2e67e5dfe24b0e456bf198b741"
+revision_date = "2026-07-09T17:43:34Z"
+license = "MIT"
+license_path = "LICENSE"
+license_size = 1912
+license_sha256 = "150d90904cd8de73609bb177b42edd3867b07b4b7b786dbba319f30de39fcda2"
+fetch = "archive"
+archive_max_bytes = 2097152
+
+[expected]
+file_count = 103
+total_bytes = 101470
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "319ef53d84e0b1a15c0c917f86cc898d321e673051b75f5248a5741c13585b87"
+
+[[selection]]
+root = "test/suites/valid"
+include = ["*/input"]
+default_classification = "yes"
+
+[[selection]]
+root = "test/suites/invalid"
+include = ["*/input"]
+default_classification = "no"
+
+# These are valid RFC JSON texts rejected by Jansson's API policy: arbitrary-size
+# numbers, resource depth, top-level scalars, embedded NULs, or unpaired UTF-16.
+[[selection.rule]]
+classification = "implementation"
+patterns = [
+    "recursion-depth/input",
+    "real-negative-overflow/input",
+    "real-positive-overflow/input",
+    "too-big-negative-integer/input",
+    "too-big-positive-integer/input",
+    "invalid-second-surrogate/input",
+    "lone-second-surrogate/input",
+    "truncated-unicode-surrogate/input",
+]
+
+[[selection.rule]]
+classification = "yes"
+patterns = [
+    "null/input",
+    "null-byte-in-object-key/input",
+    "null-escape-in-string/input",
+]
+
+[[selection]]
+root = "test/suites/invalid-unicode"
+include = ["*/input"]
+default_classification = "no"

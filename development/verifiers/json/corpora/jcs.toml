@@ -1,0 +1,31 @@
+format_version = 1
+id = "jcs"
+name = "JSON Canonicalization Scheme vectors"
+matrix = "documents"
+
+[source]
+repository = "https://github.com/cyberphone/json-canonicalization"
+revision = "19d51d7fe467d4706a3ff08adf8a748f29fc21e0"
+revision_date = "2024-12-13T10:21:44Z"
+license = "Apache-2.0"
+license_path = "LICENSE"
+license_size = 600
+license_sha256 = "6821faaddedf2d78c95bb6d98b127e9e616097afd2f6bcc34389f000d13ab12d"
+fetch = "archive"
+archive_max_bytes = 2097152
+
+[expected]
+file_count = 12
+total_bytes = 1476
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "edbf2d7553945750f0517c3c1037b0e32fd9919dba057008cc28f0335a46ac13"
+
+[[selection]]
+root = "testdata/input"
+include = ["*.json"]
+default_classification = "yes"
+
+[[selection]]
+root = "testdata/output"
+include = ["*.json"]
+default_classification = "yes"

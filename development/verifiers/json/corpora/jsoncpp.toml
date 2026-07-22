@@ -1,0 +1,61 @@
+format_version = 1
+id = "jsoncpp"
+name = "JsonCpp parser fixtures"
+matrix = "full"
+
+[source]
+repository = "https://github.com/open-source-parsers/jsoncpp"
+revision = "edc01ab10f52135ec80e3589b6b4e0a9c65b27fd"
+revision_date = "2026-07-01T23:26:29Z"
+license = "MIT OR Public-Domain"
+license_path = "LICENSE"
+license_size = 2714
+license_sha256 = "cec0db5f6d7ed6b3a72647bd50aed02e13c3377fd44382b96dc2915534c042ad"
+fetch = "archive"
+archive_max_bytes = 5242880
+
+[expected]
+file_count = 69
+total_bytes = 29025
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "ad6fe60b75a2dfb393c564600b4d2b63a0d7febf0a1bf94fb718bd73c472dcfd"
+
+[[selection]]
+root = "test/data"
+include = ["*.json"]
+default_classification = "yes"
+
+[[selection.rule]]
+classification = "implementation"
+patterns = ["fail_test_stack_limit.json"]
+
+# JsonCpp's legacy runner enables comments, leading zeroes, and trailing commas.
+# These inputs are useful precisely because Taro's standard parser is strict.
+[[selection.rule]]
+classification = "no"
+patterns = [
+    "fail_*.json",
+    "*comment*.json",
+    "legacy_test_basic_01.json",
+    "legacy_test_basic_02.json",
+    "legacy_test_basic_08.json",
+    "legacy_test_basic_09.json",
+    "legacy_test_integer_01.json",
+    "legacy_test_integer_02.json",
+    "legacy_test_integer_03.json",
+    "legacy_test_integer_04.json",
+    "legacy_test_real_01.json",
+    "legacy_test_real_02.json",
+    "legacy_test_real_03.json",
+    "legacy_test_real_04.json",
+    "legacy_test_real_05.json",
+    "legacy_test_real_06.json",
+    "legacy_test_real_07.json",
+    "legacy_test_real_08.json",
+    "legacy_test_real_09.json",
+    "legacy_test_real_10.json",
+    "legacy_test_real_11.json",
+    "legacy_test_real_12.json",
+    "test_array_08.json",
+    "test_object_05.json",
+]

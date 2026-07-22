@@ -85,6 +85,7 @@ def main() -> int:
 
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
+    verifiers_root = repo_root / "development" / "verifiers"
     build_script = repo_root / "development" / "scripts" / "build_dist.py"
     language_tests_script = repo_root / "development" / "scripts" / "language_tests.py"
     llvm_toolchain_script = repo_root / "development" / "scripts" / "llvm_toolchain.py"
@@ -115,6 +116,25 @@ def main() -> int:
             ],
             cwd=repo_root,
         )
+        # Verifier projects own their protocol tests. Discover each project
+        # separately so adding one does not require Python package boilerplate.
+        verifier_test_directories = sorted(
+            {path.parent for path in verifiers_root.glob("*/test_*.py")}
+        )
+        for verifier_test_directory in verifier_test_directories:
+            run_command(
+                [
+                    sys.executable,
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    str(verifier_test_directory),
+                    "-p",
+                    "test_*.py",
+                ],
+                cwd=repo_root,
+            )
 
         current_stage = "cargo tests"
         if args.skip_cargo_tests:

@@ -1,0 +1,434 @@
+import std.io.Reader
+
+const PROTOCOL_VERSION: usize = 1
+const RFC_MAX_DEPTH: usize = 1024
+const RFC_MAX_BYTES: usize = 64 * 1024 * 1024
+
+struct ChunkReader {
+    source: string
+    index: usize
+    chunkSize: usize
+}
+
+impl ChunkReader {
+    func new(_ source: string, _ chunkSize: usize) -> Self {
+        ChunkReader { source, index: 0, chunkSize }
+    }
+}
+
+impl Reader for ChunkReader {
+    public func read(
+        &mut self,
+        _ destination: std.mem.MutableSpan[uint8],
+    ) -> std.result.Result[usize, std.io.Error] {
+        if self.index >= self.source.byteLen() || destination.len() == 0 {
+            return .ok(0)
+        }
+
+        var count = self.chunkSize
+        if count > destination.len() {
+            count = destination.len()
+        }
+        let remaining = self.source.byteLen() - self.index
+        if count > remaining {
+            count = remaining
+        }
+
+        var written: usize = 0
+        while written < count {
+            *destination.at(written) = self.source.byteAt(self.index + written)
+            written += 1
+        }
+        self.index += written
+        return .ok(written)
+    }
+}
+
+struct Outcome {
+    accepted: bool
+    canonical: bool
+    errorKind: string
+    errorOffset: usize
+    errorLine: usize
+    errorColumn: usize
+    errorPath: string
+    errorInvariants: bool
+}
+
+func acceptedOutcome(_ value: std.json.Value, _ options: std.json.Options) -> Outcome {
+    let first = match std.json.stringifyWithOptions(&value, options) {
+        case .ok(encoded) => encoded
+        case .err(_) => {
+            return Outcome {
+                accepted: true,
+                canonical: false,
+                errorKind: "encodeFailure",
+                errorOffset: 0,
+                errorLine: 0,
+                errorColumn: 0,
+                errorPath: "$",
+                errorInvariants: false,
+            }
+        }
+    }
+    let reparsed = match std.json.parseWithOptions(first, options) {
+        case .ok(parsed) => parsed
+        case .err(_) => {
+            return Outcome {
+                accepted: true,
+                canonical: false,
+                errorKind: "reparseFailure",
+                errorOffset: 0,
+                errorLine: 0,
+                errorColumn: 0,
+                errorPath: "$",
+                errorInvariants: false,
+            }
+        }
+    }
+    let second = match std.json.stringifyWithOptions(&reparsed, options) {
+        case .ok(encoded) => encoded
+        case .err(_) => {
+            return Outcome {
+                accepted: true,
+                canonical: false,
+                errorKind: "reencodeFailure",
+                errorOffset: 0,
+                errorLine: 0,
+                errorColumn: 0,
+                errorPath: "$",
+                errorInvariants: false,
+            }
+        }
+    }
+    return Outcome {
+        accepted: true,
+        canonical: first == second,
+        errorKind: "",
+        errorOffset: 0,
+        errorLine: 0,
+        errorColumn: 0,
+        errorPath: "",
+        errorInvariants: true,
+    }
+}
+
+func errorKindName(_ kind: std.json.ErrorKind) -> string {
+    match kind {
+        case .unexpectedEof => "unexpectedEof"
+        case .unexpectedToken => "unexpectedToken"
+        case .trailingData => "trailingData"
+        case .invalidNumber => "invalidNumber"
+        case .invalidEscape => "invalidEscape"
+        case .invalidUnicodeEscape => "invalidUnicodeEscape"
+        case .invalidUtf8 => "invalidUtf8"
+        case .unescapedControlCharacter => "unescapedControlCharacter"
+        case .duplicateKey => "duplicateKey"
+        case .depthLimit => "depthLimit"
+        case .inputLimit => "inputLimit"
+        case .io => "io"
+    }
+}
+
+func rejectedOutcome(_ error: &std.json.Error, _ inputLength: usize) -> Outcome {
+    let path = error.path()
+    let invariants = error.byteOffset() <= inputLength
+        && error.line() > 0
+        && error.column() > 0
+        && path.startsWith("$")
+    return Outcome {
+        accepted: false,
+        canonical: false,
+        errorKind: errorKindName(error.kind()),
+        errorOffset: error.byteOffset(),
+        errorLine: error.line(),
+        errorColumn: error.column(),
+        errorPath: path,
+        errorInvariants: invariants,
+    }
+}
+
+func trailingOutcome(_ inputLength: usize) -> Outcome {
+    Outcome {
+        accepted: false,
+        canonical: false,
+        errorKind: "trailingData",
+        errorOffset: inputLength,
+        errorLine: 1,
+        errorColumn: 1,
+        errorPath: "$",
+        errorInvariants: true,
+    }
+}
+
+func jsonNumber(_ value: usize) -> std.json.Value {
+    let text = std.sprintf("%d", value)
+    match std.json.Number.parse(text) {
+        case .ok(number) => return .number(number)
+        case .err(_) => {
+            std.panic.panic("usize formatting must produce a valid JSON number")
+        }
+    }
+}
+
+func insertString(_ object: &mut std.json.Object, _ key: string, _ value: string) {
+    let _ = object.insert(key, .string(value))
+}
+
+func insertBool(_ object: &mut std.json.Object, _ key: string, _ value: bool) {
+    let _ = object.insert(key, .boolean(value))
+}
+
+func insertNumber(_ object: &mut std.json.Object, _ key: string, _ value: usize) {
+    let _ = object.insert(key, jsonNumber(value))
+}
+
+func emitResult(
+    _ file: string,
+    _ classification: string,
+    _ profile: string,
+    _ mode: string,
+    _ chunkSize: usize,
+    _ inputLength: usize,
+    _ outcome: Outcome,
+) {
+    var object = std.json.Object()
+    insertNumber(&mut object, "version", PROTOCOL_VERSION)
+    insertString(&mut object, "file", file)
+    insertString(&mut object, "class", classification)
+    insertString(&mut object, "profile", profile)
+    insertString(&mut object, "mode", mode)
+    insertNumber(&mut object, "chunk_size", chunkSize)
+    insertNumber(&mut object, "input_bytes", inputLength)
+    insertBool(&mut object, "accepted", outcome.accepted)
+    insertBool(&mut object, "canonical", outcome.canonical)
+    insertString(&mut object, "error_kind", outcome.errorKind)
+    insertNumber(&mut object, "error_offset", outcome.errorOffset)
+    insertNumber(&mut object, "error_line", outcome.errorLine)
+    insertNumber(&mut object, "error_column", outcome.errorColumn)
+    insertString(&mut object, "error_path", outcome.errorPath)
+    insertBool(&mut object, "error_invariants", outcome.errorInvariants)
+
+    let value = std.json.Value.object(object)
+    match std.json.stringify(&value) {
+        case .ok(line) => std.println(line)
+        case .err(error) => {
+            std.eprintln(std.sprintf("cannot encode certification result: %v", error))
+            std.process.exit(2)
+        }
+    }
+}
+
+func optionsFor(_ profile: string) -> std.json.Options {
+    if profile == "rfc" {
+        return std.json.Options()
+            .withMaxDepth(RFC_MAX_DEPTH)
+            .withMaxInputBytes(RFC_MAX_BYTES)
+            .withDuplicateKeys(.useLast)
+    }
+    return std.json.Options()
+}
+
+func runOneShot(_ input: string, _ options: std.json.Options) -> Outcome {
+    match std.json.parseWithOptions(input, options) {
+        case .ok(value) => return acceptedOutcome(value, options)
+        case .err(error) => return rejectedOutcome(&error, input.byteLen())
+    }
+}
+
+func runStreaming(
+    _ input: string,
+    _ options: std.json.Options,
+    _ chunkSize: usize,
+) -> Outcome {
+    let reader = ChunkReader(input, chunkSize)
+    var decoder = std.json.Decoder.withOptions(reader, options)
+    match decoder.decode() {
+        case .err(error) => return rejectedOutcome(&error, input.byteLen())
+        case .ok(value) => {
+            match decoder.next() {
+                case .err(error) => return rejectedOutcome(&error, input.byteLen())
+                case .ok(.some(_)) => return trailingOutcome(input.byteLen())
+                case .ok(.none) => return acceptedOutcome(value, options)
+            }
+        }
+    }
+}
+
+func classificationFor(_ filename: string) -> string? {
+    if filename.startsWith("y_") { return .some("yes") }
+    if filename.startsWith("n_") { return .some("no") }
+    if filename.startsWith("i_") { return .some("implementation") }
+    return .none
+}
+
+func stringComesBefore(_ left: &string, _ right: &string) -> bool {
+    let shared = if left.byteLen() < right.byteLen() { left.byteLen() } else { right.byteLen() }
+    var index: usize = 0
+    while index < shared {
+        let lhs = left.byteAt(index)
+        let rhs = right.byteAt(index)
+        if lhs < rhs { return true }
+        if lhs > rhs { return false }
+        index += 1
+    }
+    return left.byteLen() < right.byteLen()
+}
+
+func sortStrings(_ values: &mut std.collections.List[string]) {
+    var index: usize = 1
+    while index < values.len() {
+        let value = match values.removeAt(index) {
+            case .some(item) => item
+            case .none => {
+                std.panic.panic("insertion-sort index must remain in bounds")
+            }
+        }
+        var destination = index
+        while destination > 0 && stringComesBefore(&value, values.at(destination - 1)) {
+            destination -= 1
+        }
+        if !values.insert(at: destination, value) {
+            std.panic.panic("insertion-sort destination must remain in bounds")
+        }
+        index += 1
+    }
+}
+
+func collectCorpusFiles(_ directoryPath: string) -> std.collections.List[string] {
+    var directory = match std.fs.readDir(directoryPath) {
+        case .ok(value) => value
+        case .err(error) => {
+            std.eprintln(std.sprintf("cannot read corpus directory %s: %v", directoryPath, error))
+            std.process.exit(2)
+        }
+    }
+    var files = std.collections.List[string]()
+    loop {
+        match directory.next() {
+            case .none => break
+            case .some(.err(error)) => {
+                std.eprintln(std.sprintf("cannot traverse corpus directory %s: %v", directoryPath, error))
+                std.process.exit(2)
+            }
+            case .some(.ok(entry)) => {
+                if !entry.isDirectory() && classificationFor(entry.name()).isSome() {
+                    files.append(entry.name())
+                }
+            }
+        }
+    }
+    // `string` deliberately lacks a locale-sensitive `Ord` conformance. Corpus
+    // filenames are raw bytes, so certification uses an explicit byte order.
+    sortStrings(&mut files)
+    return files
+}
+
+func loadInput(_ path: string) -> string {
+    match std.fs.read(path) {
+        case .ok(bytes) => return std.bytes.Buffer(bytes.asSpan()).intoString()
+        case .err(error) => {
+            std.eprintln(std.sprintf("cannot read corpus input %s: %v", path, error))
+            std.process.exit(2)
+        }
+    }
+}
+
+func emitStreamingResult(
+    _ filename: string,
+    _ classification: string,
+    _ profile: string,
+    _ input: string,
+    _ options: std.json.Options,
+    _ chunkSize: usize,
+) {
+    emitResult(
+        filename,
+        classification,
+        profile,
+        "stream",
+        chunkSize,
+        input.byteLen(),
+        runStreaming(input, options, chunkSize),
+    )
+}
+
+func runFile(_ directoryPath: string, _ filename: string, _ matrix: string) {
+    let classification = match classificationFor(filename) {
+        case .some(value) => value
+        case .none => return
+    }
+    let input = loadInput(std.path.join(directoryPath, filename))
+    let profiles: [string; 2] = ["rfc", "safe"]
+
+    var profileIndex: usize = 0
+    while profileIndex < 2 {
+        let profile = *profiles.at(profileIndex)
+        let options = optionsFor(profile)
+        emitResult(
+            filename,
+            classification,
+            profile,
+            "oneshot",
+            0,
+            input.byteLen(),
+            runOneShot(input, options),
+        )
+
+        if matrix == "full" {
+            // Small conformance and fuzz corpora exercise every awkward byte
+            // boundary; this catches refill bugs independently of document shape.
+            let chunkSizes: [usize; 5] = [1, 2, 3, 7, 4096]
+            var chunkIndex: usize = 0
+            while chunkIndex < 5 {
+                emitStreamingResult(
+                    filename,
+                    classification,
+                    profile,
+                    input,
+                    options,
+                    *chunkSizes.at(chunkIndex),
+                )
+                chunkIndex += 1
+            }
+        } else {
+            // Large valid-document suites keep one deliberately awkward boundary
+            // and one production-sized refill without multiplying every byte.
+            let chunkSizes: [usize; 2] = [7, 4096]
+            var chunkIndex: usize = 0
+            while chunkIndex < 2 {
+                emitStreamingResult(
+                    filename,
+                    classification,
+                    profile,
+                    input,
+                    options,
+                    *chunkSizes.at(chunkIndex),
+                )
+                chunkIndex += 1
+            }
+        }
+        profileIndex += 1
+    }
+}
+
+func main() {
+    let arguments = std.env.args()
+    if arguments.len() != 3 {
+        std.eprintln("usage: json-certifier <normalized-corpus> <full|documents>")
+        std.process.exit(2)
+    }
+
+    let directoryPath = arguments.at(1)
+    let matrix = arguments.at(2)
+    if matrix != "full" && matrix != "documents" {
+        std.eprintln("json-certifier matrix must be full or documents")
+        std.process.exit(2)
+    }
+    let files = collectCorpusFiles(directoryPath)
+    var index: usize = 0
+    while index < files.len() {
+        runFile(directoryPath, *files.at(index), matrix)
+        index += 1
+    }
+}

@@ -1,0 +1,47 @@
+format_version = 1
+id = "json-schema"
+name = "JSON Schema Test Suite documents"
+matrix = "documents"
+
+[source]
+repository = "https://github.com/json-schema-org/JSON-Schema-Test-Suite"
+revision = "0c7b65dc16dd8eaa7bd83e21099c76610c3b246a"
+revision_date = "2026-07-20T15:59:04Z"
+license = "MIT"
+license_path = "LICENSE"
+license_size = 1057
+license_sha256 = "837402bd25fad9b704265801ca3f92566a98157c1f9a7acd6f446299ba1c305a"
+fetch = "archive"
+archive_max_bytes = 10485760
+
+[expected]
+file_count = 513
+total_bytes = 2607643
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "0d60146ce02ffc4a087f74d158a94bc90faf9eb5d2e954c59b86037cbbdefe3c"
+
+[[selection]]
+root = "tests"
+include = ["*.json", "*/*.json", "*/*/*.json", "*/*/*/*.json"]
+default_classification = "yes"
+
+# These format-test documents deliberately embed an escaped lone surrogate as
+# test data. RFC 8259's grammar admits it but leaves receiver behavior undefined.
+[[selection.rule]]
+classification = "implementation"
+patterns = [
+    "draft2019-09/optional/format/idn-email.json",
+    "draft2020-12/optional/format/idn-email.json",
+    "draft7/optional/format/idn-email.json",
+    "v1/format/idn-email.json",
+]
+
+[[selection]]
+root = "remotes"
+include = ["*.json", "*/*.json", "*/*/*.json", "*/*/*/*.json"]
+default_classification = "yes"
+
+[[selection]]
+root = "."
+include = ["test-schema.json", "output-test-schema.json"]
+default_classification = "yes"

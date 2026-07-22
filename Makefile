@@ -10,6 +10,8 @@ LANGUAGE_TESTS := $(ROOT)/development/scripts/language_tests.py
 TEST_ALL := $(ROOT)/development/scripts/test_all.py
 BENCHMARK_TIMINGS := $(ROOT)/development/scripts/benchmark_timings.py
 CODEGEN_BENCHMARK := $(ROOT)/development/scripts/codegen_benchmarks.py
+JSON_VERIFIER := $(ROOT)/development/verifiers/json/verify.py
+JSON_BENCHMARK_PACKAGE := $(ROOT)/development/benchmarks/json
 RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
 LLVM_TOOLCHAIN := $(ROOT)/development/scripts/llvm_toolchain.py
 LLVM_TOOLCHAIN_TESTS := $(ROOT)/development/scripts/test_llvm_toolchain.py
@@ -19,7 +21,7 @@ DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests bench benchmark codegen-benchmark
+.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -52,9 +54,14 @@ help:
 	@echo "  make all-tests                Run full test_all.py pipeline"
 	@echo "  make all-tests JOBS=4"
 	@echo ""
+	@echo "Verifiers:"
+	@echo "  make verify-json-prepare      Download and validate the pinned JSON corpora"
+	@echo "  make verify-json              Verify std.json against prepared inputs offline"
+	@echo ""
 	@echo "Benchmarks:"
 	@echo "  make bench PACKAGE=path       Run Taro @bench functions"
 	@echo "  make bench PACKAGE=path BENCH_ARGS='--filter parse --time 2s'"
+	@echo "  make json-benchmark           Run generated std.json parser benchmarks"
 	@echo "  make benchmark PACKAGE=std"
 	@echo "  make benchmark PACKAGE=std RUNS=10"
 	@echo "  make codegen-benchmark        Compare release baseline and O2 code generation"
@@ -121,12 +128,21 @@ runtime-stress:
 all-tests:
 	$(PYTHON) $(TEST_ALL) $(if $(JOBS),--jobs $(JOBS),)
 
+verify-json-prepare:
+	$(PYTHON) $(JSON_VERIFIER) prepare $(if $(REFRESH),--refresh,) $(if $(JOBS),--jobs $(JOBS),)
+
+verify-json: dist
+	$(PYTHON) $(JSON_VERIFIER) run
+
 bench: dist
 	@if [ -z "$(PACKAGE)" ]; then \
 		echo "error: PACKAGE is required (example: make bench PACKAGE=path/to/package)"; \
 		exit 1; \
 	fi
 	TARO_HOME=$(DIST_DIR) $(TARO) bench $(PACKAGE) --std-path $(STD_PATH) $(BENCH_ARGS)
+
+json-benchmark: dist
+	TARO_HOME=$(DIST_DIR) $(TARO) bench $(JSON_BENCHMARK_PACKAGE) --std-path $(STD_PATH) $(BENCH_ARGS)
 
 benchmark:
 	@if [ -z "$(PACKAGE)" ]; then \

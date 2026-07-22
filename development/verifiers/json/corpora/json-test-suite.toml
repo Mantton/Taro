@@ -1,0 +1,36 @@
+format_version = 1
+id = "json-test-suite"
+name = "JSONTestSuite"
+matrix = "full"
+
+[source]
+repository = "https://github.com/nst/JSONTestSuite"
+revision = "1ef36fa01286573e846ac449e8683f8833c5b26a"
+revision_date = "2024-11-22T12:55:41Z"
+license = "MIT"
+license_path = "LICENSE"
+license_size = 1071
+license_sha256 = "8bd0e0578be788c617ea01d18b2a8146e3746ae50bddadc65a5f9d3aad08ad49"
+fetch = "files"
+
+[expected]
+file_count = 318
+total_bytes = 354024
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "224a87fb70c8ab73d18df106f280389f9d6d5a559c334030af789fe611bf50ff"
+
+[[selection]]
+root = "test_parsing"
+include = ["*.json"]
+
+[[selection.rule]]
+classification = "yes"
+patterns = ["y_*.json"]
+
+[[selection.rule]]
+classification = "no"
+patterns = ["n_*.json"]
+
+[[selection.rule]]
+classification = "implementation"
+patterns = ["i_*.json"]

@@ -1,0 +1,26 @@
+format_version = 1
+id = "blns"
+name = "Big List of Naughty Strings"
+matrix = "documents"
+
+[source]
+repository = "https://github.com/minimaxir/big-list-of-naughty-strings"
+revision = "db33ec7b1d5d9616a88c76394b7d0897bd0b97eb"
+revision_date = "2021-04-17T19:05:45Z"
+license = "MIT"
+license_path = "LICENSE"
+license_size = 1082
+license_sha256 = "5ea677fecc9e664ea10b7e327a94b43dbb939d24ab78282a9038e9ac30c05508"
+fetch = "archive"
+archive_max_bytes = 2097152
+
+[expected]
+file_count = 1
+total_bytes = 27191
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "9aae78ed1dc5e38b772d0aad58e4af60a4ae59f6d6e5098496f7db4927cee3b2"
+
+[[selection]]
+root = "."
+include = ["blns.json"]
+default_classification = "yes"

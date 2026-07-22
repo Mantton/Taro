@@ -1,0 +1,26 @@
+format_version = 1
+id = "boost-json-fuzz"
+name = "Boost.JSON historical crash corpus"
+matrix = "full"
+
+[source]
+repository = "https://github.com/boostorg/json"
+revision = "ea9066875c7f1bac807110e47c64df8e9ba876a7"
+revision_date = "2026-07-15T13:57:22Z"
+license = "BSL-1.0"
+license_path = "LICENSE_1_0.txt"
+license_size = 1338
+license_sha256 = "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"
+fetch = "archive"
+archive_max_bytes = 20971520
+
+[expected]
+file_count = 16
+total_bytes = 47919
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "aaddbaefeb665d1fe382011277f64903ca80aa3745b2617bcb5474cb37ef82f7"
+
+[[selection]]
+root = "fuzzing/old_crashes"
+include = ["*"]
+default_classification = "implementation"

@@ -1,0 +1,60 @@
+format_version = 1
+id = "yyjson"
+name = "yyjson strict parser cases"
+matrix = "full"
+
+[source]
+repository = "https://github.com/ibireme/yyjson"
+revision = "ac8f6074e1fbc43ec496aa1404b460d08b55d7a5"
+revision_date = "2026-07-13T16:19:20Z"
+license = "MIT"
+license_path = "LICENSE"
+license_size = 1084
+license_sha256 = "45e384d3d52c73cba3a64d6e6c25d47cd738cd8a55c30629e3201046eda62947"
+fetch = "archive"
+archive_max_bytes = 10485760
+
+[expected]
+file_count = 209
+total_bytes = 59162
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "946911f3c067dfecb3d604ce80b744d5775ebefd189604fdb69f3cf286ee20ed"
+
+[[selection]]
+root = "test/data/json/test_yyjson"
+include = ["*.json"]
+default_classification = "yes"
+
+# RFC 8259 permits a parser to choose how it handles a leading BOM and escaped
+# unpaired surrogates, so these are interoperability decisions rather than errors.
+[[selection.rule]]
+classification = "implementation"
+patterns = [
+    "*(bom)*.json",
+    "invalid_utf8_escape_1(fail).min.json",
+    "invalid_utf8_escape_2(fail).min.json",
+    "invalid_utf8_escape_3(fail).min.json",
+    "invalid_utf8_escape_4(fail).min.json",
+    "invalid_utf8_escape_5(fail).min.json",
+    "invalid_utf8_escape_6(fail).min.json",
+    "invalid_utf8_escape_7(fail).min.json",
+]
+
+[[selection.rule]]
+classification = "no"
+patterns = [
+    "*(fail)*.json",
+    "*(garbage)*.json",
+    "*(bighex)*.json",
+    "*(comma)*.json",
+    "*(comment)*.json",
+    "*(endcomment)*.json",
+    "*(inf)*.json",
+    "*(nan)*.json",
+    "*(str_err)*.json",
+    "*(ext_num)*.json",
+    "*(ext_esc)*.json",
+    "*(ext_ws)*.json",
+    "*(str_sq)*.json",
+    "*(str_uq)*.json",
+]

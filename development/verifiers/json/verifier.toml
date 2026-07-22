@@ -1,0 +1,16 @@
+format_version = 2
+
+# Ordering is intentional: strict syntax corpora run before large valid-document
+# collections, followed by crash seeds whose accept/reject result is unspecified.
+suites = [
+    "corpora/json-test-suite.toml",
+    "corpora/jansson.toml",
+    "corpora/yajl.toml",
+    "corpora/yyjson.toml",
+    "corpora/jsoncpp.toml",
+    "corpora/json-schema.toml",
+    "corpora/jcs.toml",
+    "corpora/blns.toml",
+    "corpora/boost-json-fuzz.toml",
+    "corpora/cjson-fuzz.toml",
+]

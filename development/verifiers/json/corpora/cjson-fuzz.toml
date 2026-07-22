@@ -1,0 +1,26 @@
+format_version = 1
+id = "cjson-fuzz"
+name = "cJSON fuzz seed corpus"
+matrix = "full"
+
+[source]
+repository = "https://github.com/DaveGamble/cJSON"
+revision = "fb16e5cf358798aabb049655975cde8427101056"
+revision_date = "2026-04-09T01:59:11Z"
+license = "MIT"
+license_path = "LICENSE"
+license_size = 1084
+license_sha256 = "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c"
+fetch = "archive"
+archive_max_bytes = 5242880
+
+[expected]
+file_count = 14
+total_bytes = 9002
+tree_hash = "sha256-v2(source-relative-path NUL classification NUL decimal-size NUL contents, byte-sorted)"
+tree_sha256 = "3fc7d8f649f98a6d47205256b1ac67f56cc7263a6147cfa04d25c108db072199"
+
+[[selection]]
+root = "fuzzing/inputs"
+include = ["*"]
+default_classification = "implementation"
