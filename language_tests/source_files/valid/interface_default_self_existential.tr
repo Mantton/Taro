@@ -1,0 +1,21 @@
+interface SameValue[Other = Self] {
+    func sameValue(&self, _ other: &Other) -> bool
+}
+
+struct NumberBox {
+    value: int32
+}
+
+impl SameValue for NumberBox {
+    func sameValue(&self, _ other: &NumberBox) -> bool {
+        self.value == other.value
+    }
+}
+
+func main() {
+    let first = NumberBox { value: 7 }
+    let second = NumberBox { value: 7 }
+    let erased: any SameValue = first
+    assert(erased.sameValue(&second), "default Self argument should survive existential boxing")
+    std.print("ok\n")
+}

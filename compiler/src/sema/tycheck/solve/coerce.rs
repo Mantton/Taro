@@ -665,9 +665,14 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Parameter(_) => {
                 let bounds = self.bounds_for_type_in_scope(ty);
                 let directly_bounded = bounds.iter().any(|bound| {
-                    self.interface_ref_matches(interface, *bound)
+                    // Bounds can enter the parameter environment before call
+                    // inference finishes. Resolve their arguments at the point
+                    // of comparison so a known bound such as `SameAs[?T]`, with
+                    // `?T = Concrete`, is not mistaken for a missing bound.
+                    let (bound, _) = self.resolve_interface_ref(*bound);
+                    self.interface_ref_matches(interface, bound)
                         || self
-                            .collect_interface_with_supers(*bound)
+                            .collect_interface_with_supers(bound)
                             .into_iter()
                             .skip(1)
                             .any(|candidate| self.interface_ref_matches(interface, candidate))
