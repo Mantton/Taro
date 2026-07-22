@@ -518,7 +518,23 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
         };
 
         // Strategy 1: Check ParamEnv bounds for the matching interface
-        if let Some(bound_iface) = self.env.first_bound_for_interface(self_ty, interface_id) {
+        if let Some(bound_iface) =
+            self.env
+                .first_bound_for_interface_resolved(self_ty, interface_id, |ty| {
+                    self.icx.resolve_vars_if_possible(ty)
+                })
+        {
+            // An associated type binding on a generic bound is already the
+            // canonical answer. Consulting conformance selection here can
+            // lose the caller's parameter environment and is unnecessary.
+            let assoc_name = gcx.definition_ident(assoc_id).symbol;
+            if let Some(binding) = bound_iface
+                .bindings
+                .iter()
+                .find(|binding| binding.name == assoc_name)
+            {
+                return Some(binding.ty);
+            }
             // Found matching bound - look up type witness from conformance
             let witness = resolve_conformance_witness(gcx, bound_iface)?;
             return instantiate_witness(witness);

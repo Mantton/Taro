@@ -882,6 +882,10 @@ impl<'arena> GlobalContext<'arena> {
     /// - For struct/enum impls: returns the concrete type
     /// - For interface impls: returns the Self type parameter
     pub fn get_impl_self_ty(self, impl_id: DefinitionID) -> Option<Ty<'arena>> {
+        if let Some(target) = self.get_impl_target_ty(impl_id) {
+            return Some(target);
+        }
+
         let head = self.get_impl_type_head(impl_id)?;
         match head {
             TypeHead::Nominal(target_id) => match self.definition_kind(target_id) {
@@ -909,6 +913,20 @@ impl<'arena> GlobalContext<'arena> {
             | TypeHead::Pointer(_)
             | TypeHead::Array
             | TypeHead::Closure(_) => self.get_impl_target_ty(impl_id),
+            TypeHead::Parameter(parameter_id) => {
+                let parameter = self
+                    .generics_of(impl_id)
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.id == parameter_id)?;
+                Some(Ty::new(
+                    TyKind::Parameter(GenericParameter {
+                        index: parameter.index,
+                        name: parameter.name,
+                    }),
+                    self,
+                ))
+            }
         }
     }
 

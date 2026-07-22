@@ -644,6 +644,11 @@ pub enum TypeHead {
     Primary(PrimaryType),
     /// A nominal type identity (struct/interface/enum/etc).
     Nominal(DefinitionID),
+    /// A type parameter used as the complete target of a universal impl.
+    ///
+    /// Unlike a nominal head, this matches every concrete type after the
+    /// impl's where-clause obligations have been proven.
+    Parameter(DefinitionID),
     /// An anonymous closure type identity.
     Closure(DefinitionID),
     Reference(ast::Mutability),
@@ -653,10 +658,15 @@ pub enum TypeHead {
 }
 
 impl TypeHead {
+    pub fn is_blanket(self) -> bool {
+        matches!(self, TypeHead::Parameter(_))
+    }
+
     pub fn format(self, gcx: crate::compile::context::Gcx) -> String {
         match self {
             TypeHead::Primary(p) => p.name_str().into(),
             TypeHead::Nominal(id) => gcx.symbol_text(gcx.definition_ident(id).symbol).into(),
+            TypeHead::Parameter(id) => gcx.symbol_text(gcx.definition_ident(id).symbol).into(),
             TypeHead::Closure(_) => "closure".into(),
             TypeHead::Reference(m) => format!("&{}_", m.display_str()),
             TypeHead::Pointer(m) => format!("*{}_", m.display_str()),

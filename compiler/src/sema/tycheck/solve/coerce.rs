@@ -662,7 +662,24 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         match ty.kind() {
             TyKind::Infer(_) => return SolverResult::Deferred,
-            TyKind::Parameter(_) => return SolverResult::Solved(vec![]),
+            TyKind::Parameter(_) => {
+                let bounds = self.bounds_for_type_in_scope(ty);
+                let directly_bounded = bounds.iter().any(|bound| {
+                    self.interface_ref_matches(interface, *bound)
+                        || self
+                            .collect_interface_with_supers(*bound)
+                            .into_iter()
+                            .skip(1)
+                            .any(|candidate| self.interface_ref_matches(interface, candidate))
+                });
+                if directly_bounded {
+                    return SolverResult::Solved(vec![]);
+                }
+                // A different bound may imply this interface through a
+                // conditional blanket impl, so let declared selection below
+                // attempt that proof. Treating every parameter as conforming
+                // made recursive or entirely missing bounds silently succeed.
+            }
             TyKind::Adt(def, _)
                 if self
                     .gcx()

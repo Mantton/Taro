@@ -683,6 +683,7 @@ pub struct ConformanceRecordIdWire {
 pub enum TypeHeadWire {
     Primary(PrimaryTypeWire),
     Nominal(DefIdWire),
+    Parameter(DefIdWire),
     Closure(DefIdWire),
     Reference(MutabilityWire),
     Pointer(MutabilityWire),
@@ -2459,6 +2460,7 @@ pub fn type_head_to_wire(v: TypeHead) -> TypeHeadWire {
     match v {
         TypeHead::Primary(v) => TypeHeadWire::Primary(primary_type_to_wire(v)),
         TypeHead::Nominal(v) => TypeHeadWire::Nominal(def_to_wire(v)),
+        TypeHead::Parameter(v) => TypeHeadWire::Parameter(def_to_wire(v)),
         TypeHead::Closure(v) => TypeHeadWire::Closure(def_to_wire(v)),
         TypeHead::Reference(v) => TypeHeadWire::Reference(mutability_to_wire(v)),
         TypeHead::Pointer(v) => TypeHeadWire::Pointer(mutability_to_wire(v)),
@@ -2472,6 +2474,7 @@ pub fn type_head_from_wire(v: &TypeHeadWire) -> TypeHead {
     match v {
         TypeHeadWire::Primary(v) => TypeHead::Primary(primary_type_from_wire(v)),
         TypeHeadWire::Nominal(v) => TypeHead::Nominal(def_from_wire(v)),
+        TypeHeadWire::Parameter(v) => TypeHead::Parameter(def_from_wire(v)),
         TypeHeadWire::Closure(v) => TypeHead::Closure(def_from_wire(v)),
         TypeHeadWire::Reference(v) => TypeHead::Reference(mutability_from_wire(v)),
         TypeHeadWire::Pointer(v) => TypeHead::Pointer(mutability_from_wire(v)),

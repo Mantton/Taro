@@ -1,0 +1,4 @@
+error: type 'UniversalRecursiveConcrete' does not conform to interface 'UniversalRecursive'
+ -> language_tests/source_files/invalid/universal_blanket_impl_recursive.tr:8:41
+	    let _value: any UniversalRecursive = UniversalRecursiveConcrete {}
+	                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

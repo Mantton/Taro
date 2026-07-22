@@ -70,11 +70,15 @@ impl<'ctx> Actor<'ctx> {
                 let explicit_record = self
                     .context
                     .collect_from_databases(|db| {
-                        db.conformance_by_interface_head
-                            .get(&(iface.id, record.target))
+                        db.conformance_by_interface
+                            .get(&iface.id)
                             .into_iter()
                             .flat_map(|ids| ids.iter())
                             .filter_map(|id| db.conformance_records.get(id))
+                            .filter(|candidate| {
+                                candidate.target == record.target
+                                    || (candidate.target.is_blanket() && record.target.is_blanket())
+                            })
                             .copied()
                             .collect::<Vec<_>>()
                     })

@@ -770,11 +770,10 @@ impl<'ctx> ConstraintSolver<'ctx> {
     }
 
     fn lookup_instance_candidates(&self, ty: Ty<'ctx>, name: Symbol) -> Vec<DefinitionID> {
-        let Some(head) = self.type_head_from_type(ty) else {
-            return vec![];
-        };
-
-        self.lookup_instance_candidates_visible(head, name)
+        match self.type_head_from_type(ty) {
+            Some(head) => self.lookup_instance_candidates_visible(head, name),
+            None => self.lookup_blanket_instance_candidates(name),
+        }
     }
 
     pub(crate) fn lookup_instance_candidates_visible(
@@ -814,6 +813,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             if let Some(idx) = db.type_head_to_members.get(&head) {
                 self.collect_visible_trait_methods_for_name(idx, name, &mut members, &mut seen);
             }
+            self.collect_blanket_trait_methods_for_name(db, name, &mut members, &mut seen);
         };
 
         gcx.with_session_type_database(|db| collect_trait_methods(db));
@@ -823,6 +823,37 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         members.retain(|id| gcx.is_definition_visible(*id, self.current_def));
         members
+    }
+
+    pub(super) fn lookup_blanket_instance_candidates(&self, name: Symbol) -> Vec<DefinitionID> {
+        let gcx = self.gcx();
+        let mut members = Vec::new();
+        let mut seen = FxHashSet::default();
+
+        let mut collect = |db: &crate::compile::context::TypeDatabase<'ctx>| {
+            self.collect_blanket_trait_methods_for_name(db, name, &mut members, &mut seen);
+        };
+        gcx.with_session_type_database(|db| collect(db));
+        for package in gcx.visible_packages() {
+            gcx.with_type_database(package, |db| collect(db));
+        }
+
+        members.retain(|id| gcx.is_definition_visible(*id, self.current_def));
+        members
+    }
+
+    fn collect_blanket_trait_methods_for_name(
+        &self,
+        db: &crate::compile::context::TypeDatabase<'ctx>,
+        name: Symbol,
+        members: &mut Vec<DefinitionID>,
+        seen: &mut FxHashSet<DefinitionID>,
+    ) {
+        for (head, index) in &db.type_head_to_members {
+            if head.is_blanket() {
+                self.collect_visible_trait_methods_for_name(index, name, members, seen);
+            }
+        }
     }
 
     /// Check whether a type has any instance member with the given name that
@@ -1110,6 +1141,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             if let Some(idx) = db.type_head_to_members.get(&head) {
                 self.collect_visible_trait_methods_for_name(idx, name, &mut members, &mut seen);
             }
+            self.collect_blanket_trait_methods_for_name(db, name, &mut members, &mut seen);
         };
 
         gcx.with_session_type_database(|db| collect_trait_methods(db));
@@ -1284,15 +1316,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
         // Feed those methods to overload resolution directly; binding the method
         // later instantiates its parent impl arguments and checks its constraints.
         let mut collect_concrete = |db: &crate::compile::context::TypeDatabase<'ctx>| {
-            let Some(index) = db.type_head_to_members.get(&head) else {
-                return;
-            };
-            let Some(set) = index.trait_methods.get(&(interface_id, method_symbol)) else {
-                return;
-            };
-            for &method in &set.members {
-                if seen.insert(method) {
-                    out.push(method);
+            for index in db
+                .type_head_to_members
+                .iter()
+                .filter_map(|(candidate_head, index)| {
+                    (*candidate_head == head || candidate_head.is_blanket()).then_some(index)
+                })
+            {
+                if let Some(set) = index.trait_methods.get(&(interface_id, method_symbol)) {
+                    for &method in &set.members {
+                        if seen.insert(method) {
+                            out.push(method);
+                        }
+                    }
                 }
             }
         };
@@ -1331,11 +1367,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
         }
 
         let records = gcx.collect_from_databases(|db| {
-            db.conformance_by_interface_head
-                .get(&(interface_id, head))
+            db.conformance_by_interface
+                .get(&interface_id)
                 .map_or_else(Vec::new, |ids| {
                     ids.iter()
                         .filter_map(|id| db.conformance_records.get(id).copied())
+                        .filter(|record| record.target == head || record.target.is_blanket())
                         .collect()
                 })
         });

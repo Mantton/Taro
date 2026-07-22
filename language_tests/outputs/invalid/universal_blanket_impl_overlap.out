@@ -1,0 +1,8 @@
+error: conflicting conformance to 'UniversalMarker'
+ -> language_tests/source_files/invalid/universal_blanket_impl_overlap.tr:6:5
+	impl UniversalMarker for UniversalConcrete {}
+	     ^^^^^^^^^^^^^^^
+info: existing conformance is defined here
+ -> language_tests/source_files/invalid/universal_blanket_impl_overlap.tr:5:12
+	impl[Value] UniversalMarker for Value {}
+	            ^^^^^^^^^^^^^^^

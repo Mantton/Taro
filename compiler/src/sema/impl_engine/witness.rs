@@ -40,7 +40,9 @@ pub(super) fn build_conformance_witness<'ctx>(
                 let Some(record) = gcx.conformance_record(record_id) else {
                     return Err(SelectionError::NoCandidates(goal));
                 };
-                let Some(type_head) = type_head_from_value_ty(goal.self_ty) else {
+                let Some(type_head) = type_head_from_value_ty(goal.self_ty)
+                    .or_else(|| record.target.is_blanket().then_some(record.target))
+                else {
                     return Err(SelectionError::NoCandidates(goal));
                 };
                 build_witness_from_record(gcx, type_head, &record, selected.subst)?
@@ -180,6 +182,11 @@ fn find_property_witnesses<'ctx>(
     let explicit = gcx
         .lookup_interface_computed_properties(type_head, record.interface.id, requirement.name)
         .into_iter()
+        .chain(gcx.lookup_interface_computed_properties(
+            record.target,
+            record.interface.id,
+            requirement.name,
+        ))
         .find(|entry| gcx.definition_parent(entry.property_id) == Some(record.extension));
 
     let inherent = gcx
@@ -590,16 +597,18 @@ fn find_type_witness<'ctx>(
 ) -> Option<Ty<'ctx>> {
     let extension_pkg = record.extension.package();
     let alias_id = gcx.with_type_database(extension_pkg, |db| {
-        db.alias_table
-            .by_type
-            .get(&type_head)
-            .and_then(|bucket| bucket.aliases.get(&assoc_name))
-            .and_then(|vec| {
-                vec.iter().map(|(id, _)| *id).find(|&id| {
-                    db.alias_table.aliases.get(&id).map(|def| def.extension_id)
-                        == Some(Some(record.extension))
+        [type_head, record.target].into_iter().find_map(|head| {
+            db.alias_table
+                .by_type
+                .get(&head)
+                .and_then(|bucket| bucket.aliases.get(&assoc_name))
+                .and_then(|vec| {
+                    vec.iter().map(|(id, _)| *id).find(|&id| {
+                        db.alias_table.aliases.get(&id).map(|def| def.extension_id)
+                            == Some(Some(record.extension))
+                    })
                 })
-            })
+        })
     });
 
     if let Some(alias_id) = alias_id {

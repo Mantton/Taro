@@ -315,6 +315,7 @@ pub(crate) fn type_head_key(_gcx: GlobalContext<'_>, head: TypeHead) -> String {
         TypeHead::Primary(PrimaryType::UInt(u)) => format!("head:uint:{}", u.name_str()),
         TypeHead::Primary(PrimaryType::Float(f)) => format!("head:float:{}", f.name_str()),
         TypeHead::Nominal(def_id) => format!("head:nominal:{}", definition_key(def_id)),
+        TypeHead::Parameter(def_id) => format!("head:parameter:{}", definition_key(def_id)),
         TypeHead::Closure(def_id) => format!("head:closure:{}", definition_key(def_id)),
         TypeHead::Reference(mt) => format!("head:reference:{}", mt.display_str()),
         TypeHead::Pointer(mt) => format!("head:pointer:{}", mt.display_str()),
@@ -333,6 +334,10 @@ fn type_head_symbol(gcx: GlobalContext<'_>, head: TypeHead) -> String {
         TypeHead::Primary(PrimaryType::UInt(u)) => u.name_str().into(),
         TypeHead::Primary(PrimaryType::Float(f)) => f.name_str().into(),
         TypeHead::Nominal(def_id) => {
+            let ident = gcx.definition_ident(def_id);
+            symbol_with_key(gcx.symbol_text(ident.symbol).as_ref(), &key)
+        }
+        TypeHead::Parameter(def_id) => {
             let ident = gcx.definition_ident(def_id);
             symbol_with_key(gcx.symbol_text(ident.symbol).as_ref(), &key)
         }

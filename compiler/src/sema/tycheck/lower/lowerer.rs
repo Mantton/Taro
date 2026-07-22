@@ -888,6 +888,26 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         let gcx = self.gcx();
         let name = segment.identifier.symbol;
 
+        // A universal impl's `Self` is represented by its target parameter.
+        // Its associated type definitions are already collected, but the
+        // conformance record is intentionally built after function signatures.
+        // Resolve an alias declared by the enclosing impl directly so
+        // `Self.Item` works in those signatures without depending on a later
+        // type-checking phase.
+        if let Some(impl_id) = self.current_impl_definition()
+            && matches!(gcx.get_impl_self_ty(impl_id).map(Ty::kind), Some(TyKind::Parameter(param)) if param == base_param)
+        {
+            let alias_id = gcx.with_type_database(impl_id.package(), |db| {
+                db.alias_table.aliases.values().find_map(|alias| {
+                    (alias.extension_id == Some(impl_id) && alias.name == name).then_some(alias.id)
+                })
+            });
+            if let Some(alias_id) = alias_id {
+                let _ = check_generics_prohibited(alias_id, segment, gcx);
+                return self.resolve_alias(alias_id);
+            }
+        }
+
         let Some(def_id) = self.current_definition() else {
             gcx.dcx().emit_error(
                 format!(

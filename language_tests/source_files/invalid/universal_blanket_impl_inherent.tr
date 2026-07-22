@@ -1,0 +1,7 @@
+impl[Value] Value {
+    func identity(self) -> Value {
+        self
+    }
+}
+
+func main() {}

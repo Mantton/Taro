@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/universal-blanket-app"
+kind = "executable"
+
+[require]
+"github.com/example/universal-blanket-dep" = { path = "../dep", alias = "dep" }

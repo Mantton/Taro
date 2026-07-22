@@ -41,6 +41,9 @@ impl<'ctx> Actor<'ctx> {
         match head {
             TypeHead::Nominal(id) => id.package() == impl_pkg,
             TypeHead::Closure(id) => id.package() == impl_pkg,
+            // A type parameter is never a locally-owned type. Universal impls
+            // are legal only through ownership of their interface.
+            TypeHead::Parameter(_) => false,
             TypeHead::Primary(_)
             | TypeHead::Tuple(_)
             | TypeHead::Reference(_)
@@ -58,6 +61,15 @@ impl<'ctx> Actor<'ctx> {
         let Some(head) = self.context.get_impl_type_head(impl_id) else {
             return;
         };
+
+        if head.is_blanket() {
+            self.context.dcx().emit_error(
+                "cannot define an inherent impl for a type parameter; universal impls must implement an interface"
+                    .to_string(),
+                Some(node.target.span),
+            );
+            return;
+        }
 
         let impl_pkg = impl_id.package();
         if self.impl_owns_type(head, impl_pkg) {
@@ -139,6 +151,7 @@ impl<'ctx> Actor<'ctx> {
                 DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Enum => {
                     Some(TypeHead::Nominal(*id))
                 }
+                DefinitionKind::TypeParameter => Some(TypeHead::Parameter(*id)),
                 DefinitionKind::TypeAlias => self.type_head_for_alias(*id, ty.span),
                 _ => {
                     self.context.dcx().emit_error(

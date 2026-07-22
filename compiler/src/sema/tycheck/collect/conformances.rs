@@ -16,6 +16,7 @@ use crate::{
                 ParamEnv,
                 instantiate::{
                     instantiate_constraint_with_args, instantiate_interface_ref_with_args,
+                    instantiate_ty_with_args,
                 },
                 normalize_ty,
                 unify::TypeUnifier,
@@ -119,9 +120,11 @@ impl<'ctx> Actor<'ctx> {
             return;
         }
 
-        // Orphan rule check: must own the type OR own the interface
+        // Orphan rule check: must own the type OR own the interface. A bare
+        // type parameter is not owned by any package, so universal impls must
+        // be declared alongside the interface.
         if !self.is_conformance_allowed(ty_key, self_ty, reference.id, impl_pkg) {
-            self.emit_orphan_error(interface_ty.span, ty_key, reference);
+            self.emit_orphan_error(interface_ty.span, self_ty, reference);
             return;
         }
 
@@ -244,6 +247,7 @@ impl<'ctx> Actor<'ctx> {
         match ty {
             TypeHead::Nominal(id) => id.package() == pkg,
             TypeHead::Closure(id) => id.package() == pkg,
+            TypeHead::Parameter(_) => false,
             // For references and pointers, check the inner type
             TypeHead::Reference(_) | TypeHead::Pointer(_) => self.is_inner_type_local(self_ty, pkg),
             // Built-in types are owned by std
@@ -280,6 +284,7 @@ impl<'ctx> Actor<'ctx> {
         let type_pkg = match ty_key {
             TypeHead::Nominal(id) => Some(id.package()),
             TypeHead::Closure(id) => Some(id.package()),
+            TypeHead::Parameter(_) => None,
             _ => None,
         };
 
@@ -322,13 +327,17 @@ impl<'ctx> Actor<'ctx> {
         interface: InterfaceReference<'ctx>,
         new_extension_id: DefinitionID,
     ) -> Option<ConformanceRecord<'ctx>> {
-        let candidates =
-            self.context
-                .conformance_records_for_interface_head(package_id, interface.id, ty_key);
+        // Universal impls have no concrete constructor head. Scan the
+        // interface bucket and cheaply reject unrelated concrete heads before
+        // performing the full overlap proof.
+        let candidates = self
+            .context
+            .conformance_records_for_interface(package_id, interface.id);
 
         for candidate in candidates {
-            if candidate.interface == interface {
-                return Some(candidate);
+            if candidate.target != ty_key && !candidate.target.is_blanket() && !ty_key.is_blanket()
+            {
+                continue;
             }
 
             if !self.overlaps(candidate, interface, new_extension_id) {
@@ -370,6 +379,19 @@ impl<'ctx> Actor<'ctx> {
             None => return false,
         };
 
+        let Some(existing_self) = self.conformance_self_ty(existing.extension) else {
+            return false;
+        };
+        let Some(new_self) = self.conformance_self_ty(new_extension_id) else {
+            return false;
+        };
+        let existing_self =
+            instantiate_ty_with_args(self.context, existing_self, existing_extension_args);
+        let new_self = instantiate_ty_with_args(self.context, new_self, new_extension_args);
+        if unifier.unify(existing_self, new_self).is_err() {
+            return false;
+        }
+
         if existing_iface.id != new_iface.id
             || existing_iface.arguments.len() != new_iface.arguments.len()
         {
@@ -409,6 +431,16 @@ impl<'ctx> Actor<'ctx> {
         }
 
         true
+    }
+
+    fn conformance_self_ty(&self, extension_id: DefinitionID) -> Option<Ty<'ctx>> {
+        match self.context.definition_kind(extension_id) {
+            DefinitionKind::Impl => self.context.get_impl_self_ty(extension_id),
+            DefinitionKind::Struct | DefinitionKind::Enum => {
+                Some(self.context.get_type(extension_id))
+            }
+            _ => None,
+        }
     }
 
     fn instantiate_interface_for_overlap(
@@ -523,7 +555,7 @@ impl<'ctx> Actor<'ctx> {
         true
     }
 
-    fn emit_orphan_error(&self, span: Span, ty: TypeHead, interface: InterfaceReference<'ctx>) {
+    fn emit_orphan_error(&self, span: Span, ty: Ty<'ctx>, interface: InterfaceReference<'ctx>) {
         let interface_name = interface.format(self.context);
         let type_name = ty.format(self.context);
         self.context.dcx().emit_error(

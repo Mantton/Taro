@@ -115,34 +115,43 @@ impl<'ctx> ParamEnv<'ctx> {
         out.into_iter().collect()
     }
 
-    /// Return the first bound for a specific interface ID, if one exists for `ty`.
-    /// This avoids materializing the full bounds vector in hot lookup paths.
-    pub fn first_bound_for_interface(
+    /// Find a bound after resolving inference variables owned by the caller.
+    /// Call-site constraints are often registered before argument inference
+    /// finishes, so their stored self type can be an inference variable even
+    /// when the projection being normalized already has a concrete self type.
+    pub fn first_bound_for_interface_resolved(
         &self,
         ty: Ty<'ctx>,
         interface_id: crate::hir::DefinitionID,
+        mut resolve: impl FnMut(Ty<'ctx>) -> Ty<'ctx>,
     ) -> Option<InterfaceReference<'ctx>> {
-        if self.bounds.is_empty() {
-            return None;
-        }
+        let mut equivalent = FxHashSet::default();
+        equivalent.insert(resolve(ty));
 
-        if self.type_equalities.is_empty() {
-            for (bound_ty, interface) in &self.bounds {
-                if *bound_ty == ty && interface.id == interface_id {
-                    return Some(*interface);
+        // Preserve the normal ParamEnv equality closure after resolving
+        // call-site inference variables. Either side of an equality may have
+        // been registered before inference selected its concrete type.
+        loop {
+            let mut changed = false;
+            for &(lhs, rhs) in &self.type_equalities {
+                let lhs = resolve(lhs);
+                let rhs = resolve(rhs);
+                if equivalent.contains(&lhs) && equivalent.insert(rhs) {
+                    changed = true;
+                } else if equivalent.contains(&rhs) && equivalent.insert(lhs) {
+                    changed = true;
                 }
             }
-            return None;
-        }
 
-        let eq_set = self.equivalent_types(ty);
-        for (bound_ty, interface) in &self.bounds {
-            if interface.id == interface_id && eq_set.contains(bound_ty) {
-                return Some(*interface);
+            if !changed {
+                break;
             }
         }
 
-        None
+        self.bounds.iter().find_map(|(bound_ty, interface)| {
+            (interface.id == interface_id && equivalent.contains(&resolve(*bound_ty)))
+                .then_some(*interface)
+        })
     }
 
     /// Build transitive closure of type equalities for a type.

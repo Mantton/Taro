@@ -226,6 +226,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
                 Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
                 None => constraint.value,
             };
+            let constraint = resolve_constraint_vars(gcx, &self.infer_cx, constraint);
             if let Constraint::Bound { .. } = constraint {
                 self.env.add_constraint(constraint);
             }
@@ -652,6 +653,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     Some(args) => instantiate_constraint_with_args(gcx, constraint.value, args),
                     None => constraint.value,
                 };
+                // Argument unification happens before call-site obligations are
+                // materialized. Resolve those bindings now so the ParamEnv and
+                // its associated-type equalities refer to the caller's actual
+                // types rather than stale inference variables.
+                let constraint = resolve_constraint_vars(gcx, &self.icx, constraint);
                 if let Constraint::Bound { .. } = constraint {
                     self.param_env.add_constraint(constraint);
                 }
@@ -996,6 +1002,41 @@ impl<'ctx> ConstraintSolver<'ctx> {
             assumption_constraints: self.assumption_constraints,
             param_env: self.param_env.clone(),
             visible_traits: self.visible_traits.clone(),
+        }
+    }
+}
+
+fn resolve_constraint_vars<'ctx>(
+    gcx: Gcx<'ctx>,
+    icx: &InferCtx<'ctx>,
+    constraint: Constraint<'ctx>,
+) -> Constraint<'ctx> {
+    match constraint {
+        Constraint::TypeEquality(lhs, rhs) => Constraint::TypeEquality(
+            icx.resolve_vars_if_possible(lhs),
+            icx.resolve_vars_if_possible(rhs),
+        ),
+        Constraint::Bound { ty, mut interface } => {
+            interface.arguments = icx.resolve_args_if_possible(interface.arguments);
+            if !interface.bindings.is_empty() {
+                let bindings = interface
+                    .bindings
+                    .iter()
+                    .map(|binding| crate::sema::models::AssociatedTypeBinding {
+                        name: binding.name,
+                        ty: icx.resolve_vars_if_possible(binding.ty),
+                    })
+                    .collect::<Vec<_>>();
+                interface.bindings = gcx
+                    .store
+                    .arenas
+                    .global
+                    .alloc_slice_clone(bindings.as_slice());
+            }
+            Constraint::Bound {
+                ty: icx.resolve_vars_if_possible(ty),
+                interface,
+            }
         }
     }
 }

@@ -1,0 +1,9 @@
+interface UniversalRecursive {}
+
+impl[Value] UniversalRecursive for Value where Value: UniversalRecursive {}
+
+struct UniversalRecursiveConcrete {}
+
+func main() {
+    let _value: any UniversalRecursive = UniversalRecursiveConcrete {}
+}

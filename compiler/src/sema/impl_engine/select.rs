@@ -256,17 +256,17 @@ impl<'ctx> Selector<'ctx> {
                 head = type_head_from_value_ty(normalized);
             }
         }
-        let Some(head) = head else {
-            return out;
-        };
-
         let mut records: Vec<(ConformanceRecordId, ConformanceRecord<'ctx>)> =
             self.gcx.collect_from_databases(|db| {
-                db.conformance_by_interface_head
-                    .get(&(goal.interface_id, head))
+                db.conformance_by_interface
+                    .get(&goal.interface_id)
                     .into_iter()
                     .flat_map(|ids| ids.iter())
-                    .filter_map(|id| db.conformance_records.get(id).map(|record| (*id, *record)))
+                    .filter_map(|id| {
+                        let record = db.conformance_records.get(id)?;
+                        (record.target.is_blanket() || head == Some(record.target))
+                            .then_some((*id, *record))
+                    })
                     .collect()
             });
         records.sort_by_key(|(id, _)| (id.package.index(), id.index));

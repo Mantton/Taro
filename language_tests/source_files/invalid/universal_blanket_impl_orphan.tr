@@ -1,0 +1,3 @@
+impl[Value] std.marker.Sendable for Value {}
+
+func main() {}

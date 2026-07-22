@@ -183,6 +183,33 @@ impl[K, V] Map[K, V] {
 }
 ```
 
+### Universal Blanket Implementations
+
+An interface implementation may target its type parameter directly. This
+provides an implementation for every type that satisfies the `where` clause.
+
+```taro
+interface Renderable {
+    func render(&self) -> string;
+}
+
+interface Display {
+    func display(&self) -> string;
+}
+
+impl[T] Renderable for T where T: Display {
+    func render(&self) -> string {
+        return self.display()
+    }
+}
+```
+
+Universal blanket implementations are intentionally coherent: the interface
+must be declared in the current package, and a blanket implementation may not
+overlap another blanket or concrete implementation. Taro does not specialize
+one implementation over another. Inherent implementations such as `impl[T] T`
+are not permitted.
+
 ---
 
 ## Type Argument Inference

@@ -1,0 +1,4 @@
+error: cannot implement 'Sendable' for 'Value': neither the type nor the interface is defined in this package
+ -> language_tests/source_files/invalid/universal_blanket_impl_orphan.tr:1:12
+	impl[Value] std.marker.Sendable for Value {}
+	            ^^^^^^^^^^^^^^^^^^^

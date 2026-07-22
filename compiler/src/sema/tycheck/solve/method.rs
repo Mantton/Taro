@@ -517,8 +517,13 @@ impl<'ctx> ConstraintSolver<'ctx> {
         name: Symbol,
         span: Span,
     ) -> Option<Vec<DefinitionID>> {
-        let head = self.type_head_from_type(candidate)?;
-        let all_candidates = self.lookup_instance_candidates_visible(head, name);
+        let all_candidates = match self.type_head_from_type(candidate) {
+            Some(head) => self.lookup_instance_candidates_visible(head, name),
+            None if matches!(candidate.kind(), TyKind::Parameter(_)) => {
+                self.lookup_blanket_instance_candidates(name)
+            }
+            None => return None,
+        };
         if all_candidates.is_empty() {
             return None;
         }
@@ -559,13 +564,11 @@ impl<'ctx> ConstraintSolver<'ctx> {
     ) -> Option<&'ctx [InterfaceReference<'ctx>]> {
         let head = self.type_head_from_type(self_ty)?;
         let records = self.gcx().collect_from_databases(|db| {
-            db.conformance_by_head
-                .get(&head)
-                .map_or_else(Vec::new, |ids| {
-                    ids.iter()
-                        .filter_map(|id| db.conformance_records.get(id).copied())
-                        .collect()
-                })
+            db.conformance_records
+                .values()
+                .filter(|record| record.target == head || record.target.is_blanket())
+                .copied()
+                .collect()
         });
         if records.is_empty() {
             return None;

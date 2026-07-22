@@ -1,0 +1,4 @@
+error: cannot define an inherent impl for a type parameter; universal impls must implement an interface
+ -> language_tests/source_files/invalid/universal_blanket_impl_inherent.tr:1:12
+	impl[Value] Value {
+	            ^^^^^

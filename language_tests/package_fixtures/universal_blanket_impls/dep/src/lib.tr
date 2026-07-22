@@ -1,0 +1,30 @@
+public interface Source {
+    func source(&self) -> int32
+}
+
+public interface Adapted {
+    type Output
+    func adapted(&self) -> Self.Output
+}
+
+impl[Value] Adapted for Value where Value: Source {
+    type Output = int32
+
+    public func adapted(&self) -> Self.Output {
+        self.source() + 1
+    }
+}
+
+public struct RemoteSource: Copy {
+    value: int32
+}
+
+impl Source for RemoteSource {
+    func source(&self) -> int32 {
+        self.value
+    }
+}
+
+public func makeRemote(_ value: int32) -> RemoteSource {
+    RemoteSource { value }
+}

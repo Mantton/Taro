@@ -1,0 +1,67 @@
+interface BlanketSource {
+    func source(&self) -> int32
+}
+
+interface BlanketAdapter {
+    type Output
+
+    var doubled: int32 {
+        get(&self)
+    };
+
+    func adapted(&self) -> Self.Output
+}
+
+interface BlanketRoot {}
+interface BlanketLeaf: BlanketRoot {}
+
+impl[Value] BlanketAdapter for Value where Value: BlanketSource {
+    type Output = int32
+
+    var doubled: int32 {
+        get(&self) {
+            self.source() * 2
+        }
+    };
+
+    func adapted(&self) -> Self.Output {
+        self.source() + 1
+    }
+}
+
+impl[Value] BlanketRoot for Value where Value: BlanketSource {}
+impl[Value] BlanketLeaf for Value where Value: BlanketSource {}
+
+struct BlanketNumber: Copy {
+    value: int32
+}
+
+impl BlanketSource for BlanketNumber {
+    func source(&self) -> int32 {
+        self.value
+    }
+}
+
+func requireAdapter[Value: BlanketAdapter[Output = int32]](_ value: Value) -> int32 {
+    value.adapted()
+}
+
+func bridgeBlanket[Value: BlanketSource](_ value: Value) -> int32 {
+    requireAdapter(value)
+}
+
+func adaptDirectly[Value: BlanketSource](_ value: Value) -> int32 {
+    value.adapted()
+}
+
+func requireLeaf[Value: BlanketLeaf](_ value: Value) {}
+
+func main() {
+    let number = BlanketNumber { value: 20 }
+    assert(number.adapted() == 21, "blanket method should apply to a concrete type")
+    assert(number.doubled == 40, "blanket property should apply to a concrete type")
+    assert(bridgeBlanket(number) == 21, "blanket conformance should satisfy a generic bound")
+    assert(adaptDirectly(number) == 21, "blanket methods should resolve on generic receivers")
+    requireLeaf(number)
+    std.print("ok\n")
+}
