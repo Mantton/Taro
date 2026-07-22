@@ -2,7 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
     hir,
-    sema::models::{ConformanceWitness, InterfaceReference, SelectionMode},
+    sema::models::{ConformanceWitness, Constraint, InterfaceReference, SelectionMode},
 };
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,16 @@ pub fn resolve_conformance_witness_with_mode<'ctx>(
     mode: SelectionMode,
 ) -> Option<ConformanceWitness<'ctx>> {
     collect::interface::conform::resolve_conformance_witness_with_mode(context, interface, mode)
+}
+
+pub fn resolve_conformance_witness_with_param_env<'ctx>(
+    context: GlobalContext<'ctx>,
+    interface: InterfaceReference<'ctx>,
+    param_env: &'ctx [Constraint<'ctx>],
+) -> Option<ConformanceWitness<'ctx>> {
+    collect::interface::conform::resolve_conformance_witness_with_param_env(
+        context, interface, param_env,
+    )
 }
 
 pub fn typecheck_package<'ctx>(

@@ -5,8 +5,8 @@ use crate::{
     sema::{
         impl_engine::method_signature_matches,
         models::{
-            ConformanceRecord, GenericArguments, InterfaceGoal, InterfaceMethodRequirement,
-            InterfaceReference, SelectionError, SelectionMode, Ty,
+            ConformanceRecord, Constraint, GenericArguments, InterfaceGoal,
+            InterfaceMethodRequirement, InterfaceReference, SelectionError, SelectionMode, Ty,
         },
         tycheck::utils::{
             generics::GenericsBuilder,
@@ -315,13 +315,40 @@ pub fn resolve_conformance_witness<'ctx>(
     context: Gcx<'ctx>,
     interface: InterfaceReference<'ctx>,
 ) -> Option<crate::sema::models::ConformanceWitness<'ctx>> {
-    resolve_conformance_witness_with_mode(context, interface, SelectionMode::Typecheck)
+    resolve_conformance_witness_with_mode_and_param_env(
+        context,
+        interface,
+        SelectionMode::Typecheck,
+        &[],
+    )
+}
+
+pub fn resolve_conformance_witness_with_param_env<'ctx>(
+    context: Gcx<'ctx>,
+    interface: InterfaceReference<'ctx>,
+    param_env: &'ctx [Constraint<'ctx>],
+) -> Option<crate::sema::models::ConformanceWitness<'ctx>> {
+    resolve_conformance_witness_with_mode_and_param_env(
+        context,
+        interface,
+        SelectionMode::Typecheck,
+        param_env,
+    )
 }
 
 pub fn resolve_conformance_witness_with_mode<'ctx>(
     context: Gcx<'ctx>,
     interface: InterfaceReference<'ctx>,
     mode: SelectionMode,
+) -> Option<crate::sema::models::ConformanceWitness<'ctx>> {
+    resolve_conformance_witness_with_mode_and_param_env(context, interface, mode, &[])
+}
+
+fn resolve_conformance_witness_with_mode_and_param_env<'ctx>(
+    context: Gcx<'ctx>,
+    interface: InterfaceReference<'ctx>,
+    mode: SelectionMode,
+    param_env: &'ctx [Constraint<'ctx>],
 ) -> Option<crate::sema::models::ConformanceWitness<'ctx>> {
     if interface_ref_contains_unresolved_inference(interface) {
         return None;
@@ -331,7 +358,7 @@ pub fn resolve_conformance_witness_with_mode<'ctx>(
     if ty_contains_unresolved_inference(self_ty) {
         return None;
     }
-    let goal = interface.to_goal_with_self_ty(context, &[], self_ty);
+    let goal = interface.to_goal_with_self_ty(context, param_env, self_ty);
 
     match context.build_conformance_witness(goal, mode) {
         Ok(witness) => Some(witness),

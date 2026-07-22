@@ -374,7 +374,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
             .collect()
     }
 
-    fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
+    pub(crate) fn structurally_resolve(&self, ty: Ty<'ctx>) -> Ty<'ctx> {
         let ty = self.infer_cx.resolve_vars_if_possible(ty);
         normalize_ty(self.infer_cx.clone(), ty, &self.env)
     }

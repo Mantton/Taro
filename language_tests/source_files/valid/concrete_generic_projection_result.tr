@@ -1,0 +1,72 @@
+interface ProjectionResultSource {
+    type Error: std.error.Error
+    func result(&self) -> std.result.Result[(), Self.Error]
+}
+
+interface ProjectionSink {}
+
+struct ProjectionConcreteError {}
+
+impl std.fmt.Display for ProjectionConcreteError {
+    func display(&self, _ into: &mut std.fmt.Formatter) {
+        into.writeString("projection error")
+    }
+}
+
+impl std.error.Error for ProjectionConcreteError {}
+
+struct ProjectionGenericSource[Value: ProjectionSink] {
+    value: Value
+}
+
+impl[Value: ProjectionSink] ProjectionResultSource for ProjectionGenericSource[Value] {
+    type Error = ProjectionConcreteError
+
+    func result(&self) -> std.result.Result[(), Self.Error] {
+        return .err(ProjectionConcreteError {})
+    }
+}
+
+func projectionResult[Source: ProjectionResultSource](
+    _ source: &Source,
+) -> std.result.Result[(), Source.Error] {
+    source.result()
+}
+
+// Regression: after explicit generic substitution, the projected return error
+// is `ProjectionGenericSource[Value].Error` and must normalize through the
+// concrete generic impl before it is compared with `ProjectionConcreteError`.
+func normalizeConcreteProjection[Value: ProjectionSink](
+    _ source: &ProjectionGenericSource[Value],
+) -> std.result.Result[(), ProjectionConcreteError] {
+    match projectionResult[ProjectionGenericSource[Value]](source) {
+        case .ok(_) => return .ok(())
+        case .err(error) => return .err(error)
+    }
+}
+
+// The propagation operator must apply the same projection normalization before
+// deciding whether an error conversion through `From` is required.
+func propagateConcreteProjection[Value: ProjectionSink](
+    _ source: &ProjectionGenericSource[Value],
+) -> std.result.Result[(), ProjectionConcreteError] {
+    projectionResult[ProjectionGenericSource[Value]](source)!
+    return .ok(())
+}
+
+func main() {
+    let source = ProjectionGenericSource[ProjectionConcreteSink] { value: ProjectionConcreteSink {} }
+    match normalizeConcreteProjection(&source) {
+        case .ok(_) => assert(false, "projection result should preserve failure")
+        case .err(_) => {}
+    }
+    match propagateConcreteProjection(&source) {
+        case .ok(_) => assert(false, "projection propagation should preserve failure")
+        case .err(_) => {}
+    }
+    std.print("ok\n")
+}
+
+struct ProjectionConcreteSink {}
+
+impl ProjectionSink for ProjectionConcreteSink {}

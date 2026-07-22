@@ -87,7 +87,11 @@ impl<'ctx> Checker<'ctx> {
         }
         cs.solve_intermediate();
 
-        let operand_ty = cs.infer_cx.resolve_vars_if_possible(operand_ty);
+        // Propagation compares the concrete error contracts, not their
+        // unresolved associated-type spelling. Use the same structural
+        // normalization as coercion so conditional generic witnesses can turn
+        // `Concrete[T].Error` into the implementation's declared error type.
+        let operand_ty = cs.structurally_resolve(operand_ty);
         let Some(return_ty) = self.return_ty.get() else {
             gcx.dcx().emit_error(
                 "postfix `!` requires an enclosing Optional or Result return type".into(),
@@ -95,7 +99,7 @@ impl<'ctx> Checker<'ctx> {
             );
             return Ty::error(gcx);
         };
-        let return_ty = cs.infer_cx.resolve_vars_if_possible(return_ty);
+        let return_ty = cs.structurally_resolve(return_ty);
 
         if let Some((_, inner_ty)) = self.optional_inner_type(operand_ty) {
             if self.is_optional_type(return_ty) {
@@ -126,8 +130,8 @@ impl<'ctx> Checker<'ctx> {
                 return Ty::error(gcx);
             };
 
-            let resolved_return_err = cs.infer_cx.resolve_vars_if_possible(return_err_ty);
-            let resolved_operand_err = cs.infer_cx.resolve_vars_if_possible(err_ty);
+            let resolved_return_err = cs.structurally_resolve(return_err_ty);
+            let resolved_operand_err = cs.structurally_resolve(err_ty);
             if resolved_return_err.is_infer() || resolved_operand_err.is_infer() {
                 cs.equal(return_err_ty, err_ty, expression.span);
                 return ok_ty;

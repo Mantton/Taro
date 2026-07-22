@@ -1,6 +1,6 @@
 use crate::sema::tycheck::{
     infer::InferCtx,
-    resolve_conformance_witness,
+    resolve_conformance_witness_with_param_env,
     utils::{
         instantiate::{instantiate_constraint_with_args, instantiate_ty_with_args},
         param_env::ParamEnv,
@@ -18,6 +18,7 @@ use crate::{
     },
 };
 use rustc_hash::FxHashSet;
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 /// Normalize a type using the given inference context and parameter environment.
@@ -29,6 +30,7 @@ pub fn normalize_ty<'ctx>(icx: Rc<InferCtx<'ctx>>, ty: Ty<'ctx>, env: &ParamEnv<
         icx,
         env,
         in_progress,
+        selection_param_env: OnceCell::new(),
     };
     ty.fold_with(&mut folder)
 }
@@ -68,6 +70,7 @@ struct NormalizeFolder<'a, 'ctx> {
     icx: Rc<InferCtx<'ctx>>,
     env: &'a ParamEnv<'ctx>,
     in_progress: FxHashSet<Ty<'ctx>>,
+    selection_param_env: OnceCell<&'ctx [crate::sema::models::Constraint<'ctx>]>,
 }
 
 fn collect_fresh_impl_var_ids<'ctx>(
@@ -354,6 +357,52 @@ impl<'a, 'ctx> TypeFolder<'ctx> for NormalizeFolder<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
+    fn conformance_witness(
+        &self,
+        interface: InterfaceReference<'ctx>,
+    ) -> Option<crate::sema::models::ConformanceWitness<'ctx>> {
+        // Conditional implementations may rely on bounds from the generic
+        // definition currently being checked. Materialize that environment
+        // lazily so types without projections pay no allocation cost and all
+        // projections in one normalization pass share the same baseline slice.
+        let full_param_env = *self.selection_param_env.get_or_init(|| {
+            self.gcx()
+                .store
+                .arenas
+                .global
+                .alloc_slice_clone(&self.env.constraints())
+        });
+        let self_ty = interface.self_ty()?;
+        let is_goal_bound = |constraint: &crate::sema::models::Constraint<'ctx>| {
+            matches!(
+                constraint,
+                crate::sema::models::Constraint::Bound { ty, interface: bound }
+                    if *ty == self_ty
+                        && bound.id == interface.id
+                        && bound.arguments == interface.arguments
+            )
+        };
+
+        // An instantiated callee requirement can repeat the very conformance
+        // whose associated type we are resolving. Leaving it in the selection
+        // environment creates both a ParamEnv candidate and the concrete impl,
+        // making the witness ambiguous. Such a bound carries no type witness
+        // unless it has an explicit associated binding (handled before this
+        // lookup), so exclude only that goal-equivalent bound while retaining
+        // caller bounds needed by a conditional implementation.
+        let param_env = if !full_param_env.iter().any(is_goal_bound) {
+            full_param_env
+        } else {
+            let filtered: Vec<_> = full_param_env
+                .iter()
+                .filter(|constraint| !is_goal_bound(constraint))
+                .copied()
+                .collect();
+            self.gcx().store.arenas.global.alloc_slice_clone(&filtered)
+        };
+        resolve_conformance_witness_with_param_env(self.gcx(), interface, param_env)
+    }
+
     fn resolve_projection(
         &self,
         assoc_id: DefinitionID,
@@ -533,7 +582,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
                 return Some(self.icx.resolve_vars_if_possible(binding.ty));
             }
             // Found matching bound - look up type witness from conformance.
-            let witness = resolve_conformance_witness(gcx, bound_iface)?;
+            let witness = self.conformance_witness(bound_iface)?;
             return instantiate_witness(witness);
         }
 
@@ -568,7 +617,7 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             arguments: args,
             bindings: &[],
         };
-        let witness = resolve_conformance_witness(gcx, interface)?;
+        let witness = self.conformance_witness(interface)?;
         instantiate_witness(witness)
     }
 }
