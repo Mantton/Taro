@@ -267,6 +267,8 @@ pub struct Enum {
 pub struct TypeAlias {
     pub generics: Generics,
     pub ty: Option<Box<Type>>,
+    /// An unboxed interface composition such as `Readable & Writable`.
+    pub interface_set: Option<GenericBounds>,
     pub bounds: Option<GenericBounds>,
 }
 
@@ -1989,6 +1991,7 @@ pub fn walk_function_parameter<V: HirVisitor>(
 pub fn walk_type_alias<V: HirVisitor>(visitor: &mut V, node: &TypeAlias) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     visit_optional!(visitor, visit_type, &node.ty);
+    visit_optional!(visitor, visit_generic_bounds, &node.interface_set);
     visit_optional!(visitor, visit_generic_bounds, &node.bounds);
     V::Result::output()
 }

@@ -87,18 +87,20 @@ impl<'ctx> Actor<'ctx> {
             let opaque_ty = crate::sema::tycheck::opaque::opaque_return_ty(gcx, id);
             let lowering = DefTyLoweringCtx::new(id, gcx);
             for bound in bounds {
-                let interface = lowering
+                let interfaces = lowering
                     .lowerer()
-                    .lower_interface_reference(opaque_ty, bound);
-                let constraint = Constraint::Bound {
-                    ty: opaque_ty,
-                    interface,
-                };
-                if !constraints
-                    .iter()
-                    .any(|existing| existing.value == constraint)
-                {
-                    constraints.push(Spanned::new(constraint, bound.span));
+                    .lower_interface_references(opaque_ty, bound);
+                for interface in interfaces {
+                    let constraint = Constraint::Bound {
+                        ty: opaque_ty,
+                        interface,
+                    };
+                    if !constraints
+                        .iter()
+                        .any(|existing| existing.value == constraint)
+                    {
+                        constraints.push(Spanned::new(constraint, bound.span));
+                    }
                 }
             }
         }
@@ -207,14 +209,16 @@ impl<'ctx> Actor<'ctx> {
 
                 let ty = gcx.get_type(param.id);
                 for bound in bounds.iter() {
-                    let interface = icx.lowerer().lower_interface_reference(ty, &bound.path);
-                    add_interface_constraints(
-                        gcx,
-                        &mut constraints,
-                        ty,
-                        interface,
-                        bound.path.span,
-                    );
+                    let interfaces = icx.lowerer().lower_interface_references(ty, &bound.path);
+                    for interface in interfaces {
+                        add_interface_constraints(
+                            gcx,
+                            &mut constraints,
+                            ty,
+                            interface,
+                            bound.path.span,
+                        );
+                    }
                     // Keep newly-added bounds visible while we lower subsequent bounds.
                     gcx.update_constraints(def_id, constraints.clone());
                 }
@@ -227,16 +231,18 @@ impl<'ctx> Actor<'ctx> {
         if let Some(bounds) = alias_bounds {
             let bounded_ty = self.alias_bounded_ty(def_id, gcx);
             for bound in bounds.iter() {
-                let interface = icx
+                let interfaces = icx
                     .lowerer()
-                    .lower_interface_reference(bounded_ty, &bound.path);
-                add_interface_constraints(
-                    gcx,
-                    &mut constraints,
-                    bounded_ty,
-                    interface,
-                    bound.path.span,
-                );
+                    .lower_interface_references(bounded_ty, &bound.path);
+                for interface in interfaces {
+                    add_interface_constraints(
+                        gcx,
+                        &mut constraints,
+                        bounded_ty,
+                        interface,
+                        bound.path.span,
+                    );
+                }
             }
         }
 
@@ -246,15 +252,17 @@ impl<'ctx> Actor<'ctx> {
                     hir::GenericRequirement::ConformanceRequirement(node) => {
                         let ty = icx.lowerer().lower_type(&node.bounded_type);
                         for bound in node.bounds.iter() {
-                            let interface =
-                                icx.lowerer().lower_interface_reference(ty, &bound.path);
-                            add_interface_constraints(
-                                gcx,
-                                &mut constraints,
-                                ty,
-                                interface,
-                                node.span,
-                            );
+                            let interfaces =
+                                icx.lowerer().lower_interface_references(ty, &bound.path);
+                            for interface in interfaces {
+                                add_interface_constraints(
+                                    gcx,
+                                    &mut constraints,
+                                    ty,
+                                    interface,
+                                    node.span,
+                                );
+                            }
                             // Make where-clause bounds available to later requirements.
                             gcx.update_constraints(def_id, constraints.clone());
                         }

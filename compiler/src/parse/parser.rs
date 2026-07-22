@@ -1400,10 +1400,33 @@ impl Parser {
             None
         };
 
-        let ty = if self.eat(Token::Assign) {
-            Some(self.parse_type()?)
+        let (ty, interface_set) = if self.eat(Token::Assign) {
+            let first = self.parse_type()?;
+            if self.eat(Token::Amp) {
+                let Type {
+                    id,
+                    kind: TypeKind::Nominal(path),
+                    ..
+                } = *first
+                else {
+                    return Err(self.err_at_current(ParserError::ExpectedInterfaceSetMember));
+                };
+
+                let mut bounds = vec![GenericBound {
+                    path: PathNode { id, path },
+                }];
+                loop {
+                    bounds.push(self.parse_generic_bound()?);
+                    if !self.eat(Token::Amp) {
+                        break;
+                    }
+                }
+                (None, Some(bounds))
+            } else {
+                (Some(first), None)
+            }
         } else {
-            None
+            (None, None)
         };
 
         let where_clause = self.parse_generic_where_clause()?;
@@ -1415,6 +1438,7 @@ impl Parser {
 
         let decl = TypeAlias {
             ty,
+            interface_set,
             generics,
             bounds,
         };
@@ -4729,6 +4753,7 @@ enum ParserError {
     ExpectedTopLevelDeclaration,
     TopLevelVariableMustBeStatic,
     ExpectedType,
+    ExpectedInterfaceSetMember,
     ExpectedGenericRequirement,
     ExpectedMatchingPattern,
     ExpectedMatchArmCaseKeyword,
@@ -4796,6 +4821,9 @@ impl Display for ParserError {
                 "top-level and namespace variables must use `static let` or `static var`",
             ),
             ExpectedType => f.write_str("expected type"),
+            ExpectedInterfaceSetMember => {
+                f.write_str("interface-set members must be interface paths")
+            }
             ExpectedGenericRequirement => f.write_str("expected generic requirement"),
             ExpectedMatchingPattern => f.write_str("expected a matching pattern"),
             ExpectedMatchArmCaseKeyword => f.write_str("expected 'case' before match arm"),
@@ -5257,6 +5285,18 @@ mod tests {
             DeclarationKind::TypeAlias(ta) => {
                 assert!(ta.generics.type_parameters.is_some());
                 assert!(ta.ty.is_some());
+            }
+            _ => panic!("Expected type alias"),
+        }
+    }
+
+    #[test]
+    fn test_interface_set_type_alias() {
+        let decl = parse_one_decl("type Codable = Encodable & Decodable");
+        match &decl.kind {
+            DeclarationKind::TypeAlias(alias) => {
+                assert!(alias.ty.is_none());
+                assert_eq!(alias.interface_set.as_ref().map(Vec::len), Some(2));
             }
             _ => panic!("Expected type alias"),
         }

@@ -1,0 +1,5 @@
+type InterfaceSetNumber = int32
+
+func requireInterfaceSet[Value: InterfaceSetNumber](_ value: Value) {}
+
+func main() {}

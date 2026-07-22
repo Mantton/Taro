@@ -1,0 +1,6 @@
+interface InterfaceSetCycleRoot {}
+
+type InterfaceSetCycleA = InterfaceSetCycleB & InterfaceSetCycleRoot
+type InterfaceSetCycleB = InterfaceSetCycleA
+
+func main() {}

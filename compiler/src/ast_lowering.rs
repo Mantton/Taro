@@ -628,6 +628,7 @@ impl Actor<'_, '_> {
         hir::TypeAlias {
             generics: self.lower_generics(node.generics),
             ty: node.ty.map(|n| self.lower_type(n)),
+            interface_set: node.interface_set.map(|n| self.lower_generic_bounds(n)),
             bounds: node.bounds.map(|n| self.lower_generic_bounds(n)),
         }
     }

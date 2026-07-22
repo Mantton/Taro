@@ -1,0 +1,51 @@
+public interface RemoteReadable {
+    func read(&self) -> int32
+}
+
+public interface RemoteWritable {
+    func written(&self) -> int32
+}
+
+public type RemoteReadWrite = RemoteReadable & RemoteWritable
+
+public interface RemoteSource[Value] {
+    func source(&self) -> Value
+}
+
+public interface RemoteSink[Value] {
+    func sink(&self) -> Value
+}
+
+public type RemoteGenericPair[Value] = RemoteSource[Value] & RemoteSink[Value]
+
+public struct RemoteValue: Copy {
+    value: int32
+}
+
+impl RemoteReadable for RemoteValue {
+    public func read(&self) -> int32 {
+        self.value
+    }
+}
+
+impl RemoteWritable for RemoteValue {
+    public func written(&self) -> int32 {
+        self.value + 1
+    }
+}
+
+impl RemoteSource[int32] for RemoteValue {
+    public func source(&self) -> int32 {
+        self.value
+    }
+}
+
+impl RemoteSink[int32] for RemoteValue {
+    public func sink(&self) -> int32 {
+        self.value + 2
+    }
+}
+
+public func makeRemoteValue(_ value: int32) -> RemoteValue {
+    RemoteValue { value }
+}

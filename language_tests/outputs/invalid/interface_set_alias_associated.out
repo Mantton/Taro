@@ -1,0 +1,4 @@
+error: interface-set aliases must be standalone type declarations
+ -> language_tests/source_files/invalid/interface_set_alias_associated.tr:5:4
+	    type Invalid = InterfaceSetAssociatedLeft & InterfaceSetAssociatedRight
+	    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

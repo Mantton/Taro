@@ -254,6 +254,21 @@ impl<'r, 'a> ast::AstVisitor for Actor<'r, 'a> {
         }
     }
 
+    fn visit_alias(&mut self, node: &ast::TypeAlias) -> Self::Result {
+        self.visit_generics(&node.generics);
+        if let Some(ty) = &node.ty {
+            self.with_type_source(ResolutionSource::AliasTarget, |this| {
+                this.visit_type(ty);
+            });
+        }
+        if let Some(interface_set) = &node.interface_set {
+            self.visit_generic_bounds(interface_set);
+        }
+        if let Some(bounds) = &node.bounds {
+            self.visit_generic_bounds(bounds);
+        }
+    }
+
     fn visit_local(&mut self, node: &ast::Local) -> Self::Result {
         self.resolve_local(node);
     }

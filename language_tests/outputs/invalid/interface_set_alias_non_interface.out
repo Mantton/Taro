@@ -1,0 +1,4 @@
+error: type alias 'InterfaceSetNumber' does not name an interface set
+ -> language_tests/source_files/invalid/interface_set_alias_non_interface.tr:3:32
+	func requireInterfaceSet[Value: InterfaceSetNumber](_ value: Value) {}
+	                                ^^^^^^^^^^^^^^^^^^

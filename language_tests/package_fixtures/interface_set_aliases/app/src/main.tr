@@ -1,0 +1,21 @@
+import dep.{RemoteGenericPair, RemoteReadWrite, RemoteValue, makeRemoteValue}
+
+func consumeRemote[Value: RemoteReadWrite](_ value: Value) -> int32 {
+    value.read() + value.written()
+}
+
+func consumeRemoteExistential(_ value: any RemoteReadWrite) -> int32 {
+    value.read() + value.written()
+}
+
+func consumeRemoteGeneric[Value: RemoteGenericPair[int32]](_ value: Value) -> int32 {
+    value.source() + value.sink()
+}
+
+func main() {
+    let value: RemoteValue = makeRemoteValue(20)
+    assert(consumeRemote(value) == 41, "dependency alias bound")
+    assert(consumeRemoteExistential(makeRemoteValue(20)) == 41, "dependency alias existential")
+    assert(consumeRemoteGeneric(makeRemoteValue(20)) == 42, "dependency generic alias")
+    std.print("ok\n")
+}

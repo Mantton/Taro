@@ -28,7 +28,7 @@ pub struct TypecheckPhaseTiming {
     pub duration: Duration,
 }
 
-const TYPECHECK_PHASE_COUNT: usize = 20;
+const TYPECHECK_PHASE_COUNT: usize = 21;
 
 pub fn resolve_conformance_witness<'ctx>(
     context: GlobalContext<'ctx>,
@@ -84,6 +84,11 @@ fn run_typecheck_pipeline<'ctx>(
     run_typecheck_phase(phase_timings, "sema.typecheck.collect.adt", || {
         collect::adt::run(package, context)
     })?; // Collect ADT Definitions
+    run_typecheck_phase(
+        phase_timings,
+        "sema.typecheck.collect.interface_alias",
+        || collect::interface_alias::run(package, context),
+    )?; // Expand interface-set aliases before any interface positions are lowered
     run_typecheck_phase(
         phase_timings,
         "sema.typecheck.collect.interface.collect",

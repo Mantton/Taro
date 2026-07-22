@@ -446,6 +446,7 @@ pub struct BindingError {
 pub enum ResolutionSource {
     Type,
     TypeArgument,
+    AliasTarget,
     ImplTarget,
     Interface,
     Module,
@@ -458,6 +459,7 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type
             | ResolutionSource::TypeArgument
+            | ResolutionSource::AliasTarget
             | ResolutionSource::ImplTarget
             | ResolutionSource::Interface => ScopeNamespace::Type,
             ResolutionSource::MatchPatternUnit => ScopeNamespace::Value,
@@ -501,6 +503,23 @@ impl ResolutionSource {
                         | Resolution::PrimaryType(..)
                 )
             }
+            ResolutionSource::AliasTarget => {
+                matches!(
+                    res,
+                    Resolution::Definition(
+                        _,
+                        DefinitionKind::Struct
+                            | DefinitionKind::Enum
+                            | DefinitionKind::Interface
+                            | DefinitionKind::TypeParameter
+                            | DefinitionKind::TypeAlias
+                            | DefinitionKind::AssociatedType
+                            | DefinitionKind::OpaqueType
+                    ) | Resolution::SelfTypeAlias(..)
+                        | Resolution::InterfaceSelfTypeParameter(..)
+                        | Resolution::PrimaryType(..)
+                )
+            }
             ResolutionSource::ImplTarget => {
                 matches!(
                     res,
@@ -514,9 +533,10 @@ impl ResolutionSource {
                     ) | Resolution::PrimaryType(..)
                 )
             }
-            ResolutionSource::Interface => {
-                matches!(res, Resolution::Definition(_, DefinitionKind::Interface))
-            }
+            ResolutionSource::Interface => matches!(
+                res,
+                Resolution::Definition(_, DefinitionKind::Interface | DefinitionKind::TypeAlias)
+            ),
             ResolutionSource::MatchPatternUnit => matches!(
                 res,
                 Resolution::Definition(
@@ -542,6 +562,7 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type => "type".into(),
             ResolutionSource::TypeArgument => "type or const argument".into(),
+            ResolutionSource::AliasTarget => "type or interface".into(),
             ResolutionSource::ImplTarget => "type or interface".into(),
             ResolutionSource::Interface => "interface".into(),
             ResolutionSource::MatchPatternUnit => "unit enum variant".into(),
@@ -554,6 +575,7 @@ impl ResolutionSource {
         match self {
             ResolutionSource::Type => true,
             ResolutionSource::TypeArgument => true,
+            ResolutionSource::AliasTarget => true,
             ResolutionSource::ImplTarget => true,
             ResolutionSource::Interface => false,
             ResolutionSource::MatchPatternUnit => true,

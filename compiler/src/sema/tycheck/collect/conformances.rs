@@ -97,6 +97,9 @@ impl<'ctx> Actor<'ctx> {
             path: resolved_path.clone(),
             span: interface_ty.span,
         };
+        if self.reject_interface_alias_implementation(&interface_path) {
+            return;
+        }
 
         // Get type head and self type for the impl
         let Some(ty_key) = self.context.get_impl_type_head(impl_id) else {
@@ -167,6 +170,9 @@ impl<'ctx> Actor<'ctx> {
         let icx = DefTyLoweringCtx::new(type_id, self.context);
 
         for interface in interfaces {
+            if self.reject_interface_alias_implementation(interface) {
+                continue;
+            }
             let reference = icx.lowerer().lower_interface_reference(self_ty, interface);
 
             // Check for duplicate conformances
@@ -199,6 +205,29 @@ impl<'ctx> Actor<'ctx> {
 
             self.context.insert_conformance_record(record);
         }
+    }
+
+    fn reject_interface_alias_implementation(&self, node: &hir::PathNode) -> bool {
+        let hir::ResolvedPath::Resolved(path) = &node.path else {
+            return false;
+        };
+        let hir::Resolution::Definition(alias_id, DefinitionKind::TypeAlias) = path.resolution
+        else {
+            return false;
+        };
+
+        let name = self
+            .context
+            .symbol_text(self.context.definition_ident(alias_id).symbol);
+        let message = if self.context.is_interface_alias(alias_id) {
+            format!(
+                "interface-set alias '{name}' cannot be used as an implementation target; implement each constituent interface separately"
+            )
+        } else {
+            format!("type alias '{name}' does not name an interface")
+        };
+        self.context.dcx().emit_error(message, Some(node.span));
+        true
     }
 
     /// Check if an interface is compiler-only (cannot be implemented by user code).

@@ -1,0 +1,8 @@
+interface InterfaceSetConcreteLeft {}
+interface InterfaceSetConcreteRight {}
+
+type InterfaceSetConcreteBoth = InterfaceSetConcreteLeft & InterfaceSetConcreteRight
+
+func takeInterfaceSet(_ value: InterfaceSetConcreteBoth) {}
+
+func main() {}

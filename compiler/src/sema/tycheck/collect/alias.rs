@@ -99,6 +99,10 @@ impl HirVisitor for Actor<'_> {
             return hir::walk_declaration(self, node);
         };
 
+        if self.context.is_interface_alias(node.id) {
+            return hir::walk_declaration(self, node);
+        }
+
         let Some(ty) = &alias.ty else {
             return hir::walk_declaration(self, node);
         };

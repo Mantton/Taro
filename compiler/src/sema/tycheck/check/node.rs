@@ -317,42 +317,44 @@ impl<'ctx> Checker<'ctx> {
         if let Some(bounds) = crate::sema::tycheck::opaque::opaque_return_bounds(node) {
             let lowering = crate::sema::tycheck::lower::DefTyLoweringCtx::new(id, gcx);
             for bound in bounds {
-                let interface = lowering
+                let interfaces = lowering
                     .lowerer()
-                    .lower_interface_reference(hidden_ty, bound);
-                if matches!(hidden_ty.kind(), TyKind::Parameter(_)) {
-                    let param_env =
-                        crate::sema::tycheck::constraints::canonical_constraints_of(gcx, id)
-                            .into_iter()
-                            .map(|constraint| constraint.value)
-                            .collect::<Vec<_>>();
-                    let param_env = gcx.store.arenas.global.alloc_slice_clone(&param_env);
-                    let goal = interface.to_goal_with_self_ty(gcx, param_env, hidden_ty);
-                    if !matches!(
-                        gcx.prove_interface_goal(
-                            goal,
-                            crate::sema::models::SelectionMode::Typecheck,
-                        ),
-                        crate::sema::models::GoalResult::Proven
-                    ) {
-                        gcx.dcx().emit_error(
-                            format!(
-                                "type '{}' does not conform to interface '{}'",
-                                hidden_ty.format(gcx),
-                                interface.format(gcx)
+                    .lower_interface_references(hidden_ty, bound);
+                for interface in interfaces {
+                    if matches!(hidden_ty.kind(), TyKind::Parameter(_)) {
+                        let param_env =
+                            crate::sema::tycheck::constraints::canonical_constraints_of(gcx, id)
+                                .into_iter()
+                                .map(|constraint| constraint.value)
+                                .collect::<Vec<_>>();
+                        let param_env = gcx.store.arenas.global.alloc_slice_clone(&param_env);
+                        let goal = interface.to_goal_with_self_ty(gcx, param_env, hidden_ty);
+                        if !matches!(
+                            gcx.prove_interface_goal(
+                                goal,
+                                crate::sema::models::SelectionMode::Typecheck,
                             ),
-                            Some(bound.span),
-                        );
+                            crate::sema::models::GoalResult::Proven
+                        ) {
+                            gcx.dcx().emit_error(
+                                format!(
+                                    "type '{}' does not conform to interface '{}'",
+                                    hidden_ty.format(gcx),
+                                    interface.format(gcx)
+                                ),
+                                Some(bound.span),
+                            );
+                        }
+                        continue;
                     }
-                    continue;
+                    cs.add_goal(
+                        Goal::Conforms {
+                            ty: hidden_ty,
+                            interface,
+                        },
+                        bound.span,
+                    );
                 }
-                cs.add_goal(
-                    Goal::Conforms {
-                        ty: hidden_ty,
-                        interface,
-                    },
-                    bound.span,
-                );
             }
         }
         cs.solve_all();

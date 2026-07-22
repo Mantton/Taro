@@ -175,6 +175,17 @@ impl<'ctx> Actor<'ctx> {
     }
 
     fn type_head_for_alias(&mut self, alias_id: DefinitionID, span: Span) -> Option<TypeHead> {
+        if self.context.is_interface_alias(alias_id) {
+            let name = self
+                .context
+                .symbol_text(self.context.definition_ident(alias_id).symbol);
+            self.context.dcx().emit_error(
+                format!("cannot implement for interface-set alias '{name}'"),
+                Some(span),
+            );
+            return None;
+        }
+
         if !self.alias_visiting.insert(alias_id) {
             self.context
                 .dcx()

@@ -1,0 +1,8 @@
+error: interface-set alias 'InterfaceSetImplBoth' cannot be used as an implementation target; implement each constituent interface separately
+ -> language_tests/source_files/invalid/interface_set_alias_impl_targets.tr:7:32
+	struct InterfaceSetInlineValue: InterfaceSetImplBoth {}
+	                                ^^^^^^^^^^^^^^^^^^^^
+error: interface-set alias 'InterfaceSetImplBoth' cannot be used as an implementation target; implement each constituent interface separately
+ -> language_tests/source_files/invalid/interface_set_alias_impl_targets.tr:9:5
+	impl InterfaceSetImplBoth for InterfaceSetExplicitValue {}
+	     ^^^^^^^^^^^^^^^^^^^^

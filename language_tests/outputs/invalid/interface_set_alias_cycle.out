@@ -1,0 +1,5 @@
+error: circular interface-set alias
+	cycle: InterfaceSetCycleA -> InterfaceSetCycleB -> InterfaceSetCycleA
+ -> language_tests/source_files/invalid/interface_set_alias_cycle.tr:3:0
+	type InterfaceSetCycleA = InterfaceSetCycleB & InterfaceSetCycleRoot
+	^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

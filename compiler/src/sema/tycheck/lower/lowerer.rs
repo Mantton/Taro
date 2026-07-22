@@ -11,7 +11,7 @@ use crate::{
         resolve::models::{PrimaryType, TypeHead},
         tycheck::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
-            lower::LoweringRequest,
+            lower::{DefTyLoweringCtx, LoweringRequest},
             solve::DefaultFallbackGoalData,
             utils::{
                 const_eval::eval_const_expression_with_expected_type,
@@ -117,8 +117,9 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                 let self_ty = gcx.types.self_type_parameter;
                 let mut lowered = Vec::with_capacity(interfaces.len());
                 for interface in interfaces {
-                    lowered.push(self.lower_interface_reference(self_ty, interface));
+                    lowered.extend(self.lower_interface_references(self_ty, interface));
                 }
+                deduplicate_interface_refs(&mut lowered);
                 let list = gcx.store.arenas.global.alloc_slice_clone(&lowered);
                 Ty::new(TyKind::BoxedExistential { interfaces: list }, gcx)
             }
@@ -210,6 +211,17 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
                         Ty::new(TyKind::Adt(def, args), gcx)
                     }
                     crate::sema::resolve::models::DefinitionKind::TypeAlias => {
+                        if gcx.is_interface_alias(id) {
+                            let name = gcx.symbol_text(segment.identifier.symbol);
+                            gcx.dcx().emit_error(
+                                format!(
+                                    "'{name}' names an interface set; use it as a bound or write 'any {name}' for an existential type"
+                                )
+                                .into(),
+                                Some(path.span),
+                            );
+                            return gcx.types.error;
+                        }
                         // Resolve alias in place with cycle detection
                         let ty = self.resolve_alias(id);
                         instantiate_ty_with_args(gcx, ty, args)
@@ -596,6 +608,148 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
             arguments,
             bindings,
         }
+    }
+
+    /// Lower one interface-position path. A direct interface produces one
+    /// reference; a transparent interface-set alias may produce several.
+    pub fn lower_interface_references(
+        &self,
+        self_ty: Ty<'ctx>,
+        node: &hir::PathNode,
+    ) -> Vec<InterfaceReference<'ctx>> {
+        let gcx = self.gcx();
+        let path = match &node.path {
+            hir::ResolvedPath::Resolved(path) => path,
+            _ => unreachable!("ICE: interface paths must be fully resolved"),
+        };
+        let segment = path.segments.last().expect("interface path segment");
+
+        match path.resolution {
+            Resolution::Definition(_, DefinitionKind::Interface) => {
+                vec![self.lower_interface_reference(self_ty, node)]
+            }
+            Resolution::Definition(alias_id, DefinitionKind::TypeAlias) => {
+                if let Some(from) = self.current_definition()
+                    && !gcx.is_definition_visible(alias_id, from)
+                {
+                    let name = gcx.definition_ident(alias_id).symbol;
+                    gcx.dcx().emit_error(
+                        format!(
+                            "interface-set alias '{}' is not visible here",
+                            gcx.symbol_text(name)
+                        )
+                        .into(),
+                        Some(node.span),
+                    );
+                    return Vec::new();
+                }
+
+                if !gcx.is_interface_alias(alias_id) {
+                    gcx.dcx().emit_error(
+                        format!(
+                            "type alias '{}' does not name an interface set",
+                            gcx.symbol_text(segment.identifier.symbol)
+                        )
+                        .into(),
+                        Some(node.span),
+                    );
+                    return Vec::new();
+                }
+
+                let alias_args = self.lower_type_arguments(alias_id, segment);
+                let placeholder = interface_alias_self_placeholder(gcx, alias_id);
+                let templates = self.resolve_interface_alias(alias_id);
+                let mut expanded = Vec::with_capacity(templates.len());
+                for template in templates {
+                    let instantiated =
+                        instantiate_interface_ref_with_args(gcx, *template, alias_args);
+                    expanded.push(substitute_interface_alias_self(
+                        gcx,
+                        instantiated,
+                        placeholder,
+                        self_ty,
+                    ));
+                }
+                deduplicate_interface_refs(&mut expanded);
+                expanded
+            }
+            _ => {
+                gcx.dcx().emit_error(
+                    format!(
+                        "'{}' does not name an interface or interface set",
+                        gcx.symbol_text(segment.identifier.symbol)
+                    )
+                    .into(),
+                    Some(node.span),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Resolve and cache the generic template for an interface-set alias.
+    /// Templates use a synthetic Self parameter outside the alias's generic
+    /// argument range so alias substitution cannot overwrite the use-site type.
+    pub fn resolve_interface_alias(
+        &self,
+        alias_id: DefinitionID,
+    ) -> &'ctx [InterfaceReference<'ctx>] {
+        let gcx = self.gcx();
+        if let Some(cached) = gcx.try_get_interface_alias(alias_id) {
+            return cached;
+        }
+
+        let Some(definition) = gcx.with_type_database(alias_id.package(), |db| {
+            db.alias_table.interface_sets.get(&alias_id).cloned()
+        }) else {
+            gcx.dcx().emit_error(
+                format!(
+                    "unknown interface-set alias '{}'",
+                    gcx.symbol_text(gcx.definition_ident(alias_id).symbol)
+                )
+                .into(),
+                None,
+            );
+            return &[];
+        };
+
+        if let Err(cycle) = LOWERING_REQUEST.with(|request| request.enter_alias(alias_id)) {
+            let mut names: Vec<_> = cycle
+                .iter()
+                .map(|id| {
+                    gcx.symbol_text(gcx.definition_ident(*id).symbol)
+                        .to_string()
+                })
+                .collect();
+            if let Some(first) = names.first().cloned() {
+                names.push(first);
+            }
+            gcx.dcx().emit_error(
+                format!(
+                    "circular interface-set alias\n\tcycle: {}",
+                    names.join(" -> ")
+                ),
+                Some(definition.span),
+            );
+            gcx.cache_interface_alias(alias_id, Vec::new());
+            return gcx.try_get_interface_alias(alias_id).unwrap_or(&[]);
+        }
+
+        let placeholder = interface_alias_self_placeholder(gcx, alias_id);
+        let lowering = DefTyLoweringCtx::new(alias_id, gcx);
+        let mut interfaces = Vec::with_capacity(definition.interfaces.len());
+        for interface in &definition.interfaces {
+            interfaces.extend(
+                lowering
+                    .lowerer()
+                    .lower_interface_references(placeholder, interface),
+            );
+        }
+        deduplicate_interface_refs(&mut interfaces);
+        LOWERING_REQUEST.with(|request| request.exit_alias(alias_id));
+
+        gcx.cache_interface_alias(alias_id, interfaces);
+        gcx.try_get_interface_alias(alias_id).unwrap_or(&[])
     }
 
     /// Lower T.Element style associated type access
@@ -1256,6 +1410,86 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
 
         Some(instantiate_ty_with_args(gcx, gcx.get_type(def_id), args))
     }
+}
+
+fn interface_alias_self_placeholder<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    alias_id: DefinitionID,
+) -> Ty<'ctx> {
+    let generics = gcx.generics_of(alias_id);
+    let next_index = generics
+        .parameters
+        .iter()
+        .map(|parameter| parameter.index.saturating_add(1))
+        .max()
+        .unwrap_or(generics.parent_count);
+    Ty::new(
+        TyKind::Parameter(GenericParameter {
+            index: next_index,
+            // This spelling cannot collide with a source-language identifier.
+            name: gcx.intern_symbol("<interface-alias Self>"),
+        }),
+        gcx,
+    )
+}
+
+fn substitute_interface_alias_self<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    interface: InterfaceReference<'ctx>,
+    placeholder: Ty<'ctx>,
+    self_ty: Ty<'ctx>,
+) -> InterfaceReference<'ctx> {
+    struct Substitute<'ctx> {
+        gcx: GlobalContext<'ctx>,
+        placeholder: Ty<'ctx>,
+        self_ty: Ty<'ctx>,
+    }
+
+    impl<'ctx> TypeFolder<'ctx> for Substitute<'ctx> {
+        fn gcx(&self) -> GlobalContext<'ctx> {
+            self.gcx
+        }
+
+        fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
+            if ty == self.placeholder {
+                return self.self_ty;
+            }
+            ty.super_fold_with(self)
+        }
+    }
+
+    let mut folder = Substitute {
+        gcx,
+        placeholder,
+        self_ty,
+    };
+    let arguments = interface
+        .arguments
+        .iter()
+        .map(|argument| match argument {
+            GenericArgument::Type(ty) => GenericArgument::Type(ty.fold_with(&mut folder)),
+            GenericArgument::Const(value) => GenericArgument::Const(value.fold_with(&mut folder)),
+        })
+        .collect::<Vec<_>>();
+    let bindings = interface
+        .bindings
+        .iter()
+        .map(|binding| AssociatedTypeBinding {
+            name: binding.name,
+            ty: binding.ty.fold_with(&mut folder),
+        })
+        .collect::<Vec<_>>();
+
+    InterfaceReference {
+        id: interface.id,
+        arguments: gcx.store.interners.intern_generic_args(arguments),
+        bindings: gcx.store.arenas.global.alloc_slice_clone(&bindings),
+    }
+}
+
+fn deduplicate_interface_refs(interfaces: &mut Vec<InterfaceReference<'_>>) {
+    let mut seen = FxHashSet::default();
+    interfaces.retain(|interface| seen.insert(*interface));
 }
 
 fn const_value_matches_type(value: ConstValue, ty: Ty<'_>) -> bool {

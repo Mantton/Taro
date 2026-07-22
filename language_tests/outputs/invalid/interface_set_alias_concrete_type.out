@@ -1,0 +1,4 @@
+error: 'InterfaceSetConcreteBoth' names an interface set; use it as a bound or write 'any InterfaceSetConcreteBoth' for an existential type
+ -> language_tests/source_files/invalid/interface_set_alias_concrete_type.tr:6:31
+	func takeInterfaceSet(_ value: InterfaceSetConcreteBoth) {}
+	                               ^^^^^^^^^^^^^^^^^^^^^^^^

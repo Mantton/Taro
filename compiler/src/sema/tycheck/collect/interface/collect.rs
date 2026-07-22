@@ -64,10 +64,14 @@ impl<'ctx> Actor<'ctx> {
         let self_ty = gcx.types.self_type_parameter;
         let mut superfaces = vec![];
         for conformance in &conformances.bounds {
-            let reference = icx
+            let references = icx
                 .lowerer()
-                .lower_interface_reference(self_ty, &conformance);
-            superfaces.push(Spanned::new(reference, conformance.span));
+                .lower_interface_references(self_ty, &conformance);
+            superfaces.extend(
+                references
+                    .into_iter()
+                    .map(|reference| Spanned::new(reference, conformance.span)),
+            );
         }
 
         superfaces

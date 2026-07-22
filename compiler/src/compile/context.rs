@@ -13,9 +13,9 @@ use crate::{
             AliasKind, CanonicalGoalKey, ClosureCaptures, ConformanceRecord, ConformanceRecordId,
             ConformanceWitness, Const, Constraint, EnumDefinition, EnumVariant, FloatTy,
             GenericArgument, GenericArguments, GenericParameter, Generics, GoalResult, IntTy,
-            InterfaceDefinition, InterfaceGoal, InterfaceRequirements, LabeledFunctionSignature,
-            SelectionMode, SelectionResult, StructDefinition, StructField, Ty, TyKind, TyList,
-            UIntTy,
+            InterfaceDefinition, InterfaceGoal, InterfaceReference, InterfaceRequirements,
+            LabeledFunctionSignature, SelectionMode, SelectionResult, StructDefinition,
+            StructField, Ty, TyKind, TyList, UIntTy,
         },
         resolve::models::{
             DefinitionKind, PrimaryType, ResolutionOutput, ScopeData, ScopeEntryData, TypeHead,
@@ -255,6 +255,22 @@ impl<'arena> GlobalContext<'arena> {
     pub fn cache_alias_type(self, id: DefinitionID, ty: Ty<'arena>) {
         self.with_type_database(id.package(), |db| {
             db.resolved_aliases.insert(id, ty);
+        });
+    }
+
+    pub fn cache_interface_alias(
+        self,
+        id: DefinitionID,
+        interfaces: Vec<InterfaceReference<'arena>>,
+    ) {
+        let interfaces = self
+            .context
+            .store
+            .arenas
+            .global
+            .alloc_slice_clone(&interfaces);
+        self.with_type_database(id.package(), |db| {
+            db.resolved_interface_aliases.insert(id, interfaces);
         });
     }
 
@@ -717,6 +733,22 @@ impl<'arena> GlobalContext<'arena> {
 
     pub fn try_get_alias_type(self, id: DefinitionID) -> Option<Ty<'arena>> {
         self.with_type_database(id.package(), |db| db.resolved_aliases.get(&id).cloned())
+    }
+
+    pub fn try_get_interface_alias(
+        self,
+        id: DefinitionID,
+    ) -> Option<&'arena [InterfaceReference<'arena>]> {
+        self.with_type_database(id.package(), |db| {
+            db.resolved_interface_aliases.get(&id).copied()
+        })
+    }
+
+    pub fn is_interface_alias(self, id: DefinitionID) -> bool {
+        self.with_type_database(id.package(), |db| {
+            db.resolved_interface_aliases.contains_key(&id)
+                || db.alias_table.interface_sets.contains_key(&id)
+        })
     }
 
     #[inline]
@@ -2097,6 +2129,9 @@ pub struct TypeDatabase<'arena> {
     pub alias_table: crate::sema::models::PackageAliasTable,
     /// Resolved alias types (cached after lowering)
     pub resolved_aliases: FxHashMap<DefinitionID, Ty<'arena>>,
+    /// Fully flattened interface-set alias templates. Their synthetic Self
+    /// placeholder is replaced with the bounded type at each use site.
+    pub resolved_interface_aliases: FxHashMap<DefinitionID, &'arena [InterfaceReference<'arena>]>,
     /// Escape summaries for functions (computed during MIR optimization)
     pub def_to_escape_summary: FxHashMap<DefinitionID, EscapeSummary>,
     /// Closure capture information keyed by closure definition ID

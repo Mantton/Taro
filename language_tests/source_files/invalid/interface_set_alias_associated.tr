@@ -1,0 +1,8 @@
+interface InterfaceSetAssociatedLeft {}
+interface InterfaceSetAssociatedRight {}
+
+interface InterfaceSetAssociatedOwner {
+    type Invalid = InterfaceSetAssociatedLeft & InterfaceSetAssociatedRight
+}
+
+func main() {}

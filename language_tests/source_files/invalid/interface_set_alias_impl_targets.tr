@@ -1,0 +1,11 @@
+interface InterfaceSetImplLeft {}
+interface InterfaceSetImplRight {}
+
+type InterfaceSetImplBoth = InterfaceSetImplLeft & InterfaceSetImplRight
+
+struct InterfaceSetExplicitValue {}
+struct InterfaceSetInlineValue: InterfaceSetImplBoth {}
+
+impl InterfaceSetImplBoth for InterfaceSetExplicitValue {}
+
+func main() {}

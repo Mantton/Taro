@@ -1,0 +1,97 @@
+interface InterfaceSetReadable {
+    func read(&self) -> int32
+}
+
+interface InterfaceSetWritable {
+    func written(&self) -> int32
+}
+
+interface InterfaceSetBox[Value] {
+    func boxed(&self) -> Value
+}
+
+interface InterfaceSetNamed[Value] {
+    func named(&self) -> Value
+}
+
+type InterfaceSetReadWrite = InterfaceSetReadable & InterfaceSetWritable
+type InterfaceSetNested = InterfaceSetReadWrite
+type InterfaceSetSingle = InterfaceSetReadable
+type InterfaceSetDeduplicated = InterfaceSetReadWrite & InterfaceSetReadable
+type InterfaceSetGeneric[Value] = InterfaceSetBox[Value] & InterfaceSetNamed[Value]
+
+interface InterfaceSetExtended: InterfaceSetNested {}
+
+struct InterfaceSetValue: Copy {
+    value: int32
+}
+
+impl InterfaceSetReadable for InterfaceSetValue {
+    func read(&self) -> int32 {
+        self.value
+    }
+}
+
+impl InterfaceSetWritable for InterfaceSetValue {
+    func written(&self) -> int32 {
+        self.value + 1
+    }
+}
+
+impl InterfaceSetBox[int32] for InterfaceSetValue {
+    func boxed(&self) -> int32 {
+        self.value
+    }
+}
+
+impl InterfaceSetNamed[int32] for InterfaceSetValue {
+    func named(&self) -> int32 {
+        self.value + 2
+    }
+}
+
+impl InterfaceSetExtended for InterfaceSetValue {}
+
+func interfaceSetBound[Value: InterfaceSetNested](_ value: Value) -> int32 {
+    value.read() + value.written()
+}
+
+func interfaceSetWhere[Value](_ value: Value) -> int32 where Value: InterfaceSetReadWrite {
+    value.read() + value.written()
+}
+
+func interfaceSetSingle[Value: InterfaceSetSingle](_ value: Value) -> int32 {
+    value.read()
+}
+
+func interfaceSetDeduplicated(_ value: any InterfaceSetDeduplicated) -> int32 {
+    value.read() + value.written()
+}
+
+func interfaceSetGeneric[Value: InterfaceSetGeneric[int32]](_ value: Value) -> int32 {
+    value.boxed() + value.named()
+}
+
+func interfaceSetExistential(_ value: any InterfaceSetNested) -> int32 {
+    value.read() + value.written()
+}
+
+func interfaceSetOpaque(_ value: int32) -> some InterfaceSetReadWrite {
+    InterfaceSetValue { value }
+}
+
+func interfaceSetExtended[Value: InterfaceSetExtended](_ value: Value) -> int32 {
+    value.read() + value.written()
+}
+
+func main() {
+    assert(interfaceSetBound(InterfaceSetValue { value: 20 }) == 41, "nested bound")
+    assert(interfaceSetWhere(InterfaceSetValue { value: 20 }) == 41, "where bound")
+    assert(interfaceSetSingle(InterfaceSetValue { value: 20 }) == 20, "single interface alias")
+    assert(interfaceSetDeduplicated(InterfaceSetValue { value: 20 }) == 41, "deduplicated alias")
+    assert(interfaceSetGeneric(InterfaceSetValue { value: 20 }) == 42, "generic alias")
+    assert(interfaceSetExistential(InterfaceSetValue { value: 20 }) == 41, "existential alias")
+    assert(interfaceSetBound(interfaceSetOpaque(20)) == 41, "opaque alias")
+    assert(interfaceSetExtended(InterfaceSetValue { value: 20 }) == 41, "superinterface alias")
+    std.print("ok\n")
+}

@@ -336,6 +336,7 @@ pub struct TypeDatabaseWire {
     pub interface_requirements: Vec<(DefIdWire, InterfaceRequirementsWire)>,
     pub alias_table: PackageAliasTableWire,
     pub resolved_aliases: Vec<(DefIdWire, TyWire)>,
+    pub resolved_interface_aliases: Vec<(DefIdWire, Vec<InterfaceReferenceWire>)>,
     pub def_to_escape_summary: Vec<(DefIdWire, EscapeSummaryWire)>,
     pub closure_captures: Vec<(DefIdWire, ClosureCapturesWire)>,
     pub synthetic_methods: Vec<((TypeHeadWire, DefIdWire), SyntheticMethodInfoWire)>,
@@ -3174,6 +3175,7 @@ pub fn alias_table_from_wire(
                 )
             })
             .collect(),
+        interface_sets: Default::default(),
         by_type: v
             .by_type
             .iter()
@@ -5093,6 +5095,20 @@ pub fn type_database_to_wire(
             .iter()
             .map(|(def, ty)| (def_to_wire(*def), ty_to_wire(*ty)))
             .collect(),
+        resolved_interface_aliases: db
+            .resolved_interface_aliases
+            .iter()
+            .map(|(def, interfaces)| {
+                (
+                    def_to_wire(*def),
+                    interfaces
+                        .iter()
+                        .copied()
+                        .map(interface_reference_to_wire)
+                        .collect(),
+                )
+            })
+            .collect(),
         def_to_escape_summary: db
             .def_to_escape_summary
             .iter()
@@ -5435,6 +5451,20 @@ pub fn type_database_from_wire<'a>(
             .resolved_aliases
             .iter()
             .map(|(def, ty)| (def_from_wire(def), ty_from_wire(gcx, ty)))
+            .collect(),
+        resolved_interface_aliases: wire
+            .resolved_interface_aliases
+            .iter()
+            .map(|(def, interfaces)| {
+                let interfaces = interfaces
+                    .iter()
+                    .map(|interface| interface_reference_from_wire(gcx, interface))
+                    .collect::<Vec<_>>();
+                (
+                    def_from_wire(def),
+                    gcx.store.arenas.global.alloc_slice_clone(&interfaces) as &'a [_],
+                )
+            })
             .collect(),
         def_to_escape_summary: wire
             .def_to_escape_summary

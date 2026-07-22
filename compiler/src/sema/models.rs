@@ -1369,8 +1369,11 @@ pub struct MethodWitness<'ctx> {
 /// Definition of a type alias (top-level or associated)
 #[derive(Debug, Clone, Default)]
 pub struct PackageAliasTable {
-    pub aliases: FxHashMap<DefinitionID, AliasDefinition>, // NEW – file‑scope aliases
-    pub by_type: FxHashMap<TypeHead, AliasBucket>,         // existing per‑type buckets
+    pub aliases: FxHashMap<DefinitionID, AliasDefinition>,
+    /// Source definitions for transparent interface-set aliases in the package
+    /// currently being compiled. Dependencies use their resolved metadata form.
+    pub interface_sets: FxHashMap<DefinitionID, InterfaceAliasDefinition>,
+    pub by_type: FxHashMap<TypeHead, AliasBucket>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -1390,6 +1393,16 @@ pub struct AliasDefinition {
     pub ast_ty: Box<hir::Type>,
     /// For Inherent aliases - which extension declared it
     pub extension_id: Option<DefinitionID>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceAliasDefinition {
+    pub id: DefinitionID,
+    pub name: Symbol,
+    pub span: Span,
+    /// Constituent interface paths, retained until semantic lowering expands
+    /// nested aliases and generic arguments.
+    pub interfaces: Vec<hir::PathNode>,
 }
 
 #[cfg(test)]

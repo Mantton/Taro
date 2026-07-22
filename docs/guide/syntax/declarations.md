@@ -380,10 +380,36 @@ type UserId = string
 type StringMap[V] = Map[string, V]
 type Callback[T] = (T) -> void
 
+// Transparent interface-set aliases
+type ReadWrite = Readable & Writable
+type Resource[Value] = Readable[Value] & Writable[Value]
+type ResourceAlias[Value] = Resource[Value]
+
 // Associated type constraint
 type Key: Hashable
 type Element: Equatable & Hashable
 ```
+
+An interface-set alias expands wherever an interface list is accepted:
+
+```taro
+func copy[Value: ReadWrite](_ value: Value) {}
+func erase(_ value: any ReadWrite) {}
+func make() -> some ReadWrite { /* ... */ }
+```
+
+Interface-set aliases may be generic, nested, and exported across package
+boundaries. Expansion is transparent and duplicate constituents are removed.
+They are not concrete types, so a bare field or parameter type must use
+`any ReadWrite` when dynamic dispatch is intended.
+
+An interface set is also not a single conformance declaration. Implement each
+constituent explicitly; `impl ReadWrite for File` and `struct File: ReadWrite`
+are rejected. Circular interface-set aliases are diagnosed.
+
+The `any` spelling remains significant: `type Boxed = any Readable & Writable`
+aliases one concrete existential type, while `type ReadWrite = Readable &
+Writable` aliases the interface requirements themselves.
 
 ---
 

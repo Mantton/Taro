@@ -781,10 +781,7 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
             DeclarationKind::Constant(..) | DeclarationKind::StaticVariable(..) => {
                 Some(self.gcx.get_type(id).format(self.gcx))
             }
-            DeclarationKind::TypeAlias(..) => self
-                .gcx
-                .try_get_alias_type(id)
-                .map(|ty| ty.format(self.gcx)),
+            DeclarationKind::TypeAlias(..) => format_alias_target_for_display(self.gcx, id),
             _ => None,
         };
 
@@ -907,10 +904,9 @@ impl<'ctx, 'results> NavigationVisitor<'ctx, 'results> {
                         .symbol_text(self.gcx.definition_ident(def_id).symbol)
                 ))
             }
-            DefinitionKind::TypeAlias | DefinitionKind::AssociatedType => self
-                .gcx
-                .try_get_alias_type(def_id)
-                .map(|ty| ty.format(self.gcx)),
+            DefinitionKind::TypeAlias | DefinitionKind::AssociatedType => {
+                format_alias_target_for_display(self.gcx, def_id)
+            }
             DefinitionKind::Struct
             | DefinitionKind::Enum
             | DefinitionKind::Field
@@ -2248,6 +2244,19 @@ fn type_definition_id_for_completion(ty: &Type) -> Option<DefinitionID> {
             .and_then(|segment| segment.resolution.definition_id()),
         _ => None,
     }
+}
+
+fn format_alias_target_for_display(gcx: Gcx<'_>, def_id: DefinitionID) -> Option<String> {
+    if let Some(interfaces) = gcx.try_get_interface_alias(def_id) {
+        return Some(
+            interfaces
+                .iter()
+                .map(|interface| interface.format(gcx))
+                .collect::<Vec<_>>()
+                .join(" & "),
+        );
+    }
+    gcx.try_get_alias_type(def_id).map(|ty| ty.format(gcx))
 }
 
 fn type_head_for_completion<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Option<TypeHead> {
@@ -4236,6 +4245,16 @@ mod tests {
         let heading_annotation = start_position(source, "Heading", 2);
         let hover = find_hover_at(&navigation, heading_annotation).expect("hover");
         assert!(hover.contents.contains("Heading"), "{}", hover.contents);
+    }
+
+    #[test]
+    fn interface_set_alias_hover_shows_expanded_interfaces() {
+        let source = "interface Encodable {}\ninterface Decodable {}\ntype Codable = Encodable & Decodable\nfunc accept[Value: Codable](_ value: Value) {}\nfunc main() {}\n";
+        let navigation = analyze_navigation_source(source);
+
+        let alias_declaration = start_position(source, "Codable", 1);
+        let hover = find_hover_at(&navigation, alias_declaration).expect("hover");
+        assert_eq!(hover.contents, "Encodable & Decodable");
     }
 
     #[test]

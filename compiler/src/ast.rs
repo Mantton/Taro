@@ -261,6 +261,9 @@ pub struct Constant {
 pub struct TypeAlias {
     pub generics: Generics,
     pub ty: Option<Box<Type>>,
+    /// An unboxed interface composition such as `Readable & Writable`.
+    /// This is distinct from the concrete existential type `any Readable & Writable`.
+    pub interface_set: Option<GenericBounds>,
     pub bounds: Option<GenericBounds>,
 }
 
@@ -2018,6 +2021,7 @@ pub fn walk_constant<V: AstVisitor>(visitor: &mut V, node: &Constant) -> V::Resu
 pub fn walk_alias<V: AstVisitor>(visitor: &mut V, node: &TypeAlias) -> V::Result {
     try_visit!(visitor.visit_generics(&node.generics));
     visit_optional!(visitor, visit_type, &node.ty);
+    visit_optional!(visitor, visit_generic_bounds, &node.interface_set);
     visit_optional!(visitor, visit_generic_bounds, &node.bounds);
     V::Result::output()
 }
