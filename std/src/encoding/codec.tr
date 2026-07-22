@@ -1,0 +1,460 @@
+import std.collections.List
+import std.result.Result
+
+/// A format-neutral category for failures reported while converting values.
+///
+/// Concrete codecs own their error payloads and paths. Keeping only the stable
+/// category here lets JSON retain byte positions and JSONPath while a future
+/// binary codec can report offsets or schema locations appropriate to it.
+public enum CodingErrorKind: std.marker.Copy, std.ops.PartialEq {
+    case typeMismatch
+    case missingField
+    case invalidValue
+    case invalidState
+    case custom
+}
+
+impl std.fmt.Display for CodingErrorKind {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        match self {
+            case .typeMismatch => into.writeString("encoded value has the wrong type")
+            case .missingField => into.writeString("required encoded field is missing")
+            case .invalidValue => into.writeString("encoded value is invalid for the target type")
+            case .invalidState => into.writeString("codec is in an invalid state")
+            case .custom => into.writeString("custom coding failure")
+        }
+    }
+}
+
+/// The format-neutral shape visible at a decoder's current position.
+public enum CodingValueKind: std.marker.Copy, std.ops.PartialEq {
+    case null
+    case boolean
+    case number
+    case string
+    case sequence
+    case object
+}
+
+/// A destination for the semantic events emitted by an `Encodable` value.
+///
+/// Scalar methods have defaults so small or specialized formats can implement
+/// only the values they support. General-purpose formats should override every
+/// scalar and container operation. Method-level generics deliberately remain
+/// on `Encodable`, not here, keeping this interface usable as a conventional
+/// associated-error contract as Taro's codec surface grows.
+public interface Encoder {
+    type Error: std.error.Error
+
+    /// Construct an error at the encoder's current coding position.
+    func error(&self, _ kind: CodingErrorKind, _ message: string) -> Self.Error
+
+    func encodeNull(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support null"))
+    }
+
+    func encodeBool(&mut self, _ value: bool) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support booleans"))
+    }
+
+    func encodeInt8(&mut self, _ value: int8) -> Result[(), Self.Error] {
+        return self.encodeInt64(value as int64)
+    }
+
+    func encodeInt16(&mut self, _ value: int16) -> Result[(), Self.Error] {
+        return self.encodeInt64(value as int64)
+    }
+
+    func encodeInt32(&mut self, _ value: int32) -> Result[(), Self.Error] {
+        return self.encodeInt64(value as int64)
+    }
+
+    func encodeInt64(&mut self, _ value: int64) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support signed integers"))
+    }
+
+    func encodeIsize(&mut self, _ value: isize) -> Result[(), Self.Error] {
+        return self.encodeInt64(value as int64)
+    }
+
+    func encodeUint8(&mut self, _ value: uint8) -> Result[(), Self.Error] {
+        return self.encodeUint64(value as uint64)
+    }
+
+    func encodeUint16(&mut self, _ value: uint16) -> Result[(), Self.Error] {
+        return self.encodeUint64(value as uint64)
+    }
+
+    func encodeUint32(&mut self, _ value: uint32) -> Result[(), Self.Error] {
+        return self.encodeUint64(value as uint64)
+    }
+
+    func encodeUint64(&mut self, _ value: uint64) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support unsigned integers"))
+    }
+
+    func encodeUsize(&mut self, _ value: usize) -> Result[(), Self.Error] {
+        return self.encodeUint64(value as uint64)
+    }
+
+    func encodeFloat(&mut self, _ value: float) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support float values"))
+    }
+
+    func encodeDouble(&mut self, _ value: double) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support double values"))
+    }
+
+    /// Encode a validated, exact decimal representation without first rounding
+    /// through a machine numeric type. Formats without exact decimals may
+    /// reject this operation through their concrete error type.
+    func encodeDecimal(&mut self, _ value: string) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support exact decimals"))
+    }
+
+    func encodeString(&mut self, _ value: string) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support strings"))
+    }
+
+    /// Begin a sequence. `.none` means its final length is not known yet.
+    func beginSequence(&mut self, _ length: usize?) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support sequences"))
+    }
+
+    /// Position the encoder at the next sequence element.
+    func beginElement(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidState, "encoder is not inside a sequence"))
+    }
+
+    func endSequence(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidState, "encoder is not inside a sequence"))
+    }
+
+    /// Begin a string-keyed object. This is sufficient for derived structs and
+    /// composes with formats whose native keyed representation is not textual.
+    func beginObject(&mut self, _ length: usize?) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidValue, "encoder does not support objects"))
+    }
+
+    /// Position the encoder at the value belonging to `name`.
+    func beginField(&mut self, _ name: string) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidState, "encoder is not inside an object"))
+    }
+
+    func endObject(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidState, "encoder is not inside an object"))
+    }
+}
+
+/// A source of semantic values consumed by a `Decodable` implementation.
+///
+/// The cursor-style container methods avoid borrowed, format-specific container
+/// types. They can be backed by a DOM today or by a direct token stream later
+/// without changing any user conformance or compiler-derived implementation.
+public interface Decoder {
+    type Error: std.error.Error
+
+    /// Construct an error at the decoder's current coding position.
+    func error(&self, _ kind: CodingErrorKind, _ message: string) -> Self.Error
+
+    /// Construct a missing-field error beneath the active object position.
+    /// Call this before `endObject` so nested decoders retain their container
+    /// path. Concrete decoders override it when they can attach that path.
+    func missingField(&self, _ name: string, _ message: string) -> Self.Error {
+        return self.error(.missingField, message)
+    }
+
+    func peekKind(&self) -> Result[CodingValueKind, Self.Error]
+
+    func decodeNull(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.typeMismatch, "expected null"))
+    }
+
+    func decodeBool(&mut self) -> Result[bool, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a boolean"))
+    }
+
+    func decodeInt8(&mut self) -> Result[int8, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected an int8"))
+    }
+
+    func decodeInt16(&mut self) -> Result[int16, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected an int16"))
+    }
+
+    func decodeInt32(&mut self) -> Result[int32, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected an int32"))
+    }
+
+    func decodeInt64(&mut self) -> Result[int64, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected an int64"))
+    }
+
+    func decodeIsize(&mut self) -> Result[isize, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected an isize"))
+    }
+
+    func decodeUint8(&mut self) -> Result[uint8, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a uint8"))
+    }
+
+    func decodeUint16(&mut self) -> Result[uint16, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a uint16"))
+    }
+
+    func decodeUint32(&mut self) -> Result[uint32, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a uint32"))
+    }
+
+    func decodeUint64(&mut self) -> Result[uint64, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a uint64"))
+    }
+
+    func decodeUsize(&mut self) -> Result[usize, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a usize"))
+    }
+
+    func decodeFloat(&mut self) -> Result[float, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a float"))
+    }
+
+    func decodeDouble(&mut self) -> Result[double, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a double"))
+    }
+
+    /// Decode an exact decimal representation without rounding it through a
+    /// machine numeric type.
+    func decodeDecimal(&mut self) -> Result[string, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected an exact decimal"))
+    }
+
+    func decodeString(&mut self) -> Result[string, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a string"))
+    }
+
+    /// Enter a sequence and return its length when the decoder knows it.
+    func beginSequence(&mut self) -> Result[usize?, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected a sequence"))
+    }
+
+    /// Move to the next sequence element, or return `false` at its end.
+    func nextElement(&mut self) -> Result[bool, Self.Error] {
+        return .err(self.error(.invalidState, "decoder is not inside a sequence"))
+    }
+
+    func endSequence(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidState, "decoder is not inside a sequence"))
+    }
+
+    /// Enter a string-keyed object and return its field count when known.
+    func beginObject(&mut self) -> Result[usize?, Self.Error] {
+        return .err(self.error(.typeMismatch, "expected an object"))
+    }
+
+    /// Move to the next field value and return its name, or `.none` at the end.
+    func nextField(&mut self) -> Result[string?, Self.Error] {
+        return .err(self.error(.invalidState, "decoder is not inside an object"))
+    }
+
+    /// Consume an unrecognized value. DOM decoders only need to mark their
+    /// selected node consumed, while token-stream decoders advance past the
+    /// complete value.
+    func skipValue(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidState, "decoder cannot skip this value"))
+    }
+
+    func endObject(&mut self) -> Result[(), Self.Error] {
+        return .err(self.error(.invalidState, "decoder is not inside an object"))
+    }
+}
+
+/// A value that can encode itself into any statically known format encoder.
+///
+/// The method is generic intentionally: Taro monomorphizes generic interface
+/// methods and does not put them in existential witness tables. Normal generic
+/// codec APIs are therefore zero-cost; `any Encodable` is not a supported input.
+public interface Encodable {
+    func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error]
+}
+
+/// A value that can construct itself from any statically known format decoder.
+public interface Decodable {
+    func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error]
+}
+
+/// A type supporting both directions of the format-neutral coding contract.
+public type Codable = Encodable & Decodable
+
+/// Invoke an `Encodable` implementation when the concrete source type is only
+/// available as a generic argument. This is also the unambiguous nested-value
+/// entry point for handwritten codecs.
+public func encode[Source: Encodable, Destination: Encoder](
+    _ source: &Source,
+    into encoder: &mut Destination,
+) -> Result[(), Destination.Error] {
+    source.encode(into: encoder)
+}
+
+/// Invoke a `Decodable` implementation for an explicitly selected target type.
+public func decode[Target: Decodable, Source: Decoder](
+    from decoder: &mut Source,
+) -> Result[Target, Source.Error] {
+    Target.decode(from: decoder)
+}
+
+impl Encodable for () {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+        encoder.encodeNull()
+    }
+}
+
+impl Decodable for () {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+        decoder.decodeNull()
+    }
+}
+
+impl Encodable for bool {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+        encoder.encodeBool(*self)
+    }
+}
+
+impl Decodable for bool {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+        decoder.decodeBool()
+    }
+}
+
+impl Encodable for string {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+        encoder.encodeString(*self)
+    }
+}
+
+impl Decodable for string {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+        decoder.decodeString()
+    }
+}
+
+impl Encodable for int8 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt8(*self) }
+}
+impl Decodable for int8 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt8() }
+}
+impl Encodable for int16 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt16(*self) }
+}
+impl Decodable for int16 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt16() }
+}
+impl Encodable for int32 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt32(*self) }
+}
+impl Decodable for int32 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt32() }
+}
+impl Encodable for int64 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeInt64(*self) }
+}
+impl Decodable for int64 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeInt64() }
+}
+impl Encodable for isize {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeIsize(*self) }
+}
+impl Decodable for isize {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeIsize() }
+}
+impl Encodable for uint8 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint8(*self) }
+}
+impl Decodable for uint8 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint8() }
+}
+impl Encodable for uint16 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint16(*self) }
+}
+impl Decodable for uint16 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint16() }
+}
+impl Encodable for uint32 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint32(*self) }
+}
+impl Decodable for uint32 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint32() }
+}
+impl Encodable for uint64 {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUint64(*self) }
+}
+impl Decodable for uint64 {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUint64() }
+}
+impl Encodable for usize {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeUsize(*self) }
+}
+impl Decodable for usize {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeUsize() }
+}
+impl Encodable for float {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeFloat(*self) }
+}
+impl Decodable for float {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeFloat() }
+}
+impl Encodable for double {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] { encoder.encodeDouble(*self) }
+}
+impl Decodable for double {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeDouble() }
+}
+
+impl[Wrapped: Encodable] Encodable for std.optional.Optional[Wrapped] {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+        match self {
+            case .some(value) => return value.encode(into: encoder)
+            case .none => return encoder.encodeNull()
+        }
+    }
+}
+
+impl[Wrapped: Decodable] Decodable for std.optional.Optional[Wrapped] {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+        if decoder.peekKind()! == CodingValueKind.null {
+            decoder.decodeNull()!
+            return .ok(.none)
+        }
+        return .ok(.some(Wrapped.decode(from: decoder)!))
+    }
+}
+
+impl[Element: Encodable] Encodable for List[Element] {
+    public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+        let length: usize? = .some(self.len())
+        encoder.beginSequence(length)!
+        var index: usize = 0
+        while index < self.len() {
+            encoder.beginElement()!
+            self.at(index).encode(into: encoder)!
+            index += 1
+        }
+        return encoder.endSequence()
+    }
+}
+
+impl[Element: Decodable] Decodable for List[Element] {
+    public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+        let length = decoder.beginSequence()!
+        var values = match length {
+            case .some(length) => List[Element](withCapacity: length)
+            case .none => List[Element]()
+        }
+        while decoder.nextElement()! {
+            values.append(Element.decode(from: decoder)!)
+        }
+        decoder.endSequence()!
+        return .ok(values)
+    }
+}

@@ -1,0 +1,309 @@
+import std.encoding.{Codable, Decoder, Encodable, Encoder}
+import std.fmt.Display
+
+struct TestCodingError {
+    kindValue: std.encoding.CodingErrorKind
+    messageValue: string
+}
+
+impl std.fmt.Display for TestCodingError {
+    public func display(&self, _ into: &mut std.fmt.Formatter) {
+        self.kindValue.display(into)
+        into.writeString(": ")
+        into.writeString(self.messageValue)
+    }
+}
+
+impl std.error.Error for TestCodingError {}
+
+/// A deliberately non-JSON encoder used to prove that `Encodable`
+/// conformances emit semantic events rather than constructing a JSON DOM.
+struct TraceEncoder {
+    output: std.string.Builder
+}
+
+impl TraceEncoder {
+    func new() -> Self {
+        TraceEncoder { output: std.string.Builder() }
+    }
+
+    func intoString(self) -> string {
+        self.output.intoString()
+    }
+
+    func event(&mut self, _ value: string) {
+        self.output.writeString(value)
+        self.output.writeByte('|' as uint8)
+    }
+}
+
+impl std.encoding.Encoder for TraceEncoder {
+    type Error = TestCodingError
+
+    public func error(&self, _ kind: std.encoding.CodingErrorKind, _ message: string) -> Self.Error {
+        TestCodingError { kindValue: kind, messageValue: message }
+    }
+
+    public func encodeNull(&mut self) -> std.result.Result[(), Self.Error] {
+        self.event("null")
+        return .ok(())
+    }
+
+    public func encodeInt64(&mut self, _ value: int64) -> std.result.Result[(), Self.Error] {
+        self.event("int:".concat(std.sprintf("%d", value)))
+        return .ok(())
+    }
+
+    public func encodeDouble(&mut self, _ value: double) -> std.result.Result[(), Self.Error] {
+        // The trace records the scalar category rather than choosing a textual
+        // floating-point representation on behalf of a concrete format.
+        self.event("double")
+        return .ok(())
+    }
+
+    public func encodeString(&mut self, _ value: string) -> std.result.Result[(), Self.Error] {
+        self.event("string:".concat(value))
+        return .ok(())
+    }
+
+    public func beginSequence(&mut self, _ length: usize?) -> std.result.Result[(), Self.Error] {
+        match length {
+            case .some(length) => self.event("sequence:".concat(std.sprintf("%d", length)))
+            case .none => self.event("sequence:unknown")
+        }
+        return .ok(())
+    }
+
+    public func beginElement(&mut self) -> std.result.Result[(), Self.Error] {
+        self.event("element")
+        return .ok(())
+    }
+
+    public func endSequence(&mut self) -> std.result.Result[(), Self.Error] {
+        self.event("end-sequence")
+        return .ok(())
+    }
+
+    public func beginObject(&mut self, _ length: usize?) -> std.result.Result[(), Self.Error] {
+        match length {
+            case .some(length) => self.event("object:".concat(std.sprintf("%d", length)))
+            case .none => self.event("object:unknown")
+        }
+        return .ok(())
+    }
+
+    public func beginField(&mut self, _ name: string) -> std.result.Result[(), Self.Error] {
+        self.event("field:".concat(name))
+        return .ok(())
+    }
+
+    public func endObject(&mut self) -> std.result.Result[(), Self.Error] {
+        self.event("end-object")
+        return .ok(())
+    }
+}
+
+enum FixtureValue: std.marker.Copy, std.ops.PartialEq {
+    case none
+    case ignored
+    case name
+    case count
+}
+
+/// A small schema-backed decoder demonstrates that the same conformance works
+/// with a source that has no JSON representation, parser, or value tree.
+struct FixtureDecoder {
+    fieldIndex: usize
+    current: FixtureValue
+}
+
+impl FixtureDecoder {
+    func new() -> Self {
+        FixtureDecoder { fieldIndex: 0, current: .none }
+    }
+}
+
+impl std.encoding.Decoder for FixtureDecoder {
+    type Error = TestCodingError
+
+    public func error(&self, _ kind: std.encoding.CodingErrorKind, _ message: string) -> Self.Error {
+        TestCodingError { kindValue: kind, messageValue: message }
+    }
+
+    public func peekKind(&self) -> std.result.Result[std.encoding.CodingValueKind, Self.Error] {
+        match self.current {
+            case .name => return .ok(.string)
+            case .count => return .ok(.number)
+            case .ignored => return .ok(.boolean)
+            case .none => return .err(self.error(.invalidState, "no fixture value is selected"))
+        }
+    }
+
+    public func beginObject(&mut self) -> std.result.Result[usize?, Self.Error] {
+        let length: usize? = .some(3)
+        return .ok(length)
+    }
+
+    public func nextField(&mut self) -> std.result.Result[string?, Self.Error] {
+        if self.current != FixtureValue.none {
+            return .err(self.error(.invalidState, "previous fixture field was not consumed"))
+        }
+        if self.fieldIndex == 0 {
+            self.fieldIndex += 1
+            self.current = .ignored
+            return .ok(.some("future"))
+        }
+        if self.fieldIndex == 1 {
+            self.fieldIndex += 1
+            self.current = .count
+            return .ok(.some("count"))
+        }
+        if self.fieldIndex == 2 {
+            self.fieldIndex += 1
+            self.current = .name
+            return .ok(.some("name"))
+        }
+        return .ok(.none)
+    }
+
+    public func decodeInt32(&mut self) -> std.result.Result[int32, Self.Error] {
+        match self.current {
+            case .count => {
+                self.current = .none
+                return .ok(7)
+            }
+            case _ => return .err(self.error(.typeMismatch, "fixture value is not an int32"))
+        }
+    }
+
+    public func decodeString(&mut self) -> std.result.Result[string, Self.Error] {
+        match self.current {
+            case .name => {
+                self.current = .none
+                return .ok("Ada")
+            }
+            case _ => return .err(self.error(.typeMismatch, "fixture value is not a string"))
+        }
+    }
+
+    public func skipValue(&mut self) -> std.result.Result[(), Self.Error] {
+        if self.current == FixtureValue.none {
+            return .err(self.error(.invalidState, "no fixture value is selected"))
+        }
+        self.current = .none
+        return .ok(())
+    }
+
+    public func endObject(&mut self) -> std.result.Result[(), Self.Error] {
+        if self.current != FixtureValue.none || self.fieldIndex != 3 {
+            return .err(self.error(.invalidState, "fixture object is incomplete"))
+        }
+        return .ok(())
+    }
+}
+
+struct PortableRecord {
+    name: string
+    count: int32
+}
+
+impl std.encoding.Encodable for PortableRecord {
+    public func encode[E: std.encoding.Encoder](&self, into encoder: &mut E) -> std.result.Result[(), E.Error] {
+        let length: usize? = .some(2)
+        encoder.beginObject(length)!
+        encoder.beginField("name")!
+        self.name.encode(into: encoder)!
+        encoder.beginField("count")!
+        self.count.encode(into: encoder)!
+        return encoder.endObject()
+    }
+}
+
+impl std.encoding.Decodable for PortableRecord {
+    public func decode[D: std.encoding.Decoder](from decoder: &mut D) -> std.result.Result[Self, D.Error] {
+        let _ = decoder.beginObject()!
+        var nameValue: string? = .none
+        var countValue: int32? = .none
+        loop {
+            match decoder.nextField()! {
+                case .none => break
+                case .some(name) => {
+                    if name == "name" {
+                        nameValue = .some(std.encoding.decode[string, D](from: decoder)!)
+                    } else if name == "count" {
+                        countValue = .some(std.encoding.decode[int32, D](from: decoder)!)
+                    } else {
+                        decoder.skipValue()!
+                    }
+                }
+            }
+        }
+        let name = match nameValue {
+            case .some(value) => value
+            case .none => return .err(decoder.missingField("name", "name is required"))
+        }
+        let count = match countValue {
+            case .some(value) => value
+            case .none => return .err(decoder.missingField("count", "count is required"))
+        }
+        decoder.endObject()!
+        return .ok(PortableRecord { name, count })
+    }
+}
+
+func encodeCodable[Value: std.encoding.Codable](_ value: &Value) -> string {
+    var encoder = TraceEncoder()
+    std.encoding.encode[Value, TraceEncoder](value, into: &mut encoder).unwrap()
+    return encoder.intoString()
+}
+
+func decodeCodable[Value: std.encoding.Codable, Source: std.encoding.Decoder](
+    from decoder: &mut Source,
+) -> Value {
+    std.encoding.decode[Value, Source](from: decoder).unwrap()
+}
+
+@test
+func codingContractsAreFormatNeutralAndCodableComposesBothDirections() {
+    let value = PortableRecord { name: "Grace", count: 3 }
+    std.testing.assertEqual(
+        encodeCodable(&value),
+        "object:2|field:name|string:Grace|field:count|int:3|end-object|",
+        "a non-JSON encoder should receive semantic coding events",
+    )
+
+    var decoder = FixtureDecoder()
+    let decoded: PortableRecord = decodeCodable(from: &mut decoder)
+    std.testing.assertEqual(decoded.name, "Ada", "format-neutral decoding should restore string fields")
+    std.testing.assertEqual(decoded.count, 7, "format-neutral decoding should restore numeric fields")
+}
+
+@test
+func builtInCollectionAndOptionalConformancesEmitPortableEvents() {
+    var values = std.collections.List[int32]()
+    values.append(4)
+    values.append(9)
+    var encoder = TraceEncoder()
+    std.encoding.encode[std.collections.List[int32], TraceEncoder](&values, into: &mut encoder).unwrap()
+    std.testing.assertEqual(
+        encoder.intoString(),
+        "sequence:2|element|int:4|element|int:9|end-sequence|",
+        "List should compose its element conformances through any encoder",
+    )
+
+    let absent: string? = .none
+    var optionalEncoder = TraceEncoder()
+    std.encoding.encode[string?, TraceEncoder](&absent, into: &mut optionalEncoder).unwrap()
+    std.testing.assertEqual(
+        optionalEncoder.intoString(),
+        "null|",
+        "Optional.none should use the format-neutral null event",
+    )
+
+    let ratio: double = 1.5
+    std.testing.assertEqual(
+        encodeCodable(&ratio),
+        "double|",
+        "floating-point Codable should delegate representation to the concrete format",
+    )
+}

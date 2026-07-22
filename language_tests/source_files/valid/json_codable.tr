@@ -1,31 +1,46 @@
-import std.json.{Decodable, Encodable}
-import std.convert.Parse
+import std.encoding.{Codable, Decodable, Decoder, Encodable, Encoder}
 
 struct JsonBox {
     value: int32
 }
 
-impl std.json.Encodable for JsonBox {
-    func encodeJson(&self) -> std.result.Result[std.json.Value, std.json.CodecError] {
-        self.value.encodeJson()
+impl std.encoding.Encodable for JsonBox {
+    func encode[E: std.encoding.Encoder](&self, into encoder: &mut E) -> std.result.Result[(), E.Error] {
+        let length: usize? = .some(1)
+        encoder.beginObject(length)!
+        encoder.beginField("value")!
+        self.value.encode(into: encoder)!
+        return encoder.endObject()
     }
 }
 
-impl std.json.Decodable for JsonBox {
-    func decodeJson(_ value: &std.json.Value) -> std.result.Result[Self, std.json.CodecError] {
-        match value {
-            case .number(number) => {
-                match int32.parse(number.text()) {
-                    case .ok(value) => .ok(JsonBox { value })
-                    case .err(_) => .err(std.json.CodecError(.invalidValue, "value is out of range"))
+impl std.encoding.Decodable for JsonBox {
+    func decode[D: std.encoding.Decoder](from decoder: &mut D) -> std.result.Result[Self, D.Error] {
+        let _ = decoder.beginObject()!
+        var decoded: int32? = .none
+        loop {
+            match decoder.nextField()! {
+                case .none => break
+                case .some(name) => {
+                    if name == "value" {
+                        decoded = .some(std.encoding.decode[int32, D](from: decoder)!)
+                    } else {
+                        decoder.skipValue()!
+                    }
                 }
             }
-            case _ => .err(std.json.CodecError(.typeMismatch, "expected a number"))
+        }
+        match decoded {
+            case .some(value) => {
+                decoder.endObject()!
+                return .ok(JsonBox { value })
+            }
+            case .none => return .err(decoder.missingField("value", "value is required"))
         }
     }
 }
 
-func roundTrip[Value: std.json.Codable](_ value: &Value) -> Value {
+func roundTrip[Value: std.encoding.Codable](_ value: &Value) -> Value {
     let encoded = std.json.encode(value).unwrap()
     std.json.decode[Value](encoded).unwrap()
 }

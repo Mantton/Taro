@@ -243,10 +243,10 @@ func runStreaming(
 ) -> Outcome {
     let reader = ChunkReader(input, chunkSize)
     var decoder = std.json.Decoder.withOptions(reader, options)
-    match decoder.decode() {
+    match decoder.decodeValue() {
         case .err(error) => return rejectedOutcome(&error, input.byteLen())
         case .ok(value) => {
-            match decoder.next() {
+            match decoder.nextValue() {
                 case .err(error) => return rejectedOutcome(&error, input.byteLen())
                 case .ok(.some(_)) => return trailingOutcome(input.byteLen())
                 case .ok(.none) => return acceptedOutcome(value, options)

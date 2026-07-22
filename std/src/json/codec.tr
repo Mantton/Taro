@@ -1,18 +1,14 @@
 import std.collections.List
 import std.convert.Parse
 import std.fmt.Display
-import std.io.{Reader, Writer}
+import std.io.Reader
 import std.result.Result
 
-/// The category of a manual JSON value-conversion failure.
-public enum CodecErrorKind: std.marker.Copy, std.ops.PartialEq {
-    case typeMismatch
-    case missingField
-    case invalidValue
-    case custom
-}
+/// Preserve the JSON-facing category name while sharing the format-neutral
+/// categories used by every `std.encoding` codec.
+public type CodecErrorKind = std.encoding.CodingErrorKind
 
-/// A typed manual-codec failure with JSONPath context.
+/// A typed value-conversion failure with JSONPath context.
 public struct CodecError {
     kindValue: CodecErrorKind
     messageValue: string
@@ -41,30 +37,6 @@ impl CodecError {
     public func path(&self) -> string {
         self.pathValue
     }
-
-    /// Rebase a child codec's root-relative path beneath a container path.
-    func rebased(self, _ parent: string) -> Self {
-        var suffix = self.pathValue
-        if suffix.byteLen() > 0 && suffix.byteAt(0) == ('$' as uint8) {
-            suffix = suffix.sliceBytes(1, suffix.byteLen() - 1)
-        }
-        CodecError {
-            kindValue: self.kindValue,
-            messageValue: self.messageValue,
-            pathValue: parent.concat(suffix),
-        }
-    }
-}
-
-impl std.fmt.Display for CodecErrorKind {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
-        match self {
-            case .typeMismatch => into.writeString("JSON value has the wrong type")
-            case .missingField => into.writeString("required JSON field is missing")
-            case .invalidValue => into.writeString("JSON value is invalid for the target type")
-            case .custom => into.writeString("custom JSON codec failure")
-        }
-    }
 }
 
 impl std.fmt.Display for CodecError {
@@ -79,279 +51,12 @@ impl std.fmt.Display for CodecError {
 
 impl std.error.Error for CodecError {}
 
-/// Convert a value into the stable JSON DOM contract.
-///
-/// The first codec API is intentionally value-based rather than tied to an
-/// encoder implementation. Manual codecs therefore remain compatible when
-/// compiler-derived codecs are added later. The `encodeJson` requirement keeps
-/// the DOM conversion distinct from the string and stream `encode` APIs.
-public interface Encodable {
-    func encodeJson(&self) -> Result[Value, CodecError]
-}
+/// JSON encoding now reports one concrete output error directly. Value
+/// conversion participates through the encoder's associated error type, so a
+/// second wrapper enum would only duplicate the same path and category.
+public type JsonEncodeError = EncodeError
 
-/// Construct a value from the stable JSON DOM contract. `decodeJson` performs
-/// value conversion after syntax parsing, while `decode` accepts JSON text.
-public interface Decodable {
-    func decodeJson(_ value: &Value) -> Result[Self, CodecError]
-}
-
-/// A type that supports both directions of the stable JSON DOM contract.
-///
-/// This transparent interface set avoids a third witness or forwarding
-/// implementation: conform to `Encodable` and `Decodable` independently.
-public type Codable = Encodable & Decodable
-
-func typeMismatch(_ expected: string) -> CodecError {
-    CodecError(.typeMismatch, "expected JSON ".concat(expected))
-}
-
-func numberFromText(_ text: string) -> Result[Value, CodecError] {
-    match Number.parse(text) {
-        case .ok(value) => return .ok(.number(value))
-        case .err(_) => {
-            return .err(CodecError(
-                .invalidValue,
-                "numeric value cannot be represented by JSON",
-            ))
-        }
-    }
-}
-
-func decodeNumberAs[Target: Parse](_ value: &Value) -> Result[Target, CodecError] {
-    let text = match value {
-        case .number(number) => number.text()
-        case _ => return .err(typeMismatch("number"))
-    }
-    match Target.parse(text) {
-        case .ok(result) => return .ok(result)
-        case .err(_) => {
-            return .err(CodecError(
-                .invalidValue,
-                "JSON number is outside the target type or has an incompatible form",
-            ))
-        }
-    }
-}
-
-impl Encodable for Value {
-    public func encodeJson(&self) -> Result[Value, CodecError] {
-        .ok(self.clone())
-    }
-}
-
-impl Decodable for Value {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
-        .ok(value.clone())
-    }
-}
-
-impl Encodable for () {
-    public func encodeJson(&self) -> Result[Value, CodecError] {
-        .ok(.null)
-    }
-}
-
-impl Decodable for () {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
-        match value {
-            case .null => .ok(())
-            case _ => .err(typeMismatch("null"))
-        }
-    }
-}
-
-impl Encodable for bool {
-    public func encodeJson(&self) -> Result[Value, CodecError] {
-        .ok(.boolean(*self))
-    }
-}
-
-impl Decodable for bool {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
-        match value {
-            case .boolean(result) => .ok(*result)
-            case _ => .err(typeMismatch("boolean"))
-        }
-    }
-}
-
-impl Encodable for string {
-    public func encodeJson(&self) -> Result[Value, CodecError] {
-        .ok(.string(*self))
-    }
-}
-
-impl Decodable for string {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
-        match value {
-            case .string(result) => .ok(*result)
-            case _ => .err(typeMismatch("string"))
-        }
-    }
-}
-
-impl Encodable for Number {
-    public func encodeJson(&self) -> Result[Value, CodecError] {
-        .ok(.number(self.clone()))
-    }
-}
-
-impl Decodable for Number {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
-        match value {
-            case .number(result) => .ok(result.clone())
-            case _ => .err(typeMismatch("number"))
-        }
-    }
-}
-
-impl Encodable for int8 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for int8 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int8](value) }
-}
-impl Encodable for int16 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for int16 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int16](value) }
-}
-impl Encodable for int32 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for int32 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int32](value) }
-}
-impl Encodable for int64 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for int64 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[int64](value) }
-}
-impl Encodable for isize {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for isize {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[isize](value) }
-}
-impl Encodable for uint8 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for uint8 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint8](value) }
-}
-impl Encodable for uint16 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for uint16 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint16](value) }
-}
-impl Encodable for uint32 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for uint32 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint32](value) }
-}
-impl Encodable for uint64 {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for uint64 {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[uint64](value) }
-}
-impl Encodable for usize {
-    public func encodeJson(&self) -> Result[Value, CodecError] { numberFromText(std.sprintf("%d", *self)) }
-}
-impl Decodable for usize {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[usize](value) }
-}
-impl Decodable for float {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[float](value) }
-}
-impl Decodable for double {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] { decodeNumberAs[double](value) }
-}
-
-impl[Wrapped: Encodable] Encodable for std.optional.Optional[Wrapped] {
-    public func encodeJson(&self) -> Result[Value, CodecError] {
-        match self {
-            case .some(value) => value.encodeJson()
-            case .none => .ok(.null)
-        }
-    }
-}
-
-impl[Wrapped: Decodable] Decodable for std.optional.Optional[Wrapped] {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
-        match value {
-            case .null => .ok(.none)
-            case _ => {
-                match Wrapped.decodeJson(value) {
-                    case .ok(result) => return .ok(.some(result))
-                    case .err(error) => return .err(error)
-                }
-            }
-        }
-    }
-}
-
-impl[Element: Encodable] Encodable for List[Element] {
-    public func encodeJson(&self) -> Result[Value, CodecError] {
-        var values = List[Value](withCapacity: self.len())
-        var index: usize = 0
-        while index < self.len() {
-            match self.at(index).encodeJson() {
-                case .ok(value) => values.append(value)
-                case .err(error) => {
-                    return .err(error.rebased(childPathForIndex(ROOT_PATH, index)))
-                }
-            }
-            index += 1
-        }
-        return .ok(.array(values))
-    }
-}
-
-impl[Element: Decodable] Decodable for List[Element] {
-    public func decodeJson(_ value: &Value) -> Result[Self, CodecError] {
-        match value {
-            case .array(values) => {
-                var result = List[Element](withCapacity: values.len())
-                var index: usize = 0
-                while index < values.len() {
-                    match Element.decodeJson(values.at(index)) {
-                        case .ok(element) => result.append(element)
-                        case .err(error) => {
-                            return .err(error.rebased(childPathForIndex(ROOT_PATH, index)))
-                        }
-                    }
-                    index += 1
-                }
-                return .ok(result)
-            }
-            case _ => return .err(typeMismatch("array"))
-        }
-    }
-}
-
-/// A combined failure from a manual codec and the JSON serializer.
-public enum JsonEncodeError {
-    case codec(CodecError)
-    case output(EncodeError)
-}
-
-impl std.fmt.Display for JsonEncodeError {
-    public func display(&self, _ into: &mut std.fmt.Formatter) {
-        match self {
-            case .codec(error) => error.display(into)
-            case .output(error) => error.display(into)
-        }
-    }
-}
-
-impl std.error.Error for JsonEncodeError {}
-
-/// A combined failure from the JSON parser and a manual codec.
+/// A combined failure from JSON syntax parsing and typed value conversion.
 public enum JsonDecodeError {
     case syntax(Error)
     case codec(CodecError)
@@ -368,24 +73,543 @@ impl std.fmt.Display for JsonDecodeError {
 
 impl std.error.Error for JsonDecodeError {}
 
-/// Encode any manually encodable value to a compact JSON string.
-public func encode[Source: Encodable](_ source: &Source) -> Result[string, JsonEncodeError] {
-    let value = match source.encodeJson() {
-        case .ok(value) => value
-        case .err(error) => return .err(.codec(error))
+enum DecodeContainerKind: std.marker.Copy {
+    case sequence
+    case object
+}
+
+struct DecodeFrame {
+    kind: DecodeContainerKind
+    value: &Value
+    path: string
+    index: usize
+    valuePending: bool
+}
+
+/// Adapt the stable JSON DOM to the format-neutral decoder contract.
+///
+/// Keeping this adapter private makes the current parse-then-convert strategy
+/// an implementation detail. A future token-stream decoder can remove the DOM
+/// allocation without changing `Decodable` implementations or derived code.
+struct ValueDecoder {
+    current: &Value
+    pathValue: string
+    frames: List[DecodeFrame]
+    rootValueConsumed: bool
+}
+
+impl ValueDecoder {
+    func new(_ value: &Value) -> Self {
+        ValueDecoder {
+            current: value,
+            pathValue: ROOT_PATH,
+            frames: List[DecodeFrame](),
+            rootValueConsumed: false,
+        }
     }
-    match stringify(&value) {
-        case .ok(text) => return .ok(text)
-        case .err(error) => return .err(.output(error))
+
+    /// Mark the selected DOM node as consumed by one scalar, container, or
+    /// explicit skip operation. A direct token decoder will need this same
+    /// cursor invariant, so enforcing it here keeps handwritten codecs honest.
+    func consumeValue(&mut self) -> Result[(), CodecError] {
+        if self.frames.isEmpty() {
+            if self.rootValueConsumed {
+                return .err(CodecError.at(
+                    .invalidState,
+                    self.pathValue,
+                    "decodable value attempted to consume the root more than once",
+                ))
+            }
+            self.rootValueConsumed = true
+            return .ok(())
+        }
+
+        let frame = self.frames.at(self.frames.len() - 1)
+        if !frame.valuePending {
+            return .err(CodecError.at(
+                .invalidState,
+                self.pathValue,
+                "no current container value is available to consume",
+            ))
+        }
+        frame.valuePending = false
+        return .ok(())
+    }
+
+    func requireValue(&self) -> Result[(), CodecError] {
+        let available = if self.frames.isEmpty() {
+            !self.rootValueConsumed
+        } else {
+            self.frames.at(self.frames.len() - 1).valuePending
+        }
+        if !available {
+            return .err(CodecError.at(
+                .invalidState,
+                self.pathValue,
+                "no current value is available to decode",
+            ))
+        }
+        return .ok(())
+    }
+
+    func finish(&self) -> Result[(), CodecError] {
+        if !self.frames.isEmpty() {
+            return .err(CodecError.at(
+                .invalidState,
+                self.pathValue,
+                "decodable value left a container unfinished",
+            ))
+        }
+        if !self.rootValueConsumed {
+            return .err(CodecError.at(
+                .invalidState,
+                ROOT_PATH,
+                "decodable value did not consume the root value",
+            ))
+        }
+        return .ok(())
+    }
+
+    func typeMismatch(&self, _ expected: string) -> CodecError {
+        CodecError.at(
+            .typeMismatch,
+            self.pathValue,
+            "expected JSON ".concat(expected),
+        )
+    }
+
+    func decodeNumberAs[Target: Parse](&mut self, _ expected: string) -> Result[Target, CodecError] {
+        self.requireValue()!
+        let text = match self.current {
+            case .number(number) => number.text()
+            case _ => return .err(self.typeMismatch(expected))
+        }
+        match Target.parse(text) {
+            case .ok(value) => {
+                self.consumeValue()!
+                return .ok(value)
+            }
+            case .err(_) => {
+                return .err(CodecError.at(
+                    .invalidValue,
+                    self.pathValue,
+                    "JSON number is outside the target type or has an incompatible form",
+                ))
+            }
+        }
+    }
+
+    func activeObjectPath(&self) -> string {
+        if self.frames.isEmpty() {
+            return self.pathValue
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .object => return frame.path
+            case .sequence => return self.pathValue
+        }
     }
 }
 
-/// Decode one complete string through a manual codec.
-public func decode[Target: Decodable](_ input: string) -> Result[Target, JsonDecodeError] {
+impl std.encoding.Decoder for ValueDecoder {
+    type Error = CodecError
+
+    public func error(&self, _ kind: std.encoding.CodingErrorKind, _ message: string) -> Self.Error {
+        CodecError.at(kind, self.pathValue, message)
+    }
+
+    public func missingField(&self, _ name: string, _ message: string) -> Self.Error {
+        CodecError.at(
+            .missingField,
+            childPathForKey(self.activeObjectPath(), name),
+            message,
+        )
+    }
+
+    public func peekKind(&self) -> Result[std.encoding.CodingValueKind, Self.Error] {
+        self.requireValue()!
+        let kind = match self.current {
+            case .null => std.encoding.CodingValueKind.null
+            case .boolean(_) => std.encoding.CodingValueKind.boolean
+            case .number(_) => std.encoding.CodingValueKind.number
+            case .string(_) => std.encoding.CodingValueKind.string
+            case .array(_) => std.encoding.CodingValueKind.sequence
+            case .object(_) => std.encoding.CodingValueKind.object
+        }
+        return .ok(kind)
+    }
+
+    public func decodeNull(&mut self) -> Result[(), Self.Error] {
+        self.requireValue()!
+        match self.current {
+            case .null => {
+                self.consumeValue()!
+                return .ok(())
+            }
+            case _ => return .err(self.typeMismatch("null"))
+        }
+    }
+
+    public func decodeBool(&mut self) -> Result[bool, Self.Error] {
+        self.requireValue()!
+        match self.current {
+            case .boolean(value) => {
+                let result = *value
+                self.consumeValue()!
+                return .ok(result)
+            }
+            case _ => return .err(self.typeMismatch("boolean"))
+        }
+    }
+
+    public func decodeInt8(&mut self) -> Result[int8, Self.Error] { self.decodeNumberAs("int8") }
+    public func decodeInt16(&mut self) -> Result[int16, Self.Error] { self.decodeNumberAs("int16") }
+    public func decodeInt32(&mut self) -> Result[int32, Self.Error] { self.decodeNumberAs("int32") }
+    public func decodeInt64(&mut self) -> Result[int64, Self.Error] { self.decodeNumberAs("int64") }
+    public func decodeIsize(&mut self) -> Result[isize, Self.Error] { self.decodeNumberAs("isize") }
+    public func decodeUint8(&mut self) -> Result[uint8, Self.Error] { self.decodeNumberAs("uint8") }
+    public func decodeUint16(&mut self) -> Result[uint16, Self.Error] { self.decodeNumberAs("uint16") }
+    public func decodeUint32(&mut self) -> Result[uint32, Self.Error] { self.decodeNumberAs("uint32") }
+    public func decodeUint64(&mut self) -> Result[uint64, Self.Error] { self.decodeNumberAs("uint64") }
+    public func decodeUsize(&mut self) -> Result[usize, Self.Error] { self.decodeNumberAs("usize") }
+    public func decodeFloat(&mut self) -> Result[float, Self.Error] { self.decodeNumberAs("float") }
+    public func decodeDouble(&mut self) -> Result[double, Self.Error] { self.decodeNumberAs("double") }
+
+    public func decodeDecimal(&mut self) -> Result[string, Self.Error] {
+        self.requireValue()!
+        match self.current {
+            case .number(number) => {
+                let result = number.text()
+                self.consumeValue()!
+                return .ok(result)
+            }
+            case _ => return .err(self.typeMismatch("number"))
+        }
+    }
+
+    public func decodeString(&mut self) -> Result[string, Self.Error] {
+        self.requireValue()!
+        match self.current {
+            case .string(value) => {
+                let result = *value
+                self.consumeValue()!
+                return .ok(result)
+            }
+            case _ => return .err(self.typeMismatch("string"))
+        }
+    }
+
+    public func beginSequence(&mut self) -> Result[usize?, Self.Error] {
+        self.requireValue()!
+        let length = match self.current {
+            case .array(values) => values.len()
+            case _ => return .err(self.typeMismatch("array"))
+        }
+        self.consumeValue()!
+        self.frames.append(DecodeFrame {
+            kind: .sequence,
+            value: self.current,
+            path: self.pathValue,
+            index: 0,
+            valuePending: false,
+        })
+        let result: usize? = .some(length)
+        return .ok(result)
+    }
+
+    public func nextElement(&mut self) -> Result[bool, Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(CodecError.at(.invalidState, self.pathValue, "sequence element has no containing sequence"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .object => return .err(CodecError.at(.invalidState, self.pathValue, "active container is an object"))
+            case .sequence => {}
+        }
+        if frame.valuePending {
+            return .err(CodecError.at(
+                .invalidState,
+                self.pathValue,
+                "previous sequence element was not decoded or skipped",
+            ))
+        }
+        let values = match frame.value {
+            case .array(values) => values
+            case _ => return .err(CodecError.at(.invalidState, self.pathValue, "sequence frame does not contain an array"))
+        }
+        if frame.index >= values.len() {
+            return .ok(false)
+        }
+        let index = frame.index
+        frame.index += 1
+        frame.valuePending = true
+        self.current = values.at(index)
+        self.pathValue = childPathForIndex(frame.path, index)
+        return .ok(true)
+    }
+
+    public func endSequence(&mut self) -> Result[(), Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(CodecError.at(.invalidState, self.pathValue, "sequence end has no containing sequence"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .object => return .err(CodecError.at(.invalidState, self.pathValue, "cannot end an object as a sequence"))
+            case .sequence => {}
+        }
+        if frame.valuePending {
+            return .err(CodecError.at(
+                .invalidState,
+                self.pathValue,
+                "sequence ended before its current element was decoded or skipped",
+            ))
+        }
+        let value = frame.value
+        let path = frame.path
+        let index = frame.index
+        let length = match frame.value {
+            case .array(values) => values.len()
+            case _ => 0 as usize
+        }
+        if index != length {
+            return .err(CodecError.at(
+                .invalidState,
+                path,
+                "sequence decoder ended before consuming every element",
+            ))
+        }
+        let _ = self.frames.pop()
+        self.current = value
+        self.pathValue = path
+        return .ok(())
+    }
+
+    public func beginObject(&mut self) -> Result[usize?, Self.Error] {
+        self.requireValue()!
+        let length = match self.current {
+            case .object(object) => object.len()
+            case _ => return .err(self.typeMismatch("object"))
+        }
+        self.consumeValue()!
+        self.frames.append(DecodeFrame {
+            kind: .object,
+            value: self.current,
+            path: self.pathValue,
+            index: 0,
+            valuePending: false,
+        })
+        let result: usize? = .some(length)
+        return .ok(result)
+    }
+
+    public func nextField(&mut self) -> Result[string?, Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(CodecError.at(.invalidState, self.pathValue, "object field has no containing object"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .sequence => return .err(CodecError.at(.invalidState, self.pathValue, "active container is a sequence"))
+            case .object => {}
+        }
+        if frame.valuePending {
+            return .err(CodecError.at(
+                .invalidState,
+                self.pathValue,
+                "previous object field was not decoded or skipped",
+            ))
+        }
+        let object = match frame.value {
+            case .object(object) => object
+            case _ => return .err(CodecError.at(.invalidState, self.pathValue, "object frame does not contain an object"))
+        }
+        if frame.index >= object.len() {
+            let result: string? = .none
+            return .ok(result)
+        }
+        let index = frame.index
+        frame.index += 1
+        frame.valuePending = true
+        let name = object.keyAt(index)
+        self.current = object.valueAt(index)
+        self.pathValue = childPathForKey(frame.path, name)
+        let result: string? = .some(name)
+        return .ok(result)
+    }
+
+    public func skipValue(&mut self) -> Result[(), Self.Error] {
+        // The DOM already owns the complete selected node; consuming it is
+        // enough here. A token decoder would advance past the same subtree.
+        self.consumeValue()
+    }
+
+    public func endObject(&mut self) -> Result[(), Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(CodecError.at(.invalidState, self.pathValue, "object end has no containing object"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .sequence => return .err(CodecError.at(.invalidState, self.pathValue, "cannot end a sequence as an object"))
+            case .object => {}
+        }
+        if frame.valuePending {
+            return .err(CodecError.at(
+                .invalidState,
+                self.pathValue,
+                "object ended before its current field was decoded or skipped",
+            ))
+        }
+        let value = frame.value
+        let path = frame.path
+        let index = frame.index
+        let length = match frame.value {
+            case .object(object) => object.len()
+            case _ => 0 as usize
+        }
+        if index != length {
+            return .err(CodecError.at(
+                .invalidState,
+                path,
+                "object decoder ended before consuming every field",
+            ))
+        }
+        let _ = self.frames.pop()
+        self.current = value
+        self.pathValue = path
+        return .ok(())
+    }
+}
+
+func decodeTarget[Target: std.encoding.Decodable, D: std.encoding.Decoder](
+    _ decoder: &mut D,
+) -> Result[Target, D.Error] {
+    Target.decode(from: decoder)
+}
+
+func decodeFromValue[Target: std.encoding.Decodable](
+    _ value: &Value,
+) -> Result[Target, CodecError] {
+    var decoder = ValueDecoder(value)
+    let result = decodeTarget[Target, ValueDecoder](&mut decoder)!
+    decoder.finish()!
+    return .ok(result)
+}
+
+impl std.encoding.Encodable for Number {
+    public func encode[E: std.encoding.Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+        encoder.encodeDecimal(self.text())
+    }
+}
+
+impl std.encoding.Decodable for Number {
+    public func decode[D: std.encoding.Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+        let text = decoder.decodeDecimal()!
+        match Number.parse(text) {
+            case .ok(number) => return .ok(number)
+            case .err(_) => return .err(decoder.error(.invalidValue, "decoder returned an invalid exact decimal"))
+        }
+    }
+}
+
+impl std.encoding.Encodable for Value {
+    public func encode[E: std.encoding.Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
+        match self {
+            case .null => return encoder.encodeNull()
+            case .boolean(value) => return encoder.encodeBool(*value)
+            case .number(value) => return encoder.encodeDecimal(value.text())
+            case .string(value) => return encoder.encodeString(*value)
+            case .array(values) => {
+                let length: usize? = .some(values.len())
+                encoder.beginSequence(length)!
+                var index: usize = 0
+                while index < values.len() {
+                    encoder.beginElement()!
+                    std.encoding.encode[Value, E](values.at(index), into: encoder)!
+                    index += 1
+                }
+                return encoder.endSequence()
+            }
+            case .object(object) => {
+                let length: usize? = .some(object.len())
+                encoder.beginObject(length)!
+                var index: usize = 0
+                while index < object.len() {
+                    encoder.beginField(object.keyAt(index))!
+                    std.encoding.encode[Value, E](object.valueAt(index), into: encoder)!
+                    index += 1
+                }
+                return encoder.endObject()
+            }
+        }
+    }
+}
+
+impl std.encoding.Decodable for Value {
+    public func decode[D: std.encoding.Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
+        match decoder.peekKind()! {
+            case .null => {
+                decoder.decodeNull()!
+                return .ok(.null)
+            }
+            case .boolean => return .ok(.boolean(decoder.decodeBool()!))
+            case .number => {
+                let text = decoder.decodeDecimal()!
+                match Number.parse(text) {
+                    case .ok(number) => return .ok(.number(number))
+                    case .err(_) => return .err(decoder.error(.invalidValue, "decoder returned an invalid exact decimal"))
+                }
+            }
+            case .string => return .ok(.string(decoder.decodeString()!))
+            case .sequence => {
+                let length = decoder.beginSequence()!
+                var values = match length {
+                    case .some(length) => List[Value](withCapacity: length)
+                    case .none => List[Value]()
+                }
+                while decoder.nextElement()! {
+                    values.append(decodeTarget[Value, D](decoder)!)
+                }
+                decoder.endSequence()!
+                return .ok(.array(values))
+            }
+            case .object => {
+                let _ = decoder.beginObject()!
+                var object = Object()
+                loop {
+                    match decoder.nextField()! {
+                        case .none => break
+                        case .some(name) => {
+                            let _ = object.insert(name, decodeTarget[Value, D](decoder)!)
+                        }
+                    }
+                }
+                decoder.endObject()!
+                return .ok(.object(object))
+            }
+        }
+    }
+}
+
+/// Encode any format-neutral value to one compact JSON string.
+public func encode[Source: std.encoding.Encodable](_ source: &Source) -> Result[string, JsonEncodeError] {
+    encodeWithOptions(source, Options())
+}
+
+/// Encode any format-neutral value with explicit JSON resource controls.
+public func encodeWithOptions[Source: std.encoding.Encodable](
+    _ source: &Source,
+    _ options: Options,
+) -> Result[string, JsonEncodeError] {
+    var encoder = Encoder.withOptions(std.bytes.Buffer(), options)
+    encoder.encode(source)!
+    return .ok(encoder.intoInner().intoString())
+}
+
+/// Decode one complete JSON string into a format-neutral value type.
+public func decode[Target: std.encoding.Decodable](_ input: string) -> Result[Target, JsonDecodeError] {
     decodeWithOptions[Target](input, Options())
 }
 
-public func decodeWithOptions[Target: Decodable](
+public func decodeWithOptions[Target: std.encoding.Decodable](
     _ input: string,
     _ options: Options,
 ) -> Result[Target, JsonDecodeError] {
@@ -393,52 +617,23 @@ public func decodeWithOptions[Target: Decodable](
         case .ok(value) => value
         case .err(error) => return .err(.syntax(error))
     }
-    match Target.decodeJson(&value) {
+    match decodeFromValue[Target](&value) {
         case .ok(result) => return .ok(result)
         case .err(error) => return .err(.codec(error))
     }
 }
 
-impl[Sink: Writer] Encoder[Sink] {
-    public func encodeJson[Source: Encodable](
-        &mut self,
-        _ source: &Source,
-    ) -> Result[(), JsonEncodeError] {
-        let value = match source.encodeJson() {
-            case .ok(value) => value
-            case .err(error) => return .err(.codec(error))
-        }
-        match self.encode(&value) {
-            case .ok(_) => return .ok(())
-            case .err(error) => return .err(.output(error))
-        }
-    }
-
-    public func encodeJsonLine[Source: Encodable](
-        &mut self,
-        _ source: &Source,
-    ) -> Result[(), JsonEncodeError] {
-        let value = match source.encodeJson() {
-            case .ok(value) => value
-            case .err(error) => return .err(.codec(error))
-        }
-        match self.encodeLine(&value) {
-            case .ok(_) => return .ok(())
-            case .err(error) => return .err(.output(error))
-        }
-    }
-}
-
 impl[Source: Reader] Decoder[Source] {
-    public func nextJson[Target: Decodable](&mut self) -> Result[Target?, JsonDecodeError] {
-        let value = match self.next() {
+    /// Decode the next typed value, returning `.none` at clean end of input.
+    public func next[Target: std.encoding.Decodable](&mut self) -> Result[Target?, JsonDecodeError] {
+        let value = match self.nextValue() {
             case .ok(value) => value
             case .err(error) => return .err(.syntax(error))
         }
         match value {
             case .none => return .ok(.none)
             case .some(value) => {
-                match Target.decodeJson(&value) {
+                match decodeFromValue[Target](&value) {
                     case .ok(result) => return .ok(.some(result))
                     case .err(error) => return .err(.codec(error))
                 }
@@ -446,15 +641,15 @@ impl[Source: Reader] Decoder[Source] {
         }
     }
 
-    public func decodeJson[Target: Decodable](&mut self) -> Result[Target, JsonDecodeError] {
-        match self.decode() {
+    /// Decode one required typed value from the stream.
+    public func decode[Target: std.encoding.Decodable](&mut self) -> Result[Target, JsonDecodeError] {
+        let value = match self.decodeValue() {
+            case .ok(value) => value
             case .err(error) => return .err(.syntax(error))
-            case .ok(value) => {
-                match Target.decodeJson(&value) {
-                    case .ok(result) => return .ok(result)
-                    case .err(error) => return .err(.codec(error))
-                }
-            }
+        }
+        match decodeFromValue[Target](&value) {
+            case .ok(result) => return .ok(result)
+            case .err(error) => return .err(.codec(error))
         }
     }
 }

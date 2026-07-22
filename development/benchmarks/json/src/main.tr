@@ -189,7 +189,7 @@ func decodeMediumCatalogAcrossBoundaries(benchmark: &mut std.bench.Benchmark) {
     while benchmark.next() {
         let reader = BenchmarkChunkReader(input, STREAM_CHUNK_SIZE)
         var decoder = std.json.Decoder(reader)
-        let result = decoder.decode()
+        let result = decoder.decodeValue()
         std.hint.blackBox(result)
     }
 }

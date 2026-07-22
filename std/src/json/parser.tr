@@ -1145,7 +1145,7 @@ public func parseWithOptions(_ input: string, _ options: Options) -> Result[Valu
 
 /// An incremental JSON decoder over any byte `Reader`.
 ///
-/// `next` can decode a whitespace-separated sequence without retaining prior
+/// `nextValue` can decode a whitespace-separated sequence without retaining prior
 /// values. Only a fixed input window and the current DOM remain live.
 public struct Decoder[Source: Reader] {
     input: ReaderInput[Source]
@@ -1162,7 +1162,7 @@ impl[Source: Reader] Decoder[Source] {
     }
 
     /// Decode the next value, returning `.none` at clean end of input.
-    public func next(&mut self) -> Result[Value?, Error] {
+    public func nextValue(&mut self) -> Result[Value?, Error] {
         let start = self.input.position().offset
         let state = ParseState(self.options, start)
         match skipWhitespace(&mut self.input, state, ROOT_PATH) {
@@ -1181,8 +1181,8 @@ impl[Source: Reader] Decoder[Source] {
     }
 
     /// Decode one required value. Empty input is a typed unexpected-EOF error.
-    public func decode(&mut self) -> Result[Value, Error] {
-        match self.next() {
+    public func decodeValue(&mut self) -> Result[Value, Error] {
+        match self.nextValue() {
             case .ok(.some(value)) => return .ok(value)
             case .err(error) => return .err(error)
             case .ok(.none) => {

@@ -1,4 +1,5 @@
 import std.io.Writer
+import std.collections.List
 import std.fmt.Display
 import std.mem.Span
 import std.result.Result
@@ -7,6 +8,8 @@ import std.string.Builder
 /// A stable category for JSON output failures.
 public enum EncodeErrorKind: std.marker.Copy, std.ops.PartialEq {
     case invalidUtf8
+    case invalidValue
+    case invalidState
     case depthLimit
     case io
 }
@@ -53,6 +56,20 @@ impl EncodeError {
         }
     }
 
+    func coding(_ kind: std.encoding.CodingErrorKind, _ path: string, _ message: string) -> Self {
+        let kindValue = match kind {
+            case .invalidState => EncodeErrorKind.invalidState
+            case _ => EncodeErrorKind.invalidValue
+        }
+        EncodeError {
+            kindValue,
+            messageValue: message,
+            pathValue: path,
+            stringByteIndexValue: .none,
+            ioErrorValue: .none,
+        }
+    }
+
     public func kind(&self) -> EncodeErrorKind {
         self.kindValue
     }
@@ -82,10 +99,25 @@ impl std.fmt.Display for EncodeErrorKind {
     public func display(&self, _ into: &mut std.fmt.Formatter) {
         match self {
             case .invalidUtf8 => into.writeString("invalid UTF-8 in JSON output")
+            case .invalidValue => into.writeString("value cannot be represented as JSON")
+            case .invalidState => into.writeString("invalid JSON encoder state")
             case .depthLimit => into.writeString("JSON output nesting limit exceeded")
             case .io => into.writeString("JSON output I/O failure")
         }
     }
+}
+
+enum EncodeContainerKind: std.marker.Copy {
+    case sequence
+    case object
+}
+
+struct EncodeFrame {
+    kind: EncodeContainerKind
+    path: string
+    count: usize
+    expectedLength: usize?
+    valuePending: bool
 }
 
 impl std.fmt.Display for EncodeError {
@@ -345,24 +377,94 @@ func writeJsonValue[Sink: Writer](
 public struct Encoder[Sink: Writer] {
     sink: Sink
     options: Options
+    frames: List[EncodeFrame]
+    path: string
+    rootValueWritten: bool
 }
 
 impl[Sink: Writer] Encoder[Sink] {
     public func new(_ sink: Sink) -> Self {
-        Encoder[Sink] { sink, options: Options() }
+        Encoder[Sink] {
+            sink,
+            options: Options(),
+            frames: List[EncodeFrame](),
+            path: ROOT_PATH,
+            rootValueWritten: false,
+        }
     }
 
     public func withOptions(_ sink: Sink, _ options: Options) -> Self {
-        Encoder[Sink] { sink, options }
+        Encoder[Sink] {
+            sink,
+            options,
+            frames: List[EncodeFrame](),
+            path: ROOT_PATH,
+            rootValueWritten: false,
+        }
     }
 
-    /// Write one compact JSON value without an implicit separator.
-    public func encode(&mut self, _ value: &Value) -> Result[(), EncodeError] {
-        writeJsonValue(&mut self.sink, value, self.options, 0, ROOT_PATH)
+    /// Claim the current root or container slot before writing a value.
+    /// Keeping this state in the format adapter prevents a buggy handwritten
+    /// conformance from successfully producing syntactically invalid JSON.
+    func prepareValue(&mut self) -> Result[(), EncodeError] {
+        if self.frames.isEmpty() {
+            if self.rootValueWritten {
+                return .err(EncodeError.coding(
+                    .invalidState,
+                    self.path,
+                    "encodable value attempted to emit more than one root value",
+                ))
+            }
+            self.rootValueWritten = true
+            return .ok(())
+        }
+
+        let frame = self.frames.at(self.frames.len() - 1)
+        if !frame.valuePending {
+            return .err(EncodeError.coding(
+                .invalidState,
+                self.path,
+                "container value must be introduced by beginElement or beginField",
+            ))
+        }
+        frame.valuePending = false
+        return .ok(())
+    }
+
+    /// Write one format-neutral value as compact JSON without a separator.
+    public func encode[Source: std.encoding.Encodable](&mut self, _ value: &Source) -> Result[(), EncodeError] {
+        if !self.frames.isEmpty() {
+            return .err(EncodeError.coding(
+                .invalidState,
+                self.path,
+                "cannot start a root value inside an unfinished container",
+            ))
+        }
+        self.path = ROOT_PATH
+        self.rootValueWritten = false
+        match std.encoding.encode[Source, Encoder[Sink]](value, into: self) {
+            case .ok(_) => {}
+            case .err(error) => return .err(error)
+        }
+        if !self.frames.isEmpty() {
+            return .err(EncodeError.coding(
+                .invalidState,
+                self.path,
+                "encodable value left a container unfinished",
+            ))
+        }
+        if !self.rootValueWritten {
+            return .err(EncodeError.coding(
+                .invalidState,
+                ROOT_PATH,
+                "encodable value did not emit a root value",
+            ))
+        }
+        return .ok(())
     }
 
     /// Write one compact value followed by a newline for JSON stream framing.
-    public func encodeLine(&mut self, _ value: &Value) -> Result[(), EncodeError] {
+    public func encodeLine[Source: std.encoding.Encodable](&mut self, _ value: &Source) -> Result[(), EncodeError] {
         match self.encode(value) {
             case .ok(_) => return writeOutput(&mut self.sink, "\n", ROOT_PATH)
             case .err(error) => return .err(error)
@@ -383,6 +485,218 @@ impl[Sink: Writer] Encoder[Sink] {
     }
 }
 
+impl[Sink: Writer] std.encoding.Encoder for Encoder[Sink] {
+    type Error = EncodeError
+
+    public func error(&self, _ kind: std.encoding.CodingErrorKind, _ message: string) -> Self.Error {
+        EncodeError.coding(kind, self.path, message)
+    }
+
+    public func encodeNull(&mut self) -> Result[(), Self.Error] {
+        self.prepareValue()!
+        writeOutput(&mut self.sink, "null", self.path)
+    }
+
+    public func encodeBool(&mut self, _ value: bool) -> Result[(), Self.Error] {
+        self.prepareValue()!
+        if value {
+            return writeOutput(&mut self.sink, "true", self.path)
+        }
+        return writeOutput(&mut self.sink, "false", self.path)
+    }
+
+    public func encodeInt64(&mut self, _ value: int64) -> Result[(), Self.Error] {
+        self.prepareValue()!
+        writeOutput(&mut self.sink, std.sprintf("%d", value), self.path)
+    }
+
+    public func encodeUint64(&mut self, _ value: uint64) -> Result[(), Self.Error] {
+        self.prepareValue()!
+        writeOutput(&mut self.sink, std.sprintf("%d", value), self.path)
+    }
+
+    // `encodeFloat` and `encodeDouble` intentionally retain the interface
+    // defaults until std has a locale-independent, shortest-round-trip float
+    // formatter. Approximating through a generic formatter would silently
+    // change values; callers can use `Number` for exact JSON decimals today.
+    public func encodeDecimal(&mut self, _ value: string) -> Result[(), Self.Error] {
+        match Number.parse(value) {
+            case .ok(_) => {
+                self.prepareValue()!
+                return writeOutput(&mut self.sink, value, self.path)
+            }
+            case .err(_) => {
+                return .err(EncodeError.coding(
+                    .invalidValue,
+                    self.path,
+                    "exact decimal does not follow JSON number syntax",
+                ))
+            }
+        }
+    }
+
+    public func encodeString(&mut self, _ value: string) -> Result[(), Self.Error] {
+        self.prepareValue()!
+        writeEscapedString(&mut self.sink, value, self.path)
+    }
+
+    public func beginSequence(&mut self, _ length: usize?) -> Result[(), Self.Error] {
+        if self.frames.len() >= self.options.maxDepth() {
+            return .err(EncodeError.depth(self.path))
+        }
+        self.prepareValue()!
+        writeOutput(&mut self.sink, "[", self.path)!
+        self.frames.append(EncodeFrame {
+            kind: .sequence,
+            path: self.path,
+            count: 0,
+            expectedLength: length,
+            valuePending: false,
+        })
+        return .ok(())
+    }
+
+    public func beginElement(&mut self) -> Result[(), Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(EncodeError.coding(.invalidState, self.path, "sequence element has no containing sequence"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .object => return .err(EncodeError.coding(.invalidState, self.path, "object fields require beginField"))
+            case .sequence => {}
+        }
+        if frame.valuePending {
+            return .err(EncodeError.coding(
+                .invalidState,
+                self.path,
+                "previous sequence element did not emit a value",
+            ))
+        }
+        if frame.count > 0 {
+            writeOutput(&mut self.sink, ",", frame.path)!
+        }
+        self.path = childPathForIndex(frame.path, frame.count)
+        frame.count += 1
+        frame.valuePending = true
+        return .ok(())
+    }
+
+    public func endSequence(&mut self) -> Result[(), Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(EncodeError.coding(.invalidState, self.path, "sequence end has no containing sequence"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .object => return .err(EncodeError.coding(.invalidState, self.path, "cannot end an object as a sequence"))
+            case .sequence => {}
+        }
+        if frame.valuePending {
+            return .err(EncodeError.coding(
+                .invalidState,
+                self.path,
+                "sequence ended before its current element emitted a value",
+            ))
+        }
+        let path = frame.path
+        let count = frame.count
+        let expectedLength = frame.expectedLength
+        match expectedLength {
+            case .some(expected) => {
+                if expected != count {
+                    return .err(EncodeError.coding(
+                        .invalidState,
+                        path,
+                        "sequence emitted a different number of elements than declared",
+                    ))
+                }
+            }
+            case .none => {}
+        }
+        let _ = self.frames.pop()
+        self.path = path
+        return writeOutput(&mut self.sink, "]", path)
+    }
+
+    public func beginObject(&mut self, _ length: usize?) -> Result[(), Self.Error] {
+        if self.frames.len() >= self.options.maxDepth() {
+            return .err(EncodeError.depth(self.path))
+        }
+        self.prepareValue()!
+        writeOutput(&mut self.sink, "{", self.path)!
+        self.frames.append(EncodeFrame {
+            kind: .object,
+            path: self.path,
+            count: 0,
+            expectedLength: length,
+            valuePending: false,
+        })
+        return .ok(())
+    }
+
+    public func beginField(&mut self, _ name: string) -> Result[(), Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(EncodeError.coding(.invalidState, self.path, "object field has no containing object"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .sequence => return .err(EncodeError.coding(.invalidState, self.path, "sequence elements require beginElement"))
+            case .object => {}
+        }
+        if frame.valuePending {
+            return .err(EncodeError.coding(
+                .invalidState,
+                self.path,
+                "previous object field did not emit a value",
+            ))
+        }
+        if frame.count > 0 {
+            writeOutput(&mut self.sink, ",", frame.path)!
+        }
+        self.path = childPathForKey(frame.path, name)
+        writeEscapedString(&mut self.sink, name, self.path)!
+        writeOutput(&mut self.sink, ":", self.path)!
+        frame.count += 1
+        frame.valuePending = true
+        return .ok(())
+    }
+
+    public func endObject(&mut self) -> Result[(), Self.Error] {
+        if self.frames.isEmpty() {
+            return .err(EncodeError.coding(.invalidState, self.path, "object end has no containing object"))
+        }
+        let frame = self.frames.at(self.frames.len() - 1)
+        match frame.kind {
+            case .sequence => return .err(EncodeError.coding(.invalidState, self.path, "cannot end a sequence as an object"))
+            case .object => {}
+        }
+        if frame.valuePending {
+            return .err(EncodeError.coding(
+                .invalidState,
+                self.path,
+                "object ended before its current field emitted a value",
+            ))
+        }
+        let path = frame.path
+        let count = frame.count
+        let expectedLength = frame.expectedLength
+        match expectedLength {
+            case .some(expected) => {
+                if expected != count {
+                    return .err(EncodeError.coding(
+                        .invalidState,
+                        path,
+                        "object emitted a different number of fields than declared",
+                    ))
+                }
+            }
+            case .none => {}
+        }
+        let _ = self.frames.pop()
+        self.path = path
+        return writeOutput(&mut self.sink, "}", path)
+    }
+}
+
 /// Serialize one JSON DOM value into a compact string.
 public func stringify(_ value: &Value) -> Result[string, EncodeError] {
     stringifyWithOptions(value, Options())
@@ -391,7 +705,7 @@ public func stringify(_ value: &Value) -> Result[string, EncodeError] {
 /// Serialize one JSON DOM value with an explicit nesting limit.
 public func stringifyWithOptions(_ value: &Value, _ options: Options) -> Result[string, EncodeError] {
     var encoder = Encoder.withOptions(std.bytes.Buffer(), options)
-    match encoder.encode(value) {
+    match writeJsonValue(&mut encoder.sink, value, options, 0, ROOT_PATH) {
         case .ok(_) => return .ok(encoder.intoInner().intoString())
         case .err(error) => return .err(error)
     }
