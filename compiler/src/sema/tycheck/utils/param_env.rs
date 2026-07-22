@@ -115,10 +115,46 @@ impl<'ctx> ParamEnv<'ctx> {
         out.into_iter().collect()
     }
 
+    /// Return the first bound for a specific interface ID, if one exists for `ty`.
+    ///
+    /// Call-site constraints are resolved before they enter the parameter
+    /// environment. Keeping this lookup structural is important for local impl
+    /// inference: a bound whose receiver only *later* resolves to `ty` may still
+    /// contain associated-type variables that the concrete witness must infer.
+    pub fn first_bound_for_interface(
+        &self,
+        ty: Ty<'ctx>,
+        interface_id: crate::hir::DefinitionID,
+    ) -> Option<InterfaceReference<'ctx>> {
+        if self.bounds.is_empty() {
+            return None;
+        }
+
+        if self.type_equalities.is_empty() {
+            for (bound_ty, interface) in &self.bounds {
+                if *bound_ty == ty && interface.id == interface_id {
+                    return Some(*interface);
+                }
+            }
+            return None;
+        }
+
+        let eq_set = self.equivalent_types(ty);
+        for (bound_ty, interface) in &self.bounds {
+            if interface.id == interface_id && eq_set.contains(bound_ty) {
+                return Some(*interface);
+            }
+        }
+
+        None
+    }
+
     /// Find a bound after resolving inference variables owned by the caller.
-    /// Call-site constraints are often registered before argument inference
-    /// finishes, so their stored self type can be an inference variable even
-    /// when the projection being normalized already has a concrete self type.
+    ///
+    /// This is deliberately separate from structural lookup. Consumers must
+    /// not treat a late match as authoritative when its associated bindings
+    /// are themselves unresolved; those variables may need a concrete witness
+    /// to infer them.
     pub fn first_bound_for_interface_resolved(
         &self,
         ty: Ty<'ctx>,

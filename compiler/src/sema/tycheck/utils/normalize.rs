@@ -517,30 +517,52 @@ impl<'a, 'ctx> NormalizeFolder<'a, 'ctx> {
             Some(instantiate_ty_with_args(gcx, *witness_ty, args))
         };
 
-        // Strategy 1: Check ParamEnv bounds for the matching interface
-        if let Some(bound_iface) =
-            self.env
-                .first_bound_for_interface_resolved(self_ty, interface_id, |ty| {
-                    self.icx.resolve_vars_if_possible(ty)
-                })
-        {
+        // Strategy 1: Check ParamEnv bounds for the matching interface.
+        if let Some(bound_iface) = self.env.first_bound_for_interface(self_ty, interface_id) {
             // An associated type binding on a generic bound is already the
-            // canonical answer. Consulting conformance selection here can
-            // lose the caller's parameter environment and is unnecessary.
+            // canonical answer. Exact structural lookup is intentional here:
+            // an impl-local receiver that only later resolves to this type must
+            // fall through to its concrete witness so associated variables such
+            // as `Inner` can be inferred.
             let assoc_name = gcx.definition_ident(assoc_id).symbol;
             if let Some(binding) = bound_iface
                 .bindings
                 .iter()
                 .find(|binding| binding.name == assoc_name)
             {
-                return Some(binding.ty);
+                return Some(self.icx.resolve_vars_if_possible(binding.ty));
             }
-            // Found matching bound - look up type witness from conformance
+            // Found matching bound - look up type witness from conformance.
             let witness = resolve_conformance_witness(gcx, bound_iface)?;
             return instantiate_witness(witness);
         }
 
-        // Strategy 2: For concrete types without explicit bounds, try direct lookup
+        // A generic call constraint may have entered the environment before
+        // argument unification completed. Its receiver can therefore match
+        // only after inference resolution. Such a late match is authoritative
+        // when it supplies a known binding, but an unresolved binding belongs
+        // to impl-argument inference and must fall through to the concrete
+        // witness below.
+        if let Some(bound_iface) =
+            self.env
+                .first_bound_for_interface_resolved(self_ty, interface_id, |ty| {
+                    self.icx.resolve_vars_if_possible(ty)
+                })
+        {
+            let assoc_name = gcx.definition_ident(assoc_id).symbol;
+            if let Some(binding) = bound_iface
+                .bindings
+                .iter()
+                .find(|binding| binding.name == assoc_name)
+            {
+                let binding_ty = self.icx.resolve_vars_if_possible(binding.ty);
+                if !binding_ty.contains_inference() {
+                    return Some(binding_ty);
+                }
+            }
+        }
+
+        // Strategy 2: For concrete types without explicit bounds, try direct lookup.
         let interface = InterfaceReference {
             id: interface_id,
             arguments: args,

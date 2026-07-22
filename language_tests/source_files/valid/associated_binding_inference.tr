@@ -1,0 +1,17 @@
+func main() {
+    let values = std.iter.enumerate((2 as usize)..(5 as usize))
+    var indexSum = 0 as usize
+    var valueSum = 0 as usize
+
+    // Enumerate's Iterable impl infers its hidden iterator parameter through
+    // `Source: Iterable[Iterator = Inner]` after Source becomes Range[usize].
+    for pair in values {
+        let (index, value) = pair
+        indexSum += index
+        valueSum += value
+    }
+
+    assert(indexSum == 3 as usize, "associated binding should infer the index type")
+    assert(valueSum == 9 as usize, "associated binding should infer the value type")
+    std.print("ok\n")
+}
