@@ -663,31 +663,6 @@ impl<'ctx> LabeledFunctionSignature<'ctx> {
     }
 }
 
-pub fn format_signature_parameter_labels_for_display<'ctx>(
-    signature: &LabeledFunctionSignature<'ctx>,
-    gcx: Gcx<'ctx>,
-) -> Vec<String> {
-    signature
-        .inputs
-        .iter()
-        .enumerate()
-        .map(|(index, _)| format_parameter_for_display(signature, index, gcx))
-        .collect()
-}
-
-pub fn format_definition_signature_parameter_labels_for_display(
-    gcx: Gcx<'_>,
-    id: DefinitionID,
-) -> Option<Vec<String>> {
-    match gcx.definition_kind(id) {
-        crate::sema::resolve::models::DefinitionKind::Function
-        | crate::sema::resolve::models::DefinitionKind::AssociatedFunction => Some(
-            format_signature_parameter_labels_for_display(gcx.try_get_signature(id)?, gcx),
-        ),
-        _ => None,
-    }
-}
-
 fn format_parameter_for_display<'ctx>(
     signature: &LabeledFunctionSignature<'ctx>,
     index: usize,
@@ -718,16 +693,6 @@ fn variadic_element_type<'ctx>(ty: Ty<'ctx>, gcx: Gcx<'ctx>) -> Option<Ty<'ctx>>
             Some(GenericArgument::Type(inner)) if args.len() == 1 => Some(*inner),
             _ => None,
         },
-        _ => None,
-    }
-}
-
-pub fn format_definition_signature_for_display(gcx: Gcx<'_>, id: DefinitionID) -> Option<String> {
-    match gcx.definition_kind(id) {
-        crate::sema::resolve::models::DefinitionKind::Function
-        | crate::sema::resolve::models::DefinitionKind::AssociatedFunction => {
-            Some(gcx.try_get_signature(id)?.format_for_display(gcx))
-        }
         _ => None,
     }
 }

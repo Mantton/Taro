@@ -52,8 +52,6 @@ mod pattern;
 #[path = "stmt.rs"]
 mod stmt;
 
-const IDE_COMPLETION_PROBE_IDENTIFIER: &str = "__taro_completion_probe";
-
 #[derive(Clone, Copy)]
 struct ArgumentExpectation<'ctx> {
     ty: Ty<'ctx>,

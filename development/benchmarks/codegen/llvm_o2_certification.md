@@ -51,8 +51,8 @@ default change.
 
 - Default-policy and attached-std unit tests: passed.
 - High-risk debug/release codegen matrix using the promoted defaults: 54/54 passed.
-- Full unified test pipeline: passed (10 development-script, 59 CLI, 465
-  compiler, 22 LSP, 91 runtime, 343 standard-library, and 178 language tests;
+- Full unified test pipeline: passed (10 development-script, 637 Rust
+  workspace, 343 standard-library, and 178 language tests;
   one standard-library test skipped).
 - Additional non-incremental release-O2 standard-library suite: 343 passed,
   one skipped.

@@ -21,7 +21,7 @@ DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help llvm-check llvm-tests compiler compiler-release lsp lsp-release lsp-bin lsp-release-bin dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
+.PHONY: help llvm-check llvm-tests compiler compiler-release dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -30,10 +30,6 @@ help:
 	@echo "  make llvm-check               Show the LLVM 22.1 toolchain used by Taro"
 	@echo "  make compiler                 Build taro-bin (debug)"
 	@echo "  make compiler-release         Build taro-bin (release)"
-	@echo "  make lsp                      Build dist/ and taro-lsp (debug)"
-	@echo "  make lsp-release              Build dist/ and taro-lsp (release)"
-	@echo "  make lsp-bin                  Build taro-lsp only (debug)"
-	@echo "  make lsp-release-bin          Build taro-lsp only (release)"
 	@echo "  make dist                     Build dist/ layout (compiler + runtime + std link)"
 	@echo ""
 	@echo "Run compiler:"
@@ -78,18 +74,6 @@ compiler:
 
 compiler-release:
 	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-bin --release
-
-lsp:
-	$(PYTHON) $(BUILD_DIST) --profile debug
-
-lsp-release:
-	$(PYTHON) $(BUILD_DIST) --profile release
-
-lsp-bin:
-	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-lsp
-
-lsp-release-bin:
-	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-lsp --release
 
 dist:
 	$(PYTHON) $(BUILD_DIST)

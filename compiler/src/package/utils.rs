@@ -138,7 +138,7 @@ pub fn language_home() -> Result<PathBuf, String> {
     }
 
     Err(format!(
-        "failed to resolve {}.\nSet {} to your taro toolchain root, or install taro/taro-lsp under <toolchain>/bin with compiler libraries under <toolchain>/lib/taro.",
+        "failed to resolve {}.\nSet {} to your taro toolchain root, or install taro under <toolchain>/bin with compiler libraries under <toolchain>/lib/taro.",
         LANGUAGE_HOME, LANGUAGE_HOME
     ))
 }
@@ -184,7 +184,7 @@ mod tests {
         create_dir_all(root.join("lib").join("taro")).expect("toolchain lib");
 
         let inferred =
-            infer_language_home_from_executable(&root.join("bin").join("taro-lsp")).expect("home");
+            infer_language_home_from_executable(&root.join("bin").join("taro")).expect("home");
 
         assert_eq!(inferred, root);
     }
@@ -194,13 +194,11 @@ mod tests {
         let root = temp_dir("toolchain-home-missing-lib");
 
         assert_eq!(
-            infer_language_home_from_executable(&root.join("bin").join("taro-lsp")),
+            infer_language_home_from_executable(&root.join("bin").join("taro")),
             None
         );
         assert_eq!(
-            infer_language_home_from_executable(
-                &root.join("target").join("debug").join("taro-lsp")
-            ),
+            infer_language_home_from_executable(&root.join("target").join("debug").join("taro")),
             None
         );
     }

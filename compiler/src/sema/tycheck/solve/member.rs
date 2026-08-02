@@ -24,8 +24,6 @@ use crate::{
 };
 use rustc_hash::FxHashSet;
 
-const IDE_COMPLETION_PROBE_IDENTIFIER: &str = "__taro_completion_probe";
-
 #[derive(Clone)]
 struct InterfacePropertyCandidate<'ctx> {
     property: InterfacePropertyRequirement<'ctx>,
@@ -92,17 +90,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             };
             return SolverResult::Solved(vec![obligation]);
         }
-        if self
-            .gcx()
-            .symbol_eq(name.symbol, IDE_COMPLETION_PROBE_IDENTIFIER)
-        {
-            let obligation = Obligation {
-                location: span,
-                goal: Goal::Equal(result, Ty::error(self.gcx())),
-            };
-            return SolverResult::Solved(vec![obligation]);
-        }
-
         let mut adjustments = Vec::new();
         let mut prev: Option<Ty<'ctx>> = None;
         for ty in self.autoderef(receiver) {
@@ -499,17 +486,6 @@ impl<'ctx> ConstraintSolver<'ctx> {
             TyKind::Adt(_, args) if !args.is_empty() => Some(args),
             _ => None,
         };
-
-        if self
-            .gcx()
-            .symbol_eq(name.symbol, IDE_COMPLETION_PROBE_IDENTIFIER)
-        {
-            let obligation = Obligation {
-                location: span,
-                goal: Goal::Equal(expr_ty, Ty::error(self.gcx())),
-            };
-            return SolverResult::Solved(vec![obligation]);
-        }
 
         let Some(head) = self.type_head_from_type(base_ty) else {
             let error = Spanned::new(

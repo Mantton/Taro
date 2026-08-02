@@ -9,7 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     cell::{Cell, RefCell},
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -119,21 +119,8 @@ impl DiagCtx {
 
         let recording = self.inner.borrow().recording;
         if recording {
-            let related_info = diagnostic
-                .children
-                .iter()
-                .map(|child| RelatedDiagnosticInfo {
-                    message: child.message.clone(),
-                    span: child.span,
-                })
-                .collect();
             self.inner.borrow_mut().recorded.push(DiagnosticRecord {
                 message: diagnostic.message.clone(),
-                span: diagnostic.span,
-                level: diagnostic.level,
-                code: diagnostic.code,
-                stage: DiagnosticStage::General,
-                related_info,
             });
         } else {
             if let Some(message) = self.format(&diagnostic, false) {
@@ -218,7 +205,6 @@ struct DiagCtxInner {
     file_mappings: IndexVec<FileID, PathBuf>,
     file_content_mappings: FxHashMap<FileID, EcoString>,
     emitted_diagnostic_keys: FxHashSet<String>,
-    content_overrides: FxHashMap<PathBuf, String>,
     recording: bool,
     recorded: Vec<DiagnosticRecord>,
 }
@@ -275,37 +261,10 @@ impl std::fmt::Display for DiagnosticLevel {
     }
 }
 
-// --- IDE diagnostic types ---
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiagnosticStage {
-    Parse,
-    Resolve,
-    Typecheck,
-    PostTypecheck,
-    Thir,
-    Mir,
-    Entry,
-    General,
-}
-
-#[derive(Debug, Clone)]
-pub struct RelatedDiagnosticInfo {
-    pub message: String,
-    pub span: Option<Span>,
-}
-
 #[derive(Debug, Clone)]
 pub struct DiagnosticRecord {
     pub message: String,
-    pub span: Option<Span>,
-    pub level: DiagnosticLevel,
-    pub code: Option<usize>,
-    pub stage: DiagnosticStage,
-    pub related_info: Vec<RelatedDiagnosticInfo>,
 }
-
-// --- Recording & content override methods ---
 
 impl DiagCtx {
     pub fn enable_recording(&self) {
@@ -314,17 +273,6 @@ impl DiagCtx {
 
     pub fn take_recorded_diagnostics(&self) -> Vec<DiagnosticRecord> {
         std::mem::take(&mut self.inner.borrow_mut().recorded)
-    }
-
-    pub fn set_content_override(&self, path: PathBuf, content: String) {
-        self.inner
-            .borrow_mut()
-            .content_overrides
-            .insert(path, content);
-    }
-
-    pub fn content_override(&self, path: &Path) -> Option<String> {
-        self.inner.borrow().content_overrides.get(path).cloned()
     }
 }
 

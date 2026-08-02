@@ -1,7 +1,7 @@
 use crate::{
     PackageIndex,
     compile::{
-        Compiler, IdeAnalysisMode,
+        Compiler,
         config::{BuildProfile, Config, DebugOptions, HarnessMode, PackageKind, StdMode},
         context::{CompilerArenas, CompilerContext, CompilerStore},
     },
@@ -99,17 +99,14 @@ pub(crate) fn make_package_config<'a>(
 }
 
 pub(crate) fn analyze_script_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
-    analyze_script_diagnostics_with_mode(source, IdeAnalysisMode::OnType)
+    analyze_script_diagnostics_with_mir(source, false)
 }
 
 pub(crate) fn analyze_script_mir_diagnostics(source: &str) -> Vec<DiagnosticRecord> {
-    analyze_script_diagnostics_with_mode(source, IdeAnalysisMode::OnSave)
+    analyze_script_diagnostics_with_mir(source, true)
 }
 
-fn analyze_script_diagnostics_with_mode(
-    source: &str,
-    mode: IdeAnalysisMode,
-) -> Vec<DiagnosticRecord> {
+fn analyze_script_diagnostics_with_mir(source: &str, build_mir: bool) -> Vec<DiagnosticRecord> {
     let _guard = ANALYSIS_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -130,7 +127,7 @@ fn analyze_script_diagnostics_with_mode(
     let config = make_script_config(&icx, file, "script-diagnostics");
 
     let mut compiler = Compiler::new(&icx, config);
-    let _ = compiler.analyze_for_ide(mode);
+    let _ = compiler.analyze_for_diagnostics(build_mir);
     dcx.take_recorded_diagnostics()
 }
 
@@ -156,6 +153,6 @@ pub(crate) fn analyze_package_diagnostics(files: &[(&str, &str)]) -> Vec<Diagnos
     let config = make_package_config(&icx, root, "package-diagnostics");
 
     let mut compiler = Compiler::new(&icx, config);
-    let _ = compiler.analyze_for_ide(IdeAnalysisMode::OnType);
+    let _ = compiler.analyze_for_diagnostics(false);
     dcx.take_recorded_diagnostics()
 }

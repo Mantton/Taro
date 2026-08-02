@@ -22,24 +22,6 @@ pub struct Compiler<'state> {
     pub context: GlobalContext<'state>,
 }
 
-pub struct IdeAnalysis<'state> {
-    pub package: hir::Package,
-    pub results: Option<sema::tycheck::results::TypeCheckResults<'state>>,
-    pub status: IdeAnalysisStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdeAnalysisMode {
-    OnType,
-    OnSave,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct IdeAnalysisStatus {
-    pub hir_available: bool,
-    pub typed_available: bool,
-}
-
 #[derive(Debug, Clone)]
 struct PhaseTiming {
     name: &'static str,
@@ -425,11 +407,6 @@ impl<'state> Compiler<'state> {
         self.analyze_with_timings(&mut timings)
     }
 
-    pub fn analyze_for_ide(&mut self, mode: IdeAnalysisMode) -> CompileResult<IdeAnalysis<'state>> {
-        let mut timings = TimingReport::default();
-        self.analyze_for_ide_with_timings(mode, &mut timings)
-    }
-
     fn predicted_emitted_instances(&self) -> FxHashSet<specialize::Instance<'state>> {
         let mut emitted = FxHashSet::default();
         let current_pkg = self.context.package_index();
@@ -500,12 +477,10 @@ impl<'state> Compiler<'state> {
         Ok((package, results))
     }
 
-    fn analyze_for_ide_with_timings(
-        &mut self,
-        mode: IdeAnalysisMode,
-        timings: &mut TimingReport,
-    ) -> CompileResult<IdeAnalysis<'state>> {
-        let package = self.lower_to_hir_with_timings(timings, true)?;
+    #[cfg(test)]
+    pub(crate) fn analyze_for_diagnostics(&mut self, build_mir: bool) -> CompileResult<()> {
+        let mut timings = TimingReport::default();
+        let package = self.lower_to_hir_with_timings(&mut timings, true)?;
 
         let phase_started_at = Instant::now();
         let _ = sema::validate::validate_package(&package, self.context);
@@ -526,10 +501,10 @@ impl<'state> Compiler<'state> {
                 timings.push_elapsed("entry.validate", phase_started_at);
             }
 
-            if mode == IdeAnalysisMode::OnSave {
+            if build_mir {
                 let phase_started_at = Instant::now();
                 if let Ok(thir) =
-                    self.build_semantic_thir_with_timings(&package, results.clone(), timings)
+                    self.build_semantic_thir_with_timings(&package, results.clone(), &mut timings)
                 {
                     let _ = mir::package::build_package(thir, self.context);
                 }
@@ -537,20 +512,13 @@ impl<'state> Compiler<'state> {
             }
         }
 
-        Ok(IdeAnalysis {
-            package,
-            status: IdeAnalysisStatus {
-                hir_available: true,
-                typed_available: results.is_some(),
-            },
-            results,
-        })
+        Ok(())
     }
 
     fn lower_to_hir_with_timings(
         &mut self,
         timings: &mut TimingReport,
-        ide_mode: bool,
+        tolerate_std_item_errors: bool,
     ) -> CompileResult<hir::Package> {
         {
             let mut table = self.context.store.package_mapping.borrow_mut();
@@ -624,7 +592,7 @@ impl<'state> Compiler<'state> {
             table.insert(self.context.config.index, output);
         }
         let std_items = sema::std_items::collect_std_items(&package, self.context, output);
-        if let Some(items) = if ide_mode {
+        if let Some(items) = if tolerate_std_item_errors {
             std_items.ok().flatten()
         } else {
             std_items?

@@ -14,7 +14,7 @@ static CONFIGURE_OPTIMIZATION_REMARKS: Once = Once::new();
 ///
 /// LLVM exposes remark filtering through process-global command-line state in
 /// its C API. The CLI calls this at most once, before creating LLVM contexts;
-/// compiler-library and language-server sessions never enable it implicitly.
+/// compiler-library sessions never enable it implicitly.
 pub fn configure_optimization_remarks(pass_filter: &str) -> Result<(), String> {
     let raw_arguments = [
         "taro".to_owned(),

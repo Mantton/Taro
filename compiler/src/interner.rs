@@ -73,7 +73,7 @@ pub fn interned_symbol_count() -> usize {
 /// Reset the interner, freeing all interned strings.
 ///
 /// After calling this, any previously created `Symbol` values are invalid.
-/// This is intended to be called between LSP analysis passes.
+/// This is intended to be called between isolated compiler test sessions.
 pub fn reset_session() {
     SESSION_INTERNER.with(|cell| {
         *cell.borrow_mut() = StringInterner::new();

@@ -74,7 +74,7 @@ Taro is experimental. Syntax, compiler metadata, standard library APIs, and pack
 - Package management supports manifests, lockfiles, Git dependencies, and root-local path dependencies, but there is no public registry yet.
 - Incremental compilation reuses unchanged semantic and codegen artifacts for dependencies, root packages, and single-file commands. Executables are relinked for the current output path and linker inputs.
 - Operator overloading is expressed through standard library interfaces such as `std.ops.Add`, not `operator` declarations.
-- The language server supports package-wide diagnostics, navigation, references and highlights, package-scoped rename, hierarchical symbols, semantic tokens, inlay hints, signature help, and lexical/member completions. Formatting and code actions are not yet implemented.
+- VS Code and Zed integrations currently provide syntax highlighting and static editing configuration only.
 - `.taro_meta` files are binary internal compiler artifacts, not a stable interchange format.
 
 ## Build and Run
@@ -104,7 +104,7 @@ python3 development/scripts/run_dist.py --test std/src/tests/testing/testing_tes
 
 ### Manual CLI Usage
 
-If you install Taro as a toolchain with binaries under `<toolchain>/bin`, both `taro` and `taro-lsp` can infer `TARO_HOME` from that layout automatically.
+If you install Taro as a toolchain with `taro` under `<toolchain>/bin`, it can infer `TARO_HOME` from that layout automatically.
 
 For a local repo `dist/` or any other portable/custom layout, set `TARO_HOME` explicitly:
 
@@ -180,54 +180,12 @@ Generated templates currently support:
 - `--kind library`: writes `src/lib.tr`
 - `--kind both`: writes `src/lib.tr` and `src/main/main.tr`
 
-### VS Code Extension
+### Editor Support
 
-The VS Code extension is designed for an external Taro toolchain install:
-
-- put the toolchain `bin/` directory on your `PATH`
-- ensure the toolchain root contains attached std artifacts under `lib/taro/std/<target-triple>/`
-- use `taro.languageServer.path` only for custom `taro-lsp` locations
-- use `taro.languageServer.env` only for advanced overrides such as a custom `TARO_HOME`
-
-Repo-local `target/debug/taro-lsp` and `dist/` are still supported as a development fallback when working inside the Taro repository.
-
-For the daily-driver repo workflow, build the local toolchain and language server together:
-
-```bash
-make lsp
-```
-
-This places both `taro` and `taro-lsp` under `dist/bin/`, with attached std artifacts under `dist/lib/taro/std/<target-triple>/`.
-
-### Language Server
-
-`taro-lsp` currently provides:
-
-- package-wide diagnostics (parse/resolve/typecheck and related info) on open/change/save and watched source/manifest/lockfile changes
-- hover
-- go-to-definition
-- references
-- document highlights
-- package-scoped rename with prepare support
-- hierarchical document symbols
-- full-document semantic tokens
-- inferred-type and parameter-name inlay hints
-- signature help
-- completion for in-scope names plus probe-backed member/static-member contexts
-
-Completion covers lexical names plus member/static-member candidates for identifier, dotted-path, call, parenthesized, indexed, and optional-chain receivers. VS Code should automatically request lexical completions when typing an identifier-start character (`A-Z`, `a-z`, or `_`), and the server runs an internal completion probe for incomplete member syntax, so `point.`, `point.m`, and `Heading.n` can complete before the source is syntactically complete. Semantic tokens are full-document only, and inlay hints cover inferred local/closure-parameter types plus names for unlabeled call arguments. Formatting and code actions are not part of the current LSP surface.
-
-Manual smoke fixture: open `examples/lsp_smoke.tr` from the repository root in the VS Code extension development host. Expected checks:
-
-- retyping `l` in `lexicalProbe = localValue` automatically opens lexical completions and offers `localValue`
-- `point.` offers `x`, `y`, and `magnitude`
-- `point.m` filters to `magnitude`
-- `Heading.` offers `north`, `south`, `east`, and `west`
-- `Heading.n` filters to `north`
-- `describe(` shows signature help
-- hover/go-to-definition work on `SmokePoint`, `Heading`, `point.x`, and `Heading.south`
-- references on `point.x` include the field declaration and all uses
-- prepare-rename and rename update package-owned references without touching dependencies
+The extensions under `editors/` provide `.tr` file recognition, syntax
+highlighting, bracket/comment configuration, and tree-sitter-based editing
+support for VS Code and Zed. They do not provide diagnostics, completion,
+navigation, or refactoring.
 
 ### Compiler Timings
 
@@ -431,7 +389,6 @@ For day-to-day development, you can use the root `Makefile`:
 make help
 make run FILE=examples/hello.tr
 make check FILE=examples/hello.tr
-make lsp
 make test
 make language-tests
 make std-tests
@@ -896,7 +853,7 @@ exit.
 - **Move Semantics**: Rust-style ownership and move semantics, with values moved by default and explicit copying for copyable types, but without a mutability uniqueness guarantee.
 - **Async Concurrency**: Multithreaded task runtime (`std.task.spawn`, cancellation, task groups, async sleep, async stream I/O).
 - **Diagnostics**: Rich, clear error messages to guide developers.
-- **Basic LSP**: Diagnostics, navigation, references/rename, symbols, semantic tokens, inlay hints, signature help, and lexical/member completions via `taro-lsp`.
+- **Editor Syntax Support**: Static syntax highlighting and editing configuration for VS Code and Zed.
 - **Panic Reporting**: Compact Taro-first panic stacks by default, with `TARO_BACKTRACE=full` for raw native traces.
 - **Optimizations**: Sophisticated MIR passes including inlining, escape analysis, and simplify-cfg.
 - **Interoperability**: C ABI compatibility for easy FFI.
@@ -907,7 +864,6 @@ exit.
 - `compiler/`: The core compiler source code (parsing, HIR, THIR, MIR, codegen).
 - `compiler-cli/`: The command-line interface implementation.
 - `taro-bin/`: The `taro` binary crate.
-- `taro-lsp/`: Language server implementation.
 - `runtime/`: Runtime components (garbage collector, async executor, panic/unwind support).
 - `std/`: The standard library implementation.
 - `language_tests/`: Comprehensive test suite for language features.
@@ -925,7 +881,7 @@ Taro is currently **experimental**.
 - [x] Generics and Monomorphization
 - [x] Built-in Test Framework (`taro test`, `@test`, `@tag`, `@skip`, `@expectPanic`, `--filter`, `--tag`)
 - [x] Async Concurrency Runtime (`std.task`, task groups, async timers, async I/O waits)
-- [x] Basic LSP support and editor integration (`taro-lsp`, VS Code, Zed)
+- [x] Syntax highlighting and static editor integration (VS Code and Zed)
 - [ ] Package manager polish and registry
 - [ ] Standard library expansion
 
@@ -970,10 +926,6 @@ Rebuild `dist/`, then retry with `--no-incremental` if a package-local cache is 
 **Lockfile drift in CI**
 
 `CI=true` behaves like strict lock mode. Run locally with `--update-lock` when dependency sources intentionally changed, then commit the updated v2 `package.lock`.
-
-**Language server does not start or completions are stale**
-
-Run `make lsp`, confirm `dist/bin/taro-lsp` exists, and make sure the editor extension is using the same toolchain layout as the CLI.
 
 ## Contributing
 

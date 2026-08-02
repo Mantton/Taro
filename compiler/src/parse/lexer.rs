@@ -184,16 +184,12 @@ pub fn tokenize_file(
     dcx: &DiagCtx,
     target_triple: Option<&str>,
 ) -> Result<File, ReportedError> {
-    let source = if let Some(content) = dcx.content_override(&path) {
-        content
-    } else {
-        match read_to_string(&path) {
-            Ok(source) => source,
-            Err(e) => {
-                let message = format!("failed to read file '{}': {}", path.display(), e);
-                dcx.emit_error(message.clone(), None);
-                return Err(ReportedError);
-            }
+    let source = match read_to_string(&path) {
+        Ok(source) => source,
+        Err(e) => {
+            let message = format!("failed to read file '{}': {}", path.display(), e);
+            dcx.emit_error(message.clone(), None);
+            return Err(ReportedError);
         }
     };
 
