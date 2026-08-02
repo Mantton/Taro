@@ -3371,9 +3371,12 @@ impl<'ctx> Checker<'ctx> {
 
         self.defer_async_property_surface_check(expression.id, expression.span);
 
-        if let Some(expectation) = expectation {
-            cs.equal(expectation, result_ty, expression.span);
-        }
+        // The expectation is only a hint here. Equating it with the member's
+        // result would force the field type to match exactly and defeat any
+        // coercion the consuming context applies, such as boxing into an
+        // existential or wrapping into an `Optional`. Contexts that require a
+        // conversion emit their own coercion goal for this node.
+        let _ = expectation;
         result_ty
     }
 
@@ -3692,9 +3695,9 @@ impl<'ctx> Checker<'ctx> {
             expression.span,
         );
 
-        if let Some(expectation) = expectation {
-            cs.equal(expectation, result_ty, expression.span);
-        }
+        // See `synth_member_expression`: the expectation is a hint, and
+        // equating it here would defeat coercions at the use site.
+        let _ = expectation;
 
         result_ty
     }

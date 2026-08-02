@@ -1,0 +1,57 @@
+// Test: field and tuple projections coerce at the use site.
+//
+// Regression: `synth_member_expression` and the tuple-access synthesis equated
+// the expectation with the projection's result type, which forced an exact
+// match and defeated coercions applied by the consuming context. Boxing into an
+// existential and wrapping into an `Optional` both failed for any `x.field` or
+// `t.0` argument, while the same value bound to a local first succeeded.
+
+struct Holder {
+    num: int64;
+    text: string;
+}
+
+struct Outer {
+    inner: Holder;
+}
+
+func describe(_ value: any std.fmt.Display) -> string {
+    return std.sprintf("%v", value)
+}
+
+func wrap(_ value: Optional[int64]) -> int64 {
+    match value {
+        case .some(v) => v
+        case .none => -1
+    }
+}
+
+func fieldThroughReference(_ holder: &Holder) -> string {
+    return describe(holder.num)
+}
+
+func main() {
+    let holder = Holder { num: 42, text: "taro" }
+    let tuple = (7_i64, "second")
+    let outer = Outer { inner: Holder { num: 9, text: "nested" } }
+
+    // Boxing a projection into an existential.
+    assert(describe(holder.num) == "42", "field boxes into existential")
+    assert(describe(holder.text) == "taro", "string field boxes into existential")
+    assert(describe(tuple.0) == "7", "tuple element boxes into existential")
+    assert(describe(outer.inner.num) == "9", "nested field boxes into existential")
+    assert(fieldThroughReference(&holder) == "42", "field through reference boxes")
+
+    // Wrapping a projection into an Optional.
+    assert(wrap(holder.num) == 42, "field wraps into Optional")
+    assert(wrap(tuple.0) == 7, "tuple element wraps into Optional")
+
+    // Annotated bindings take the same coercion path.
+    let boxed: any std.fmt.Display = holder.num
+    assert(describe(boxed) == "42", "annotated binding boxes field")
+
+    let opt: Optional[int64] = holder.num
+    assert(wrap(opt) == 42, "annotated binding wraps field")
+
+    std.print("PASS: projection coercions\n")
+}
