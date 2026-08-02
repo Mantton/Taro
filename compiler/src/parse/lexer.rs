@@ -1036,7 +1036,14 @@ impl Lexer {
                     }
                 },
                 None => {
-                    return Err(LexerError::InvalidIntegerLiteral);
+                    // `0` at end of input. Reachable when a source has no
+                    // trailing content, such as an f-string interpolation
+                    // re-lexed on its own.
+                    return Ok(Token::Integer {
+                        value: content(self).into(),
+                        base,
+                        suffix: None,
+                    });
                 }
             }
         } else {
@@ -1680,6 +1687,32 @@ mod tests {
                 Token::FStringExprStart,
                 Token::Identifier {
                     value: "name".into()
+                },
+                Token::FStringExprEnd,
+                Token::FStringEnd,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_literals_fstring_zero_at_end_of_interpolation() {
+        // An interpolation is re-lexed on its own, so a trailing `0` lands at
+        // end of input.
+        let input = r#"f"{a + 0}""#;
+        let tokens = tokenize(input);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::FStringStart,
+                Token::FStringExprStart,
+                Token::Identifier { value: "a".into() },
+                Token::Plus,
+                Token::Integer {
+                    value: "0".into(),
+                    base: Base::Decimal,
+                    suffix: None,
                 },
                 Token::FStringExprEnd,
                 Token::FStringEnd,
