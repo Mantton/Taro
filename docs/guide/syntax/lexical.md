@@ -137,6 +137,11 @@ return      static      struct      true        type        var
 where       while       mut         unsafe
 ```
 
+`init` is reserved and cannot be used as an identifier or declared as a method,
+but it is accepted at member-access position. Taro has no `init` declaration
+form: initializers are static `new` methods, reachable through the type-call
+shorthand described in [Declarations](./declarations.md#initializer-shorthand).
+
 ### Future Reserved Keywords
 
 These keywords are reserved for future use:
@@ -236,7 +241,7 @@ Outside those blocks, they are regular identifiers.
 | Symbol | Usage |
 |--------|-------|
 | `(` `)` | Grouping, tuples, function calls |
-| `[` `]` | Arrays, subscripts, generics |
+| `[` `]` | Array/list/dictionary literals and types, generics |
 | `{` `}` | Blocks, struct literals |
 | `.` | Member access |
 | `,` | List separator |

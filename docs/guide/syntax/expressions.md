@@ -22,7 +22,7 @@ From lowest to highest precedence:
 14. Factor: `*`, `/`, `%`
 15. Cast / Type Assertion: `as`, `as?`, `is`
 16. Prefix: `!`, `-`, `~`, `&`, `*`
-17. Postfix: `.`, `()`, `[]`, `!`, `?.`
+17. Postfix: `.`, `()`, `!`, `?.`
 18. Primary
 
 ---
@@ -143,7 +143,10 @@ Point { x, y: 10 }
 Point { x: 1, y: 2, }
 ```
 
-> **Note**: Struct literals are not allowed in certain positions where they would be ambiguous with blocks (e.g., `if`, `while`, `guard` conditions). Use parentheses if needed.
+> **Note**: Struct literals are not allowed anywhere inside an `if`, `while`, or
+> `guard` condition, where they would be ambiguous with blocks. Parentheses and
+> call arguments do not lift the restriction — bind the value to a variable
+> first. See [Special Syntax](./special.md#struct-literal-vs-block).
 
 ---
 
@@ -217,13 +220,26 @@ foo(1, named: 2)           // Mixed
 foo(arg1, arg2,)           // Trailing comma allowed
 ```
 
-### Subscript (Index)
+### Element Access
+
+Taro has no subscript operator. Collections expose element access as methods so
+that the failure mode is visible at the call site:
 
 ```taro
-array[0]
-dictionary["key"]
-matrix[row][col]
+list.get(0)             // Optional[&Element] — .none when out of bounds
+list.at(0)              // &Element — panics when out of bounds
+dictionary.get(&key)    // Optional[&Value] — keys are passed by reference
 ```
+
+Both forms return references, so reading a value through them requires a
+dereference:
+
+```taro
+let first = *list.at(0)
+```
+
+`[` `]` after an expression is always type specialization, never indexing. Writing
+`list[0]` parses as a specialization of `list` and is rejected.
 
 ### Type Specialization
 

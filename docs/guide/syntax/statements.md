@@ -212,6 +212,21 @@ for i in 0..=10 {
 }
 ```
 
+### Async Iteration
+
+`for await` iterates an async sequence, suspending between elements. It is only
+valid inside an async context, and combines with `where` like the sync form.
+
+```taro
+for await value in stream {
+    process(value)
+}
+
+for await value in stream where value % 2 == 0 {
+    process(value)
+}
+```
+
 ---
 
 ## Break Statement
@@ -295,7 +310,7 @@ func process(value: int32?) {
 
 // With else block
 func validate(input: string) -> bool {
-    guard input.length > 0 else {
+    guard !input.isEmpty() else {
         print("Input cannot be empty")
         return false
     }

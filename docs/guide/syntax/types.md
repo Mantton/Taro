@@ -18,11 +18,11 @@ package.module.Type
 
 // Generic type
 List[int32]
-Map[string, User]
+Dictionary[string, User]
 Result[int32, Error]
 
 // Nested generic
-Map[string, List[int32]]
+Dictionary[string, List[int32]]
 ```
 
 ---
@@ -155,7 +155,7 @@ Fixed-size arrays with compile-time known length.
 
 ```taro
 [int32; 10]          // Array of 10 int32s
-[byte; 256]          // Array of 256 bytes
+[uint8; 256]         // Array of 256 bytes
 [Point; 4]           // Array of 4 Points
 ```
 
@@ -199,10 +199,13 @@ any Hashable & Equatable        // Multiple interface bounds
 The `!` type indicates a function never returns (e.g., panics, infinite loops).
 
 ```taro
-func panic(msg: string) -> ! {
+func panic(_ message: string) -> ! {
     // Never returns
 }
 ```
+
+This matches `std.panic.panic`, which takes its message unlabeled and is
+re-exported through the prelude.
 
 ### Infer Type
 
@@ -234,17 +237,17 @@ List[int32]
 Optional[string]
 
 // Multiple type arguments
-Map[string, int32]
+Dictionary[string, int32]
 Result[User, Error]
 
 // Nested generics
-Map[string, List[int32]]
+Dictionary[string, List[int32]]
 
 // Const generics
 Array[int32, 10]         // Type and const value
 
 // Trailing comma allowed
-Map[string, int32,]
+Dictionary[string, int32,]
 ```
 
 ---

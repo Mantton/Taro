@@ -43,7 +43,7 @@ func process[T: Hashable & Equatable](item: T) { }
 
 // On structs
 struct Cache[K: Hashable, V] {
-    data: Map[K, V];
+    data: Dictionary[K, V];
 }
 ```
 
@@ -60,8 +60,8 @@ func compare[T](a: T, b: T) -> bool where T: Equatable {
 }
 
 // Multiple requirements
-func merge[K, V](a: Map[K, V], b: Map[K, V]) -> Map[K, V]
-    where K: Hashable, V: Cloneable {
+func merge[K, V](a: Dictionary[K, V], b: Dictionary[K, V]) -> Dictionary[K, V]
+    where K: Hashable, V: Clone {
     // ...
 }
 
@@ -75,7 +75,7 @@ func combine[A, B, R](
     a: A,
     b: B,
     with f: (A, B) -> R
-) -> R where A: Cloneable, B: Cloneable {
+) -> R where A: Clone, B: Clone {
     // ...
 }
 ```
@@ -108,14 +108,17 @@ struct Buffer[T, const SIZE: int32 = 1024] {
 Type parameters can have default types.
 
 ```taro
-struct Map[K: Hashable, V, H: Hasher = DefaultHasher] {
+struct Table[K: Hashable, V, H: Hasher = DefaultHasher] {
     // ...
 }
 
 // Can omit defaulted parameters
-let map: Map[string, int32] = Map { }
-// Same as: Map[string, int32, DefaultHasher]
+let table: Table[string, int32] = Table { }
+// Same as: Table[string, int32, DefaultHasher]
 ```
+
+`Hasher` and `DefaultHasher` come from `std.hash`. Note that std's own
+`Dictionary[Key: Hashable, Value]` does not take a hasher parameter.
 
 ---
 
@@ -124,23 +127,31 @@ let map: Map[string, int32] = Map { }
 Types defined within interfaces.
 
 ```taro
-interface Iterator {
-    type Item;
-    
-    func next(&self) -> Self.Item?;
-}
-
 interface Container {
     type Element;
-    
-    func get(&self, index: int32) -> Self.Element?;
-    func set(&self, index: int32, value: Self.Element);
+
+    func get(&self, index: usize) -> Optional[&Self.Element];
+    func set(&mut self, index: usize, value: Self.Element);
 }
 
 // Constraining associated types
-func sum[I](iter: I) -> int32 where I: Iterator, I.Item == int32 {
+func firstOrZero[C](container: C) -> int32
+    where C: Container, C.Element == int32 {
+    match container.get(0) {
+        case .some(value) => *value
+        case .none => 0
+    }
+}
+```
+
+std's own iteration protocol is `std.iter.Iterator`, which declares
+`type Element` and `func next(&mut self) -> Optional[Self.Element]`:
+
+```taro
+func sum[I](iter: I) -> int32 where I: Iterator, I.Element == int32 {
     var total = 0
-    while let item = iter.next() {
+    var source = iter
+    while let item = source.next() {
         total += item
     }
     return total
@@ -154,34 +165,42 @@ func sum[I](iter: I) -> int32 where I: Iterator, I.Item == int32 {
 Implementations can be generic and constrained.
 
 ```taro
+struct Stack[T] {
+    items: List[T];
+}
+
 // Unconditional implementation
-impl[T] List[T] {
+impl[T] Stack[T] {
     func isEmpty(&self) -> bool {
-        return self.count == 0
+        return self.items.isEmpty()
     }
 }
 
 // Constrained implementation
-impl[T] List[T] where T: Equatable {
-    func contains(&self, element: T) -> bool {
-        for item in self {
-            if item == element { return true }
+impl[T] Stack[T] where T: std.ops.PartialEq {
+    func contains(&self, item: &T) -> bool {
+        for element in &self.items {
+            if element == item { return true }
         }
         return false
     }
 }
 
 // Implementation with additional type parameters
-impl[K, V] Map[K, V] {
-    func mapValues[U](f: (V) -> U) -> Map[K, U] {
-        var result: Map[K, U] = [:]
-        for (key, value) in self {
-            result[key] = f(value)
+impl[T] Stack[T] {
+    func mapped[U](&self, _ f: (&T) -> U) -> Stack[U] {
+        var result = List[U]()
+        for item in &self.items {
+            result.append(f(item))
         }
-        return result
+        return Stack[U] { items: result }
     }
 }
 ```
+
+These target `Stack` rather than `List` because inherent methods can only be
+added to types from the current package. See
+[Declarations](./declarations.md#implementation-declaration).
 
 ### Universal Blanket Implementations
 

@@ -131,7 +131,7 @@ Point {
 }
 
 // Generics
-Map[
+Dictionary[
     string,
     int32,      // OK
 ]
@@ -213,16 +213,26 @@ In some positions, `{` is ambiguous between struct literal and block:
 
 ```taro
 // AMBIGUOUS in control flow conditions:
-if User { isAdmin: true } { }  // Is this struct literal or block?
-
-// SOLUTION: Struct literals not allowed in these positions
-// Use parentheses if needed:
-if (User { isAdmin: true }) { }
-
-// Or use a variable:
-let admin = User { isAdmin: true }
-if admin { }
+if User { isAdmin: true }.isAdmin { }  // Is `{` a literal or the body?
 ```
+
+Struct literals are rejected anywhere inside an `if`, `while`, or `guard`
+condition — including nested in parentheses or a call argument. All of these
+fail with *struct literals are not allowed in this context*:
+
+```taro
+if (User { isAdmin: true }).isAdmin { }   // parentheses do not help
+if check(User { isAdmin: true }) { }      // nor does a call argument
+```
+
+Bind the value first:
+
+```taro
+let admin = User { isAdmin: true }
+if admin.isAdmin { }
+```
+
+Conditions must also be `bool`; there is no truthiness conversion.
 
 ### Type Cast vs Comparison
 
@@ -233,18 +243,20 @@ x as int32 < y     // (x as int32) < y
 x < y as int32     // x < (y as int32)
 ```
 
-### Generic vs Comparison
+### Square Brackets Are Always Generics
 
-Square brackets can be generics or subscripts:
+After an expression, `[` `]` is always type specialization. Taro has no subscript
+operator, so there is nothing to disambiguate:
 
 ```taro
-foo[T]              // Type specialization if T is a type
-foo[0]              // Subscript if 0 is an expression
+List[int32]         // Type specialization
+identity[string]    // Type specialization
 
-// The parser determines based on contents
-List[int32]         // Generic (int32 is a type)
-array[index]        // Subscript (index is an expression)
+list[0]             // Rejected — parsed as specializing `list` with `0`
 ```
+
+Element access uses `.get()` and `.at()` instead. See
+[Expressions](./expressions.md#element-access).
 
 ---
 

@@ -430,7 +430,7 @@ impl Point {
         return Point { x, y } // shorthand for { x: x, y: y }
     }
 
-    func distance_squared(self) -> int32 {
+    func distanceSquared(self) -> int32 {
         self.x * self.x + self.y * self.y // implicit return
     }
 }
@@ -790,7 +790,7 @@ Taro's compiler pipeline is deeply inspired by modern compiler designs (like Rus
 - **Parsing**: Source code is parsed into an Abstract Syntax Tree (AST).
 - **Name Resolution**: Resolves identifiers to their definitions, linking usage to declaration.
 - **HIR (High-level IR)**: The AST is lowered to a high-level intermediate representation where aggressive desugaring occurs.
-- **Type Checking**: A **Bidirectional TypeChecker** performs local expression type inference, handling function overloading and Swift-inspired optional coercions.
+- **Type Checking**: A **bidirectional checker** propagates expected types into expressions, backed by a constraint solver that defers and retries obligations to a fixpoint. Handles function overloading, interface conformance, and Swift-inspired optional coercions.
 - **THIR (Typed HIR)**: The fully typed representation where intrinsic operations (like integer addition) are lowered distinctly from overloaded function calls.
 - **MIR (Mid-level IR)**: A control-flow graph representation where significant optimizations happen (inlining, copy propagation, escape analysis).
 - **Codegen**: Handles monomorphization of generics and translates MIR to LLVM IR for final machine code generation.
@@ -866,6 +866,7 @@ exit.
 - `taro-bin/`: The `taro` binary crate.
 - `runtime/`: Runtime components (garbage collector, async executor, panic/unwind support).
 - `std/`: The standard library implementation.
+- `examples/`: Small standalone example programs.
 - `language_tests/`: Comprehensive test suite for language features.
 - `development/scripts/`: Local build, test, and benchmark helper scripts.
 - `docs/`: Language and compiler internals documentation.

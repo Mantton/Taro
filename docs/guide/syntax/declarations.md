@@ -251,10 +251,14 @@ func value(&const self) -> int32     // Immutable borrow
 Implementations add functionality to existing types.
 
 ```taro
+struct Stack[T] {
+    items: List[T];
+}
+
 // Basic implementation
-impl int32 {
-    func double(&self) -> int32 {
-        return self * 2
+impl Point {
+    func magnitudeSquared(&self) -> int32 {
+        return self.x * self.x + self.y * self.y
     }
 }
 
@@ -266,22 +270,27 @@ impl Hashable for int32 {
 }
 
 // Generic implementation
-impl[T] List[T] {
-    func first(&self) -> T? {
-        return self[0]
+impl[T] Stack[T] {
+    func first(&self) -> Optional[&T] {
+        return self.items.get(0)
     }
 }
 
 // Constrained implementation
-impl[T] List[T] where T: Equatable {
-    func contains(&self, item: T) -> bool {
-        for element in self {
+impl[T] Stack[T] where T: std.ops.PartialEq {
+    func contains(&self, item: &T) -> bool {
+        for element in &self.items {
             if element == item { return true }
         }
         return false
     }
 }
 ```
+
+Inherent methods can only be added to types declared in the current package.
+`impl[T] List[T] { ... }` is rejected outside std with *cannot add inherent
+methods to type from another package without interface conformance*. Interface
+conformances such as `impl Hashable for int32` are unaffected.
 
 ### Initializer Shorthand
 
@@ -377,7 +386,7 @@ type Meters = int32
 type UserId = string
 
 // Generic alias
-type StringMap[V] = Map[string, V]
+type StringMap[V] = Dictionary[string, V]
 type Callback[T] = (T) -> void
 
 // Transparent interface-set aliases
@@ -526,18 +535,20 @@ static var counter: int32 = 0
 
 ---
 
-## Operator Declaration
+## Operator Overloading
 
-Custom operator implementations for types.
+Operators are overloaded by implementing the corresponding standard library
+interface, not with an `operator` declaration. `operator` is reserved but
+unimplemented.
 
 ```taro
-impl Point {
-    operator +(a: Point, b: Point) -> Point {
-        return Point { x: a.x + b.x, y: a.y + b.y }
-    }
-    
-    operator ==(a: Point, b: Point) -> bool {
-        return a.x == b.x && a.y == b.y
+impl std.ops.Add for Point {
+    func add(self, rhs: Point) -> Point {
+        return Point { x: self.x + rhs.x, y: self.y + rhs.y }
     }
 }
 ```
+
+`std.ops` provides `Add`, `Sub`, `Mul`, `Div`, `Rem`, the bitwise operators, and
+their `…Assign` counterparts for compound assignment. `Neg` and `Not` cover the
+unary operators, and `PartialEq` / `Equatable` cover equality.

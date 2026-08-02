@@ -593,7 +593,6 @@ It does not introduce a module. The following constraints apply:
 <postfix_op>           ::= '.' <identifier>                  /* member access */
                          | '.' <integer_literal>             /* tuple access */
                          | '(' <argument_list> ')'           /* call */
-                         | '[' <expression> ']'              /* index */
                          | '[' <type_argument_list> ']'      /* specialization */
                          | '!'                               /* Optional/Result propagation */
                          | '?.' <identifier>                 /* optional chain */
