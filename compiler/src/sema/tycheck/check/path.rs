@@ -38,6 +38,36 @@ impl<'ctx> Checker<'ctx> {
         }
     }
 
+    /// Nominal type a callee path names, for the initializer shorthand
+    /// `Type(...)`.
+    ///
+    /// [`resolve_callee`] intentionally returns `None` here because the callee
+    /// is a type rather than a function; the call is served by an overload set
+    /// over that type's `new` methods.
+    pub(super) fn resolve_callee_nominal(
+        &self,
+        node: &hir::Expression,
+        cs: &Cs<'ctx>,
+    ) -> Option<DefinitionID> {
+        let hir::ExpressionKind::Path(path) = &node.kind else {
+            return None;
+        };
+        let resolution = match self.results.borrow().value_resolution(node.id) {
+            Some(resolution) => resolution,
+            None => self.resolve_value_path_resolution(path, node.span, false, cs),
+        };
+        let def_id = match resolution {
+            hir::Resolution::Definition(id, DefinitionKind::Struct)
+            | hir::Resolution::Definition(id, DefinitionKind::Enum) => id,
+            hir::Resolution::StdItem(item) => self.gcx().std_item_def(item)?,
+            _ => return None,
+        };
+        match self.gcx().definition_kind(def_id) {
+            DefinitionKind::Struct | DefinitionKind::Enum => Some(def_id),
+            _ => None,
+        }
+    }
+
     pub(super) fn resolve_resolution_callee(&self, res: &hir::Resolution) -> Option<DefinitionID> {
         match res {
             hir::Resolution::Definition(id, DefinitionKind::Function)

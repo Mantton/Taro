@@ -1633,6 +1633,10 @@ impl<'ctx> Checker<'ctx> {
             }
         }
 
+        if let Some(expectations) = self.constructor_argument_expectations(callee, arguments, cs) {
+            return Some(expectations);
+        }
+
         // Get the callee type (may still have type params if not yet instantiated)
         let callee_ty = cs.infer_cx.resolve_vars_if_possible(callee_ty);
         let (instantiated_inputs, instantiated_output) = match callee_ty.kind() {
@@ -1706,6 +1710,61 @@ impl<'ctx> Checker<'ctx> {
             callee_def,
             &instantiated_inputs,
             &parameter_async_expectations,
+            arguments,
+        )
+    }
+
+    /// Argument expectations for the initializer shorthand `Type(...)`.
+    ///
+    /// The callee of a shorthand call is an overload set over the type's `new`
+    /// methods rather than a resolved function, so the `FnPointer` path cannot
+    /// supply parameter types. Without them an inferred member argument has no
+    /// base type to resolve against and `Type(field: .case(x))` fails, even
+    /// though the equivalent `Type.new(field: .case(x))` succeeds.
+    ///
+    /// This deliberately gives up unless a single `new` exists. Overload
+    /// selection probes candidates speculatively and rolls back inference
+    /// (`solve_disjunction`), but arguments are synthesized once, up front, and
+    /// that is not rolled back: recorded expression types, adjustments and
+    /// resolutions all persist. Guessing a candidate that later loses the probe
+    /// would leave arguments checked against the wrong parameter types.
+    ///
+    /// Parameters whose type is not concrete are skipped for the same reason: a
+    /// bare type parameter is not a usable expectation, and the apply goal
+    /// infers those arguments anyway.
+    fn constructor_argument_expectations(
+        &self,
+        callee: &hir::Expression,
+        arguments: &[hir::ExpressionArgument],
+        cs: &mut Cs<'ctx>,
+    ) -> Option<Vec<Option<ArgumentExpectation<'ctx>>>> {
+        let nominal = self.resolve_callee_nominal(callee, cs)?;
+        let name = self.gcx().intern_symbol("new");
+        let candidates = self.collect_static_member_candidates(TypeHead::Nominal(nominal), name);
+        let [constructor] = candidates.as_slice() else {
+            return None;
+        };
+        let constructor = *constructor;
+
+        if !self.gcx().generics_of(constructor).is_empty() {
+            return None;
+        }
+
+        let signature = self.gcx().get_signature(constructor);
+        let parameter_tys: Vec<Ty<'ctx>> = signature.inputs.iter().map(|input| input.ty).collect();
+        if !parameter_tys.iter().all(|ty| is_expectation_usable(*ty)) {
+            return None;
+        }
+
+        let parameter_expects_async: Vec<bool> = parameter_tys
+            .iter()
+            .map(|ty| self.ty_is_known_async_callable(*ty))
+            .collect();
+
+        self.map_argument_expectations(
+            Some(constructor),
+            &parameter_tys,
+            &parameter_expects_async,
             arguments,
         )
     }
@@ -3404,6 +3463,27 @@ impl<'ctx> Checker<'ctx> {
         result_ty
     }
 
+    /// Declared type of `name` on `struct_ty`, when that type is already known.
+    ///
+    /// Returns `None` for unresolved or non-struct types and for unknown field
+    /// names; both are diagnosed later by the struct literal goal.
+    fn struct_literal_field_ty(&self, struct_ty: Ty<'ctx>, name: Symbol) -> Option<Ty<'ctx>> {
+        let TyKind::Adt(def, args) = struct_ty.kind() else {
+            return None;
+        };
+        if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
+            return None;
+        }
+        let struct_def = self.gcx().get_struct_definition(def.id);
+        let struct_def = crate::sema::tycheck::utils::instantiate::
+            instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
+        struct_def
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.ty)
+    }
+
     pub(super) fn synth_struct_literal(
         &self,
         expression: &hir::Expression,
@@ -3446,11 +3526,6 @@ impl<'ctx> Checker<'ctx> {
         let mut fields = Vec::with_capacity(lit.fields.len());
         let mut had_error = false;
         for field in &lit.fields {
-            let ty = self.synth(&field.expression, cs);
-            if ty.is_error() {
-                had_error = true;
-            }
-
             let (name, label_span) = if let Some(label) = &field.label {
                 (label.identifier.symbol, label.span)
             } else {
@@ -3463,6 +3538,17 @@ impl<'ctx> Checker<'ctx> {
                     _ => unreachable!(),
                 }
             };
+
+            // Feed the declared field type in as an expectation. Inferred member
+            // expressions need it to pick a base type: `.some(x)` synthesizes a
+            // constructor variable that is applied to produce the field value, and
+            // only the application's result is constrained by the literal's own
+            // coercion goal, so the base can never be recovered from it.
+            let expectation = self.struct_literal_field_ty(struct_ty, name);
+            let ty = self.synth_with_expectation(&field.expression, expectation, cs);
+            if ty.is_error() {
+                had_error = true;
+            }
 
             fields.push(StructLiteralField {
                 name,
@@ -3769,4 +3855,14 @@ fn type_mentions_generic_parameter<'ctx>(ty: Ty<'ctx>, index: usize) -> bool {
         }),
         _ => false,
     }
+}
+
+/// Whether a parameter type is specific enough to guide inference in an
+/// argument position. Type parameters, inference variables and unresolved
+/// aliases would mislead rather than help.
+fn is_expectation_usable(ty: Ty<'_>) -> bool {
+    !matches!(
+        ty.kind(),
+        TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::Alias { .. } | TyKind::Error
+    )
 }

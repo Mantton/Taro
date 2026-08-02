@@ -1,0 +1,61 @@
+// Test: struct literal fields receive their declared type as an expectation.
+//
+// Regression: `synth_struct_literal` synthesized field values with no
+// expectation, so an inferred member expression had no base type to resolve
+// against. `.identifier("x")` synthesizes a constructor variable that is then
+// applied, and only the application's result is constrained by the literal's
+// coercion goal, so the base could never be recovered from it. Every
+// `Struct { field: .case(...) }` failed with "type annotations needed".
+
+enum Kind {
+    case identifier(string)
+    case integer(int64)
+    case eof
+}
+
+struct Token {
+    kind: Kind;
+    line: usize;
+}
+
+struct Wrapper {
+    token: Token;
+}
+
+struct Pair[T] {
+    left: Kind;
+    right: T;
+}
+
+func kindName(_ kind: &Kind) -> string {
+    match kind {
+        case .identifier(_) => "identifier"
+        case .integer(_) => "integer"
+        case .eof => "eof"
+    }
+}
+
+func main() {
+    // Payload variant in a struct literal field.
+    let named = Token { kind: .identifier("five"), line: 1 }
+    assert(kindName(&named.kind) == "identifier", "payload variant infers base")
+
+    // Unit variant in a struct literal field.
+    let end = Token { kind: .eof, line: 2 }
+    assert(kindName(&end.kind) == "eof", "unit variant infers base")
+
+    // Nested struct literal: the inner field expectation still applies.
+    let wrapped = Wrapper { token: Token { kind: .integer(5), line: 3 } }
+    assert(kindName(&wrapped.token.kind) == "integer", "nested literal infers base")
+
+    // Generic struct: the non-generic field still resolves.
+    let pair = Pair[int32] { left: .eof, right: 7 }
+    assert(kindName(&pair.left) == "eof", "generic struct field infers base")
+
+    // Field shorthand still works.
+    let kind = Kind.integer(9)
+    let shorthand = Token { kind, line: 5 }
+    assert(kindName(&shorthand.kind) == "integer", "shorthand field")
+
+    std.print("PASS: struct literal field expectations\n")
+}

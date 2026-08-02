@@ -1,0 +1,95 @@
+// Test: the initializer shorthand supplies argument expectations when it is
+// safe to do so.
+//
+// Regression: `argument_expectations_for_call` only produced expectations for a
+// `FnPointer` callee. The shorthand's callee is an overload set over the type's
+// `new` methods, so arguments were synthesized with no expected type and
+// `Type(field: .case(x))` failed with "type annotations needed", even though
+// `Type.new(field: .case(x))` succeeded.
+//
+// The expectation is only safe when a single `new` exists. Overload selection
+// probes candidates and rolls back inference, but arguments are synthesized
+// once and that is not rolled back, so a guess belonging to a losing candidate
+// would leave them checked against the wrong parameter types. Constructors that
+// are generic, or overloaded, must therefore behave exactly as before.
+
+enum Left {
+    case value(int32)
+    case none
+}
+
+enum Right {
+    case text(string)
+    case none
+}
+
+struct Single {
+    kind: Left;
+}
+
+impl Single {
+    func new(kind: Left) -> Self {
+        return Single { kind }
+    }
+}
+
+struct Multi {
+    tag: int32;
+}
+
+impl Multi {
+    func new(left: Left) -> Self {
+        return Multi { tag: 1 }
+    }
+
+    func new(right: Right) -> Self {
+        return Multi { tag: 2 }
+    }
+}
+
+struct Boxed[T] {
+    value: T;
+}
+
+impl[T] Boxed[T] {
+    func new(value: T) -> Self {
+        return Boxed[T] { value }
+    }
+}
+
+func leftName(_ left: &Left) -> string {
+    match left {
+        case .value(_) => "value"
+        case .none => "none"
+    }
+}
+
+func main() {
+    // Single candidate: inferred members resolve through the shorthand.
+    let unit = Single(kind: .none)
+    assert(leftName(&unit.kind) == "none", "single candidate, unit variant")
+
+    let payload = Single(kind: .value(7))
+    assert(leftName(&payload.kind) == "value", "single candidate, payload variant")
+
+    // The explicit spelling keeps working and agrees with the shorthand.
+    let explicit = Single.new(kind: .value(7))
+    assert(leftName(&explicit.kind) == "value", "explicit new still resolves")
+
+    // Overloaded constructors get no expectation, and still resolve from
+    // fully qualified arguments.
+    let viaLeft = Multi(left: Left.value(1))
+    assert(viaLeft.tag == 1, "overload picks the Left constructor")
+
+    let viaRight = Multi(right: Right.text("x"))
+    assert(viaRight.tag == 2, "overload picks the Right constructor")
+
+    // Generic constructors are skipped by the guard and infer as before.
+    let boxed = Boxed[int32](value: 5)
+    assert(boxed.value == 5, "explicit generic constructor")
+
+    let inferred = Boxed(value: 9)
+    assert(inferred.value == 9, "inferred generic constructor")
+
+    std.print("PASS: constructor argument expectations\n")
+}
