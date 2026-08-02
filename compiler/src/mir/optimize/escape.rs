@@ -113,10 +113,13 @@ fn analyze_function_for_summary<'ctx>(
             match &stmt.kind {
                 // Reference creation: &x or &mut x
                 StatementKind::Assign(dest, Rvalue::Ref { place, .. }) => {
-                    if let Some(base) = base_local_for_ref(place) {
-                        // If the base local is derived from a parameter...
+                    // A base and a reborrow both carry the provenance of
+                    // `place.local`: for a base it is the referent itself, for a
+                    // reborrow it is the reference already recorded as pointing
+                    // at a parameter.
+                    if let Some(source) = ref_source_for_place(place, &is_ref_local) {
                         let param_sources =
-                            get_param_sources(base, &local_to_param, &ref_param_sources);
+                            get_param_sources(source.local(), &local_to_param, &ref_param_sources);
 
                         if dest.projection.is_empty() && dest.local == body.return_local {
                             // Reference flows to return
@@ -174,13 +177,42 @@ fn analyze_function_for_summary<'ctx>(
                         }
                     }
                 }
+                // Building a struct, tuple, enum payload or array out of a
+                // reference puts it somewhere this analysis cannot follow, so
+                // the parameter it came from has to be assumed reachable.
+                StatementKind::Assign(_, Rvalue::Aggregate { fields, .. }) => {
+                    for field in fields.iter() {
+                        if let Some(src_local) = ref_local_operand(body, field) {
+                            for param_idx in
+                                get_param_sources(src_local, &local_to_param, &ref_param_sources)
+                            {
+                                param_escapes[param_idx].leaks_to_heap = true;
+                            }
+                        }
+                    }
+                }
+                StatementKind::Assign(_, Rvalue::Repeat { operand, .. }) => {
+                    if let Some(src_local) = ref_local_operand(body, operand) {
+                        for param_idx in
+                            get_param_sources(src_local, &local_to_param, &ref_param_sources)
+                        {
+                            param_escapes[param_idx].leaks_to_heap = true;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
         // Analyze call terminators
         if let Some(term) = &bb.terminator {
-            if let TerminatorKind::Call { func, args, .. } = &term.kind {
+            if let TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                ..
+            } = &term.kind
+            {
                 // Try to get callee info
                 if let Some((callee_id, _)) = extract_callee(func) {
                     let callee_summary = current_summaries.get(&callee_id).cloned().or_else(|| {
@@ -205,6 +237,37 @@ fn analyze_function_for_summary<'ctx>(
                             if arg_leaks {
                                 for param_idx in &param_sources {
                                     param_escapes[*param_idx].leaks_to_heap = true;
+                                }
+                            }
+
+                            // A callee that hands the argument back keeps it
+                            // reachable through the result, so the result
+                            // carries the argument's provenance onwards.
+                            let arg_returns = callee_summary
+                                .as_ref()
+                                .and_then(|s| s.params.get(arg_idx))
+                                .map(|p| p.flows_to_return)
+                                .unwrap_or(true);
+
+                            if arg_returns {
+                                if destination.projection.is_empty()
+                                    && destination.local != body.return_local
+                                    && is_ref_local[destination.local.index()]
+                                {
+                                    for param_idx in param_sources {
+                                        if !ref_param_sources[destination.local.index()]
+                                            .contains(&param_idx)
+                                        {
+                                            ref_param_sources[destination.local.index()]
+                                                .push(param_idx);
+                                        }
+                                    }
+                                } else {
+                                    // The result leaves this function, so the
+                                    // parameter it came from does too.
+                                    for param_idx in &param_sources {
+                                        param_escapes[*param_idx].flows_to_return = true;
+                                    }
                                 }
                             }
                         }
@@ -314,21 +377,35 @@ impl<'ctx> MirPass<'ctx> for EscapeAnalysis {
             for stmt in &bb.statements {
                 match &stmt.kind {
                     StatementKind::Assign(dest, Rvalue::Ref { place, .. }) => {
-                        if let Some(base) = base_local_for_ref(place) {
-                            // Direct return of reference
-                            if dest.projection.is_empty() && dest.local == body.return_local {
-                                body.escape_locals[base.index()] = true;
-                                continue;
-                            }
+                        let returns_directly =
+                            dest.projection.is_empty() && dest.local == body.return_local;
+                        let into_ref_local =
+                            dest.projection.is_empty() && is_ref_local[dest.local.index()];
 
-                            if dest.projection.is_empty() && is_ref_local[dest.local.index()] {
-                                if !ref_bases[dest.local.index()].contains(&base) {
-                                    ref_bases[dest.local.index()].push(base);
+                        match ref_source_for_place(place, &is_ref_local) {
+                            Some(RefSource::Base(base)) => {
+                                if returns_directly {
+                                    body.escape_locals[base.index()] = true;
+                                } else if into_ref_local {
+                                    if !ref_bases[dest.local.index()].contains(&base) {
+                                        ref_bases[dest.local.index()].push(base);
+                                    }
+                                } else {
+                                    // Stored in non-reference location
+                                    body.escape_locals[base.index()] = true;
                                 }
-                            } else {
-                                // Stored in non-reference location
-                                body.escape_locals[base.index()] = true;
                             }
+                            // A reborrow escapes exactly when the reference it
+                            // was taken through does, so it inherits that
+                            // reference's bases rather than naming its own.
+                            Some(RefSource::Reborrow(source)) => {
+                                if into_ref_local && !returns_directly {
+                                    ref_sources[dest.local.index()].push(source);
+                                } else {
+                                    ref_escapes[source.index()] = true;
+                                }
+                            }
+                            None => {}
                         }
                     }
                     StatementKind::Assign(dest, Rvalue::Use(op)) => {
@@ -347,13 +424,34 @@ impl<'ctx> MirPass<'ctx> for EscapeAnalysis {
                             }
                         }
                     }
+                    // A reference built into a struct, tuple, enum payload or
+                    // array goes somewhere this analysis cannot follow, so its
+                    // referent has to outlive the frame.
+                    StatementKind::Assign(_, Rvalue::Aggregate { fields, .. }) => {
+                        for field in fields.iter() {
+                            if let Some(src) = ref_local_operand(body, field) {
+                                ref_escapes[src.index()] = true;
+                            }
+                        }
+                    }
+                    StatementKind::Assign(_, Rvalue::Repeat { operand, .. }) => {
+                        if let Some(src) = ref_local_operand(body, operand) {
+                            ref_escapes[src.index()] = true;
+                        }
+                    }
                     _ => {}
                 }
             }
 
             // Analyze calls with escape summaries
             if let Some(term) = &bb.terminator {
-                if let TerminatorKind::Call { func, args, .. } = &term.kind {
+                if let TerminatorKind::Call {
+                    func,
+                    args,
+                    destination,
+                    ..
+                } = &term.kind
+                {
                     // Try to get the callee's escape summary
                     let callee_summary = extract_callee(func).and_then(|(callee_id, _)| {
                         // First check if we have a computed summary
@@ -379,6 +477,31 @@ impl<'ctx> MirPass<'ctx> for EscapeAnalysis {
 
                             if escapes {
                                 ref_escapes[local.index()] = true;
+                            }
+
+                            // The result of a call that hands the argument back
+                            // still points at whatever the argument did, so it
+                            // keeps that argument's bases alive.
+                            let returns = callee_summary
+                                .as_ref()
+                                .and_then(|s| s.params.get(arg_idx))
+                                .map(|p| p.flows_to_return)
+                                .unwrap_or(true);
+
+                            if returns {
+                                if destination.projection.is_empty()
+                                    && destination.local != body.return_local
+                                    && is_ref_local[destination.local.index()]
+                                {
+                                    // A plain reference result can be followed.
+                                    ref_sources[destination.local.index()].push(local);
+                                } else {
+                                    // Returned straight out of this function, or
+                                    // into an aggregate whose references this
+                                    // analysis does not track. Either way the
+                                    // referent outlives the frame.
+                                    ref_escapes[local.index()] = true;
+                                }
                             }
                         }
                     }
@@ -770,15 +893,45 @@ fn heapified_direct_deref_pointee_ty<'ctx>(
 
 // Helper functions
 
-fn base_local_for_ref(place: &Place<'_>) -> Option<LocalId> {
-    if place
-        .projection
-        .iter()
-        .any(|elem| matches!(elem, PlaceElem::Deref))
-    {
+/// Where a newly created reference inherits its provenance from.
+#[derive(Clone, Copy)]
+enum RefSource {
+    /// The reference points at this local, as `&local` or `&local.field` does.
+    Base(LocalId),
+    /// The reference points into whatever this reference local points at.
+    ///
+    /// This is a reborrow: `&(*r).field`. Pattern matching lowers every payload
+    /// binding this way, so missing it loses the connection between a match on
+    /// `&local` and the reference the arm hands out.
+    Reborrow(LocalId),
+}
+
+impl RefSource {
+    fn local(self) -> LocalId {
+        match self {
+            RefSource::Base(local) | RefSource::Reborrow(local) => local,
+        }
+    }
+}
+
+fn ref_source_for_place(place: &Place<'_>, is_ref_local: &[bool]) -> Option<RefSource> {
+    let mut elements = place.projection.iter();
+    let reborrows = matches!(elements.next(), Some(PlaceElem::Deref));
+
+    // A `Deref` past the first dereferences a reference loaded out of memory,
+    // whose provenance this analysis does not follow.
+    if elements.any(|elem| matches!(elem, PlaceElem::Deref)) {
         return None;
     }
-    Some(place.local)
+
+    if !reborrows {
+        return Some(RefSource::Base(place.local));
+    }
+    is_ref_local
+        .get(place.local.index())
+        .copied()
+        .unwrap_or(false)
+        .then_some(RefSource::Reborrow(place.local))
 }
 
 fn ref_local_operand<'a>(body: &Body<'a>, operand: &Operand<'a>) -> Option<LocalId> {
@@ -911,12 +1064,26 @@ mod tests {
     use crate::{
         hir::Mutability,
         mir::{
-            CastKind, LocalDecl, LocalKind, Operand, Place, Rvalue, Statement, StatementKind,
+            AggregateKind, CastKind, LocalDecl, LocalId, LocalKind, Operand, Place, PlaceElem,
+            Rvalue, Statement, StatementKind,
             test_support::{minimal_body, push_temp, with_test_gcx},
         },
         sema::models::{Ty, TyKind},
     };
+    use index_vec::IndexVec;
     use rustc_hash::FxHashMap;
+
+    fn push_parameter<'ctx>(body: &mut crate::mir::Body<'ctx>, ty: Ty<'ctx>) -> LocalId {
+        let span = body.locals[body.return_local].span;
+        body.escape_locals.push(false);
+        body.locals.push(LocalDecl {
+            ty,
+            kind: LocalKind::Param,
+            mutable: false,
+            name: None,
+            span,
+        })
+    }
 
     #[test]
     fn pointer_cast_kinds_preserve_parameter_escape_provenance() {
@@ -932,14 +1099,7 @@ mod tests {
                     Ty::new(TyKind::Pointer(gcx.types.uint8, Mutability::Immutable), gcx);
                 body.locals[body.return_local].ty = pointer_ty;
 
-                let parameter = body.locals.push(LocalDecl {
-                    ty: reference_ty,
-                    kind: LocalKind::Param,
-                    mutable: false,
-                    name: None,
-                    span,
-                });
-                body.escape_locals.push(false);
+                let parameter = push_parameter(&mut body, reference_ty);
                 let erased = push_temp(&mut body, pointer_ty);
                 body.basic_blocks[body.start_block].statements.extend([
                     Statement {
@@ -967,6 +1127,91 @@ mod tests {
                 assert!(
                     summary.params[0].flows_to_return,
                     "{kind:?} cast should preserve reference provenance"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn reborrow_preserves_parameter_return_provenance() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let reference_ty = Ty::new(
+                TyKind::Reference(gcx.types.uint8, Mutability::Immutable),
+                gcx,
+            );
+            body.locals[body.return_local].ty = reference_ty;
+
+            let parameter = push_parameter(&mut body, reference_ty);
+            let reborrow = push_temp(&mut body, reference_ty);
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(reborrow),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place {
+                                local: parameter,
+                                projection: vec![PlaceElem::Deref],
+                            },
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(body.return_local),
+                        Rvalue::Use(Operand::Copy(Place::from_local(reborrow))),
+                    ),
+                    span,
+                },
+            ]);
+
+            let summary = analyze_function_for_summary(gcx, &body, &FxHashMap::default());
+            assert_eq!(summary.params.len(), 1);
+            assert!(summary.params[0].flows_to_return);
+        });
+    }
+
+    #[test]
+    fn aggregate_and_repeat_storage_mark_reference_parameters_as_escaping() {
+        with_test_gcx(|gcx| {
+            for aggregate in [true, false] {
+                let mut body = minimal_body(gcx);
+                let span = body.locals[body.return_local].span;
+                let reference_ty = Ty::new(
+                    TyKind::Reference(gcx.types.uint8, Mutability::Immutable),
+                    gcx,
+                );
+                let parameter = push_parameter(&mut body, reference_ty);
+                let destination = push_temp(&mut body, gcx.types.void);
+                let operand = Operand::Copy(Place::from_local(parameter));
+                let value = if aggregate {
+                    Rvalue::Aggregate {
+                        kind: AggregateKind::Tuple,
+                        fields: IndexVec::from_vec(vec![operand]),
+                    }
+                } else {
+                    Rvalue::Repeat {
+                        operand,
+                        count: 2,
+                        element: reference_ty,
+                    }
+                };
+                body.basic_blocks[body.start_block]
+                    .statements
+                    .push(Statement {
+                        kind: StatementKind::Assign(Place::from_local(destination), value),
+                        span,
+                    });
+
+                let summary = analyze_function_for_summary(gcx, &body, &FxHashMap::default());
+                assert_eq!(summary.params.len(), 1);
+                assert!(
+                    summary.params[0].leaks_to_heap,
+                    "{} storage should make the reference escape",
+                    if aggregate { "aggregate" } else { "repeat" }
                 );
             }
         });

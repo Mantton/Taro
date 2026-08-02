@@ -16,6 +16,7 @@ pub mod panic_unwind;
 #[cfg(unix)]
 mod process;
 mod scalar_parse;
+mod stack_guard;
 mod sync;
 pub mod task;
 #[cfg(unix)]

@@ -1,0 +1,23 @@
+// STDIN: "alpha beta\n"
+// EXPECT_STDERR_CONTAINS: answer=42
+//
+// Test synchronous stdin and formatted stderr using real process streams. The
+// stdout snapshot also ensures `eprintf` does not accidentally write there.
+
+func main() {
+    var reader = std.io.BufReader(std.io.stdin())
+    let line = match reader.readLine() {
+        case .ok(.some(value)) => value
+        case .ok(.none) => {
+            assert(false, "expected a line on stdin")
+            return
+        }
+        case .err(_) => {
+            assert(false, "failed to read stdin")
+            return
+        }
+    }
+
+    std.printf("stdin=%s", line)
+    std.eprintf("answer=%v\n", 42)
+}

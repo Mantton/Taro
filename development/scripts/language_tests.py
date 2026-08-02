@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import json
 import os
 import re
 import shlex
@@ -100,6 +101,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // BENCH                     — run a short `taro bench`; passes if exit 0
       // BENCH_RELEASE             — run the short benchmark in its default release/O2 profile
       // ARGS: <values...>         — forward runtime args to `taro run` after `--`
+      // STDIN: <JSON string>       — provide decoded text as the program's stdin
       // ENV: KEY=value …          — set environment variables for compile/run
       // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
       // EXPECT_STDOUT_CONTAINS: … — assert this substring appears in stdout
@@ -115,6 +117,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "run_as_bench": False,
         "bench_release": False,
         "args": [],
+        "stdin": None,
         "env": {},
         "expect_exit": None,
         "expect_stdout_contains": [],
@@ -144,6 +147,14 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                 elif line.startswith("// ARGS:"):
                     values = line[len("// ARGS:") :].strip()
                     result["args"] = shlex.split(values)
+                elif line.startswith("// STDIN:"):
+                    value = line[len("// STDIN:") :].strip()
+                    try:
+                        decoded = json.loads(value)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(decoded, str):
+                        result["stdin"] = decoded
                 elif line.startswith("// ENV:"):
                     values = shlex.split(line[len("// ENV:") :].strip())
                     for value in values:
@@ -220,6 +231,7 @@ def run_test(
         is_run_as_bench = directives["run_as_bench"]
         is_bench_release = directives["bench_release"]
         program_args = directives["args"]
+        program_stdin = directives["stdin"]
         environment = directives["env"]
         expected_exit = directives["expect_exit"]
         expected_stdout_contains = directives["expect_stdout_contains"]
@@ -315,7 +327,12 @@ def run_test(
 
         # Run process
         result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=PROJECT_ROOT, env=process_env
+            cmd,
+            input=program_stdin,
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+            env=process_env,
         )
 
         if is_invalid_test:

@@ -1,0 +1,26 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: stack overflow
+//
+// Test: exhausting the stack is reported instead of killing the process.
+//
+// Regression: nothing installed a handler for the guard-page fault a stack
+// overflow raises, so the default action terminated the process with a bare
+// SIGSEGV — no message, and an exit status indistinguishable from memory
+// corruption. Rust's standard library installs that handler from `std::rt::init`,
+// which a Taro binary never reaches: `main` is emitted by codegen and calls
+// `taro_start` directly.
+
+func descend(_ n: int64) -> int64 {
+    if n == 0 {
+        return 0
+    }
+    // Recursion the optimiser cannot turn into a loop: the result is used.
+    return descend(n - 1) + 1
+}
+
+func main() {
+    std.print("descending\n")
+    // Far past any reachable depth, so this always exhausts the stack.
+    let result = descend(100000000)
+    std.printf("unreachable %v\n", result)
+}

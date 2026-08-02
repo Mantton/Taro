@@ -1,0 +1,122 @@
+// Test: a reference derived from an enum payload keeps its referent alive.
+//
+// Regression: escape analysis only recognised a reference taken directly from a
+// local, `&local.field`. Pattern matching lowers a payload binding to a reborrow
+// through the matched reference, `&(*r as case).0`, whose projection starts with
+// a `Deref` — and any place containing one was dropped from the analysis. The
+// local was left on the stack while a reference to its interior outlived the
+// frame, so reads returned garbage or crashed.
+//
+// Two further paths had the same effect: a reference returned through a call was
+// not connected to the argument it came from, and a reference built into an
+// aggregate was not followed at all.
+
+enum Node {
+    case leaf(int64)
+    case block(names: List[string], body: List[Node])
+}
+
+struct Captured {
+    names: &List[string]
+    body: &List[Node]
+}
+
+func makeNode() -> Node {
+    var body = List[Node]()
+    body.append(.leaf(1))
+    body.append(.leaf(2))
+    body.append(.leaf(3))
+
+    var names = List[string]()
+    names.append("x")
+    names.append("y")
+
+    return .block(names: names, body: body)
+}
+
+func sumLeaves(_ nodes: &List[Node]) -> int64 {
+    var total: int64 = 0
+    for node in nodes {
+        match node {
+            case .leaf(value) => total += *value
+            case _ => {}
+        }
+    }
+    return total
+}
+
+// A payload reference escaping the frame that built the enum.
+func payloadEscapes() -> &List[Node] {
+    let node = makeNode()
+    match &node {
+        case .block(_, body) => return body
+        case _ => return &List[Node]()
+    }
+}
+
+// The same reborrow, handed back through a call.
+func reborrow(_ node: &Node) -> &List[Node] {
+    match node {
+        case .block(_, body) => return body
+        case _ => return &List[Node]()
+    }
+}
+
+func payloadEscapesThroughCall() -> &List[Node] {
+    let node = makeNode()
+    return reborrow(&node)
+}
+
+// The same reborrow, stored in a struct by a callee.
+func captureFields(_ node: &Node) -> Optional[Captured] {
+    match node {
+        case .block(names, body) => return .some(Captured { names: names, body: body })
+        case _ => return .none
+    }
+}
+
+func payloadEscapesInAggregate() -> Optional[Captured] {
+    let node = makeNode()
+    return captureFields(&node)
+}
+
+/// Allocates enough to reuse any memory a dangling reference would point at.
+func churnHeap() {
+    var ballast = List[List[int64]]()
+    var i = 0
+    while i < 512 {
+        var chunk = List[int64]()
+        var j = 0
+        while j < 32 {
+            chunk.append(j as int64)
+            j += 1
+        }
+        ballast.append(chunk)
+        i += 1
+    }
+}
+
+func main() {
+    let direct = payloadEscapes()
+    churnHeap()
+    assert(direct.len() == 3, "payload reference survives its frame")
+    assert(sumLeaves(direct) == 6, "payload reference still holds its elements")
+
+    let throughCall = payloadEscapesThroughCall()
+    churnHeap()
+    assert(throughCall.len() == 3, "payload reference survives a call")
+    assert(sumLeaves(throughCall) == 6, "payload reference through a call is intact")
+
+    let captured = match payloadEscapesInAggregate() {
+        case .some(value) => value
+        case .none => {
+            assert(false, "expected a block node")
+            return
+        }
+    }
+    churnHeap()
+    assert(captured.names.len() == 2, "aggregate keeps its reference alive")
+    assert(sumLeaves(captured.body) == 6, "aggregate reference is intact")
+
+    std.print("PASS: escape through payload reference\n")
+}

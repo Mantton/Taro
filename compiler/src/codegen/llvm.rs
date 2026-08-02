@@ -1372,6 +1372,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let bb_ret = self.context.append_basic_block(start_fn, "ret");
         let bb_panic = self.context.append_basic_block(start_fn, "panic");
         builder.position_at_end(bb_entry);
+        let install_stack_guard_fn = self.declare_install_stack_guard_fn();
+        builder
+            .build_call(install_stack_guard_fn, &[], "install_stack_guard")
+            .unwrap();
         let call = builder
             .build_invoke(user_fn, &[], bb_ret, bb_panic, "call_main")
             .unwrap();
@@ -1524,6 +1528,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let builder = self.context.create_builder();
         let entry_bb = self.context.append_basic_block(start_fn, "entry");
         builder.position_at_end(entry_bb);
+
+        let install_stack_guard_fn = self.declare_install_stack_guard_fn();
+        builder
+            .build_call(install_stack_guard_fn, &[], "install_stack_guard")
+            .unwrap();
 
         // Counters: passed, failed, skipped (alloca in entry)
         let passed_ptr = builder.build_alloca(i32_ty, "passed").unwrap();
@@ -2050,6 +2059,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let entry = self.context.append_basic_block(start_fn, "entry");
         builder.position_at_end(entry);
 
+        let install_stack_guard_fn = self.declare_install_stack_guard_fn();
+        builder
+            .build_call(install_stack_guard_fn, &[], "install_stack_guard")
+            .unwrap();
+
         let failures = builder.build_alloca(i32_ty, "bench_failures").unwrap();
         builder.build_store(failures, i32_ty.const_zero()).unwrap();
 
@@ -2395,6 +2409,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap_or_else(|| {
                 self.module
                     .add_function("__rt__async_run_root", fn_ty, Some(Linkage::External))
+            })
+    }
+
+    /// Installs the stack-exhaustion handler.
+    ///
+    /// Called first thing in every entry shim: without it a thread that runs out
+    /// of stack dies on the guard page with no diagnostic at all.
+    fn declare_install_stack_guard_fn(&self) -> FunctionValue<'llvm> {
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .get_function("__rt__install_stack_guard")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "__rt__install_stack_guard",
+                    fn_ty,
+                    Some(Linkage::External),
+                )
             })
     }
 

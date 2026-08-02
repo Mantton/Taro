@@ -52,7 +52,7 @@ mod pattern;
 #[path = "stmt.rs"]
 mod stmt;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct ArgumentExpectation<'ctx> {
     ty: Ty<'ctx>,
     expects_async_callable: bool,

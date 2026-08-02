@@ -165,7 +165,11 @@ pub(crate) fn validate(
 /// be newer than a vendor `nm`. Xcode's `nm`, for example, rejects such
 /// archives with `Unknown attribute kind`, so `llvm-nm` is preferred.
 fn nm_candidates() -> Vec<OsString> {
-    if let Some(program) = std::env::var_os("TARO_NM") {
+    nm_candidates_for_override(std::env::var_os("TARO_NM"))
+}
+
+fn nm_candidates_for_override(program: Option<OsString>) -> Vec<OsString> {
+    if let Some(program) = program {
         return vec![program];
     }
     vec![OsString::from("llvm-nm"), OsString::from("nm")]
@@ -195,26 +199,28 @@ fn read_archive_symbols(program: &OsString, archive: &Path) -> Result<String, St
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn validate_required_symbols(archive: &Path, target: &str) -> Result<(), String> {
+fn first_archive_symbol_listing(
+    archive: &Path,
+    candidates: impl IntoIterator<Item = OsString>,
+    mut read: impl FnMut(&OsString, &Path) -> Result<String, String>,
+) -> Result<String, String> {
     let mut last_error = None;
-    let mut listing = None;
-    for program in nm_candidates() {
-        match read_archive_symbols(&program, archive) {
-            Ok(output) => {
-                listing = Some(output);
-                break;
-            }
+    for program in candidates {
+        match read(&program, archive) {
+            Ok(output) => return Ok(output),
             Err(error) => last_error = Some(error),
         }
     }
-    let Some(output) = listing else {
-        return Err(last_error.unwrap_or_else(|| {
-            format!(
-                "failed to inspect runtime symbols in `{}`: no symbol reader available",
-                archive.display()
-            )
-        }));
-    };
+    Err(last_error.unwrap_or_else(|| {
+        format!(
+            "failed to inspect runtime symbols in `{}`: no symbol reader available",
+            archive.display()
+        )
+    }))
+}
+
+fn validate_required_symbols(archive: &Path, target: &str) -> Result<(), String> {
+    let output = first_archive_symbol_listing(archive, nm_candidates(), read_archive_symbols)?;
 
     let symbols = defined_symbols(&output);
     let mut missing = required_symbols_for_target(target)
@@ -474,6 +480,42 @@ mod tests {
         assert!(symbols.contains("__rt__async_poll"));
         assert!(symbols.contains("__gc__collect"));
         assert!(!symbols.contains("__rt__async_create"));
+    }
+
+    #[test]
+    fn symbol_reader_candidates_honor_override_and_fallback_order() {
+        assert_eq!(
+            nm_candidates_for_override(Some(OsString::from("custom-nm"))),
+            vec![OsString::from("custom-nm")]
+        );
+        assert_eq!(
+            nm_candidates_for_override(None),
+            vec![OsString::from("llvm-nm"), OsString::from("nm")]
+        );
+    }
+
+    #[test]
+    fn symbol_reader_falls_back_and_reports_the_last_failure() {
+        let archive = Path::new("runtime.a");
+        let candidates = vec![OsString::from("llvm-nm"), OsString::from("nm")];
+        let mut attempted = Vec::new();
+        let listing = first_archive_symbol_listing(archive, candidates.clone(), |program, _| {
+            attempted.push(program.clone());
+            if program == "llvm-nm" {
+                Err("llvm-nm failed".into())
+            } else {
+                Ok("000000 T __gc__collect".into())
+            }
+        })
+        .expect("second reader should succeed");
+        assert_eq!(attempted, candidates);
+        assert!(listing.contains("__gc__collect"));
+
+        let error = first_archive_symbol_listing(archive, candidates, |program, _| {
+            Err(format!("{} failed", program.to_string_lossy()))
+        })
+        .unwrap_err();
+        assert_eq!(error, "nm failed");
     }
 
     #[test]

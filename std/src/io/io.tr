@@ -12,6 +12,36 @@ public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Erro
     std.sys.io.writeStderr(buf, len)
 }
 
+public func readStdin(_ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
+    std.sys.io.readStdin(buf, len)
+}
+
+/// The process's standard input, as a `Reader`.
+///
+/// Holds no state and owns no descriptor, so it does not need closing. Reads
+/// still consume the process-wide input stream and therefore share it with any
+/// other synchronous or asynchronous stdin reader. Wrap it in a `BufReader` to
+/// read a line at a time.
+public struct Stdin {}
+
+/// A reader over the process's standard input.
+public func stdin() -> Stdin {
+    return Stdin {}
+}
+
+impl Reader for Stdin {
+    public func read(&mut self, _ buf: MutableSpan[uint8]) -> Result[usize, Error] {
+        let len = buf.len()
+        if len == 0 {
+            return .ok(0)
+        }
+
+        var writable = buf
+        let ptr = unsafe { writable.at(0) as *mut uint8 }
+        return readStdin(ptr, len)
+    }
+}
+
 public func writeAll[W: Writer](_ writer: &mut W, _ buf: Span[uint8]) -> Result[(), Error] {
     let len = buf.len()
     if len == 0 {

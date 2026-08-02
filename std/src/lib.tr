@@ -66,6 +66,11 @@ public func eprintln(_ s: string) {
     eprint("\n")
 }
 
+public func eprintf(_ format: string, _ args: any std.fmt.Display...) {
+    let rendered = renderFormat(format, args)
+    eprint(rendered)
+}
+
 public func assert(_ condition: bool, _ message: string) {
     if !condition {
         std.panic.panic(message)

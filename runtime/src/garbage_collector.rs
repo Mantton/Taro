@@ -207,6 +207,11 @@ fn ensure_current_thread_state() -> Arc<ThreadState> {
                 current.state.clone()
             }
             None => {
+                // First time this thread runs Taro code. The stack-overflow
+                // handler is process-wide but its alternate stack is not, so
+                // every such thread has to be guarded, and this is the one point
+                // they all pass through.
+                crate::stack_guard::guard_current_thread();
                 let state = register_current_thread_state();
                 *slot = Some(CurrentThreadState {
                     state: state.clone(),

@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 9;
+pub const RUNTIME_ABI_REVISION: u32 = 10;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -330,6 +330,7 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     additional("__rt__bench_set_bytes", "(usize)->void"),
     additional("__rt__black_box", "(*mut u8,usize)->void"),
+    additional("__rt__install_stack_guard", "()->void"),
     additional("__gc__alloc", "(usize,*const gc_desc)->*mut u8"),
     additional("__gc__collect", "()->void"),
     additional(
@@ -596,5 +597,20 @@ mod tests {
         let symbols = required_symbols().collect::<HashSet<_>>();
         assert!(symbols.contains("__rt__parse_f32"));
         assert!(symbols.contains("__rt__parse_f64"));
+    }
+
+    #[test]
+    fn stack_guard_export_is_required_on_every_target() {
+        for target in [
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+        ] {
+            assert!(
+                required_symbols_for_target(target)
+                    .any(|symbol| symbol == "__rt__install_stack_guard"),
+                "stack guard missing for {target}"
+            );
+        }
     }
 }

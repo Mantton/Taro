@@ -1799,6 +1799,21 @@ impl<'ctx> Checker<'ctx> {
             }
         };
 
+        self.map_argument_expectations_for_signature(
+            &signature,
+            parameter_tys,
+            parameter_expects_async,
+            arguments,
+        )
+    }
+
+    fn map_argument_expectations_for_signature(
+        &self,
+        signature: &crate::sema::models::LabeledFunctionSignature<'ctx>,
+        parameter_tys: &[Ty<'ctx>],
+        parameter_expects_async: &[bool],
+        arguments: &[hir::ExpressionArgument],
+    ) -> Option<Vec<Option<ArgumentExpectation<'ctx>>>> {
         let apply_args: Vec<ApplyArgument<'ctx>> = arguments
             .iter()
             .map(|arg| ApplyArgument {
@@ -1991,6 +2006,20 @@ impl<'ctx> Checker<'ctx> {
                 {
                     Self::record_generic_bindings_from_ty(pattern_inner, actual_inner, inferred);
                 }
+            }
+            TyKind::Array {
+                element: pattern_element,
+                len: pattern_len,
+            } => {
+                let TyKind::Array {
+                    element: actual_element,
+                    len: actual_len,
+                } = actual.kind()
+                else {
+                    return;
+                };
+                Self::record_generic_bindings_from_ty(pattern_element, actual_element, inferred);
+                Self::record_generic_bindings_from_const(pattern_len, actual_len, inferred);
             }
             TyKind::Tuple(pattern_items) => {
                 let TyKind::Tuple(actual_items) = actual.kind() else {
@@ -2298,7 +2327,7 @@ impl<'ctx> Checker<'ctx> {
         let arg_expectations = if recv_ty.is_error() {
             None
         } else {
-            self.method_argument_expectations(recv_ty, name, arguments.len(), expression.span, cs)
+            self.method_argument_expectations(recv_ty, name, arguments, expression.span, cs)
         };
 
         let args: Vec<ApplyArgument<'ctx>> = arguments
@@ -2308,7 +2337,7 @@ impl<'ctx> Checker<'ctx> {
                 let expected = arg_expectations
                     .as_ref()
                     .and_then(|items| items.get(index))
-                    .cloned();
+                    .and_then(|item| *item);
                 let ty = if let Some(expected) = expected {
                     let is_closure = matches!(n.expression.kind, hir::ExpressionKind::Closure(_));
                     if expected.expects_async_callable && is_closure {
@@ -2364,46 +2393,46 @@ impl<'ctx> Checker<'ctx> {
         &self,
         receiver_ty: Ty<'ctx>,
         name: &crate::span::Identifier,
-        argument_count: usize,
+        arguments: &[hir::ExpressionArgument],
         _span: Span,
         cs: &mut Cs<'ctx>,
-    ) -> Option<Vec<ArgumentExpectation<'ctx>>> {
+    ) -> Option<Vec<Option<ArgumentExpectation<'ctx>>>> {
         let gcx = self.gcx();
 
-        let mut base_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
-        if base_ty.is_error() || base_ty.is_infer() {
+        let mut candidate_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+        if candidate_ty.is_error() || candidate_ty.is_infer() {
             return None;
         }
 
+        // Method resolution considers every autoderef level. Keep the receiver
+        // type paired with each candidate: it supplies the right substitutions
+        // for pointer/array impls, while an inapplicable same-named method at an
+        // earlier level must not hide a viable method on the pointee.
+        let mut candidates = Vec::new();
         loop {
-            match base_ty.kind() {
-                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
-                    base_ty = cs.infer_cx.resolve_vars_if_possible(inner);
-                    if base_ty.is_error() || base_ty.is_infer() {
-                        return None;
-                    }
-                }
-                _ => break,
+            if let Some(head) = type_head_from_value_ty(candidate_ty) {
+                candidates.extend(
+                    self.collect_inherent_instance_candidates(head, name.symbol)
+                        .into_iter()
+                        .map(|def_id| (candidate_ty, def_id)),
+                );
+            }
+
+            let Some(inner) = candidate_ty.dereference() else {
+                break;
+            };
+            candidate_ty = cs.infer_cx.resolve_vars_if_possible(inner);
+            if candidate_ty.is_error() || candidate_ty.is_infer() {
+                break;
             }
         }
-
-        let Some(head) = type_head_from_value_ty(base_ty) else {
-            return None;
-        };
-
-        let base_args = match base_ty.kind() {
-            TyKind::Adt(_, args) if !args.is_empty() => Some(args),
-            _ => None,
-        };
-
-        let candidates = self.collect_inherent_instance_candidates(head, name.symbol);
         if candidates.is_empty() {
             return None;
         }
 
-        let mut candidate_inputs: Vec<Vec<ArgumentExpectation<'ctx>>> = vec![];
+        let mut candidate_inputs: Vec<Vec<Option<ArgumentExpectation<'ctx>>>> = vec![];
 
-        for def_id in candidates {
+        for (base_ty, def_id) in candidates {
             if !gcx.is_definition_visible(def_id, self.current_def) {
                 continue;
             }
@@ -2416,13 +2445,33 @@ impl<'ctx> Checker<'ctx> {
                 None
             } else {
                 let identity_args = GenericsBuilder::identity_for_item(self.gcx(), def_id);
-                Some(GenericsBuilder::for_item(self.gcx(), def_id, |param, _| {
-                    base_args
-                        .and_then(|args| args.get(param.index).cloned())
-                        .unwrap_or_else(|| identity_args[param.index])
-                }))
+                let mut inferred = vec![None; identity_args.len()];
+
+                if generics.parent_count > 0 {
+                    let Some(parent) = generics.parent else {
+                        continue;
+                    };
+                    let Some(impl_target) = gcx.get_impl_target_ty(parent) else {
+                        continue;
+                    };
+                    Self::record_generic_bindings_from_ty(impl_target, base_ty, &mut inferred);
+                    if inferred
+                        .iter()
+                        .take(generics.parent_count)
+                        .any(Option::is_none)
+                    {
+                        continue;
+                    }
+                }
+
+                let args = identity_args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, identity)| inferred[index].unwrap_or(*identity))
+                    .collect();
+                Some(gcx.store.interners.intern_generic_args(args))
             };
-            let signature = if let Some(args) = instantiation_args {
+            let mut signature = if let Some(args) = instantiation_args {
                 instantiate_signature_with_args(gcx, signature, args)
             } else {
                 signature.clone()
@@ -2434,7 +2483,8 @@ impl<'ctx> Checker<'ctx> {
                 continue;
             }
 
-            let mut input_expectations =
+            let mut parameter_tys = Vec::with_capacity(instantiated_inputs.len().saturating_sub(1));
+            let mut parameter_expects_async =
                 Vec::with_capacity(instantiated_inputs.len().saturating_sub(1));
             for (&original_ty, &instantiated_ty) in original_inputs
                 .iter()
@@ -2450,10 +2500,8 @@ impl<'ctx> Checker<'ctx> {
                         name.span,
                         cs,
                     );
-                    input_expectations.push(ArgumentExpectation {
-                        ty: expectation_ty,
-                        expects_async_callable: bound.expects_async_callable,
-                    });
+                    parameter_tys.push(expectation_ty);
+                    parameter_expects_async.push(bound.expects_async_callable);
                 } else {
                     // A method-local type parameter is inferred by the selected
                     // call candidate. Creating an unrelated inference variable
@@ -2474,18 +2522,24 @@ impl<'ctx> Checker<'ctx> {
                         return None;
                     }
 
-                    let expectation_ty = instantiated_ty;
-                    input_expectations.push(ArgumentExpectation {
-                        ty: expectation_ty,
-                        expects_async_callable: self.ty_is_known_async_callable(expectation_ty),
-                    });
+                    parameter_tys.push(instantiated_ty);
+                    parameter_expects_async.push(self.ty_is_known_async_callable(instantiated_ty));
                 }
             }
 
-            if input_expectations.len() != argument_count {
+            if signature.inputs.is_empty() {
                 continue;
             }
+            signature.inputs.remove(0);
 
+            let Some(input_expectations) = self.map_argument_expectations_for_signature(
+                &signature,
+                &parameter_tys,
+                &parameter_expects_async,
+                arguments,
+            ) else {
+                continue;
+            };
             candidate_inputs.push(input_expectations);
         }
 
@@ -2494,12 +2548,7 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let first = candidate_inputs[0].clone();
-        if candidate_inputs.iter().all(|inputs| {
-            inputs.len() == first.len()
-                && inputs.iter().zip(first.iter()).all(|(lhs, rhs)| {
-                    lhs.ty == rhs.ty && lhs.expects_async_callable == rhs.expects_async_callable
-                })
-        }) {
+        if candidate_inputs.iter().all(|inputs| *inputs == first) {
             Some(first)
         } else {
             None
@@ -3414,7 +3463,17 @@ impl<'ctx> Checker<'ctx> {
             return Ty::error(self.gcx());
         }
         let receiver_can_mut_borrow = self.can_mutably_borrow_receiver(target, cs);
-        let result_ty = cs.infer_cx.next_ty_var(expression.span);
+
+        // A field read on an already-known struct has a known type, so bind it
+        // now instead of leaving a variable for the member goal to resolve.
+        // Consumers that run before the deferred queue drains — argument
+        // expectations for `receiver.field.method(...)`, most visibly — would
+        // otherwise see an unresolved receiver and give up. The goal is still
+        // emitted, and equating it against this type turns a mismatch into a
+        // reported error rather than a silent divergence.
+        let result_ty = self
+            .known_field_ty(receiver_ty, name.symbol, cs)
+            .unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
         cs.add_goal(
             Goal::Member(MemberGoalData {
                 node_id: expression.id,
@@ -3463,6 +3522,59 @@ impl<'ctx> Checker<'ctx> {
         result_ty
     }
 
+    /// Type of the field `name` reached from `receiver_ty`, when that is already
+    /// determined.
+    ///
+    /// Mirrors what `solve_member` does for a field: autoderef, then look the
+    /// name up on the struct. Autoderef only peels references and pointers, and
+    /// neither carries fields, so checking the fully peeled type alone cannot
+    /// disagree about which field is found. Anything the member goal resolves by
+    /// another route — a computed property, an interface requirement — returns
+    /// `None` here and is left to that goal.
+    fn known_field_ty(
+        &self,
+        receiver_ty: Ty<'ctx>,
+        name: Symbol,
+        cs: &mut Cs<'ctx>,
+    ) -> Option<Ty<'ctx>> {
+        let mut base_ty = cs.infer_cx.resolve_vars_if_possible(receiver_ty);
+        loop {
+            if base_ty.is_error() || base_ty.is_infer() {
+                return None;
+            }
+            match base_ty.kind() {
+                TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => {
+                    base_ty = cs.infer_cx.resolve_vars_if_possible(inner);
+                }
+                _ => break,
+            }
+        }
+
+        let TyKind::Adt(def, args) = base_ty.kind() else {
+            return None;
+        };
+        if self.gcx().definition_kind(def.id) != DefinitionKind::Struct {
+            return None;
+        }
+        let struct_def = self.gcx().get_struct_definition(def.id);
+        let struct_def =
+            crate::sema::tycheck::utils::instantiate::instantiate_struct_definition_with_args(
+                self.gcx(),
+                struct_def,
+                args,
+            );
+        let field = struct_def.fields.iter().find(|field| field.name == name)?;
+        // An inaccessible field is an error the member goal reports; binding its
+        // type here would only hide that.
+        if !self
+            .gcx()
+            .is_visibility_allowed(field.visibility, self.current_def)
+        {
+            return None;
+        }
+        Some(field.ty)
+    }
+
     /// Declared type of `name` on `struct_ty`, when that type is already known.
     ///
     /// Returns `None` for unresolved or non-struct types and for unknown field
@@ -3475,8 +3587,12 @@ impl<'ctx> Checker<'ctx> {
             return None;
         }
         let struct_def = self.gcx().get_struct_definition(def.id);
-        let struct_def = crate::sema::tycheck::utils::instantiate::
-            instantiate_struct_definition_with_args(self.gcx(), struct_def, args);
+        let struct_def =
+            crate::sema::tycheck::utils::instantiate::instantiate_struct_definition_with_args(
+                self.gcx(),
+                struct_def,
+                args,
+            );
         struct_def
             .fields
             .iter()

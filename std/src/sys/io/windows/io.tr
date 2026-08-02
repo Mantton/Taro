@@ -21,6 +21,10 @@ public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Erro
     std.panic.todo("std.sys.io.writeStderr not implemented on windows yet")
 }
 
+public func readStdin(_ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
+    std.panic.todo("std.sys.io.readStdin not implemented on windows yet")
+}
+
 public func stdin() -> Result[PlatformAsyncStream, Error] {
     std.panic.todo("std.sys.io.stdin not implemented on windows yet")
 }

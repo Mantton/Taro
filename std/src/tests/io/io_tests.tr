@@ -461,3 +461,29 @@ func testReadAtLeastInvalidInput() {
     std.assert(reader.close().isOk(), "failed to close readAtLeast invalid file")
     std.assert(std.fs.removeFile(path).isOk(), "failed to remove readAtLeast invalid file")
 }
+
+/// Accepts any `Reader`, so passing `Stdin` here proves it conforms.
+func readInto[R: Reader](_ reader: &mut R, _ buf: std.mem.MutableSpan[uint8]) -> std.result.Result[usize, std.io.Error] {
+    reader.read(buf)
+}
+
+@test
+func testStdinIsAReader() {
+    var input = std.io.stdin()
+
+    // A zero-length read is answered without consulting the descriptor, so this
+    // holds whether or not the harness leaves anything on standard input.
+    var empty: [uint8; 1] = [0]
+    let none = std.mem.MutableSpan[uint8].from(
+        unsafe { (&mut empty as *mut [uint8; 1]) as *mut uint8 },
+        0,
+    )
+    match readInto(&mut input, none) {
+        case .ok(count) => std.testing.assertEqual(count, 0 as usize, "empty read should report no bytes")
+        case .err(_) => std.testing.fail("an empty read should not fail")
+    }
+
+    // `BufReader` composes with it the same way it does with a file.
+    var buffered = std.io.BufReader(std.io.stdin())
+    let _ = &mut buffered
+}

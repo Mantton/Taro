@@ -31,6 +31,19 @@ public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Erro
     return .ok(res as usize)
 }
 
+/// Reads from the process's standard input.
+///
+/// The mirror of `writeStdout`: a direct descriptor read, with none of the
+/// reactor registration `stdin()` performs, so a synchronous caller does not
+/// need the async runtime running.
+public func readStdin(_ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
+    let res = std.libc.read(std.libc.STDIN_FILENO, buf, len)
+    if res < 0 {
+        return .err(lastError().withOperation("read stdin"))
+    }
+    return .ok(res as usize)
+}
+
 public func adoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
     let sourceId = __rt__async_io_adopt_fd(fd)
     if sourceId == 0 {

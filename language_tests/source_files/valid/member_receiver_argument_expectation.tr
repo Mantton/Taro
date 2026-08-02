@@ -1,0 +1,117 @@
+// Test: a method called on a field receiver still gets argument expectations.
+//
+// Regression: `synth_member_expression` always returned a fresh inference
+// variable and left the field type to a deferred goal. A method call reads its
+// receiver's type immediately to build argument expectations, so
+// `holder.field.method(.case(...))` saw an unresolved receiver, supplied no
+// expectation, and failed with "type annotations needed" — while the same call
+// on a local variable worked.
+
+enum Kind {
+    case identifier(string)
+    case integer(int64)
+    case eof
+}
+
+impl Kind {
+    func read(&self, value value: Kind) -> int64 {
+        match value {
+            case .identifier(_) => return 1
+            case .integer(_) => return 2
+            case .eof => return 3
+        }
+    }
+}
+
+struct Sink {
+    seen: int64
+}
+
+impl Sink {
+    func take(&mut self, _ kind: Kind) {
+        self.seen += 1
+    }
+
+    func takeLabeled(&mut self, kind kind: Kind) {
+        self.seen += 1
+    }
+
+    func takeReordered(&mut self, left left: Kind, right right: Kind) {
+        self.seen += 1
+    }
+
+    func takeDefault(&mut self, kind kind: Kind, count count: int64 = 1) {
+        self.seen += count
+    }
+
+    func takeVariadic(&mut self, _ kinds: Kind...) {
+        self.seen += kinds.len() as int64
+    }
+}
+
+struct Holder {
+    sink: Sink
+    kinds: List[Kind]
+    lookup: Dictionary[string, Kind]
+}
+
+struct Outer {
+    inner: Holder
+}
+
+func main() {
+    var holder = Holder {
+        sink: Sink { seen: 0 },
+        kinds: List[Kind](),
+        lookup: Dictionary[string, Kind](),
+    }
+
+    // Non-generic method reached through a field.
+    holder.sink.take(.identifier("a"))
+    holder.sink.takeLabeled(kind: .eof)
+    holder.sink.takeReordered(right: .integer(2), left: .eof)
+    holder.sink.takeDefault(kind: .identifier("default"))
+    holder.sink.takeVariadic(.eof, .integer(3))
+    assert(holder.sink.seen == 6, "field receiver, mapped method arguments")
+
+    // Generic type's method, positional and labeled.
+    holder.kinds.append(.integer(1))
+    holder.lookup.insert(key: "k", value: .eof)
+    assert(holder.kinds.len() == 1, "field receiver, generic method")
+    assert(holder.lookup.len() == 1, "field receiver, labeled generic method")
+
+    // Field of a field.
+    var outer = Outer { inner: holder }
+    outer.inner.kinds.append(.identifier("b"))
+    assert(outer.inner.kinds.len() == 2, "nested field receiver")
+
+    // Field reached through a reference.
+    let alias = &mut outer.inner
+    alias.kinds.append(.eof)
+    assert(alias.kinds.len() == 3, "field receiver behind a reference")
+
+    // Builtin generic receivers derive their method substitutions from the
+    // receiver type just like nominal generic receivers do.
+    var arrayKinds: [Kind; 3] = [.eof; 3]
+    arrayKinds.set(1, .integer(42))
+    match arrayKinds.at(1) {
+        case .integer(value) => assert(*value == 42, "array receiver expectation")
+        case _ => assert(false, "array receiver stored the wrong case")
+    }
+
+    var pointerKind: Kind = .eof
+    let pointer = unsafe { &mut pointerKind as *mut Kind }
+    unsafe { pointer.write(.identifier("pointer")) }
+    match pointerKind {
+        case .identifier(value) => assert(std.string.stringEq(value, "pointer"), "pointer receiver expectation")
+        case _ => assert(false, "pointer receiver stored the wrong case")
+    }
+
+    // The pointer and pointee both have a `read` method. The pointer candidate
+    // has no arguments, so labeled arguments must fall through to the pointee
+    // candidate before expectations are chosen.
+    let collision = unsafe { pointer.read(value: .integer(5)) }
+    assert(collision == 2, "method expectation follows viable autoderef candidate")
+
+    std.print("PASS: member receiver argument expectations\n")
+}
