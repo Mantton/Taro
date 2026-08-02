@@ -155,26 +155,67 @@ pub(crate) fn validate(
     ensure_target_architecture(effective_target, &detected_architecture)
 }
 
-fn validate_required_symbols(archive: &Path, target: &str) -> Result<(), String> {
-    let output = Command::new("nm")
+/// Lists the symbol readers to try, in priority order.
+///
+/// 1. `TARO_NM` environment variable, used verbatim with no fallback.
+/// 2. `llvm-nm`, which reads bitcode from the toolchain that built the runtime.
+/// 3. `nm` from `PATH`.
+///
+/// The runtime archive embeds LLVM bitcode produced by rustc's LLVM, which can
+/// be newer than a vendor `nm`. Xcode's `nm`, for example, rejects such
+/// archives with `Unknown attribute kind`, so `llvm-nm` is preferred.
+fn nm_candidates() -> Vec<OsString> {
+    if let Some(program) = std::env::var_os("TARO_NM") {
+        return vec![program];
+    }
+    vec![OsString::from("llvm-nm"), OsString::from("nm")]
+}
+
+fn read_archive_symbols(program: &OsString, archive: &Path) -> Result<String, String> {
+    let output = Command::new(program)
         .arg("-g")
         .arg(archive)
         .output()
         .map_err(|error| {
             format!(
-                "failed to inspect runtime symbols in `{}` with `nm`: {error}",
-                archive.display()
+                "failed to inspect runtime symbols in `{}` with `{}`: {error}",
+                archive.display(),
+                program.to_string_lossy()
             )
         })?;
     if !output.status.success() {
         return Err(format!(
-            "failed to inspect runtime symbols in `{}` with `nm`: {}",
+            "failed to inspect runtime symbols in `{}` with `{}`: {}",
             archive.display(),
+            program.to_string_lossy(),
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
 
-    let output = String::from_utf8_lossy(&output.stdout);
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn validate_required_symbols(archive: &Path, target: &str) -> Result<(), String> {
+    let mut last_error = None;
+    let mut listing = None;
+    for program in nm_candidates() {
+        match read_archive_symbols(&program, archive) {
+            Ok(output) => {
+                listing = Some(output);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let Some(output) = listing else {
+        return Err(last_error.unwrap_or_else(|| {
+            format!(
+                "failed to inspect runtime symbols in `{}`: no symbol reader available",
+                archive.display()
+            )
+        }));
+    };
+
     let symbols = defined_symbols(&output);
     let mut missing = required_symbols_for_target(target)
         .filter(|symbol| !symbols.contains(*symbol))
