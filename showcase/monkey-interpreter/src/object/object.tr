@@ -1,0 +1,263 @@
+import monkey.ast.{Statement, renderStatement}
+import std.hash.{Hashable, Hasher}
+import std.ops.PartialEq
+
+/// The kind of a value, without its payload.
+///
+/// Error messages name types, and naming them from a closed set means a new
+/// object kind cannot be described as `""` by an overlooked branch. The spellings
+/// match Monkey's, so diagnostics read the same as the reference implementation.
+public enum ObjectKind: std.marker.Copy, PartialEq {
+    case null
+    case integer
+    case boolean
+    case text
+    case array
+    case hash
+    case function
+    case builtin
+}
+
+impl ObjectKind {
+    public func describe(&self) -> string {
+        match self {
+            case .null => "NULL"
+            case .integer => "INTEGER"
+            case .boolean => "BOOLEAN"
+            case .text => "STRING"
+            case .array => "ARRAY"
+            case .hash => "HASH"
+            case .function => "FUNCTION"
+            case .builtin => "BUILTIN"
+        }
+    }
+}
+
+/// A value usable as a hash key.
+///
+/// Monkey admits integers, booleans and strings as keys. The reference
+/// implementation reduces each to a 64-bit hash and keys the map on that, so two
+/// distinct strings that happen to collide silently become the same key. Carrying
+/// the value itself and letting `Dictionary` compare keys on collision removes
+/// that failure entirely.
+public enum HashKey {
+    case integer(int64)
+    case boolean(bool)
+    case text(string)
+}
+
+impl HashKey {
+    public func kind(&self) -> ObjectKind {
+        match self {
+            case .integer(_) => .integer
+            case .boolean(_) => .boolean
+            case .text(_) => .text
+        }
+    }
+
+    /// The key as the value it was made from.
+    ///
+    /// Because the payload is kept rather than hashed away, rendering a hash
+    /// does not need the reference implementation's parallel `HashPair` table
+    /// holding the original keys.
+    public func toObject(&self) -> Object {
+        match self {
+            case .integer(value) => .integer(*value)
+            case .boolean(value) => .boolean(*value)
+            case .text(value) => .text(*value)
+        }
+    }
+}
+
+impl PartialEq for HashKey {
+    public func eq(&self, _ other: &HashKey) -> bool {
+        match self {
+            case .integer(lhs) => {
+                match other {
+                    case .integer(rhs) => *lhs == *rhs
+                    case _ => false
+                }
+            }
+            case .boolean(lhs) => {
+                match other {
+                    case .boolean(rhs) => *lhs == *rhs
+                    case _ => false
+                }
+            }
+            case .text(lhs) => {
+                match other {
+                    case .text(rhs) => *lhs == *rhs
+                    case _ => false
+                }
+            }
+        }
+    }
+}
+
+impl Hashable for HashKey {
+    public func hash[H: Hasher](&self, into hasher: &mut H) {
+        // The kind is mixed in first so `1` and `true` cannot collide.
+        match self {
+            case .integer(value) => {
+                hasher.combine(0 as uint8)
+                hasher.combine(*value)
+            }
+            case .boolean(value) => {
+                hasher.combine(1 as uint8)
+                hasher.combine(*value)
+            }
+            case .text(value) => {
+                hasher.combine(2 as uint8)
+                value.hash(into: hasher)
+            }
+        }
+    }
+}
+
+/// A user-defined function together with the environment it closed over.
+///
+/// The environment is held by reference, so a binding added after the literal is
+/// evaluated is still visible from the body. That is what makes `let f = fn(n) {
+/// f(n - 1) }` able to find `f`.
+/// The parameters and body refer into the syntax tree rather than copying it,
+/// which is what the reference implementation's `*ast.BlockStatement` does.
+public struct Function {
+    public parameters: &List[string]
+    public body: &List[Statement]
+    public env: &mut Environment
+}
+
+/// A value.
+///
+/// Aggregates are held by reference so that copying an `Object` stays cheap and
+/// sharing matches Monkey's semantics, where the reference implementation passes
+/// `*Array`, `*Hash` and `*Function` pointers around. Monkey never mutates an
+/// array or hash in place — `push` produces a new array — so the references are
+/// immutable.
+public enum Object {
+    case null
+    case integer(int64)
+    case boolean(bool)
+    case text(string)
+    case array(&List[Object])
+    case hash(&Dictionary[HashKey, Object])
+    case function(&Function)
+    case builtin(Builtin)
+}
+
+/// Moves an array's elements to managed storage so an `Object` can refer to them.
+public func boxArray(_ elements: List[Object]) -> &List[Object] {
+    let boxed = elements
+    return &boxed
+}
+
+/// Moves a hash's entries to managed storage so an `Object` can refer to them.
+public func boxHash(_ entries: Dictionary[HashKey, Object]) -> &Dictionary[HashKey, Object] {
+    let boxed = entries
+    return &boxed
+}
+
+/// Moves a function to managed storage so an `Object` can refer to it.
+public func boxFunction(_ function: Function) -> &Function {
+    let boxed = function
+    return &boxed
+}
+
+impl std.marker.Clone for Object {
+    /// Copies the value, sharing rather than duplicating aggregates.
+    public func clone(&self) -> Self {
+        match self {
+            case .null => .null
+            case .integer(value) => .integer(*value)
+            case .boolean(value) => .boolean(*value)
+            case .text(value) => .text(*value)
+            case .array(elements) => .array(*elements)
+            case .hash(entries) => .hash(*entries)
+            case .function(function) => .function(*function)
+            case .builtin(builtin) => .builtin(*builtin)
+        }
+    }
+}
+
+impl Object {
+    public func kind(&self) -> ObjectKind {
+        match self {
+            case .null => .null
+            case .integer(_) => .integer
+            case .boolean(_) => .boolean
+            case .text(_) => .text
+            case .array(_) => .array
+            case .hash(_) => .hash
+            case .function(_) => .function
+            case .builtin(_) => .builtin
+        }
+    }
+
+    /// Monkey's truthiness: only `false` and `null` are falsey. Every integer,
+    /// including `0`, is truthy.
+    public func isTruthy(&self) -> bool {
+        match self {
+            case .null => false
+            case .boolean(value) => *value
+            case _ => true
+        }
+    }
+
+    /// The value as a hash key, when its kind admits one.
+    public func toHashKey(&self) -> Optional[HashKey] {
+        match self {
+            case .integer(value) => .some(.integer(*value))
+            case .boolean(value) => .some(.boolean(*value))
+            case .text(value) => .some(.text(*value))
+            case _ => .none
+        }
+    }
+
+    /// How the value prints, as `puts` and the REPL show it.
+    public func inspect(&self) -> string {
+        match self {
+            case .null => return "null"
+            case .integer(value) => return std.sprintf("%v", *value)
+            case .boolean(value) => {
+                if *value { return "true" }
+                return "false"
+            }
+            case .text(value) => return *value
+            case .array(elements) => {
+                var out = ""
+                var first = true
+                for element in *elements {
+                    if !first { out = out + ", " }
+                    out = out + element.inspect()
+                    first = false
+                }
+                return "[" + out + "]"
+            }
+            case .hash(entries) => {
+                var out = ""
+                var first = true
+                for entry in *entries {
+                    if !first { out = out + ", " }
+                    out = out + entry.0.toObject().inspect() + ": " + entry.1.inspect()
+                    first = false
+                }
+                return "{" + out + "}"
+            }
+            case .function(function) => {
+                var names = ""
+                var first = true
+                for name in function.parameters {
+                    if !first { names = names + ", " }
+                    names = names + *name
+                    first = false
+                }
+                var body = ""
+                for statement in function.body {
+                    body = body + renderStatement(statement)
+                }
+                return "fn(" + names + ") {\n" + body + "\n}"
+            }
+            case .builtin(builtin) => return std.sprintf("builtin function %s", builtin.name())
+        }
+    }
+}

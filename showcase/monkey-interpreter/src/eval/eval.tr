@@ -1,0 +1,389 @@
+import monkey.ast.{Expression, Statement, Program, PrefixOperator, InfixOperator}
+import monkey.object.{
+    Object,
+    ObjectKind,
+    HashKey,
+    Function,
+    Environment,
+    Builtin,
+    builtinNamed,
+    boxArray,
+    boxHash,
+    boxFunction,
+    boxEnvironment,
+}
+
+/// Deepest chain of Monkey calls the evaluator will enter.
+///
+/// Each one costs several native frames, so an unbounded Monkey recursion would
+/// exhaust the native stack. Taro reports that rather than dying silently, but
+/// the report is a process abort: an interpreter should hand the mistake back to
+/// the program that made it, which is what this limit does.
+const MAX_CALL_DEPTH: usize = 128
+
+/// Evaluates a parsed program.
+///
+/// The only state is the current call depth; scopes travel with the value being
+/// evaluated, since a closure carries the environment it was defined in.
+public struct Evaluator {
+    depth: usize
+}
+
+impl Evaluator {
+    public func new() -> Self {
+        return Evaluator { depth: 0 as usize }
+    }
+
+    /// Evaluates a whole program.
+    ///
+    /// A `return` at the top level yields its value, matching Monkey, so the
+    /// signal is unwrapped here rather than escaping to the caller.
+    public func run(
+        &mut self,
+        _ program: &Program,
+        _ env: &mut Environment,
+    ) -> Result[Object, EvalError] {
+        match self.evalBlock(&program.statements, env) {
+            case .ok(value) => return .ok(value)
+            case .err(signal) => {
+                match signal {
+                    case .produced(value) => return .ok(value)
+                    case .failed(error) => return .err(error)
+                }
+            }
+        }
+    }
+
+    /// Evaluates statements in order, yielding the last value.
+    ///
+    /// There is no check for a `return` or an error between statements: both
+    /// arrive as an `.err` from `!`, which abandons the loop on the spot.
+    func evalBlock(
+        &mut self,
+        _ statements: &List[Statement],
+        _ env: &mut Environment,
+    ) -> Result[Object, Signal] {
+        var result = Object.null
+        for statement in statements {
+            result = self.evalStatement(statement, env)!
+        }
+        return .ok(result)
+    }
+
+    func evalStatement(
+        &mut self,
+        _ statement: &Statement,
+        _ env: &mut Environment,
+    ) -> Result[Object, Signal] {
+        match statement {
+            case .bind(name, value) => {
+                let bound = self.evalExpression(value, env)!
+                env.define(*name, bound)
+                return .ok(.null)
+            }
+            case .produce(value) => {
+                // Unwinds to the nearest call boundary, which is the only place
+                // that turns the signal back into a value.
+                let produced = self.evalExpression(value, env)!
+                return .err(.produced(produced))
+            }
+            case .expression(value) => return self.evalExpression(value, env)
+        }
+    }
+
+    func evalExpression(
+        &mut self,
+        _ expression: &Expression,
+        _ env: &mut Environment,
+    ) -> Result[Object, Signal] {
+        match expression {
+            case .integer(value) => return .ok(.integer(*value))
+            case .text(value) => return .ok(.text(*value))
+            case .boolean(value) => return .ok(.boolean(*value))
+            case .identifier(name) => return evalIdentifier(*name, env)
+
+            case .prefix(op, operand) => {
+                let value = self.evalExpression(*operand, env)!
+                return evalPrefix(*op, value)
+            }
+
+            case .infix(left, op, right) => {
+                let lhs = self.evalExpression(*left, env)!
+                let rhs = self.evalExpression(*right, env)!
+                return evalInfix(lhs, *op, rhs)
+            }
+
+            case .conditional(condition, consequence, alternative, hasAlternative) => {
+                let test = self.evalExpression(*condition, env)!
+                if test.isTruthy() {
+                    return self.evalBlock(consequence, env)
+                }
+                if *hasAlternative {
+                    return self.evalBlock(alternative, env)
+                }
+                return .ok(.null)
+            }
+
+            case .function(parameters, body) => {
+                // The environment is captured by reference, so a binding made
+                // after this literal is evaluated — including the one naming the
+                // function itself — is visible from the body.
+                let function = Function { parameters: parameters, body: body, env: env }
+                return .ok(.function(boxFunction(function)))
+            }
+
+            case .call(callee, arguments) => {
+                let target = self.evalExpression(*callee, env)!
+                var values = List[Object]()
+                for argument in arguments {
+                    values.append(self.evalExpression(argument, env)!)
+                }
+                return self.applyFunction(target, values)
+            }
+
+            case .array(elements) => {
+                var values = List[Object]()
+                for element in elements {
+                    values.append(self.evalExpression(element, env)!)
+                }
+                return .ok(.array(boxArray(values)))
+            }
+
+            case .index(collection, index) => {
+                let target = self.evalExpression(*collection, env)!
+                let position = self.evalExpression(*index, env)!
+                return evalIndex(target, position)
+            }
+
+            case .hash(entries) => {
+                var pairs = Dictionary[HashKey, Object]()
+                for entry in entries {
+                    let key = self.evalExpression(&entry.key, env)!
+                    let hashKey = match key.toHashKey() {
+                        case .some(found) => found
+                        case .none => return .err(.failed(.unusableAsHashKey(key.kind())))
+                    }
+                    let value = self.evalExpression(&entry.value, env)!
+                    pairs.set(key: hashKey, value: value)
+                }
+                return .ok(.hash(boxHash(pairs)))
+            }
+        }
+    }
+
+    /// Calls a function or builtin with already-evaluated arguments.
+    func applyFunction(
+        &mut self,
+        _ target: Object,
+        _ arguments: List[Object],
+    ) -> Result[Object, Signal] {
+        match &target {
+            case .function(function) => {
+                // Monkey's reference implementation indexes the argument list by
+                // parameter position without checking, so too few arguments
+                // crash the interpreter. Reporting the mismatch is the fix.
+                if function.parameters.len() != arguments.len() {
+                    return .err(.failed(.wrongArgumentCount(
+                        function: "fn",
+                        expected: function.parameters.len(),
+                        found: arguments.len(),
+                    )))
+                }
+
+                if self.depth >= MAX_CALL_DEPTH {
+                    return .err(.failed(.callDepthExceeded(MAX_CALL_DEPTH)))
+                }
+
+                let scope = boxEnvironment(Environment.enclosedBy(function.env))
+                var position = 0 as usize
+                for parameter in function.parameters {
+                    scope.define(*parameter, arguments.at(position).clone())
+                    position += 1 as usize
+                }
+
+                self.depth += 1 as usize
+                let outcome = self.evalBlock(function.body, scope)
+                self.depth -= 1 as usize
+
+                // A `return` anywhere in the body arrives here as a signal; this
+                // is the boundary where it becomes the call's value again.
+                match outcome {
+                    case .ok(value) => return .ok(value)
+                    case .err(signal) => {
+                        match signal {
+                            case .produced(value) => return .ok(value)
+                            case .failed(error) => return .err(.failed(error))
+                        }
+                    }
+                }
+            }
+            case .builtin(builtin) => return callBuiltin(*builtin, arguments)
+            case _ => return .err(.failed(.notAFunction(target.kind())))
+        }
+    }
+}
+
+/// Resolves a name against the environment chain, then the builtins.
+func evalIdentifier(_ name: string, _ env: &mut Environment) -> Result[Object, Signal] {
+    match env.lookup(name) {
+        case .some(value) => return .ok(value)
+        case .none => {}
+    }
+    match builtinNamed(name) {
+        case .some(builtin) => return .ok(.builtin(builtin))
+        case .none => return .err(.failed(.identifierNotFound(name)))
+    }
+}
+
+func evalPrefix(_ op: PrefixOperator, _ operand: Object) -> Result[Object, Signal] {
+    match op {
+        case .not => return .ok(.boolean(!operand.isTruthy()))
+        case .negate => {
+            match &operand {
+                case .integer(value) => return .ok(.integer(-*value))
+                case _ => {
+                    return .err(.failed(.unknownPrefixOperator(op: op, operand: operand.kind())))
+                }
+            }
+        }
+    }
+}
+
+func evalInfix(_ left: Object, _ op: InfixOperator, _ right: Object) -> Result[Object, Signal] {
+    match &left {
+        case .integer(lhs) => {
+            match &right {
+                case .integer(rhs) => return evalIntegerInfix(*lhs, op, *rhs)
+                case _ => {}
+            }
+        }
+        case .text(lhs) => {
+            match &right {
+                case .text(rhs) => return evalStringInfix(*lhs, op, *rhs)
+                case _ => {}
+            }
+        }
+        case _ => {}
+    }
+
+    // Equality is defined across every pair of kinds, as it is in Monkey, where
+    // mismatched kinds simply compare unequal rather than failing.
+    match op {
+        case .equal => return .ok(.boolean(objectsEqual(&left, &right)))
+        case .notEqual => return .ok(.boolean(!objectsEqual(&left, &right)))
+        case _ => {}
+    }
+
+    if left.kind() != right.kind() {
+        return .err(.failed(.typeMismatch(left: left.kind(), op: op, right: right.kind())))
+    }
+    return .err(.failed(.unknownInfixOperator(left: left.kind(), op: op, right: right.kind())))
+}
+
+func evalIntegerInfix(_ left: int64, _ op: InfixOperator, _ right: int64) -> Result[Object, Signal] {
+    match op {
+        case .add => return .ok(.integer(left + right))
+        case .subtract => return .ok(.integer(left - right))
+        case .multiply => return .ok(.integer(left * right))
+        case .divide => {
+            // Monkey inherits Go's behaviour here, which is a runtime panic.
+            // Reporting it is strictly better and costs nothing.
+            if right == 0 {
+                return .err(.failed(.divisionByZero))
+            }
+            return .ok(.integer(left / right))
+        }
+        case .lessThan => return .ok(.boolean(left < right))
+        case .greaterThan => return .ok(.boolean(left > right))
+        case .equal => return .ok(.boolean(left == right))
+        case .notEqual => return .ok(.boolean(left != right))
+    }
+}
+
+func evalStringInfix(_ left: string, _ op: InfixOperator, _ right: string) -> Result[Object, Signal] {
+    match op {
+        case .add => return .ok(.text(left + right))
+        // The reference implementation rejects `==` on strings, because it
+        // compares interface pointers and never reaches the string case.
+        // Comparing the values is what the language plainly means.
+        case .equal => return .ok(.boolean(left == right))
+        case .notEqual => return .ok(.boolean(left != right))
+        case _ => {
+            return .err(.failed(.unknownInfixOperator(left: .text, op: op, right: .text)))
+        }
+    }
+}
+
+/// Value equality, used by `==` and `!=`.
+///
+/// Aggregates compare unequal unless they are the same value, matching Monkey's
+/// pointer comparison; only the scalar kinds have a structural answer.
+func objectsEqual(_ left: &Object, _ right: &Object) -> bool {
+    match left {
+        case .null => {
+            match right {
+                case .null => return true
+                case _ => return false
+            }
+        }
+        case .integer(lhs) => {
+            match right {
+                case .integer(rhs) => return *lhs == *rhs
+                case _ => return false
+            }
+        }
+        case .boolean(lhs) => {
+            match right {
+                case .boolean(rhs) => return *lhs == *rhs
+                case _ => return false
+            }
+        }
+        case .text(lhs) => {
+            match right {
+                case .text(rhs) => return *lhs == *rhs
+                case _ => return false
+            }
+        }
+        case .builtin(lhs) => {
+            match right {
+                case .builtin(rhs) => return *lhs == *rhs
+                case _ => return false
+            }
+        }
+        case _ => return false
+    }
+}
+
+func evalIndex(_ collection: Object, _ index: Object) -> Result[Object, Signal] {
+    match &collection {
+        case .array(elements) => {
+            match &index {
+                case .integer(position) => {
+                    if *position < 0 {
+                        return .ok(.null)
+                    }
+                    // Out of range yields null rather than failing, as Monkey
+                    // specifies.
+                    match elements.get(*position as usize) {
+                        case .some(found) => return .ok(found.clone())
+                        case .none => return .ok(.null)
+                    }
+                }
+                case _ => {}
+            }
+        }
+        case .hash(entries) => {
+            match index.toHashKey() {
+                case .some(key) => {
+                    match entries.get(&key) {
+                        case .some(found) => return .ok(found.clone())
+                        case .none => return .ok(.null)
+                    }
+                }
+                case .none => return .err(.failed(.unusableAsHashKey(index.kind())))
+            }
+        }
+        case _ => {}
+    }
+    return .err(.failed(.unsupportedIndex(collection: collection.kind(), index: index.kind())))
+}

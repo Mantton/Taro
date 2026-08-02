@@ -1,0 +1,104 @@
+/// Canonical text for a parsed tree.
+///
+/// Every subexpression is fully parenthesized, so the output shows exactly how
+/// the parser grouped the input. `1 + 2 * 3` renders as `(1 + (2 * 3))`, which
+/// makes a precedence mistake visible rather than plausible.
+
+func renderList(_ items: &List[Expression], _ separator: string) -> string {
+    var out = ""
+    var first = true
+    for item in items {
+        if !first {
+            out = out + separator
+        }
+        out = out + renderExpression(item)
+        first = false
+    }
+    return out
+}
+
+func renderBlock(_ statements: &List[Statement]) -> string {
+    var out = ""
+    for statement in statements {
+        out = out + renderStatement(statement)
+    }
+    return out
+}
+
+public func renderExpression(_ expression: &Expression) -> string {
+    match expression {
+        case .identifier(name) => return *name
+        case .integer(value) => return std.sprintf("%v", *value)
+        case .text(value) => return std.sprintf("\"%s\"", *value)
+        case .boolean(value) => {
+            if *value { return "true" }
+            return "false"
+        }
+        case .prefix(op, operand) => {
+            return "(" + op.symbol() + renderExpression(*operand) + ")"
+        }
+        case .infix(left, op, right) => {
+            return "(" + renderExpression(*left) + " " + op.symbol() + " "
+                + renderExpression(*right) + ")"
+        }
+        case .conditional(condition, consequence, alternative, hasAlternative) => {
+            // The space matters: the reference implementation writes `if`
+            // straight against the condition, so an atomic one renders as `ifx`
+            // and the output stops being readable back.
+            var out = "if " + renderExpression(*condition) + " " + renderBlock(consequence)
+            if *hasAlternative {
+                out = out + " else " + renderBlock(alternative)
+            }
+            return out
+        }
+        case .function(parameters, body) => {
+            var names = ""
+            var first = true
+            for name in parameters {
+                if !first {
+                    names = names + ", "
+                }
+                names = names + *name
+                first = false
+            }
+            return "fn(" + names + ") " + renderBlock(body)
+        }
+        case .call(callee, arguments) => {
+            return renderExpression(*callee) + "(" + renderList(arguments, ", ") + ")"
+        }
+        case .array(elements) => {
+            return "[" + renderList(elements, ", ") + "]"
+        }
+        case .index(collection, index) => {
+            return "(" + renderExpression(*collection) + "[" + renderExpression(*index) + "])"
+        }
+        case .hash(entries) => {
+            var out = ""
+            var first = true
+            for entry in entries {
+                if !first {
+                    out = out + ", "
+                }
+                out = out + renderExpression(&entry.key) + ":" + renderExpression(&entry.value)
+                first = false
+            }
+            return "{" + out + "}"
+        }
+    }
+}
+
+public func renderStatement(_ statement: &Statement) -> string {
+    match statement {
+        case .bind(name, value) => {
+            return "let " + *name + " = " + renderExpression(value) + ";"
+        }
+        case .produce(value) => {
+            return "return " + renderExpression(value) + ";"
+        }
+        case .expression(value) => return renderExpression(value)
+    }
+}
+
+public func renderProgram(_ program: &Program) -> string {
+    return renderBlock(&program.statements)
+}

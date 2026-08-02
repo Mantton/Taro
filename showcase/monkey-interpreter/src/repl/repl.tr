@@ -1,0 +1,209 @@
+import monkey.ast.{renderProgram, endsWithBinding}
+import monkey.lexer.Lexer
+import monkey.parser.{Parser, ParseError}
+import monkey.eval.Evaluator
+import monkey.object.{Object, Environment, boxEnvironment}
+import monkey.token.TokenTag
+
+const PROMPT: string = ">> "
+
+/// What the user typed, once it has been classified.
+enum Input {
+    /// A directive to the REPL rather than a Monkey expression.
+    case command(name: string, argument: string)
+    /// Monkey source to evaluate.
+    case source(string)
+    /// Nothing to do.
+    case blank
+}
+
+/// A read-eval-print session.
+///
+/// The environment lives for the whole session, so bindings made on one line are
+/// visible from the next. The reference implementation reaches this point by
+/// chapter 3; keeping it here from the start costs nothing.
+public struct Repl {
+    env: &mut Environment
+    evaluator: Evaluator
+    /// Prints the parse tree alongside the value, for seeing how input grouped.
+    showTree: bool
+}
+
+impl Repl {
+    public func new() -> Self {
+        return Repl {
+            env: boxEnvironment(Environment.new()),
+            evaluator: Evaluator(),
+            showTree: false,
+        }
+    }
+
+    /// Reads, evaluates and prints until the input ends or the user quits.
+    public func run(&mut self) {
+        std.print(GREETING)
+
+        var reader = std.io.BufReader(std.io.stdin())
+        loop {
+            std.print(PROMPT)
+
+            let line = match reader.readLine() {
+                case .ok(read) => {
+                    match read {
+                        // End of input: a piped script ran out, or the user
+                        // pressed Ctrl-D.
+                        case .none => break
+                        case .some(text) => text
+                    }
+                }
+                case .err(error) => {
+                    std.printf("cannot read input: %v\n", error)
+                    break
+                }
+            }
+
+            match classify(line) {
+                case .blank => {}
+                case .command(name, argument) => {
+                    if !self.runCommand(name, argument) {
+                        break
+                    }
+                }
+                case .source(text) => self.evaluate(text)
+            }
+        }
+
+        std.print("\n")
+    }
+
+    /// Runs a REPL directive, answering whether the session continues.
+    func runCommand(&mut self, _ name: string, _ argument: string) -> bool {
+        if name == "help" {
+            std.print(HELP)
+            return true
+        }
+        if name == "tree" {
+            self.showTree = !self.showTree
+            if self.showTree {
+                std.print("showing the parse tree\n")
+            } else {
+                std.print("hiding the parse tree\n")
+            }
+            return true
+        }
+        if name == "tokens" {
+            printTokens(argument)
+            return true
+        }
+        if name == "reset" {
+            self.env = boxEnvironment(Environment.new())
+            std.print("environment cleared\n")
+            return true
+        }
+        if name == "quit" || name == "exit" {
+            return false
+        }
+
+        std.printf("unknown command :%s — try :help\n", name)
+        return true
+    }
+
+    /// Parses and evaluates one line, printing whatever comes back.
+    func evaluate(&mut self, _ source: string) {
+        var parser = Parser(Lexer(source))
+        let program = match parser.parseProgram() {
+            case .ok(parsed) => parsed
+            case .err(errors) => {
+                printParseErrors(source, &errors)
+                return
+            }
+        }
+
+        if self.showTree {
+            std.printf("tree: %s\n", renderProgram(&program))
+        }
+
+        match self.evaluator.run(&program, self.env) {
+            case .ok(value) => {
+                // A binding yields nothing to echo. Everything else yields a
+                // value, and `null` is one — hiding it would make `puts()` and a
+                // conditional with no match look like they did nothing at all.
+                if !endsWithBinding(&program) {
+                    std.printf("%s\n", value.inspect())
+                }
+            }
+            case .err(error) => std.printf("error: %s\n", error.describe())
+        }
+    }
+}
+
+/// Decides what a line of input means.
+func classify(_ line: string) -> Input {
+    let trimmed = line.trim()
+    if trimmed.isEmpty() {
+        return .blank
+    }
+    if !trimmed.startsWith(":") {
+        return .source(trimmed)
+    }
+
+    // `substring` takes a count, not an end index.
+    let body = trimmed.substring(1 as usize, trimmed.byteLen() - (1 as usize))
+    match body.find(" ") {
+        case .some(space) => {
+            let name = body.substring(0 as usize, space)
+            let rest = space + (1 as usize)
+            let argument = body.substring(rest, body.byteLen() - rest).trim()
+            return .command(name: name, argument: argument)
+        }
+        case .none => return .command(name: body, argument: "")
+    }
+}
+
+/// Reports parse failures with the offending column marked.
+///
+/// The reference implementation prints a list of messages and an ASCII monkey.
+/// The messages here carry a position, so the line itself can be shown with the
+/// problem pointed at directly.
+func printParseErrors(_ source: string, _ errors: &List[ParseError]) {
+    for error in errors {
+        std.printf("  %s\n", error.message)
+        // Only single-line input reaches the REPL, so the caret lines up
+        // whenever the position is within the text.
+        if error.position.line == (1 as usize) && error.position.column <= source.byteLen() {
+            std.printf("    %s\n", source)
+            var caret = ""
+            var column = 1 as usize
+            while column < error.position.column {
+                caret = caret + " "
+                column += 1 as usize
+            }
+            std.printf("    %s^\n", caret)
+        }
+    }
+}
+
+/// Prints the token stream for a source, which the book's REPL does first.
+func printTokens(_ source: string) {
+    if source.isEmpty() {
+        std.print("usage: :tokens <source>\n")
+        return
+    }
+
+    var lexer = Lexer(source)
+    loop {
+        let token = lexer.nextToken()
+        if token.kind.tag() == TokenTag.eof {
+            break
+        }
+        std.printf(
+            "  %v:%v %s\n",
+            token.position.line,
+            token.position.column,
+            token.kind.describe(),
+        )
+    }
+}
+
+const GREETING: string = "Monkey, in Taro.\nType :help for commands, :quit to leave.\n"
+
+const HELP: string = "  :help           show this message\n  :tokens <src>   print the token stream for <src>\n  :tree           toggle printing the parse tree\n  :reset          forget every binding\n  :quit           leave\n"

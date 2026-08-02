@@ -1,0 +1,287 @@
+import monkey.lexer.Lexer
+import monkey.parser.Parser
+import monkey.eval.{Evaluator, EvalError}
+import monkey.object.{Object, Environment, boxEnvironment}
+import std.testing.{assertTrue, assertEqual}
+
+/// Evaluates a source and renders the result, or the first failure.
+func eval(_ source: string) -> string {
+    var parser = Parser(Lexer(source))
+    let program = match parser.parseProgram() {
+        case .ok(parsed) => parsed
+        case .err(errors) => {
+            if errors.isEmpty() {
+                return "parse error"
+            }
+            return std.sprintf("parse error: %s", errors.at(0 as usize).message)
+        }
+    }
+
+    let env = boxEnvironment(Environment.new())
+    var evaluator = Evaluator()
+    match evaluator.run(&program, env) {
+        case .ok(value) => return value.inspect()
+        case .err(error) => return std.sprintf("error: %s", error.describe())
+    }
+}
+
+func check(_ source: string, _ expected: string) {
+    let actual = eval(source)
+    assertEqual(actual, expected, std.sprintf("%s => %s (want %s)", source, actual, expected))
+}
+
+@test
+func integerArithmetic() {
+    check("5", "5")
+    check("-5", "-5")
+    check("5 + 5 + 5 + 5 - 10", "10")
+    check("2 * 2 * 2 * 2 * 2", "32")
+    check("50 / 2 * 2 + 10", "60")
+    check("3 * (3 * 3) + 10", "37")
+    check("(5 + 10 * 2 + 15 / 3) * 2 + -10", "50")
+}
+
+@test
+func booleanLogic() {
+    check("true", "true")
+    check("1 < 2", "true")
+    check("1 > 2", "false")
+    check("1 == 1", "true")
+    check("1 != 1", "false")
+    check("true == true", "true")
+    check("(1 < 2) == true", "true")
+    check("!true", "false")
+    check("!5", "false")
+    check("!!5", "true")
+}
+
+@test
+func truthinessFollowsMonkey() {
+    // Only `false` and `null` are falsey; zero is truthy.
+    check("if (0) { \"yes\" } else { \"no\" }", "yes")
+    check("if (\"\") { \"yes\" } else { \"no\" }", "yes")
+    check("if (false) { \"yes\" } else { \"no\" }", "no")
+}
+
+@test
+func conditionalsWithoutAlternativeYieldNull() {
+    check("if (true) { 10 }", "10")
+    check("if (false) { 10 }", "null")
+    check("if (1 < 2) { 10 } else { 20 }", "10")
+}
+
+@test
+func returnUnwindsToTheCallBoundary() {
+    check("return 10;", "10")
+    check("return 10; 9;", "10")
+    check("9; return 2 * 5; 9;", "10")
+    // The inner `return` must escape both blocks without the outer one running.
+    check("if (10 > 1) { if (10 > 1) { return 10; } return 1; }", "10")
+    check("let f = fn() { return 1; 2 }; f()", "1")
+    // A `return` inside a call does not unwind past that call.
+    check("let f = fn() { return 1; }; let g = fn() { f(); 2 }; g()", "2")
+}
+
+@test
+func bindings() {
+    check("let a = 5; a;", "5")
+    check("let a = 5 * 5; a;", "25")
+    check("let a = 5; let b = a; b;", "5")
+    check("let a = 5; let b = a; let c = a + b + 5; c;", "15")
+}
+
+@test
+func functionsAndClosures() {
+    check("let identity = fn(x) { x }; identity(5)", "5")
+    check("let identity = fn(x) { return x; }; identity(5)", "5")
+    check("let double = fn(x) { x * 2 }; double(5)", "10")
+    check("let add = fn(x, y) { x + y }; add(5 + 5, add(5, 5))", "20")
+    check("fn(x) { x }(5)", "5")
+
+    // The closure keeps its defining scope alive after that call returned.
+    check("let adder = fn(x) { fn(y) { x + y } }; adder(2)(3)", "5")
+    check("let counter = fn() { let n = 7; fn() { n } }; counter()()", "7")
+}
+
+@test
+func recursionSeesItsOwnBinding() {
+    // The function is bound after its literal is evaluated, so this only works
+    // if the captured environment is shared rather than copied.
+    check("let fact = fn(n) { if (n < 2) { 1 } else { n * fact(n - 1) } }; fact(10)", "3628800")
+    check("let fib = fn(n) { if (n < 2) { n } else { fib(n - 1) + fib(n - 2) } }; fib(15)", "610")
+}
+
+@test
+func strings() {
+    check("\"hello world\"", "hello world")
+    check("\"mon\" + \"key\"", "monkey")
+    check("len(\"\")", "0")
+    check("len(\"four\")", "4")
+    // The reference implementation cannot compare strings; this can.
+    check("\"a\" == \"a\"", "true")
+    check("\"a\" != \"b\"", "true")
+}
+
+@test
+func arrays() {
+    check("[1, 2 * 2, 3 + 3]", "[1, 4, 6]")
+    check("[1, 2, 3][0]", "1")
+    check("[1, 2, 3][2]", "3")
+    check("let i = 0; [1][i];", "1")
+    check("[1, 2, 3][1 + 1];", "3")
+    check("let xs = [1, 2, 3]; xs[0] + xs[1] + xs[2];", "6")
+    // Out of range is null, not a failure.
+    check("[1, 2, 3][3]", "null")
+    check("[1, 2, 3][-1]", "null")
+}
+
+@test
+func arrayBuiltins() {
+    check("len([1, 2, 3])", "3")
+    check("first([1, 2, 3])", "1")
+    check("last([1, 2, 3])", "3")
+    check("rest([1, 2, 3])", "[2, 3]")
+    check("rest(rest([1, 2, 3]))", "[3]")
+    check("push([1, 2], 3)", "[1, 2, 3]")
+    check("first([])", "null")
+    check("last([])", "null")
+    check("rest([])", "null")
+    // `push` produces a new array; the original is untouched.
+    check("let xs = [1]; push(xs, 2); xs", "[1]")
+}
+
+@test
+func hashes() {
+    check("{\"one\": 1}[\"one\"]", "1")
+    check("{\"one\": 10 - 9}[\"one\"]", "1")
+    check("{true: 5}[true]", "5")
+    check("{false: 5}[false]", "5")
+    check("{1: 5}[1]", "5")
+    check("{}[\"missing\"]", "null")
+    check("{\"one\": 1}[\"two\"]", "null")
+    // A key's kind is part of its identity, so 1 and true stay distinct.
+    check("let h = {1: \"int\", true: \"bool\"}; h[1] + \"/\" + h[true]", "int/bool")
+}
+
+@test
+func hashKeysDoNotCollide() {
+    // The reference implementation keys its map on a 64-bit hash of the string
+    // and drops the string itself, so any two colliding keys become one entry.
+    // Keeping the value means equality decides, as it should.
+    check(
+        "let h = {\"a\": 1, \"b\": 2, \"c\": 3}; h[\"a\"] + h[\"b\"] + h[\"c\"]",
+        "6",
+    )
+    check("len([{\"k\": 1}[\"k\"], {\"k\": 2}[\"k\"]])", "2")
+}
+
+@test
+func higherOrderFunctions() {
+    let map = "let map = fn(xs, f) {"
+        + "  let iter = fn(remaining, acc) {"
+        + "    if (len(remaining) == 0) { acc }"
+        + "    else { iter(rest(remaining), push(acc, f(first(remaining)))) }"
+        + "  };"
+        + "  iter(xs, [])"
+        + "};"
+    check(map + "map([1, 2, 3, 4], fn(x) { x * x })", "[1, 4, 9, 16]")
+
+    let reduce = "let reduce = fn(xs, initial, f) {"
+        + "  let iter = fn(remaining, acc) {"
+        + "    if (len(remaining) == 0) { acc }"
+        + "    else { iter(rest(remaining), f(acc, first(remaining))) }"
+        + "  };"
+        + "  iter(xs, initial)"
+        + "};"
+    check(reduce + "reduce([1, 2, 3, 4, 5], 0, fn(acc, x) { acc + x })", "15")
+}
+
+@test
+func shadowingResolvesToTheInnermostBinding() {
+    check("let len = fn(x) { 99 }; len([1, 2, 3])", "99")
+    check("let x = 1; let f = fn(x) { x }; f(2)", "2")
+    check("let x = 1; let f = fn(x) { x }; f(2); x", "1")
+}
+
+@test
+func errorsCarryTheirCause() {
+    check("5 + true", "error: type mismatch: INTEGER + BOOLEAN")
+    check("5 + true; 5;", "error: type mismatch: INTEGER + BOOLEAN")
+    check("-true", "error: unknown operator: -BOOLEAN")
+    check("true + false", "error: unknown operator: BOOLEAN + BOOLEAN")
+    check("if (10 > 1) { true + false; }", "error: unknown operator: BOOLEAN + BOOLEAN")
+    check("foobar", "error: identifier not found: foobar")
+    check("5(1)", "error: not a function: INTEGER")
+    check("{fn(x) { x }: 1}", "error: unusable as hash key: FUNCTION")
+    check("\"abc\"[0]", "error: index operator not supported: STRING[INTEGER]")
+}
+
+@test
+func errorsBeyondTheReferenceImplementation() {
+    // Go panics on integer division by zero; reporting it is a plain win.
+    check("10 / 0", "error: division by zero")
+    check("let f = fn(x, y) { x }; f(1)", "error: wrong number of arguments to `fn`: want 2, got 1")
+    check("let f = fn(x) { x }; f(1, 2)", "error: wrong number of arguments to `fn`: want 1, got 2")
+    check("first(1)", "error: argument to `first` must be ARRAY, got INTEGER")
+    check("len(1)", "error: argument to `len` not supported, got INTEGER")
+    check("len()", "error: wrong number of arguments to `len`: want 1, got 0")
+}
+
+@test
+func errorsUnwindLikeReturns() {
+    // A failure abandons the rest of the block without any per-statement check.
+    check("let f = fn() { 5 + true; 99 }; f()", "error: type mismatch: INTEGER + BOOLEAN")
+    check("let f = fn() { return 5 + true; }; f(); 1", "error: type mismatch: INTEGER + BOOLEAN")
+}
+
+@test
+func closuresSurviveHeapChurn() {
+    // Every closure keeps its defining environment alive, and those
+    // environments hold closures in turn. Building many of them and using one
+    // afterwards exercises whether the collector keeps a reachable cycle.
+    let source = "let makeAdder = fn(x) { fn(y) { x + y } };"
+        + "let build = fn(n, acc) {"
+        + "  if (n == 0) { acc }"
+        + "  else { build(n - 1, push(acc, makeAdder(n))) }"
+        + "};"
+        + "let adders = build(100, []);"
+        + "first(adders)(1) + last(adders)(1)"
+    // The first adder closed over 100, the last over 1.
+    check(source, "103")
+}
+
+
+@test
+func deepRecursionIsReported() {
+    // A recursion the interpreter can handle.
+    check("let countdown = fn(n) { if (n == 0) { 0 } else { countdown(n - 1) } }; countdown(100)", "0")
+    // One it cannot: the guard reports it instead of exhausting the stack.
+    check(
+        "let countdown = fn(n) { if (n == 0) { 0 } else { countdown(n - 1) } }; countdown(500)",
+        "error: call depth exceeded 128 nested calls",
+    )
+    check(
+        "let forever = fn() { forever() }; forever()",
+        "error: call depth exceeded 128 nested calls",
+    )
+}
+
+@test
+func nullIsAValueWorthShowing() {
+    // A conditional with no match, an empty body and `puts` all yield null.
+    // Only a `let` yields nothing, which is a question about syntax rather than
+    // about the value, so `endsWithBinding` answers it separately.
+    check("if (false) { 1 }", "null")
+    check("fn() { }()", "null")
+    check("let f = fn() { }; f()", "null")
+}
+
+@test
+func builtinAcceptingSeveralKindsSaysSo() {
+    // `len` takes a string or an array, so its failure must not claim it wanted
+    // one particular kind.
+    check("len({})", "error: argument to `len` not supported, got HASH")
+    check("len(true)", "error: argument to `len` not supported, got BOOLEAN")
+    // A builtin that really does take one kind still names it.
+    check("first(1)", "error: argument to `first` must be ARRAY, got INTEGER")
+}

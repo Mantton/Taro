@@ -1,0 +1,95 @@
+import monkey.object.{Object, Builtin, boxArray}
+
+/// Applies a builtin to already-evaluated arguments.
+///
+/// Arity is checked once, from the builtin's own declaration, rather than
+/// repeated at the top of every implementation as the reference version does.
+func callBuiltin(_ builtin: Builtin, _ arguments: List[Object]) -> Result[Object, Signal] {
+    if !builtin.isVariadic() && arguments.len() != builtin.arity() {
+        return .err(.failed(.wrongArgumentCount(
+            function: builtin.name(),
+            expected: builtin.arity(),
+            found: arguments.len(),
+        )))
+    }
+
+    match builtin {
+        case .len => {
+            let argument = arguments.at(0 as usize)
+            match argument {
+                case .text(value) => return .ok(.integer(value.byteLen() as int64))
+                case .array(elements) => return .ok(.integer(elements.len() as int64))
+                // `len` takes a string or an array, so naming a single
+                // expected kind would misdescribe it.
+                case _ => {
+                    return .err(.failed(.unsupportedArgument(
+                        function: "len",
+                        found: argument.kind(),
+                    )))
+                }
+            }
+        }
+
+        case .first => {
+            let elements = arrayArgument("first", &arguments)!
+            match elements.get(0 as usize) {
+                case .some(found) => return .ok(found.clone())
+                case .none => return .ok(.null)
+            }
+        }
+
+        case .last => {
+            let elements = arrayArgument("last", &arguments)!
+            if elements.isEmpty() {
+                return .ok(.null)
+            }
+            return .ok(elements.at(elements.len() - (1 as usize)).clone())
+        }
+
+        case .rest => {
+            let elements = arrayArgument("rest", &arguments)!
+            if elements.isEmpty() {
+                return .ok(.null)
+            }
+            var tail = List[Object]()
+            var position = 1 as usize
+            while position < elements.len() {
+                tail.append(elements.at(position).clone())
+                position += 1 as usize
+            }
+            return .ok(.array(boxArray(tail)))
+        }
+
+        case .push => {
+            let elements = arrayArgument("push", &arguments)!
+            var extended = List[Object]()
+            for element in elements {
+                extended.append(element.clone())
+            }
+            extended.append(arguments.at(1 as usize).clone())
+            return .ok(.array(boxArray(extended)))
+        }
+
+        case .puts => {
+            for argument in &arguments {
+                std.printf("%s\n", argument.inspect())
+            }
+            return .ok(.null)
+        }
+    }
+}
+
+/// The first argument as an array, or a typed failure naming the builtin.
+func arrayArgument(_ name: string, _ arguments: &List[Object]) -> Result[&List[Object], Signal] {
+    let argument = arguments.at(0 as usize)
+    match argument {
+        case .array(elements) => return .ok(*elements)
+        case _ => {
+            return .err(.failed(.wrongArgumentType(
+                function: name,
+                expected: .array,
+                found: argument.kind(),
+            )))
+        }
+    }
+}

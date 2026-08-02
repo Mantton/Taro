@@ -1,0 +1,59 @@
+/// A function the interpreter supplies rather than the program defining it.
+///
+/// The reference implementation keeps these in a `map[string]*Builtin` holding
+/// Go closures, so adding a builtin without wiring it up is a silent omission.
+/// Naming them makes both the lookup and the dispatch exhaustive: a new case
+/// fails to compile until it is implemented.
+public enum Builtin: std.marker.Copy, std.ops.PartialEq {
+    case len
+    case first
+    case last
+    case rest
+    case push
+    case puts
+}
+
+impl Builtin {
+    public func name(&self) -> string {
+        match self {
+            case .len => "len"
+            case .first => "first"
+            case .last => "last"
+            case .rest => "rest"
+            case .push => "push"
+            case .puts => "puts"
+        }
+    }
+
+    /// How many arguments the builtin takes.
+    public func arity(&self) -> usize {
+        match self {
+            case .len => 1 as usize
+            case .first => 1 as usize
+            case .last => 1 as usize
+            case .rest => 1 as usize
+            case .push => 2 as usize
+            // `puts` prints however many it is given.
+            case .puts => 0 as usize
+        }
+    }
+
+    /// Whether the builtin accepts any number of arguments.
+    public func isVariadic(&self) -> bool {
+        match self {
+            case .puts => true
+            case _ => false
+        }
+    }
+}
+
+/// Resolves a name to a builtin, or `.none` when no builtin has that name.
+public func builtinNamed(_ name: string) -> Optional[Builtin] {
+    if name == "len" { return .some(.len) }
+    if name == "first" { return .some(.first) }
+    if name == "last" { return .some(.last) }
+    if name == "rest" { return .some(.rest) }
+    if name == "push" { return .some(.push) }
+    if name == "puts" { return .some(.puts) }
+    return .none
+}

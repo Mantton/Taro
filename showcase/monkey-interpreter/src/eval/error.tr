@@ -1,0 +1,107 @@
+import monkey.ast.{PrefixOperator, InfixOperator}
+import monkey.object.{Object, ObjectKind}
+
+/// Why evaluation failed.
+///
+/// The reference implementation makes errors a kind of object carrying a
+/// formatted string, which means every call site must remember to check for one
+/// and the message is the only structure there is. Naming each failure keeps the
+/// cause inspectable — a REPL can react to `identifierNotFound` specifically —
+/// and makes the message a rendering choice rather than the error itself.
+public enum EvalError {
+    case identifierNotFound(string)
+    case unknownPrefixOperator(op: PrefixOperator, operand: ObjectKind)
+    case unknownInfixOperator(left: ObjectKind, op: InfixOperator, right: ObjectKind)
+    case typeMismatch(left: ObjectKind, op: InfixOperator, right: ObjectKind)
+    case notAFunction(ObjectKind)
+    case unusableAsHashKey(ObjectKind)
+    case unsupportedIndex(collection: ObjectKind, index: ObjectKind)
+    case wrongArgumentCount(function: string, expected: usize, found: usize)
+    case wrongArgumentType(function: string, expected: ObjectKind, found: ObjectKind)
+    /// A builtin that accepts several kinds was given none of them.
+    case unsupportedArgument(function: string, found: ObjectKind)
+    case divisionByZero
+    case callDepthExceeded(usize)
+}
+
+impl EvalError {
+    public func describe(&self) -> string {
+        match self {
+            case .identifierNotFound(name) => {
+                return std.sprintf("identifier not found: %s", *name)
+            }
+            case .unknownPrefixOperator(op, operand) => {
+                return std.sprintf("unknown operator: %s%s", op.symbol(), operand.describe())
+            }
+            case .unknownInfixOperator(left, op, right) => {
+                return std.sprintf(
+                    "unknown operator: %s %s %s",
+                    left.describe(),
+                    op.symbol(),
+                    right.describe(),
+                )
+            }
+            case .typeMismatch(left, op, right) => {
+                return std.sprintf(
+                    "type mismatch: %s %s %s",
+                    left.describe(),
+                    op.symbol(),
+                    right.describe(),
+                )
+            }
+            case .notAFunction(kind) => {
+                return std.sprintf("not a function: %s", kind.describe())
+            }
+            case .unusableAsHashKey(kind) => {
+                return std.sprintf("unusable as hash key: %s", kind.describe())
+            }
+            case .unsupportedIndex(collection, index) => {
+                return std.sprintf(
+                    "index operator not supported: %s[%s]",
+                    collection.describe(),
+                    index.describe(),
+                )
+            }
+            case .wrongArgumentCount(function, expected, found) => {
+                return std.sprintf(
+                    "wrong number of arguments to `%s`: want %v, got %v",
+                    *function,
+                    *expected,
+                    *found,
+                )
+            }
+            case .wrongArgumentType(function, expected, found) => {
+                return std.sprintf(
+                    "argument to `%s` must be %s, got %s",
+                    *function,
+                    expected.describe(),
+                    found.describe(),
+                )
+            }
+            case .unsupportedArgument(function, found) => {
+                return std.sprintf(
+                    "argument to `%s` not supported, got %s",
+                    *function,
+                    found.describe(),
+                )
+            }
+            case .divisionByZero => return "division by zero"
+            case .callDepthExceeded(limit) => {
+                return std.sprintf("call depth exceeded %v nested calls", *limit)
+            }
+        }
+    }
+}
+
+/// Why evaluation stopped before reaching the end of a block.
+///
+/// `return` and a failure are both non-local exits: each abandons the rest of
+/// the block and unwinds. Carrying them on the same channel means `!` performs
+/// that unwinding, so no statement loop has to test whether the previous one
+/// produced a value or an error — the reference implementation checks both after
+/// every single evaluation. Only `applyFunction` intercepts `produced`, which is
+/// exactly where a `return` should stop.
+public enum Signal {
+    case failed(EvalError)
+    case produced(Object)
+}

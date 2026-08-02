@@ -1,0 +1,90 @@
+import monkey.ast.endsWithBinding
+import monkey.lexer.Lexer
+import monkey.parser.Parser
+import monkey.eval.Evaluator
+import monkey.object.{Environment, boxEnvironment}
+import monkey.repl.Repl
+
+/// Parses and evaluates a whole source, printing the result or the failure.
+///
+/// Answers whether it succeeded, so a script can set the exit status.
+func runSource(_ source: string, _ origin: string) -> bool {
+    var parser = Parser(Lexer(source))
+    let program = match parser.parseProgram() {
+        case .ok(parsed) => parsed
+        case .err(errors) => {
+            for error in &errors {
+                std.eprintf(
+                    "%s:%v:%v: %s\n",
+                    origin,
+                    error.position.line,
+                    error.position.column,
+                    error.message,
+                )
+            }
+            return false
+        }
+    }
+
+    let env = boxEnvironment(Environment.new())
+    var evaluator = Evaluator()
+    match evaluator.run(&program, env) {
+        case .ok(value) => {
+            if !endsWithBinding(&program) {
+                std.printf("%s\n", value.inspect())
+            }
+            return true
+        }
+        case .err(error) => {
+            std.eprintf("%s: %s\n", origin, error.describe())
+            return false
+        }
+    }
+}
+
+func usage() {
+    std.eprint("usage: monkey [file | -e <source>]\n")
+    std.eprint("  with no arguments, starts a REPL\n")
+}
+
+func main() {
+    let arguments = std.env.args()
+
+    // No arguments: interactive session.
+    if arguments.len() <= (1 as usize) {
+        var repl = Repl()
+        repl.run()
+        return
+    }
+
+    let first = arguments.at(1 as usize)
+
+    if first == "-h" || first == "--help" {
+        usage()
+        return
+    }
+
+    if first == "-e" {
+        if arguments.len() < (3 as usize) {
+            std.eprint("error: -e needs a source argument\n")
+            usage()
+            std.process.exit(2)
+        }
+        if !runSource(arguments.at(2 as usize), "-e") {
+            std.process.exit(1)
+        }
+        return
+    }
+
+    match std.fs.readToString(first) {
+        case .ok(source) => {
+            if !runSource(source, first) {
+                std.process.exit(1)
+            }
+        }
+        case .err(error) => {
+            std.eprintf("cannot read %s: %v\n", first, error)
+            std.process.exit(1)
+        }
+    }
+}

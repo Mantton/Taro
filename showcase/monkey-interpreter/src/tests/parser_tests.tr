@@ -1,0 +1,262 @@
+import monkey.ast.renderProgram
+import monkey.lexer.Lexer
+import monkey.parser.Parser
+import std.testing.{assertTrue, assertEqual}
+
+/// Parses a source and renders it back, fully parenthesized.
+///
+/// The rendering makes grouping explicit, so a precedence mistake shows up as a
+/// different string rather than as a plausible one.
+func parsed(_ source: string) -> string {
+    var parser = Parser(Lexer(source))
+    match parser.parseProgram() {
+        case .ok(program) => return renderProgram(&program)
+        case .err(errors) => {
+            if errors.isEmpty() {
+                return "error"
+            }
+            return std.sprintf("error: %s", errors.at(0 as usize).message)
+        }
+    }
+}
+
+func check(_ source: string, _ expected: string) {
+    let actual = parsed(source)
+    assertEqual(actual, expected, std.sprintf("%s => %s (want %s)", source, actual, expected))
+}
+
+/// The first failure, as `line:column message`.
+func firstError(_ source: string) -> string {
+    var parser = Parser(Lexer(source))
+    match parser.parseProgram() {
+        case .ok(_) => return "parsed"
+        case .err(errors) => {
+            if errors.isEmpty() {
+                return "no errors reported"
+            }
+            let error = errors.at(0 as usize)
+            return std.sprintf(
+                "%v:%v %s",
+                error.position.line,
+                error.position.column,
+                error.message,
+            )
+        }
+    }
+}
+
+func checkError(_ source: string, _ expected: string) {
+    let actual = firstError(source)
+    assertEqual(actual, expected, std.sprintf("%s => %s (want %s)", source, actual, expected))
+}
+
+/// How many failures a source produced.
+func errorCount(_ source: string) -> usize {
+    var parser = Parser(Lexer(source))
+    match parser.parseProgram() {
+        case .ok(_) => return 0 as usize
+        case .err(errors) => return errors.len()
+    }
+}
+
+@test
+func letAndReturnStatements() {
+    check("let x = 5;", "let x = 5;")
+    check("let y = true;", "let y = true;")
+    check("let foobar = y;", "let foobar = y;")
+    check("return 5;", "return 5;")
+    check("return true;", "return true;")
+    check("return foobar;", "return foobar;")
+    // A semicolon is optional at the end of input.
+    check("let x = 5", "let x = 5;")
+    check("return 5", "return 5;")
+}
+
+@test
+func literalsAndIdentifiers() {
+    check("foobar;", "foobar")
+    check("5;", "5")
+    check("true;", "true")
+    check("false;", "false")
+    check("\"hello world\";", "\"hello world\"")
+}
+
+@test
+func prefixOperators() {
+    check("!5;", "(!5)")
+    check("-15;", "(-15)")
+    check("!foobar;", "(!foobar)")
+    check("-foobar;", "(-foobar)")
+    check("!true;", "(!true)")
+    check("!false;", "(!false)")
+    // Prefix operators nest.
+    check("!-a", "(!(-a))")
+    check("--5", "(-(-5))")
+    check("!!true", "(!(!true))")
+}
+
+@test
+func infixOperators() {
+    check("5 + 5;", "(5 + 5)")
+    check("5 - 5;", "(5 - 5)")
+    check("5 * 5;", "(5 * 5)")
+    check("5 / 5;", "(5 / 5)")
+    check("5 > 5;", "(5 > 5)")
+    check("5 < 5;", "(5 < 5)")
+    check("5 == 5;", "(5 == 5)")
+    check("5 != 5;", "(5 != 5)")
+    check("true == true", "(true == true)")
+    check("true != false", "(true != false)")
+}
+
+@test
+func operatorPrecedence() {
+    // The reference implementation's precedence table, rendered.
+    check("-a * b", "((-a) * b)")
+    check("a + b + c", "((a + b) + c)")
+    check("a + b - c", "((a + b) - c)")
+    check("a * b * c", "((a * b) * c)")
+    check("a * b / c", "((a * b) / c)")
+    check("a + b / c", "(a + (b / c))")
+    check("a + b * c + d / e - f", "(((a + (b * c)) + (d / e)) - f)")
+    check("5 > 4 == 3 < 4", "((5 > 4) == (3 < 4))")
+    check("5 < 4 != 3 > 4", "((5 < 4) != (3 > 4))")
+    check("3 + 4 * 5 == 3 * 1 + 4 * 5", "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))")
+    check("3 > 5 == false", "((3 > 5) == false)")
+    check("3 < 5 == true", "((3 < 5) == true)")
+}
+
+@test
+func groupingOverridesPrecedence() {
+    check("1 + (2 + 3) + 4", "((1 + (2 + 3)) + 4)")
+    check("(5 + 5) * 2", "((5 + 5) * 2)")
+    check("2 / (5 + 5)", "(2 / (5 + 5))")
+    check("(5 + 5) * 2 * (5 + 5)", "(((5 + 5) * 2) * (5 + 5))")
+    check("-(5 + 5)", "(-(5 + 5))")
+    check("!(true == true)", "(!(true == true))")
+}
+
+@test
+func multipleStatements() {
+    check("3 + 4; -5 * 5", "(3 + 4)((-5) * 5)")
+    check("let a = 1; let b = 2;", "let a = 1;let b = 2;")
+    check("return 1; return 2;", "return 1;return 2;")
+    // An empty source is an empty program, not a failure.
+    check("", "")
+    check(";", "error: expected an expression, found ';'")
+}
+
+@test
+func conditionals() {
+    check("if (x < y) { x }", "if (x < y) x")
+    check("if (x < y) { x } else { y }", "if (x < y) x else y")
+    // An empty branch is allowed and renders as nothing.
+    check("if (x) { }", "if x ")
+    // Several statements in a branch.
+    check("if (x) { a; b }", "if x ab")
+    // Conditionals nest, and `else` binds to the nearest `if`.
+    check("if (a) { if (b) { c } else { d } }", "if a if b c else d")
+    // A conditional is an expression, so it can appear inside one.
+    check("let x = if (a) { 1 } else { 2 };", "let x = if a 1 else 2;")
+}
+
+@test
+func functionLiterals() {
+    check("fn(x, y) { x + y; }", "fn(x, y) (x + y)")
+    check("fn() { }", "fn() ")
+    check("fn(x) { }", "fn(x) ")
+    check("fn(x, y, z) { }", "fn(x, y, z) ")
+    // A function literal is an expression.
+    check("let f = fn(x) { x };", "let f = fn(x) x;")
+    check("fn(x) { x }(5)", "fn(x) x(5)")
+    // Functions returning functions.
+    check("fn(x) { fn(y) { x + y } }", "fn(x) fn(y) (x + y)")
+}
+
+@test
+func callExpressions() {
+    check("add(1, 2 * 3, 4 + 5);", "add(1, (2 * 3), (4 + 5))")
+    check("add();", "add()")
+    check("add(1);", "add(1)")
+    check("a + add(b * c) + d", "((a + add((b * c))) + d)")
+    check("add(a, b, 1, 2 * 3, 4 + 5, add(6, 7 * 8))", "add(a, b, 1, (2 * 3), (4 + 5), add(6, (7 * 8)))")
+    check("add(a + b + c * d / f + g)", "add((((a + b) + ((c * d) / f)) + g))")
+    // Calls chain, binding tighter than any operator.
+    check("f(1)(2)", "f(1)(2)")
+    check("-f(1)", "(-f(1))")
+}
+
+@test
+func arraysAndIndexing() {
+    check("[1, 2 * 2, 3 + 3]", "[1, (2 * 2), (3 + 3)]")
+    check("[]", "[]")
+    check("[1]", "[1]")
+    check("myArray[1 + 1]", "(myArray[(1 + 1)])")
+    // Indexing binds tighter than arithmetic, and chains.
+    check("a * [1, 2, 3, 4][b * c] * d", "((a * ([1, 2, 3, 4][(b * c)])) * d)")
+    check("add(a * b[2], b[1], 2 * [1, 2][1])", "add((a * (b[2])), (b[1]), (2 * ([1, 2][1])))")
+    check("a[0][1]", "((a[0])[1])")
+    check("f(1)[0]", "(f(1)[0])")
+}
+
+@test
+func hashLiterals() {
+    check("{\"one\": 1, \"two\": 2}", "{\"one\":1, \"two\":2}")
+    check("{}", "{}")
+    check("{1: 1, 2: 2}", "{1:1, 2:2}")
+    check("{true: 1, false: 2}", "{true:1, false:2}")
+    // Values may be arbitrary expressions.
+    check("{\"one\": 0 + 1, \"two\": 10 - 8}", "{\"one\":(0 + 1), \"two\":(10 - 8)}")
+    // A hash literal in a statement position is still an expression, not a block.
+    check("let h = {\"a\": 1};", "let h = {\"a\":1};")
+}
+
+@test
+func failuresCarryAPosition() {
+    checkError("let x 5;", "1:7 expected '=', found integer 5")
+    checkError("let = 5;", "1:5 expected identifier after 'let', found '='")
+    checkError("let x = ;", "1:9 expected an expression, found ';'")
+    checkError("@", "1:1 expected an expression, found illegal character")
+    checkError("if x { }", "1:4 expected '(', found identifier 'x'")
+    checkError("if (x { }", "1:7 expected ')', found '{'")
+    checkError("fn(x { }", "1:6 expected ')', found '{'")
+    checkError("[1, 2", "1:6 expected ']', found end of input")
+    checkError("(1 + 2", "1:7 expected ')', found end of input")
+    checkError("{\"a\" 1}", "1:6 expected ':', found integer 1")
+}
+
+@test
+func positionsTrackAcrossLines() {
+    checkError("let a = 1;\nlet 2 = 3;", "2:5 expected identifier after 'let', found integer 2")
+    checkError("\n\n@", "3:1 expected an expression, found illegal character")
+}
+
+@test
+func severalFailuresAreAllReported() {
+    // Parsing continues past a bad statement, so one run reports more than the
+    // first problem.
+    assertTrue(errorCount("let = 1; let = 2;") >= (2 as usize), "both bindings should be reported")
+    assertTrue(errorCount("let x = 5;") == (0 as usize), "a valid source reports nothing")
+}
+
+@test
+func nestingIsBounded() {
+    // Deep nesting is reported rather than exhausting the native stack. The
+    // limit is well below where that happens.
+    var deep = "1"
+    var level = 0
+    while level < 400 {
+        deep = "(" + deep + " + 1)"
+        level += 1
+    }
+    assertTrue(errorCount(deep) > (0 as usize), "over-deep nesting is reported")
+
+    // Nesting under the limit still parses.
+    var shallow = "1"
+    var shallowLevel = 0
+    while shallowLevel < 100 {
+        shallow = "(" + shallow + " + 1)"
+        shallowLevel += 1
+    }
+    assertTrue(errorCount(shallow) == (0 as usize), "nesting under the limit parses")
+}

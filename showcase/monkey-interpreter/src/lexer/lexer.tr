@@ -1,0 +1,224 @@
+import monkey.token.{Token, TokenKind, Position, keywordKind}
+
+const BYTE_NUL: uint8 = 0
+const BYTE_TAB: uint8 = 9
+const BYTE_NEWLINE: uint8 = 10
+const BYTE_RETURN: uint8 = 13
+const BYTE_SPACE: uint8 = 32
+const BYTE_BANG: uint8 = 33
+const BYTE_QUOTE: uint8 = 34
+const BYTE_LPAREN: uint8 = 40
+const BYTE_RPAREN: uint8 = 41
+const BYTE_ASTERISK: uint8 = 42
+const BYTE_PLUS: uint8 = 43
+const BYTE_COMMA: uint8 = 44
+const BYTE_MINUS: uint8 = 45
+const BYTE_SLASH: uint8 = 47
+const BYTE_ZERO: uint8 = 48
+const BYTE_NINE: uint8 = 57
+const BYTE_COLON: uint8 = 58
+const BYTE_SEMICOLON: uint8 = 59
+const BYTE_LESS: uint8 = 60
+const BYTE_ASSIGN: uint8 = 61
+const BYTE_GREATER: uint8 = 62
+const BYTE_UPPER_A: uint8 = 65
+const BYTE_UPPER_Z: uint8 = 90
+const BYTE_LBRACKET: uint8 = 91
+const BYTE_RBRACKET: uint8 = 93
+const BYTE_UNDERSCORE: uint8 = 95
+const BYTE_LOWER_A: uint8 = 97
+const BYTE_LOWER_Z: uint8 = 122
+const BYTE_LBRACE: uint8 = 123
+const BYTE_RBRACE: uint8 = 125
+
+func isLetter(_ byte: uint8) -> bool {
+    if byte >= BYTE_LOWER_A && byte <= BYTE_LOWER_Z { return true }
+    if byte >= BYTE_UPPER_A && byte <= BYTE_UPPER_Z { return true }
+    return byte == BYTE_UNDERSCORE
+}
+
+func isDigit(_ byte: uint8) -> bool {
+    return byte >= BYTE_ZERO && byte <= BYTE_NINE
+}
+
+/// Whether a byte may continue an identifier already begun.
+///
+/// The reference implementation reuses its letter test here, so `add5` lexes as
+/// `add` followed by `5` and the surrounding parse fails with a message naming
+/// neither. Nothing in Monkey wants that — no example or test in the book uses a
+/// digit in a name, so it is untested territory rather than a rule — and every
+/// language a reader would compare against allows digits after the first
+/// character.
+func isIdentifierContinuation(_ byte: uint8) -> bool {
+    return isLetter(byte) || isDigit(byte)
+}
+
+func isWhitespace(_ byte: uint8) -> bool {
+    return byte == BYTE_SPACE
+        || byte == BYTE_TAB
+        || byte == BYTE_NEWLINE
+        || byte == BYTE_RETURN
+}
+
+/// Converts a run of ASCII digits to an integer.
+///
+/// Monkey has no integer literal larger than `int64`, and the lexer only ever
+/// passes digit runs here, so this cannot fail.
+func digitsToInt(_ digits: string) -> int64 {
+    var value = 0 as int64
+    for byte in digits.bytes() {
+        value = value * 10 + ((byte - BYTE_ZERO) as int64)
+    }
+    return value
+}
+
+/// Turns Monkey source into a stream of tokens.
+///
+/// The Go original tracks `position`/`readPosition`/`ch` and re-reads the
+/// current character into a field. Here a single byte offset is the cursor and
+/// lookahead is a function of it, which keeps line/column bookkeeping in one
+/// place: `advance`.
+public struct Lexer {
+    source: string
+    offset: usize
+    line: usize
+    column: usize
+}
+
+impl Lexer {
+    public func new(_ source: string) -> Self {
+        return Lexer {
+            source,
+            offset: 0 as usize,
+            line: 1 as usize,
+            column: 1 as usize,
+        }
+    }
+
+    func isAtEnd(&self) -> bool {
+        return self.offset >= self.source.byteLen()
+    }
+
+    func peek(&self) -> uint8 {
+        if self.isAtEnd() { return BYTE_NUL }
+        return self.source.byteAt(self.offset)
+    }
+
+    func peekNext(&self) -> uint8 {
+        let next = self.offset + (1 as usize)
+        if next >= self.source.byteLen() { return BYTE_NUL }
+        return self.source.byteAt(next)
+    }
+
+    func position(&self) -> Position {
+        return Position { line: self.line, column: self.column }
+    }
+
+    func advance(&mut self) -> uint8 {
+        let byte = self.peek()
+        self.offset += 1 as usize
+        if byte == BYTE_NEWLINE {
+            self.line += 1 as usize
+            self.column = 1 as usize
+        } else {
+            self.column += 1 as usize
+        }
+        return byte
+    }
+
+    func skipWhitespace(&mut self) {
+        while !self.isAtEnd() && isWhitespace(self.peek()) {
+            let _ = self.advance()
+        }
+    }
+
+    func readWhile(&mut self, _ predicate: (uint8) -> bool) -> string {
+        let start = self.offset
+        while !self.isAtEnd() && predicate(self.peek()) {
+            let _ = self.advance()
+        }
+        return self.source.sliceBytes(start, self.offset - start)
+    }
+
+    /// Reads a double-quoted string. An unterminated literal yields the text
+    /// found so far; the parser reports the position.
+    func readString(&mut self) -> string {
+        let _ = self.advance() // opening quote
+        let start = self.offset
+        while !self.isAtEnd() && self.peek() != BYTE_QUOTE {
+            let _ = self.advance()
+        }
+        let text = self.source.sliceBytes(start, self.offset - start)
+        if !self.isAtEnd() {
+            let _ = self.advance() // closing quote
+        }
+        return text
+    }
+
+    /// Produces the next token, or `.eof` once the input is exhausted.
+    public func nextToken(&mut self) -> Token {
+        self.skipWhitespace()
+
+        let position = self.position()
+        if self.isAtEnd() {
+            return Token { kind: .eof, position }
+        }
+
+        let byte = self.peek()
+
+        if isLetter(byte) {
+            let text = self.readWhile(isIdentifierContinuation)
+            match keywordKind(text) {
+                case .some(keyword) => return Token { kind: keyword, position }
+                case .none => return Token { kind: .identifier(text), position }
+            }
+        }
+
+        if isDigit(byte) {
+            let digits = self.readWhile(isDigit)
+            return Token { kind: .integer(digitsToInt(digits)), position }
+        }
+
+        if byte == BYTE_QUOTE {
+            return Token { kind: .text(self.readString()), position }
+        }
+
+        // Two-byte operators are checked before their one-byte prefixes.
+        if byte == BYTE_ASSIGN && self.peekNext() == BYTE_ASSIGN {
+            let _ = self.advance()
+            let _ = self.advance()
+            return Token { kind: .equal, position }
+        }
+
+        if byte == BYTE_BANG && self.peekNext() == BYTE_ASSIGN {
+            let _ = self.advance()
+            let _ = self.advance()
+            return Token { kind: .notEqual, position }
+        }
+
+        let _ = self.advance()
+        let kind = singleByteKind(byte)
+        return Token { kind, position }
+    }
+}
+
+func singleByteKind(_ byte: uint8) -> TokenKind {
+    if byte == BYTE_ASSIGN { return .assign }
+    if byte == BYTE_PLUS { return .plus }
+    if byte == BYTE_MINUS { return .minus }
+    if byte == BYTE_BANG { return .bang }
+    if byte == BYTE_ASTERISK { return .asterisk }
+    if byte == BYTE_SLASH { return .slash }
+    if byte == BYTE_LESS { return .lessThan }
+    if byte == BYTE_GREATER { return .greaterThan }
+    if byte == BYTE_COMMA { return .comma }
+    if byte == BYTE_SEMICOLON { return .semicolon }
+    if byte == BYTE_COLON { return .colon }
+    if byte == BYTE_LPAREN { return .leftParen }
+    if byte == BYTE_RPAREN { return .rightParen }
+    if byte == BYTE_LBRACE { return .leftBrace }
+    if byte == BYTE_RBRACE { return .rightBrace }
+    if byte == BYTE_LBRACKET { return .leftBracket }
+    if byte == BYTE_RBRACKET { return .rightBracket }
+    return .illegal(byte as rune)
+}

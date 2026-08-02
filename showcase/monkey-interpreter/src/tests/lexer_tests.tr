@@ -1,0 +1,112 @@
+import monkey.ast.endsWithBinding
+import monkey.lexer.Lexer
+import monkey.parser.Parser
+import monkey.token.{TokenTag, TokenKind}
+import std.testing.{assertTrue, assertEqual}
+
+/// Renders a source as `kind` descriptions, so a test states the whole stream.
+func tokens(_ source: string) -> string {
+    var lexer = Lexer(source)
+    var out = ""
+    var first = true
+    loop {
+        let token = lexer.nextToken()
+        if token.kind.tag() == TokenTag.eof {
+            break
+        }
+        if !first {
+            out = out + " "
+        }
+        out = out + token.kind.describe()
+        first = false
+    }
+    return out
+}
+
+func checkTokens(_ source: string, _ expected: string) {
+    let actual = tokens(source)
+    assertEqual(actual, expected, std.sprintf("%s => %s (want %s)", source, actual, expected))
+}
+
+@test
+func operatorsAndDelimiters() {
+    checkTokens("=+(){},;", "'=' '+' '(' ')' '{' '}' ',' ';'")
+    checkTokens("!-/*5", "'!' '-' '/' '*' integer 5")
+    checkTokens("10 == 10", "integer 10 '==' integer 10")
+    checkTokens("10 != 9", "integer 10 '!=' integer 9")
+    checkTokens("[1]", "'[' integer 1 ']'")
+    checkTokens("{\"a\": 1}", "'{' string \"a\" ':' integer 1 '}'")
+}
+
+@test
+func keywordsAreDistinctFromIdentifiers() {
+    checkTokens("let", "'let'")
+    checkTokens("fn", "'fn'")
+    checkTokens("true false if else return", "'true' 'false' 'if' 'else' 'return'")
+    // A keyword is only a keyword whole.
+    checkTokens("lets", "identifier 'lets'")
+    checkTokens("iffy", "identifier 'iffy'")
+    checkTokens("returns", "identifier 'returns'")
+}
+
+@test
+func identifiersMayContainDigits() {
+    // The reference implementation reuses its letter test for continuation, so
+    // `add5` lexes as two tokens and every use of such a name fails to parse.
+    checkTokens("add5", "identifier 'add5'")
+    checkTokens("x1 x2", "identifier 'x1' identifier 'x2'")
+    checkTokens("_private1", "identifier '_private1'")
+    // A digit still cannot begin one.
+    checkTokens("5x", "integer 5 identifier 'x'")
+}
+
+@test
+func positionsTrackLinesAndColumns() {
+    var lexer = Lexer("let x = 5;\nlet y = 10;")
+    let first = lexer.nextToken()
+    assertTrue(first.position.line == (1 as usize), "first token is on line 1")
+    assertTrue(first.position.column == (1 as usize), "first token is at column 1")
+
+    // Consume the rest of the first line: x = 5 ;
+    let _ = lexer.nextToken()
+    let _ = lexer.nextToken()
+    let _ = lexer.nextToken()
+    let _ = lexer.nextToken()
+
+    let second = lexer.nextToken()
+    assertTrue(second.position.line == (2 as usize), "second `let` is on line 2")
+    assertTrue(second.position.column == (1 as usize), "second `let` is at column 1")
+}
+
+@test
+func unknownBytesBecomeIllegal() {
+    checkTokens("@", "illegal character")
+    checkTokens("5 @ 5", "integer 5 illegal character integer 5")
+}
+
+@test
+func stringsRunToTheClosingQuote() {
+    checkTokens("\"hello world\"", "string \"hello world\"")
+    checkTokens("\"\"", "string \"\"")
+    // An unterminated literal yields what was found; the parser reports it.
+    checkTokens("\"open", "string \"open\"")
+}
+
+@test
+func bindingsProduceNothingToEcho() {
+    // The distinction a caller echoing results needs: `let` yields nothing,
+    // everything else yields a value even when that value is null.
+    assertTrue(programEndsWithBinding("let x = 5"), "a binding is the last statement")
+    assertTrue(programEndsWithBinding("5; let y = 6"), "a trailing binding still counts")
+    assertTrue(!programEndsWithBinding("let x = 5; x"), "an expression follows the binding")
+    assertTrue(!programEndsWithBinding("if (false) { 1 }"), "a conditional yields a value")
+    assertTrue(!programEndsWithBinding(""), "an empty program has no binding")
+}
+
+func programEndsWithBinding(_ source: string) -> bool {
+    var parser = Parser(Lexer(source))
+    match parser.parseProgram() {
+        case .ok(program) => return endsWithBinding(&program)
+        case .err(_) => return false
+    }
+}

@@ -1,0 +1,112 @@
+import monkey.token.Position
+
+/// Monkey's prefix operators.
+public enum PrefixOperator: std.marker.Copy {
+    case not
+    case negate
+}
+
+impl PrefixOperator {
+    public func symbol(&self) -> string {
+        match self {
+            case .not => "!"
+            case .negate => "-"
+        }
+    }
+}
+
+/// Monkey's infix operators.
+///
+/// The Go original compares operator strings at every dispatch site. Naming them
+/// makes evaluation exhaustive, so an unhandled operator is a compile error
+/// rather than a runtime "unknown operator".
+public enum InfixOperator: std.marker.Copy {
+    case add
+    case subtract
+    case multiply
+    case divide
+    case lessThan
+    case greaterThan
+    case equal
+    case notEqual
+}
+
+impl InfixOperator {
+    public func symbol(&self) -> string {
+        match self {
+            case .add => "+"
+            case .subtract => "-"
+            case .multiply => "*"
+            case .divide => "/"
+            case .lessThan => "<"
+            case .greaterThan => ">"
+            case .equal => "=="
+            case .notEqual => "!="
+        }
+    }
+}
+
+/// A key/value pair in a hash literal.
+public struct HashEntry {
+    public key: Expression
+    public value: Expression
+}
+
+/// A Monkey expression.
+///
+/// Recursive positions go through `&Expression`. Taro rejects a directly
+/// recursive enum as infinitely sized, and references to locals are promoted to
+/// managed storage, so a parser can build and return these trees safely.
+public enum Expression {
+    case identifier(string)
+    case integer(int64)
+    case text(string)
+    case boolean(bool)
+    case prefix(op: PrefixOperator, operand: &Expression)
+    case infix(left: &Expression, op: InfixOperator, right: &Expression)
+    case conditional(
+        condition: &Expression,
+        consequence: List[Statement],
+        alternative: List[Statement],
+        hasAlternative: bool,
+    )
+    case function(parameters: List[string], body: List[Statement])
+    case call(callee: &Expression, arguments: List[Expression])
+    case array(elements: List[Expression])
+    case index(collection: &Expression, index: &Expression)
+    case hash(entries: List[HashEntry])
+}
+
+/// A Monkey statement.
+///
+/// `List[Statement]` supplies the indirection between statements and the
+/// expressions that contain them, so no explicit boxing is needed here.
+public enum Statement {
+    case bind(name: string, value: Expression)
+    case produce(value: Expression)
+    case expression(value: Expression)
+}
+
+/// A parsed program: the statements of a single source file.
+public struct Program {
+    public statements: List[Statement]
+}
+
+/// Whether the program's last statement is a binding.
+///
+/// A `let` yields no value at all, so a caller echoing results should stay
+/// silent for it. Every other statement yields one — possibly `null`, which is a
+/// value and worth showing. The reference implementation gets this distinction
+/// for free by returning Go's `nil` for a binding and a `NULL` object otherwise;
+/// modelling both as `Object.null` means the question is answered from the
+/// syntax instead.
+public func endsWithBinding(_ program: &Program) -> bool {
+    if program.statements.isEmpty() {
+        return false
+    }
+    let last = program.statements.at(program.statements.len() - (1 as usize))
+    match last {
+        case .bind(_, _) => return true
+        case _ => return false
+    }
+}

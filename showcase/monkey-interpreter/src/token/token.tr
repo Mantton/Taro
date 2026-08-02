@@ -1,0 +1,208 @@
+/// Tokens produced by the Monkey lexer.
+///
+/// Unlike the Go original, which pairs a `Type` string with a `Literal` string,
+/// each kind carries exactly the payload it needs. Matching a token is then
+/// exhaustive, and an identifier cannot be confused with a keyword by typo.
+public enum TokenKind {
+    case illegal(rune)
+    case eof
+
+    // Identifiers and literals
+    case identifier(string)
+    case integer(int64)
+    case text(string)
+
+    // Operators
+    case assign
+    case plus
+    case minus
+    case bang
+    case asterisk
+    case slash
+    case lessThan
+    case greaterThan
+    case equal
+    case notEqual
+
+    // Delimiters
+    case comma
+    case semicolon
+    case colon
+    case leftParen
+    case rightParen
+    case leftBrace
+    case rightBrace
+    case leftBracket
+    case rightBracket
+
+    // Keywords
+    case function
+    case `let`
+    case `true`
+    case `false`
+    case `if`
+    case `else`
+    case `return`
+}
+
+/// The kind of a token, without its payload.
+///
+/// Mirrors `std.json.ValueKind`: the parser mostly asks "is this a `)`?", which
+/// needs no payload, and comparing tags keeps those checks a single `==`.
+public enum TokenTag: std.marker.Copy, std.ops.PartialEq {
+    case illegal
+    case eof
+    case identifier
+    case integer
+    case text
+    case assign
+    case plus
+    case minus
+    case bang
+    case asterisk
+    case slash
+    case lessThan
+    case greaterThan
+    case equal
+    case notEqual
+    case comma
+    case semicolon
+    case colon
+    case leftParen
+    case rightParen
+    case leftBrace
+    case rightBrace
+    case leftBracket
+    case rightBracket
+    case function
+    case bind
+    case boolTrue
+    case boolFalse
+    case branchIf
+    case branchElse
+    case produce
+}
+
+impl TokenTag {
+    /// How this tag is written in a diagnostic.
+    public func describe(&self) -> string {
+        match self {
+            case .illegal => "illegal character"
+            case .eof => "end of input"
+            case .identifier => "an identifier"
+            case .integer => "an integer"
+            case .text => "a string"
+            case .assign => "'='"
+            case .plus => "'+'"
+            case .minus => "'-'"
+            case .bang => "'!'"
+            case .asterisk => "'*'"
+            case .slash => "'/'"
+            case .lessThan => "'<'"
+            case .greaterThan => "'>'"
+            case .equal => "'=='"
+            case .notEqual => "'!='"
+            case .comma => "','"
+            case .semicolon => "';'"
+            case .colon => "':'"
+            case .leftParen => "'('"
+            case .rightParen => "')'"
+            case .leftBrace => "'{'"
+            case .rightBrace => "'}'"
+            case .leftBracket => "'['"
+            case .rightBracket => "']'"
+            case .function => "'fn'"
+            case .bind => "'let'"
+            case .boolTrue => "'true'"
+            case .boolFalse => "'false'"
+            case .branchIf => "'if'"
+            case .branchElse => "'else'"
+            case .produce => "'return'"
+        }
+    }
+}
+
+impl TokenKind {
+    public func tag(&self) -> TokenTag {
+        match self {
+            case .illegal(_) => .illegal
+            case .eof => .eof
+            case .identifier(_) => .identifier
+            case .integer(_) => .integer
+            case .text(_) => .text
+            case .assign => .assign
+            case .plus => .plus
+            case .minus => .minus
+            case .bang => .bang
+            case .asterisk => .asterisk
+            case .slash => .slash
+            case .lessThan => .lessThan
+            case .greaterThan => .greaterThan
+            case .equal => .equal
+            case .notEqual => .notEqual
+            case .comma => .comma
+            case .semicolon => .semicolon
+            case .colon => .colon
+            case .leftParen => .leftParen
+            case .rightParen => .rightParen
+            case .leftBrace => .leftBrace
+            case .rightBrace => .rightBrace
+            case .leftBracket => .leftBracket
+            case .rightBracket => .rightBracket
+            case .function => .function
+            case .`let` => .bind
+            case .`true` => .boolTrue
+            case .`false` => .boolFalse
+            case .`if` => .branchIf
+            case .`else` => .branchElse
+            case .`return` => .produce
+        }
+    }
+
+    /// How this token is written in a diagnostic, including its payload.
+    public func describe(&self) -> string {
+        match self {
+            case .identifier(name) => std.sprintf("identifier '%s'", *name)
+            case .integer(value) => std.sprintf("integer %v", *value)
+            case .text(value) => std.sprintf("string \"%s\"", *value)
+            case _ => self.tag().describe()
+        }
+    }
+}
+
+/// A source position, one-based, used for parser diagnostics.
+public struct Position: std.marker.Copy {
+    public line: usize
+    public column: usize
+}
+
+impl Position {
+    public func new(line: usize, column: usize) -> Self {
+        return Position { line, column }
+    }
+}
+
+/// A token together with where it came from.
+public struct Token {
+    public kind: TokenKind
+    public position: Position
+}
+
+impl Token {
+    public func new(kind: TokenKind, position: Position) -> Self {
+        return Token { kind, position }
+    }
+}
+
+/// Maps an identifier to its keyword kind, or `.none` when it is a plain
+/// identifier.
+public func keywordKind(_ name: string) -> Optional[TokenKind] {
+    if name == "fn" { return .some(.function) }
+    if name == "let" { return .some(.`let`) }
+    if name == "true" { return .some(.`true`) }
+    if name == "false" { return .some(.`false`) }
+    if name == "if" { return .some(.`if`) }
+    if name == "else" { return .some(.`else`) }
+    if name == "return" { return .some(.`return`) }
+    return .none
+}
