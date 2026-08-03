@@ -4,12 +4,7 @@
 //! consumes only Taro's versioned PC metadata, which is built from these owned
 //! records after machine-code emission.
 
-use std::{
-    borrow::Cow,
-    path::Path,
-    ptr::NonNull,
-    slice,
-};
+use std::{borrow::Cow, path::Path, ptr::NonNull, slice};
 
 #[repr(C)]
 struct NativeParsedStackMap {
@@ -17,8 +12,10 @@ struct NativeParsedStackMap {
 }
 
 unsafe extern "C" {
-    fn taro_stack_map_parse_object(path: *const u8, path_length: usize)
-    -> *mut NativeParsedStackMap;
+    fn taro_stack_map_parse_object(
+        path: *const u8,
+        path_length: usize,
+    ) -> *mut NativeParsedStackMap;
     fn taro_stack_map_dispose(stack_map: *mut NativeParsedStackMap);
     fn taro_stack_map_is_valid(stack_map: *const NativeParsedStackMap) -> bool;
     fn taro_stack_map_error(
@@ -89,10 +86,9 @@ struct NativeStackMap(NonNull<NativeParsedStackMap>);
 impl NativeStackMap {
     fn parse(path: &Path) -> Result<Self, String> {
         let bytes = path_bytes(path)?;
-        let parsed = NonNull::new(unsafe {
-            taro_stack_map_parse_object(bytes.as_ptr(), bytes.len())
-        })
-        .ok_or_else(|| "LLVM failed to allocate a parsed stack map".to_owned())?;
+        let parsed =
+            NonNull::new(unsafe { taro_stack_map_parse_object(bytes.as_ptr(), bytes.len()) })
+                .ok_or_else(|| "LLVM failed to allocate a parsed stack map".to_owned())?;
         let parsed = Self(parsed);
         if !unsafe { taro_stack_map_is_valid(parsed.0.as_ptr()) } {
             return Err(parsed.error());
@@ -141,7 +137,9 @@ impl TryFrom<u8> for RawStackMapLocationKind {
             3 => Ok(Self::Indirect),
             4 => Ok(Self::Constant),
             5 => Ok(Self::ConstantIndex),
-            _ => Err(format!("LLVM emitted unknown stack-map location kind {value}")),
+            _ => Err(format!(
+                "LLVM emitted unknown stack-map location kind {value}"
+            )),
         }
     }
 }
@@ -182,9 +180,8 @@ pub(crate) struct RawStackMap {
 pub(crate) fn parse_object(path: &Path) -> Result<RawStackMap, String> {
     let native = NativeStackMap::parse(path)?;
     let pointer = native.0.as_ptr();
-    let architecture = read_native_string(|length| unsafe {
-        taro_stack_map_architecture(pointer, length)
-    })?;
+    let architecture =
+        read_native_string(|length| unsafe { taro_stack_map_architecture(pointer, length) })?;
     let pointer_bytes = unsafe { taro_stack_map_pointer_bytes(pointer) };
     if pointer_bytes == 0 {
         return Err("LLVM stack-map object reported a zero-byte pointer".into());
@@ -197,7 +194,9 @@ pub(crate) fn parse_object(path: &Path) -> Result<RawStackMap, String> {
             taro_stack_map_function_symbol(pointer, index, length)
         })?;
         if symbol.is_empty() {
-            return Err(format!("LLVM stack-map function {index} has an empty symbol"));
+            return Err(format!(
+                "LLVM stack-map function {index} has an empty symbol"
+            ));
         }
         functions.push(RawStackMapFunction {
             symbol,
@@ -210,9 +209,7 @@ pub(crate) fn parse_object(path: &Path) -> Result<RawStackMap, String> {
     let record_count = unsafe { taro_stack_map_record_count(pointer) };
     let mut records = Vec::with_capacity(record_count);
     for record_index in 0..record_count {
-        let function_index = unsafe {
-            taro_stack_map_record_function_index(pointer, record_index)
-        };
+        let function_index = unsafe { taro_stack_map_record_function_index(pointer, record_index) };
         if function_index >= functions.len() {
             return Err(format!(
                 "LLVM stack-map record {record_index} references missing function {function_index}"
@@ -230,11 +227,7 @@ pub(crate) fn parse_object(path: &Path) -> Result<RawStackMap, String> {
                     taro_stack_map_location_size(pointer, record_index, location_index)
                 },
                 dwarf_register: unsafe {
-                    taro_stack_map_location_dwarf_register(
-                        pointer,
-                        record_index,
-                        location_index,
-                    )
+                    taro_stack_map_location_dwarf_register(pointer, record_index, location_index)
                 },
                 value: unsafe {
                     taro_stack_map_location_value(pointer, record_index, location_index)
@@ -310,9 +303,7 @@ mod tests {
         context::Context,
         memory_buffer::MemoryBuffer,
         passes::PassBuilderOptions,
-        targets::{
-            CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
-        },
+        targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple},
     };
     use std::{
         fs,
@@ -390,11 +381,7 @@ mod tests {
         module.set_data_layout(&machine.get_target_data().get_data_layout());
         if optimization != OptimizationLevel::None {
             module
-                .run_passes(
-                    "default<O2>",
-                    &machine,
-                    PassBuilderOptions::create(),
-                )
+                .run_passes("default<O2>", &machine, PassBuilderOptions::create())
                 .expect("optimize stack-map probe");
         }
         module.verify().expect("verify stack-map probe");
