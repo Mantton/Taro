@@ -2,10 +2,12 @@
 
 ## Status
 
-Phases 1-8 are implemented. Compiler PC maps are authoritative, the shadow
-frame ABI and `ShadowResync` MIR have been removed, and compact panic reports
-consume structured physical/inline frames from the same registered metadata.
-Full-suite verification and paired final benchmarks remain in progress.
+Complete. Phases 1-9 are implemented. Compiler PC maps are authoritative, the
+shadow-frame ABI and `ShadowResync` MIR have been removed, and compact panic
+reports consume structured physical/inline frames from the same registered
+metadata. The full compiler, language, standard-library, LTO, incremental, GC
+stress, and showcase suites are green. Final results compare retained release
+binaries from pre-feature commit `71f0fdc` with completed commit `d65c083`.
 
 On AArch64 O0, functions containing PC maps intentionally take LLVM's
 per-function SelectionDAG fallback because GlobalISel cannot select the stack
@@ -84,10 +86,15 @@ runtime ABI. It contains:
 - **Inline scope**: logical function, callsite source location, and parent scope.
 - **String/file tables**: deduplicated UTF-8 names and source paths.
 
-The compiler emits a small sidecar object whose globals contain relocations to
-the associated generated functions. A constructor registers each table with the
-runtime. This avoids platform-specific discovery of Mach-O/ELF stack-map
-sections and works for dependency objects and incremental reuse.
+The compiler emits a compact sidecar object whose table references and function
+entries are signed offsets from one module header. The linker resolves these
+differences statically, and a constructor registers the header's single runtime
+address. Identical root recipes, root-location arrays, strings, and logical
+frames are deduplicated. The compiler strips LLVM's raw stack-map section after
+normalization, while the runtime indexes function headers on the first walk and
+decodes only the selected PC record. This avoids platform-specific runtime
+discovery, unnecessary loader rebases, and eager standard-library table copies
+while still supporting dependency objects and incremental reuse.
 
 ## Implementation phases
 
@@ -310,8 +317,9 @@ Files/functions:
   is present.
 - Preserve the 64-frame compact limit and omission count.
 - Verify debug short names, stripped release binaries, MIR-inlined functions,
-  recursion, async task traces, and double panic. Functions with PC records are
-  not eligible for post-map LLVM inlining.
+  recursion, async task traces, and double panic. Functions with retained PC
+  records are not eligible for post-map LLVM inlining; zero-root poll-only
+  functions emit no record and remain eligible.
 
 Files/functions:
 
@@ -368,6 +376,87 @@ Acceptance criteria:
 - compact panic stacks useful in both profiles;
 - Monkey VM/tree numbers reported against the retained pre-feature binary, even
   if the change is neutral for that workload.
+
+## Final verification and benchmark results
+
+All correctness gates passed on AArch64 macOS:
+
+- `make dist`
+- `make language-tests JOBS=8`: 227/227
+- `make codegen-matrix JOBS=8`: 62/62 across debug and release
+- `make std-tests`: 461 passed, 1 skipped, including compile, bitcode,
+  incremental, full-LTO, and ThinLTO smoke tests
+- `cargo test --workspace`: 663/663
+- Monkey language suite: 108/108
+- focused compiler-map fixture in release, GC stress, full LTO plus stress,
+  ThinLTO plus stress, and incremental reuse plus stress
+- debug and release panic fixtures exited with the expected panic status and
+  rendered `namedPanicFrame -> inlinePanicFrame -> main`
+- cross-format object tests normalized and stripped both x86-64 ELF and AArch64
+  Mach-O stack-map sections
+
+### Runtime microbenchmarks
+
+The primary microbenchmark protocol used 31 paired, interleaved process samples.
+Each cell reports `median (MAD; p95)` in milliseconds; a negative change is an
+improvement.
+
+| Workload | `71f0fdc` | `d65c083` | Change |
+| --- | ---: | ---: | ---: |
+| Inline additions | 7.094 (0.135; 8.025) | 7.189 (0.143; 8.485) | +1.33% |
+| Rootless function calls | 10.284 (0.149; 11.745) | 10.491 (0.199; 12.148) | +2.01% |
+| String byte length | 101.757 (0.454; 109.815) | 25.075 (0.221; 28.843) | -75.36% |
+| Rooted function calls | 146.580 (0.604; 184.979) | 36.175 (0.335; 37.876) | -75.32% |
+| List reads | 444.302 (21.012; 595.312) | 68.767 (0.683; 117.881) | -84.52% |
+
+The inferred bare-call surcharge was 0.319 ns before and 0.330 ns after, a
+0.011 ns difference inside the observed spread. The inferred rooted-wrapper
+surcharge fell from 4.482 ns to 1.110 ns (-75.2%). The two rootless medians rose
+1.3-2.0%, but their MAD bands overlap; this is not a measurable practical
+regression under the acceptance protocol.
+
+The retained microbenchmark executables grew from approximately 3.883 MB to
+4.699 MB (+21.0%) because they now link always-on PC metadata and the stack
+walker. The final attached `std.o` is 1,283,656 bytes and contains no raw LLVM
+stack-map section; `std.pcmeta.o` is 2,457,648 bytes. The 7,497,926-byte
+`std.stackmaps` descriptor is a compiler artifact and is not linked into user
+executables.
+
+### Monkey showcase
+
+Three paired `--bench 30` samples produced these medians:
+
+| Engine | `71f0fdc` | `d65c083` | Change |
+| --- | ---: | ---: | ---: |
+| Tree interpreter | 19,364 ms (MAD 263) | 19,933 ms (MAD 58) | +2.94% |
+| Bytecode VM | 13,386 ms (MAD 124) | 7,932 ms (MAD 105) | -40.74% |
+
+The VM advantage increased from 1.45x to 2.51x. The requested `--bench 35`
+headline pair was 218.932 s to 233.109 s for the tree interpreter (+6.48%) and
+150.407 s to 93.303 s for the VM (-37.97%), increasing the VM advantage from
+1.46x to 2.50x. That long run is a single pair and is therefore secondary to
+the three-pair result. Both produced 9,227,465. The retained Monkey executable
+grew from 4,437,392 to 5,743,400 bytes (+29.43%).
+
+### Collection-time tradeoff
+
+Five paired Monkey `--bench 20` samples with `TARO_RUNTIME_STATS=1` performed
+identical work in every process: 53 collections, 1,204,809 allocations, and
+55,827,232 allocated bytes.
+
+| GC pause statistic | `71f0fdc` | `d65c083` | Change |
+| --- | ---: | ---: | ---: |
+| p50 | 0.434 ms | 0.913 ms | +110.32% |
+| p95 | 1.283 ms | 1.323 ms | +3.13% |
+| Maximum | 1.401 ms | 1.647 ms | +17.54% |
+
+This is the deliberate cost transfer: root discovery no longer runs on every
+managed call or assignment, but stack walking and PC-record decoding now run at
+collection time. The runtime does not yet expose a separate root-scan timer, so
+GC pause is the observable proxy. The p50 increase (about 0.479 ms per
+collection) is material and likely contributes to the tree-interpreter
+slowdown; the p95 increase is about 0.040 ms. It should remain a tracked metric
+for future collector work rather than being hidden by the throughput wins.
 
 ## Failure policy
 
