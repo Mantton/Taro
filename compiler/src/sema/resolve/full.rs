@@ -508,6 +508,12 @@ enum ResolvedEntity<'a> {
     Resolved(Resolution),
     DeferredAssociatedType,
     DeferredAssociatedValue,
+    /// `Enum.variant`, which is a value even though it is spelled like a
+    /// type-relative path. Kept apart from `DeferredAssociatedType` so that a
+    /// further member access lands on the variant rather than extending the
+    /// path, while the variant itself still lowers as a relative path for the
+    /// type checker to resolve.
+    DeferredEnumVariant,
 }
 
 impl<'r, 'a> Actor<'r, 'a> {
@@ -578,6 +584,13 @@ impl<'r, 'a> Actor<'r, 'a> {
                                 ExpressionResolutionState::DeferredAssociatedValue,
                             );
                         }
+                        // A variant still lowers as a relative path, so that the
+                        // type checker resolves it against the enum as before.
+                        ResolvedEntity::DeferredEnumVariant => {
+                            self.resolver
+                                .expression_resolutions
+                                .insert(node.id, ExpressionResolutionState::DeferredAssociatedType);
+                        }
                     },
                     Err(e) => {
                         self.report_error(e);
@@ -613,6 +626,13 @@ impl<'r, 'a> Actor<'r, 'a> {
                                 node.id,
                                 ExpressionResolutionState::DeferredAssociatedValue,
                             );
+                        }
+                        // A variant still lowers as a relative path, so that the
+                        // type checker resolves it against the enum as before.
+                        ResolvedEntity::DeferredEnumVariant => {
+                            self.resolver
+                                .expression_resolutions
+                                .insert(node.id, ExpressionResolutionState::DeferredAssociatedType);
                         }
                     },
                     Err(e) => {
@@ -813,8 +833,13 @@ impl<'r, 'a> Actor<'r, 'a> {
                 Resolution::PrimaryType(..) => {
                     return Ok(ResolvedEntity::DeferredAssociatedType);
                 }
-                Resolution::Definition(_, kind) => match kind {
+                Resolution::Definition(def_id, kind) => match kind {
                     DefinitionKind::Module | DefinitionKind::Namespace => unreachable!(),
+                    DefinitionKind::Enum
+                        if self.resolver.has_enum_variant(def_id, name.symbol) =>
+                    {
+                        return Ok(ResolvedEntity::DeferredEnumVariant);
+                    }
                     DefinitionKind::Enum
                     | DefinitionKind::Struct
                     | DefinitionKind::TypeAlias
@@ -853,6 +878,11 @@ impl<'r, 'a> Actor<'r, 'a> {
             ResolvedEntity::DeferredAssociatedType => {
                 return Ok(ResolvedEntity::DeferredAssociatedType);
             }
+            // Reached for `Enum.variant.member`. The base is a value, so the
+            // member belongs to it and the type-relative path stops here.
+            ResolvedEntity::DeferredEnumVariant => {
+                return Ok(ResolvedEntity::DeferredAssociatedValue);
+            }
         }
 
         return Err(ResolutionError::UnknownSymbol(*name));
@@ -866,7 +896,9 @@ impl<'r, 'a> Actor<'r, 'a> {
         let resolution = match base {
             ResolvedEntity::Scoped(scope) => scope.resolution().expect("resolution"),
             ResolvedEntity::Resolved(resolution) => resolution.clone(),
-            ResolvedEntity::DeferredAssociatedType => return Ok(()),
+            ResolvedEntity::DeferredAssociatedType | ResolvedEntity::DeferredEnumVariant => {
+                return Ok(());
+            }
             ResolvedEntity::DeferredAssociatedValue => {
                 return Err(ResolutionError::SpecializationDisallowed(None, span));
             }

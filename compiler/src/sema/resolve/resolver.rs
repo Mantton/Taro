@@ -16,7 +16,7 @@ use crate::{
     span::{FileID, Span, Symbol},
     utils::intern::Interned,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
 
 pub struct Resolver<'arena> {
@@ -38,6 +38,8 @@ pub struct Resolver<'arena> {
     pub builin_fn_bindings: FxHashMap<Symbol, Resolution>,
     pub resolutions: FxHashMap<NodeID, ResolutionState>,
     pub expression_resolutions: FxHashMap<NodeID, ExpressionResolutionState>,
+    /// Variant names per enum, filled in the first time an enum is asked about.
+    enum_variants: RefCell<FxHashMap<DefinitionID, FxHashSet<Symbol>>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -62,6 +64,7 @@ impl<'a> Resolver<'a> {
 
             resolutions: Default::default(),
             expression_resolutions: Default::default(),
+            enum_variants: Default::default(),
 
             builin_types_bindings: PrimaryType::ALL
                 .iter()
@@ -149,6 +152,58 @@ impl<'a> Resolver<'a> {
 
     pub fn package_index(&self) -> PackageIndex {
         self.context.config.index
+    }
+
+    /// Whether the enum `enum_id` declares a variant called `name`.
+    ///
+    /// An enum does not open a scope, so its variants cannot be found by the
+    /// ordinary scope lookup. The tagging pass records each one as a definition
+    /// parented to its enum, which is what this reads — and caches per enum,
+    /// since answering means scanning the parent map.
+    pub fn has_enum_variant(&self, enum_id: DefinitionID, name: Symbol) -> bool {
+        if let Some(known) = self
+            .enum_variants
+            .borrow()
+            .get(&enum_id)
+            .map(|variants| variants.contains(&name))
+        {
+            return known;
+        }
+
+        let mut variants = FxHashSet::default();
+        {
+            let mut collect = |parents: &FxHashMap<DefinitionID, DefinitionID>,
+                               kinds: &FxHashMap<DefinitionID, DefinitionKind>,
+                               idents: &FxHashMap<DefinitionID, Identifier>| {
+                for (id, parent) in parents {
+                    if *parent != enum_id
+                        || kinds.get(id) != Some(&DefinitionKind::Variant)
+                    {
+                        continue;
+                    }
+                    if let Some(ident) = idents.get(id) {
+                        variants.insert(ident.symbol);
+                    }
+                }
+            };
+
+            if enum_id.is_local_to_index(self.package_index()) {
+                collect(&self.def_to_parent, &self.def_to_kind, &self.def_to_ident);
+            } else {
+                let outputs = self.context.store.resolution_outputs.borrow();
+                if let Some(package) = outputs.get(&enum_id.package()) {
+                    collect(
+                        &package.definition_to_parent,
+                        &package.definition_to_kind,
+                        &package.definition_to_ident,
+                    );
+                }
+            }
+        }
+
+        let found = variants.contains(&name);
+        self.enum_variants.borrow_mut().insert(enum_id, variants);
+        found
     }
 }
 
