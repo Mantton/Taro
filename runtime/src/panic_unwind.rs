@@ -214,12 +214,6 @@ pub(crate) fn serialized_panic_message(payload: &[u8]) -> Option<&[u8]> {
     read_payload_bytes(payload, &mut cursor)
 }
 
-#[derive(Clone, Copy)]
-struct LogicalFrameRaw {
-    ptr: *const u8,
-    len: usize,
-}
-
 std::thread_local! {
     static PANIC_REPORT: RefCell<Option<PanicReport>> = const { RefCell::new(None) };
     static PANIC_ACTIVE: Cell<bool> = const { Cell::new(false) };
@@ -231,9 +225,6 @@ std::thread_local! {
     /// Set temporarily while polling a grouped child task so the executor can
     /// capture its panic and apply task-group policy.
     static IN_EXECUTOR_CATCH: Cell<bool> = const { Cell::new(false) };
-    /// Logical (language-level) call stack captured via compiler/runtime push/pop.
-    /// Entries are symbol byte slices backed by static binary data.
-    static LOGICAL_STACK: RefCell<Vec<LogicalFrameRaw>> = const { RefCell::new(Vec::new()) };
 }
 
 pub(crate) fn in_test_harness() -> bool {
@@ -242,46 +233,6 @@ pub(crate) fn in_test_harness() -> bool {
 
 pub(crate) fn set_test_harness_active(active: bool) {
     IN_TEST_HARNESS.with(|flag| flag.set(active));
-}
-
-fn snapshot_logical_stack() -> Vec<String> {
-    LOGICAL_STACK.with(|stack| {
-        stack
-            .borrow()
-            .iter()
-            .filter_map(|frame| {
-                if frame.ptr.is_null() || frame.len == 0 {
-                    return None;
-                }
-                let bytes = unsafe { std::slice::from_raw_parts(frame.ptr, frame.len) };
-                Some(String::from_utf8_lossy(bytes).into_owned())
-            })
-            .collect()
-    })
-}
-
-fn clear_logical_stack() {
-    LOGICAL_STACK.with(|stack| stack.borrow_mut().clear());
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__logical_stack_push(symbol: RtString) {
-    if symbol.ptr.is_null() || symbol.len == 0 {
-        return;
-    }
-    LOGICAL_STACK.with(|stack| {
-        stack.borrow_mut().push(LogicalFrameRaw {
-            ptr: symbol.ptr,
-            len: symbol.len,
-        });
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__logical_stack_pop() {
-    LOGICAL_STACK.with(|stack| {
-        let _ = stack.borrow_mut().pop();
-    });
 }
 
 pub(crate) fn catch_executor_panic<R>(f: impl FnOnce() -> R) -> Result<R, PanicReport> {
@@ -321,7 +272,6 @@ pub(crate) fn take_full_panic_report() -> Option<PanicReport> {
         active
     });
     let report = PANIC_REPORT.with(|slot| slot.borrow_mut().take());
-    clear_logical_stack();
     if was_active {
         return report.or_else(|| {
             Some(PanicReport {
@@ -344,13 +294,12 @@ fn set_panic_report(message: String) {
 #[inline]
 fn set_panic_report_with_location(message: String, location: Option<String>) {
     let backtrace = format!("{:#}", Backtrace::force_capture());
-    let logical_stack = snapshot_logical_stack();
     PANIC_REPORT.with(|slot| {
         *slot.borrow_mut() = Some(PanicReport {
             message,
             backtrace,
             location,
-            logical_stack,
+            logical_stack: Vec::new(),
             task_trace: Vec::new(),
         });
     });
@@ -364,7 +313,6 @@ pub(crate) fn take_thread_panic_report() -> Option<String> {
     });
 
     let report = PANIC_REPORT.with(|slot| slot.borrow_mut().take());
-    clear_logical_stack();
     if was_active {
         return report
             .map(|report| report.message)
@@ -409,7 +357,7 @@ enum FrameKind {
 #[derive(Clone, Debug)]
 struct ParsedFrame {
     _index: usize,
-    _symbol: String,
+    symbol: String,
     lines: Vec<String>,
     kind: FrameKind,
 }
@@ -512,7 +460,7 @@ fn parse_backtrace_frames(backtrace: &str) -> Vec<ParsedFrame> {
                 frames.push(ParsedFrame {
                     _index: prev_index,
                     kind: classify_frame(&prev_symbol),
-                    _symbol: prev_symbol,
+                    symbol: prev_symbol,
                     lines: std::mem::take(&mut current_lines),
                 });
             }
@@ -528,7 +476,7 @@ fn parse_backtrace_frames(backtrace: &str) -> Vec<ParsedFrame> {
         frames.push(ParsedFrame {
             _index: last_index,
             kind: classify_frame(&last_symbol),
-            _symbol: last_symbol,
+            symbol: last_symbol,
             lines: current_lines,
         });
     }
@@ -605,19 +553,60 @@ fn format_logical_symbol(symbol: &str) -> String {
     }
 }
 
+const MAX_COMPACT_TARO_FRAMES: usize = 64;
+
 fn render_logical_stack(frames: &[String]) -> String {
     if frames.is_empty() {
         return String::new();
     }
-    const MAX_LOGICAL_FRAMES: usize = 64;
     let mut lines = Vec::new();
-    for (idx, frame) in frames.iter().rev().take(MAX_LOGICAL_FRAMES).enumerate() {
+    for (idx, frame) in frames
+        .iter()
+        .rev()
+        .take(MAX_COMPACT_TARO_FRAMES)
+        .enumerate()
+    {
         lines.push(format!("  {idx:>2}: {}", format_logical_symbol(frame)));
     }
-    if frames.len() > MAX_LOGICAL_FRAMES {
+    if frames.len() > MAX_COMPACT_TARO_FRAMES {
         lines.push(format!(
             "  ... {} older frame(s) omitted",
-            frames.len() - MAX_LOGICAL_FRAMES
+            frames.len() - MAX_COMPACT_TARO_FRAMES
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Render language frames from unwind metadata captured at the panic site.
+///
+/// Compiler-tagged symbols make this an exceptional-path operation: ordinary
+/// calls no longer need to maintain a parallel logical stack solely for panic
+/// reporting.
+fn render_native_taro_stack(backtrace: &str) -> String {
+    let frames: Vec<_> = parse_backtrace_frames(backtrace)
+        .into_iter()
+        .filter(|frame| {
+            matches!(
+                frame.kind,
+                FrameKind::User | FrameKind::Std | FrameKind::Synthetic | FrameKind::Entry
+            )
+        })
+        .collect();
+    if frames.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    for (idx, frame) in frames.iter().take(MAX_COMPACT_TARO_FRAMES).enumerate() {
+        lines.push(format!(
+            "  {idx:>2}: {}",
+            format_logical_symbol(&frame.symbol)
+        ));
+    }
+    if frames.len() > MAX_COMPACT_TARO_FRAMES {
+        lines.push(format!(
+            "  ... {} older frame(s) omitted",
+            frames.len() - MAX_COMPACT_TARO_FRAMES
         ));
     }
     lines.join("\n")
@@ -665,10 +654,13 @@ fn write_captured_report(
         let _ = writeln!(output, "  at {location}");
     }
     if matches!(policy, BacktracePolicy::Compact) {
-        let logical = render_logical_stack(&report.logical_stack);
-        if !logical.is_empty() {
+        let taro_stack = match render_logical_stack(&report.logical_stack) {
+            logical if !logical.is_empty() => logical,
+            _ => render_native_taro_stack(&report.backtrace),
+        };
+        if !taro_stack.is_empty() {
             let _ = writeln!(output, "taro stack:");
-            let _ = writeln!(output, "{logical}");
+            let _ = writeln!(output, "{taro_stack}");
         } else {
             let _ = writeln!(output, "stack backtrace:");
             let _ = writeln!(output, "{}", render_panic_backtrace(&report.backtrace));
@@ -723,10 +715,10 @@ pub(crate) fn write_report(default_message: &str) {
         let raw_backtrace = format!("{:#}", Backtrace::force_capture());
         let _ = writeln!(stderr, "panic: {}", default_message);
         if matches!(policy, BacktracePolicy::Compact) {
-            let logical = render_logical_stack(&snapshot_logical_stack());
-            if !logical.is_empty() {
+            let taro_stack = render_native_taro_stack(&raw_backtrace);
+            if !taro_stack.is_empty() {
                 let _ = writeln!(stderr, "taro stack:");
-                let _ = writeln!(stderr, "{logical}");
+                let _ = writeln!(stderr, "{taro_stack}");
             } else {
                 let _ = writeln!(stderr, "stack backtrace:");
                 let _ = writeln!(stderr, "{}", render_panic_backtrace(&raw_backtrace));
@@ -800,8 +792,6 @@ pub extern "C" fn __rt__panic_take_report() -> PanicTakeReportResult {
         f.set(false);
         v
     });
-    clear_logical_stack();
-
     if !was_active {
         return PanicTakeReportResult {
             had_panic: false,
@@ -935,7 +925,6 @@ pub extern "C" fn __rt__panic_clear() {
     PANIC_REPORT.with(|slot| {
         slot.borrow_mut().take();
     });
-    clear_logical_stack();
     // The test harness calls this after each test. Clear any stray shadow-stack
     // link left behind by unwinding so later explicit collections don't walk a
     // stale frame chain from a prior test.
@@ -970,6 +959,12 @@ fn install_taro_panic_hook() {
 pub extern "C" fn __rt__test_call_fn(fn_ptr: extern "C-unwind" fn()) -> bool {
     set_test_harness_active(true);
     install_taro_panic_hook();
+
+    // Test and benchmark harnesses may reuse a native thread after an async
+    // executor session detached it. Re-enter managed execution at the callback
+    // boundary instead of making every generated safepoint rediscover that
+    // state.
+    crate::garbage_collector::__gc__thread_enter_managed();
 
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         fn_ptr();
@@ -1173,8 +1168,8 @@ mod tests {
         BacktracePolicy, FrameKind, PanicReport, TEST_PANIC_MESSAGE_MISMATCH, TEST_PANIC_MISSING,
         TEST_PANIC_PASSED, TEST_PANIC_UNEXPECTED, TaskTraceFrame, classify_test_panic,
         deserialize_panic_report, parse_backtrace_frames, parse_backtrace_policy,
-        render_panic_backtrace_with_policy, serialize_panic_report, serialized_panic_message,
-        write_captured_report,
+        render_native_taro_stack, render_panic_backtrace_with_policy, serialize_panic_report,
+        serialized_panic_message, write_captured_report,
     };
 
     #[test]
@@ -1247,6 +1242,42 @@ mod tests {
         assert!(rendered.contains("taro stack:"));
         assert!(rendered.contains("async task trace:"));
         assert!(rendered.contains("spawned `child` at src/main.tr:3:9"));
+    }
+
+    #[test]
+    fn captured_reports_derive_taro_stack_from_native_symbols() {
+        let report = PanicReport {
+            message: "boom".into(),
+            backtrace: r#"   0: 0x1000 - taro_runtime::panic_unwind::write_report
+   1: 0x1001 - _app__bt_usr__mod__boom__h0123456789abcdef
+   2: 0x1002 - _std__bt_std__task__join
+   3: 0x1003 - _taro_start"#
+                .into(),
+            location: None,
+            logical_stack: Vec::new(),
+            task_trace: Vec::new(),
+        };
+        let mut rendered = Vec::new();
+        write_captured_report(&mut rendered, "panic", &report, BacktracePolicy::Compact);
+        let rendered = String::from_utf8(rendered).unwrap();
+
+        assert!(rendered.contains("taro stack:"));
+        assert!(rendered.contains("[usr] app::mod::boom"));
+        assert!(rendered.contains("[std] std::task::join"));
+        assert!(rendered.contains("taro_start"));
+        assert!(!rendered.contains("taro_runtime::panic_unwind::write_report"));
+    }
+
+    #[test]
+    fn native_taro_stack_bounds_deep_backtraces() {
+        let raw = (0..70)
+            .map(|index| format!("{index:>4}: 0x1000 - _app__bt_usr__recurse_{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = render_native_taro_stack(&raw);
+
+        assert_eq!(rendered.lines().count(), 65);
+        assert!(rendered.contains("... 6 older frame(s) omitted"));
     }
 
     #[test]

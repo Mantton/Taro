@@ -1,0 +1,9 @@
+func main() {
+    var total = 0 as int64
+    var iteration = 0 as int64
+    while iteration < 10000000 {
+        total += 1
+        iteration += 1
+    }
+    std.printf("%v\n", total)
+}

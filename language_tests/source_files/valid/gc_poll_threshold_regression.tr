@@ -1,0 +1,56 @@
+// Safepoints read "is a collection due?" from an atomic that the collector
+// republishes under its mutex, rather than taking that mutex on every loop
+// back-edge. This checks the mirrored answer still drives collection: the loop
+// allocates far past the threshold, so collections have to happen, and the data
+// held across them has to survive intact.
+
+func makeGarbage(_ size: int64) -> int64 {
+    var scratch = List[int64]()
+    var i = 0 as int64
+    while i < size {
+        scratch.append(i)
+        i += 1
+    }
+    var sum = 0 as int64
+    for value in &scratch {
+        sum += *value
+    }
+    return sum
+}
+
+func main() {
+    // Held live across every collection the loop below triggers.
+    var live = List[int64]()
+    var seed = 0 as int64
+    while seed < 500 {
+        live.append(seed)
+        seed += 1
+    }
+
+    var round = 0 as int64
+    var checksum = 0 as int64
+    while round < 200 {
+        // Each round drops everything it allocated.
+        checksum += makeGarbage(200)
+        round += 1
+    }
+
+    var total = 0 as int64
+    for value in &live {
+        total += *value
+    }
+    // 0 + 1 + ... + 499, unchanged by any collection in between.
+    std.printf("%v\n", total)
+    // 200 rounds of 0 + 1 + ... + 199.
+    std.printf("%v\n", checksum)
+
+    // A loop that allocates nothing still reaches its safepoints and still
+    // terminates; the poll's fast path must not stop the counter advancing.
+    var spin = 0 as int64
+    var k = 0 as int64
+    while k < 200000 {
+        spin += 1
+        k += 1
+    }
+    std.printf("%v\n", spin)
+}

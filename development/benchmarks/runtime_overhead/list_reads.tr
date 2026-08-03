@@ -1,0 +1,12 @@
+func main() {
+    var values = List[int64]()
+    values.append(1)
+
+    var total = 0 as int64
+    var iteration = 0 as int64
+    while iteration < 20000000 {
+        total += *values.at(0)
+        iteration += 1
+    }
+    std.printf("%v\n", total)
+}

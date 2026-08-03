@@ -1,0 +1,10 @@
+func main() {
+    let value = "x"
+    var total = 0 as int64
+    var iteration = 0 as int64
+    while iteration < 10000000 {
+        total = total + (value.byteLen() as int64)
+        iteration += 1
+    }
+    std.printf("%v\n", total)
+}

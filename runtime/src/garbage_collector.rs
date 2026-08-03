@@ -44,7 +44,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -138,9 +138,48 @@ unsafe impl Sync for ThreadState {}
 static THREAD_REGISTRY: Mutex<Vec<Arc<ThreadState>>> = Mutex::new(Vec::new());
 static THREAD_REGISTRY_EPOCH: AtomicUsize = AtomicUsize::new(0);
 static THREAD_ATTACHING: AtomicUsize = AtomicUsize::new(0);
-static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
+const GC_REQUESTED_FLAG: u8 = 1 << 0;
+const GC_NEEDED_FLAG: u8 = 1 << 1;
+
+/// Compiler-polled process state. A zero byte is the complete mutator fast path.
+///
+/// Collection requests and threshold notifications share one byte so generated
+/// code needs one atomic load and one unlikely branch. Runtime slow paths use
+/// read-modify-write operations to change their own bit without losing a
+/// concurrent update to the other bit.
+#[unsafe(export_name = "__gc__poll_flags")]
+pub static GC_POLL_FLAGS: AtomicU8 = AtomicU8::new(0);
+
+/// Whether allocation has passed the threshold at which a collection is due.
+///
+/// The counter and the threshold both live behind the GC mutex, but the answer
+/// is read from every compiler-inserted safepoint — that is, from every loop
+/// back-edge in the program. Taking the mutex there costs a lock round-trip per
+/// iteration and, worse, serialises every Taro thread against a single global
+/// lock even when no collection is anywhere in sight. Mirroring the answer into
+/// an atomic keeps the poll's fast path to one load. It is refreshed under the
+/// mutex wherever either input changes, before the allocation or collection
+/// operation returns.
 static GC_RESUME_COND: Condvar = Condvar::new();
 static GC_RESUME_LOCK: Mutex<()> = Mutex::new(());
+
+#[inline]
+fn gc_requested(ordering: Ordering) -> bool {
+    GC_POLL_FLAGS.load(ordering) & GC_REQUESTED_FLAG != 0
+}
+
+#[inline]
+fn gc_needed(ordering: Ordering) -> bool {
+    GC_POLL_FLAGS.load(ordering) & GC_NEEDED_FLAG != 0
+}
+
+fn set_gc_needed(needed: bool) {
+    if needed {
+        GC_POLL_FLAGS.fetch_or(GC_NEEDED_FLAG, Ordering::Release);
+    } else {
+        GC_POLL_FLAGS.fetch_and(!GC_NEEDED_FLAG, Ordering::Release);
+    }
+}
 
 struct CurrentThreadState {
     state: Arc<ThreadState>,
@@ -150,7 +189,7 @@ struct CurrentThreadState {
 impl Drop for CurrentThreadState {
     fn drop(&mut self) {
         if self.attached {
-            unregister_thread(self.state.id);
+            unregister_thread(&self.state);
         }
     }
 }
@@ -177,10 +216,15 @@ fn register_current_thread_state() -> Arc<ThreadState> {
     }))
 }
 
-fn unregister_thread(id: std::thread::ThreadId) {
+fn unregister_thread(state: &ThreadState) {
+    // A collector may already hold this state in a registry snapshot. Publish
+    // stable roots before removing the registry entry so that collector can
+    // finish its wait, observe the epoch change, and retry the snapshot.
+    state.at_safepoint.store(true, Ordering::Release);
+
     let mut reg = THREAD_REGISTRY.lock().unwrap();
     let len_before = reg.len();
-    reg.retain(|state| state.id != id);
+    reg.retain(|registered| registered.id != state.id);
     if reg.len() != len_before {
         THREAD_REGISTRY_EPOCH.fetch_add(1, Ordering::Release);
     }
@@ -235,9 +279,9 @@ fn set_current_thread_safepoint(at_safepoint: bool) {
 }
 
 fn wait_for_gc_resume() {
-    if GC_REQUESTED.load(Ordering::Acquire) {
+    if gc_requested(Ordering::Acquire) {
         let mut guard = GC_RESUME_LOCK.lock().unwrap();
-        while GC_REQUESTED.load(Ordering::Acquire) {
+        while gc_requested(Ordering::Acquire) {
             guard = GC_RESUME_COND.wait(guard).unwrap();
         }
     }
@@ -249,24 +293,71 @@ fn wait_for_gc_resume() {
 /// indefinitely on the GC resume condvar.
 pub(crate) fn cancel_pending_collection() {
     let _guard = GC_RESUME_LOCK.lock().unwrap();
-    if GC_REQUESTED.load(Ordering::Acquire) {
-        GC_REQUESTED.store(false, Ordering::Release);
+    if gc_requested(Ordering::Acquire) {
+        GC_POLL_FLAGS.fetch_and(!GC_REQUESTED_FLAG, Ordering::Release);
         GC_RESUME_COND.notify_all();
     }
 }
 
 pub(crate) fn ensure_thread_registered() {
-    let should_park = with_current_thread_state(|state| {
-        GC_REQUESTED.load(Ordering::Acquire) && !state.at_safepoint.load(Ordering::Relaxed)
+    let should_park = CURRENT_THREAD_STATE.with(|slot| {
+        let slot = slot.borrow();
+        let current = slot.as_ref()?;
+        if !current.attached {
+            return None;
+        }
+
+        // The TLS slot owns this Arc for the lifetime of the attached thread,
+        // so the poll can inspect it through the borrow without changing the
+        // reference count on every safepoint.
+        Some(gc_requested(Ordering::Acquire) && !current.state.at_safepoint.load(Ordering::Relaxed))
+    });
+    let should_park = should_park.unwrap_or_else(|| {
+        // First use and explicit detach/reattach must keep going through the
+        // existing registration path. In particular, registration's
+        // THREAD_ATTACHING ordering coordinates with a collection already in
+        // progress and must not be duplicated here.
+        with_current_thread_state(|state| {
+            gc_requested(Ordering::Acquire) && !state.at_safepoint.load(Ordering::Relaxed)
+        })
     });
     if should_park {
         park_at_safepoint();
     }
 }
 
+/// Whether this thread is already executing managed code and no collection is
+/// asking it to park.
+///
+/// The false state is published before a managed thread begins changing roots.
+/// A request that races after this check will be observed at the callee's entry
+/// poll, after its new shadow frame is fully linked.
+fn current_thread_is_managed() -> bool {
+    CURRENT_THREAD_STATE.with(|slot| {
+        let slot = slot.borrow();
+        let Some(current) = slot.as_ref() else {
+            return false;
+        };
+        current.attached
+            && !current.state.at_safepoint.load(Ordering::Relaxed)
+            && !gc_requested(Ordering::Acquire)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__thread_attach() {
     enter_safepoint();
+}
+
+/// Enter compiler-generated Taro code from a native/runtime entry point.
+///
+/// Entry shims pay registration once, before any managed roots can become
+/// live. Compiler-inserted safepoints can then use the exported process flag as
+/// their complete fast path and call `__gc__poll` only when work is pending.
+#[unsafe(no_mangle)]
+pub extern "C" fn __gc__thread_enter_managed() {
+    ensure_thread_registered();
+    leave_safepoint();
 }
 
 #[unsafe(no_mangle)]
@@ -275,7 +366,7 @@ pub extern "C" fn __gc__thread_detach() {
         let mut slot = slot.borrow_mut();
         if let Some(current) = slot.as_mut() {
             if current.attached {
-                unregister_thread(current.state.id);
+                unregister_thread(&current.state);
                 current.attached = false;
             }
         }
@@ -294,7 +385,7 @@ pub(crate) fn leave_safepoint() {
         // the stable shadow stack and wait. This ordering prevents a thread
         // from changing roots after the collector has observed it parked.
         set_current_thread_safepoint(false);
-        if !GC_REQUESTED.load(Ordering::Acquire) {
+        if !gc_requested(Ordering::Acquire) {
             return;
         }
         set_current_thread_safepoint(true);
@@ -363,10 +454,7 @@ fn threads_for_collection(current_id: std::thread::ThreadId) -> Vec<Arc<ThreadSt
 
 fn initiate_collection() {
     // Ensure only one thread acts as the collector
-    if GC_REQUESTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    if GC_POLL_FLAGS.fetch_or(GC_REQUESTED_FLAG, Ordering::AcqRel) & GC_REQUESTED_FLAG != 0 {
         park_at_safepoint();
         return;
     }
@@ -383,14 +471,14 @@ fn initiate_collection() {
     let pause = pause_started.elapsed();
     with_gc(|gc| gc.record_pause(pause));
 
-    // Wake up everyone. GC_REQUESTED must be cleared *while holding*
+    // Wake up everyone. GC_REQUESTED_FLAG must be cleared *while holding*
     // GC_RESUME_LOCK so no thread can slip between seeing GC_REQUESTED==true
     // and calling cond.wait() without observing the notify. Clearing it before
     // acquiring the lock would open a lost-wakeup window that deadlocks the
     // thread indefinitely.
     {
         let _guard = GC_RESUME_LOCK.lock().unwrap();
-        GC_REQUESTED.store(false, Ordering::Release);
+        GC_POLL_FLAGS.fetch_and(!GC_REQUESTED_FLAG, Ordering::Release);
         GC_RESUME_COND.notify_all();
     }
     // Trace recording may lock and allocate, so keep it outside the
@@ -398,7 +486,9 @@ fn initiate_collection() {
     // before resuming to preserve its collection identifier.
     crate::executor::record_gc_pause(pause);
 
-    debug_assert!(!GC_REQUESTED.load(Ordering::Acquire));
+    // A different mutator may request the next collection as soon as the
+    // world resumes. Do not assert that the process-wide request bit remains
+    // clear while the previous collection's reclaimers are running.
     for reclaimer in work.reclaimers {
         (reclaimer.callback)(reclaimer.data);
     }
@@ -407,8 +497,11 @@ fn initiate_collection() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__gc_push_frame(frame: *mut GcShadowFrame) {
-    ensure_thread_registered();
-    leave_safepoint();
+    if !current_thread_is_managed() {
+        // Preserve lazy registration and native/runtime callback entry. Normal
+        // generated-to-generated calls take the cheap managed fast path.
+        __gc__thread_enter_managed();
+    }
     GC_SHADOW_TOP.with(|top| {
         unsafe { (*frame).prev = top.get() };
         top.set(frame);
@@ -454,7 +547,7 @@ pub extern "C" fn __gc__alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
     if size == 0 || desc.is_null() {
         return std::ptr::null_mut();
     }
-    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    let needs_gc = gc_needed(Ordering::Relaxed);
     if needs_gc {
         initiate_collection();
     }
@@ -485,7 +578,7 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
     if total == 0 {
         return std::ptr::null_mut();
     }
-    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    let needs_gc = gc_needed(Ordering::Relaxed);
     if needs_gc {
         initiate_collection();
     }
@@ -502,13 +595,11 @@ pub extern "C" fn __gc__collect() {
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__poll() {
     ensure_thread_registered();
-    if GC_REQUESTED.load(Ordering::Acquire) {
+    let flags = GC_POLL_FLAGS.load(Ordering::Acquire);
+    if flags & GC_REQUESTED_FLAG != 0 {
         park_at_safepoint();
-    } else {
-        let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
-        if needs_gc {
-            initiate_collection();
-        }
+    } else if flags & GC_NEEDED_FLAG != 0 {
+        initiate_collection();
     }
 }
 
@@ -579,7 +670,7 @@ pub extern "C" fn __gc__grow_buf(
         None => return std::ptr::null_mut(),
     };
 
-    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    let needs_gc = gc_needed(Ordering::Relaxed);
     if needs_gc {
         initiate_collection();
     }
@@ -1319,6 +1410,13 @@ impl Gc {
         // Update stats and allow safepoints to decide when to collect.
         self.stats.record_alloc(alloc_bytes);
         self.alloc_since_gc = self.alloc_since_gc.saturating_add(alloc_bytes);
+        self.refresh_gc_needed();
+    }
+
+    /// Republishes whether a collection is due, for safepoints to read without
+    /// taking the mutex this runs under.
+    fn refresh_gc_needed(&self) {
+        set_gc_needed(self.alloc_since_gc >= self.gc_threshold_bytes);
     }
 
     fn alloc_weak_cell(&mut self, target: *const u8) -> *mut u8 {
@@ -1614,6 +1712,7 @@ impl Gc {
         self.stats.log();
         self.alloc_since_gc = 0;
         self.gc_threshold_bytes = next_gc_threshold(self.stats.live_bytes);
+        self.refresh_gc_needed();
         CollectionWork {
             reclaimers,
             cleanup_handles,
@@ -1958,7 +2057,7 @@ pub(crate) fn with_gc<R>(f: impl FnOnce(&mut Gc) -> R) -> R {
 
 pub(crate) fn create_weak_cell(target: *const u8) -> *mut u8 {
     ensure_thread_registered();
-    let needs_gc = with_gc(|gc| gc.alloc_since_gc >= gc.gc_threshold_bytes);
+    let needs_gc = gc_needed(Ordering::Relaxed);
     if needs_gc {
         initiate_collection();
     }
@@ -2106,8 +2205,10 @@ fn register_segment_arenas(
 mod tests {
     use super::{
         __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach,
-        __rt__gc_enter_blocking, __rt__gc_exit_blocking, CleanupRegistration, Gc, GcDesc, GcStats,
-        MAX_GC_PAUSE_SAMPLES, PAGE_SIZE, SEGMENT_SIZE, Segment, register_segment_arenas,
+        __rt__gc_enter_blocking, __rt__gc_exit_blocking, __rt__gc_pop_frame, __rt__gc_push_frame,
+        CURRENT_THREAD_STATE, CleanupRegistration, GC_SHADOW_TOP, Gc, GcDesc, GcShadowFrame,
+        GcStats, MAX_GC_PAUSE_SAMPLES, PAGE_SIZE, SEGMENT_SIZE, Segment, THREAD_REGISTRY,
+        ensure_thread_registered, register_segment_arenas,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -2430,6 +2531,10 @@ mod tests {
 
         let overflow = __gc__grow_buf(std::ptr::null_mut(), &desc, usize::MAX, usize::MAX);
         assert!(overflow.is_null());
+
+        // This test enters the runtime directly rather than through a generated
+        // Taro entry shim, so it must also close that native thread boundary.
+        __gc__thread_detach();
     }
 
     #[test]
@@ -2445,6 +2550,91 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
         __gc__collect();
         handle.join().unwrap();
+        __gc__thread_detach();
+    }
+
+    #[test]
+    fn ensure_thread_registered_preserves_lazy_registration_and_reattachment() {
+        std::thread::spawn(|| {
+            ensure_thread_registered();
+            let thread_id = std::thread::current().id();
+            assert!(CURRENT_THREAD_STATE.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .is_some_and(|current| current.attached && current.state.id == thread_id)
+            }));
+            assert!(
+                THREAD_REGISTRY
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|state| state.id == thread_id)
+            );
+
+            __gc__thread_detach();
+            assert!(CURRENT_THREAD_STATE.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|current| {
+                    !current.attached && current.state.at_safepoint.load(Ordering::Acquire)
+                })
+            }));
+
+            ensure_thread_registered();
+            assert!(CURRENT_THREAD_STATE.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .is_some_and(|current| current.attached && current.state.id == thread_id)
+            }));
+            assert!(
+                THREAD_REGISTRY
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|state| state.id == thread_id)
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn shadow_frames_preserve_lazy_entry_and_nested_managed_calls() {
+        std::thread::spawn(|| {
+            let mut outer = GcShadowFrame {
+                prev: std::ptr::null_mut(),
+                slots: std::ptr::null_mut(),
+                count: 0,
+            };
+            let mut inner = GcShadowFrame {
+                prev: std::ptr::null_mut(),
+                slots: std::ptr::null_mut(),
+                count: 0,
+            };
+
+            __rt__gc_push_frame(&mut outer);
+            assert!(CURRENT_THREAD_STATE.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|current| {
+                    current.attached && !current.state.at_safepoint.load(Ordering::Acquire)
+                })
+            }));
+            assert!(GC_SHADOW_TOP.with(|top| std::ptr::eq(top.get(), &outer)));
+
+            __rt__gc_push_frame(&mut inner);
+            assert!(std::ptr::eq(inner.prev, &outer));
+            assert!(GC_SHADOW_TOP.with(|top| std::ptr::eq(top.get(), &inner)));
+
+            __rt__gc_pop_frame(&mut inner);
+            assert!(GC_SHADOW_TOP.with(|top| std::ptr::eq(top.get(), &outer)));
+            __rt__gc_pop_frame(&mut outer);
+            assert!(GC_SHADOW_TOP.with(|top| top.get().is_null()));
+            assert!(CURRENT_THREAD_STATE.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|current| {
+                    current.attached && current.state.at_safepoint.load(Ordering::Acquire)
+                })
+            }));
+            __gc__thread_detach();
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
@@ -2464,5 +2654,6 @@ mod tests {
         __gc__collect();
         release_tx.send(()).unwrap();
         handle.join().unwrap();
+        __gc__thread_detach();
     }
 }

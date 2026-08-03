@@ -27,6 +27,23 @@ pub fn compute_package_fingerprint_input_with_test_selection(
     known_fingerprints: &FxHashMap<String, String>,
     test_selection: Option<&TestSelection>,
 ) -> Result<PackageFingerprintInput, String> {
+    let runtime_abi_fingerprint = compiler::runtime_abi::fingerprint();
+    compute_package_fingerprint_input_with_runtime_abi(
+        ctx,
+        config,
+        known_fingerprints,
+        test_selection,
+        &runtime_abi_fingerprint,
+    )
+}
+
+fn compute_package_fingerprint_input_with_runtime_abi(
+    ctx: &CompilerContext<'_>,
+    config: &Config,
+    known_fingerprints: &FxHashMap<String, String>,
+    test_selection: Option<&TestSelection>,
+    runtime_abi_fingerprint: &str,
+) -> Result<PackageFingerprintInput, String> {
     let mut dependency_ids: Vec<String> = config
         .dependencies
         .values()
@@ -52,6 +69,11 @@ pub fn compute_package_fingerprint_input_with_test_selection(
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"taro.incremental.v1.package");
+    // Generated objects directly reference the compiler/runtime ABI. Reusing
+    // one after that ABI changes can otherwise survive metadata validation and
+    // fail only at the final link with stale symbols.
+    hasher.update(runtime_abi_fingerprint.as_bytes());
+    hasher.update(&[0]);
 
     hasher.update(config.identifier.as_bytes());
     hasher.update(&[0]);
@@ -343,7 +365,8 @@ fn collect_source_files(directory: &Path, out: &mut Vec<PathBuf>) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_package_fingerprint_input, compute_package_fingerprint_input_with_test_selection,
+        compute_package_fingerprint_input, compute_package_fingerprint_input_with_runtime_abi,
+        compute_package_fingerprint_input_with_test_selection,
     };
     use compiler::{
         PackageIndex,
@@ -433,6 +456,35 @@ mod tests {
             let first = compute_package_fingerprint_input(context, &first, &known).unwrap();
             let second = compute_package_fingerprint_input(context, &second, &known).unwrap();
             assert_eq!(first.package_fingerprint, second.package_fingerprint);
+        });
+    }
+
+    #[test]
+    fn runtime_abi_changes_compilation_fingerprint() {
+        with_context(|context, source| {
+            let config = base_config(source);
+            let known = FxHashMap::default();
+
+            let first = compute_package_fingerprint_input_with_runtime_abi(
+                context,
+                &config,
+                &known,
+                None,
+                "runtime-abi-a",
+            )
+            .unwrap()
+            .package_fingerprint;
+            let second = compute_package_fingerprint_input_with_runtime_abi(
+                context,
+                &config,
+                &known,
+                None,
+                "runtime-abi-b",
+            )
+            .unwrap()
+            .package_fingerprint;
+
+            assert_ne!(first, second);
         });
     }
 

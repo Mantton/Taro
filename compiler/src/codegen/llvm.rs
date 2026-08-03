@@ -25,7 +25,7 @@ use crate::{
     specialize::{Instance, InstanceKind, resolve_instance},
 };
 use inkwell::{
-    AddressSpace, FloatPredicate, IntPredicate,
+    AddressSpace, AtomicOrdering, FloatPredicate, IntPredicate,
     attributes::{Attribute, AttributeLoc},
     basic_block::BasicBlock,
     builder::Builder,
@@ -1376,6 +1376,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         builder
             .build_call(install_stack_guard_fn, &[], "install_stack_guard")
             .unwrap();
+        let enter_managed_fn = self.declare_gc_thread_enter_managed_fn();
+        builder
+            .build_call(enter_managed_fn, &[], "gc_enter_managed")
+            .unwrap();
         let call = builder
             .build_invoke(user_fn, &[], bb_ret, bb_panic, "call_main")
             .unwrap();
@@ -1532,6 +1536,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let install_stack_guard_fn = self.declare_install_stack_guard_fn();
         builder
             .build_call(install_stack_guard_fn, &[], "install_stack_guard")
+            .unwrap();
+        let enter_managed_fn = self.declare_gc_thread_enter_managed_fn();
+        builder
+            .build_call(enter_managed_fn, &[], "gc_enter_managed")
             .unwrap();
 
         // Counters: passed, failed, skipped (alloca in entry)
@@ -2063,6 +2071,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         builder
             .build_call(install_stack_guard_fn, &[], "install_stack_guard")
             .unwrap();
+        let enter_managed_fn = self.declare_gc_thread_enter_managed_fn();
+        builder
+            .build_call(enter_managed_fn, &[], "gc_enter_managed")
+            .unwrap();
 
         let failures = builder.build_alloca(i32_ty, "bench_failures").unwrap();
         builder.build_store(failures, i32_ty.const_zero()).unwrap();
@@ -2423,6 +2435,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap_or_else(|| {
                 self.module.add_function(
                     "__rt__install_stack_guard",
+                    fn_ty,
+                    Some(Linkage::External),
+                )
+            })
+    }
+
+    fn declare_gc_thread_enter_managed_fn(&self) -> FunctionValue<'llvm> {
+        let fn_ty = self.context.void_type().fn_type(&[], false);
+        self.module
+            .get_function("__gc__thread_enter_managed")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "__gc__thread_enter_managed",
                     fn_ty,
                     Some(Linkage::External),
                 )
@@ -2811,7 +2836,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let mut locals = self.allocate_locals(body, preamble_block, function, &fn_abi);
         self.builder.position_at_end(preamble_block);
         self.setup_shadow_stack(body, preamble_block, &locals)?;
-        self.emit_logical_stack_push(instance);
         self.builder
             .build_unconditional_branch(mir_entry_block)
             .unwrap();
@@ -3655,47 +3679,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap();
     }
 
-    fn get_logical_stack_push_fn(&self) -> FunctionValue<'llvm> {
-        let str_ty = string_header_ty(self.context, &self.target_data);
-        let fn_ty = self.context.void_type().fn_type(&[str_ty.into()], false);
-        self.module
-            .get_function("__rt__logical_stack_push")
-            .unwrap_or_else(|| {
-                self.module
-                    .add_function("__rt__logical_stack_push", fn_ty, Some(Linkage::External))
-            })
-    }
-
-    fn get_logical_stack_pop_fn(&self) -> FunctionValue<'llvm> {
-        let fn_ty = self.context.void_type().fn_type(&[], false);
-        self.module
-            .get_function("__rt__logical_stack_pop")
-            .unwrap_or_else(|| {
-                self.module
-                    .add_function("__rt__logical_stack_pop", fn_ty, Some(Linkage::External))
-            })
-    }
-
-    fn emit_logical_stack_push(&mut self, instance: Instance<'gcx>) {
-        let symbol = mangle_instance(self.gcx, instance);
-        let arg = self.const_string_value(&symbol);
-        let _ = self
-            .builder
-            .build_call(
-                self.get_logical_stack_push_fn(),
-                &[arg.into()],
-                "taro_stack_push",
-            )
-            .unwrap();
-    }
-
-    fn emit_logical_stack_pop(&mut self) {
-        let _ = self
-            .builder
-            .build_call(self.get_logical_stack_pop_fn(), &[], "taro_stack_pop")
-            .unwrap();
-    }
-
     fn lower_statement(
         &mut self,
         body: &mir::Body<'gcx>,
@@ -3722,8 +3705,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::StatementKind::GcSafepoint => {
-                let callee = self.get_gc_poll();
-                let _ = self.builder.build_call(callee, &[], "gc_poll").unwrap();
+                self.emit_gc_poll();
             }
             mir::StatementKind::SetDiscriminant {
                 place,
@@ -5184,7 +5166,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
             }
             mir::TerminatorKind::Return => {
-                self.emit_logical_stack_pop();
                 self.emit_shadow_pop();
                 let fn_abi = self
                     .current_fn_abi
@@ -5208,7 +5189,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::TerminatorKind::ResumeUnwind => {
-                self.emit_logical_stack_pop();
                 self.emit_shadow_pop();
                 let Some(eh_slot) = self.eh_slot else {
                     self.gcx.dcx().emit_error(
@@ -7204,12 +7184,71 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     fn get_gc_poll(&self) -> FunctionValue<'llvm> {
-        if let Some(f) = self.module.get_function("__gc__poll") {
-            return f;
+        let function = if let Some(f) = self.module.get_function("__gc__poll") {
+            f
+        } else {
+            let fn_ty = self.context.void_type().fn_type(&[], false);
+            self.module
+                .add_function("__gc__poll", fn_ty, Some(Linkage::External))
+        };
+        add_llvm_enum_function_attribute(self.context, function, "cold");
+        add_llvm_enum_function_attribute(self.context, function, "nounwind");
+        function
+    }
+
+    fn get_gc_poll_flags(&self) -> inkwell::values::GlobalValue<'llvm> {
+        if let Some(global) = self.module.get_global("__gc__poll_flags") {
+            return global;
         }
-        let fn_ty = self.context.void_type().fn_type(&[], false);
-        self.module
-            .add_function("__gc__poll", fn_ty, Some(Linkage::External))
+        let global = self
+            .module
+            .add_global(self.context.i8_type(), None, "__gc__poll_flags");
+        global.set_linkage(Linkage::External);
+        global
+    }
+
+    /// Emit the mutator fast path directly into generated code.
+    ///
+    /// Managed entry shims register the thread before any Taro code runs. A
+    /// zero flag therefore means there is no GC coordination work to perform;
+    /// only the uncommon non-zero case crosses into the runtime.
+    fn emit_gc_poll(&mut self) {
+        let flags = self
+            .builder
+            .build_load(
+                self.context.i8_type(),
+                self.get_gc_poll_flags().as_pointer_value(),
+                "gc_poll_flags",
+            )
+            .unwrap();
+        flags
+            .as_instruction_value()
+            .expect("GC poll flag load must be an instruction")
+            .set_atomic_ordering(AtomicOrdering::Acquire)
+            .expect("acquire ordering must be valid for a GC poll load");
+        let pending = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                flags.into_int_value(),
+                self.context.i8_type().const_zero(),
+                "gc_poll_pending",
+            )
+            .unwrap();
+
+        let function = self.current_fn.expect("GC poll emitted outside a function");
+        let slow = self.context.append_basic_block(function, "gc_poll.slow");
+        let resume = self.context.append_basic_block(function, "gc_poll.resume");
+        self.builder
+            .build_conditional_branch(pending, slow, resume)
+            .unwrap();
+
+        self.builder.position_at_end(slow);
+        self.builder
+            .build_call(self.get_gc_poll(), &[], "gc_poll_slow")
+            .unwrap();
+        self.builder.build_unconditional_branch(resume).unwrap();
+        self.builder.position_at_end(resume);
     }
 
     fn get_rt_existential_lookup_conformance(&self) -> FunctionValue<'llvm> {

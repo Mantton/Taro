@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 10;
+pub const RUNTIME_ABI_REVISION: u32 = 11;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -339,8 +339,10 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     additional("__gc__makebuf", "(*const gc_desc,usize,usize)->*mut u8"),
     additional("__gc__poll", "()->void"),
+    additional("__gc__poll_flags", "atomic u8"),
     additional("__gc__register_static", "(*const u8,usize)->void"),
     additional("__gc__set_buf_len", "(*mut u8,*const gc_desc,usize)->void"),
+    additional("__gc__thread_enter_managed", "()->void"),
     additional("__rt__cleanup_cancel", "(usize)->bool"),
     additional("__rt__cleanup_wait", "()->void"),
     additional("__rt__async_io_adopt_fd", "(i32)->usize"),
@@ -403,8 +405,6 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__hash_seed0", "()->u64"),
     additional("__rt__hash_seed1", "()->u64"),
     additional("__rt__keep_alive", "(*const u8)->void"),
-    additional("__rt__logical_stack_pop", "()->void"),
-    additional("__rt__logical_stack_push", "(string)->void"),
     additional_unix(
         "__rt__net_ip_snapshot_at",
         "(usize,usize,*mut u8,*mut u8)->i32",
