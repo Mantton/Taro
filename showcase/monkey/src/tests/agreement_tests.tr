@@ -1,0 +1,195 @@
+import monkey.ast.Program
+import monkey.compiler.Compiler
+import monkey.eval.Evaluator
+import monkey.lexer.Lexer
+import monkey.object.{Object, Environment, boxEnvironment}
+import monkey.parser.Parser
+import monkey.vm.VM
+import std.testing.{assertTrue, assertEqual}
+
+/// The two engines are independent implementations of one specification, so
+/// every program is really two tests. Running each through both and comparing
+/// catches anything where one drifted from the other — which no test written
+/// against a single engine can see.
+
+func parsed(_ source: string) -> Optional[Program] {
+    var parser = Parser(Lexer(source))
+    match parser.parseProgram() {
+        case .ok(program) => return .some(program)
+        case .err(_) => return .none
+    }
+}
+
+/// What the tree-walking evaluator makes of `source`.
+func viaEvaluator(_ program: &Program) -> string {
+    let env = boxEnvironment(Environment.new())
+    var evaluator = Evaluator()
+    match evaluator.run(program, env) {
+        case .ok(value) => return value.inspect()
+        case .err(error) => return std.sprintf("error: %s", error.describe())
+    }
+}
+
+/// What the bytecode machine makes of `source`.
+func viaMachine(_ program: &Program) -> string {
+    var compiler = Compiler.new()
+    match compiler.compile(program) {
+        case .ok(_) => {}
+        case .err(error) => return std.sprintf("error: %s", error.describe())
+    }
+    var machine = VM.new(compiler.bytecode())
+    match machine.run() {
+        case .ok(_) => return machine.result().inspect()
+        case .err(error) => return std.sprintf("error: %s", error.describe())
+    }
+}
+
+/// Asserts both engines answer `expected`.
+func agree(_ source: string, _ expected: string) {
+    let program = match parsed(source) {
+        case .some(found) => found
+        case .none => {
+            std.testing.fail(std.sprintf("%s did not parse", source))
+            return
+        }
+    }
+
+    let walked = viaEvaluator(&program)
+    let compiled = viaMachine(&program)
+    assertEqual(walked, compiled, std.sprintf("%s: evaluator %s, machine %s", source, walked, compiled))
+    assertEqual(walked, expected, std.sprintf("%s => %s (want %s)", source, walked, expected))
+}
+
+@test
+func arithmeticAgrees() {
+    agree("1 + 2 * 3 - 4 / 2", "5")
+    agree("(1 + 2) * (3 - 4)", "-3")
+    agree("-(5 + 5)", "-10")
+    agree("50 / 2 * 2 + 10 - 5", "55")
+}
+
+@test
+func comparisonsAgree() {
+    agree("1 < 2", "true")
+    agree("2 < 1", "false")
+    agree("1 == 1", "true")
+    agree("true != false", "true")
+    agree("(1 < 2) == true", "true")
+    agree("\"a\" == \"a\"", "true")
+    agree("!5", "false")
+    agree("!!5", "true")
+}
+
+@test
+func conditionalsAgree() {
+    agree("if (true) { 10 }", "10")
+    agree("if (false) { 10 } else { 20 }", "20")
+    // Both must produce null, not nothing, when no branch matches.
+    agree("if (1 > 2) { 10 }", "null")
+    agree("if ((if (false) { 10 })) { 10 } else { 20 }", "20")
+}
+
+@test
+func bindingsAndClosuresAgree() {
+    agree("let a = 5; let b = a; a + b", "10")
+    agree("let identity = fn(x) { x }; identity(9)", "9")
+    agree("let adder = fn(x) { fn(y) { x + y } }; adder(2)(3)", "5")
+    agree("let n = 50; let f = fn() { let n = 1; n }; f() + n", "51")
+    agree(
+        "let counter = fn(a, b) { let c = a + b; fn(d) { c + d } };"
+            + "counter(1, 2)(8)",
+        "11",
+    )
+}
+
+@test
+func recursionAgrees() {
+    agree(
+        "let fib = fn(x) { if (x < 2) { return x; } fib(x - 1) + fib(x - 2); }; fib(15)",
+        "610",
+    )
+    // A recursive function bound inside another function: the case that needs
+    // the running closure rather than the binding it is on its way into.
+    agree(
+        "let wrapper = fn() {"
+            + "let down = fn(x) { if (x == 0) { return 0; } down(x - 1); };"
+            + "down(5); }; wrapper()",
+        "0",
+    )
+}
+
+@test
+func compositesAgree() {
+    agree("[1, 2 * 2, 3 + 3]", "[1, 4, 6]")
+    agree("[1, 2, 3][1]", "2")
+    agree("[1, 2, 3][99]", "null")
+    agree("{\"a\": 1, \"b\": 2}[\"b\"]", "2")
+    agree("{1: 1}[0]", "null")
+    agree("{true: 1}[true]", "1")
+    agree("[[1, 2], [3, 4]][1][0]", "3")
+}
+
+@test
+func builtinsAgree() {
+    agree("len(\"hello\")", "5")
+    agree("len([1, 2, 3])", "3")
+    agree("first([1, 2, 3])", "1")
+    agree("last([1, 2, 3])", "3")
+    agree("rest([1, 2, 3])", "[2, 3]")
+    agree("push([1], 2)", "[1, 2]")
+    agree("first([])", "null")
+}
+
+@test
+func higherOrderProgramsAgree() {
+    let map = "let map = fn(arr, f) {"
+        + "let iter = fn(arr, acc) {"
+        + "if (len(arr) == 0) { acc }"
+        + "else { iter(rest(arr), push(acc, f(first(arr)))) } };"
+        + "iter(arr, []) };"
+    agree(map + "map([1, 2, 3, 4], fn(x) { x * x })", "[1, 4, 9, 16]")
+
+    let reduce = "let reduce = fn(arr, init, f) {"
+        + "let iter = fn(arr, result) {"
+        + "if (len(arr) == 0) { result }"
+        + "else { iter(rest(arr), f(result, first(arr))) } };"
+        + "iter(arr, init) };"
+    agree(reduce + "reduce([1, 2, 3, 4, 5], 0, fn(a, b) { a + b })", "15")
+}
+
+@test
+func sharedFailuresAgree() {
+    // Both engines call the same builtins, so a builtin's complaint is
+    // identical text on either.
+    agree("len(1)", "error: argument to `len` not supported, got INTEGER")
+    agree("first(1)", "error: argument to `first` must be ARRAY, got INTEGER")
+    agree("len(\"a\", \"b\")", "error: wrong number of arguments to `len`: want 1, got 2")
+    // Division by zero is reported by both, where the book panics.
+    agree("1 / 0", "error: division by zero")
+}
+
+@test
+func divergencesAreDeliberate() {
+    // Where the two disagree, it is because they are different machines, not
+    // because one is wrong. These are the only differences, and each is a
+    // message rather than a value.
+    let program = match parsed("1 + true") {
+        case .some(found) => found
+        case .none => {
+            std.testing.fail("should parse")
+            return
+        }
+    }
+    // The evaluator names the operator; the machine has already discarded it,
+    // because the instruction that failed carries no operand.
+    assertEqual(
+        viaEvaluator(&program),
+        "error: type mismatch: INTEGER + BOOLEAN",
+        "the evaluator still has the operator",
+    )
+    assertEqual(
+        viaMachine(&program),
+        "error: unsupported types for binary operation: INTEGER BOOLEAN",
+        "the machine reports the operand kinds",
+    )
+}

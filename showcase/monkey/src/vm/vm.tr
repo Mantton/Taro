@@ -1,0 +1,568 @@
+import monkey.code.{Instruction, Instructions, Opcode, Decoded, DecodeError}
+import monkey.compiler.Bytecode
+import monkey.object.{
+    Object,
+    ObjectKind,
+    HashKey,
+    Closure,
+    CompiledFunction,
+    Builtin,
+    BuiltinError,
+    builtinAt,
+    callBuiltin,
+    boxArray,
+    boxHash,
+    boxClosure,
+    boxCompiledFunction,
+}
+
+/// Deepest the operand stack will grow.
+const MAX_STACK: usize = 2048
+
+/// Most calls that can be in progress at once.
+///
+/// A Monkey recursion that never ends is reported here rather than being left to
+/// exhaust the native stack, which it cannot do in any case: a call costs a
+/// `Frame` in a list, not a native frame, so the machine unwinds far deeper than
+/// the tree-walking evaluator can.
+const MAX_FRAMES: usize = 1024
+
+/// Why execution stopped.
+public enum RuntimeError {
+    case stackOverflow
+    case stackUnderflow
+    case frameOverflow
+    case unsupportedBinaryOperation(left: ObjectKind, right: ObjectKind)
+    case unsupportedComparison(left: ObjectKind, right: ObjectKind)
+    case unsupportedNegation(ObjectKind)
+    case unusableAsHashKey(ObjectKind)
+    case unsupportedIndex(collection: ObjectKind, index: ObjectKind)
+    case notAFunction(ObjectKind)
+    case wrongArgumentCount(expected: usize, found: usize)
+    case divisionByZero
+    case unknownBuiltin(usize)
+    /// A builtin refused its arguments; both engines report these the same way.
+    case builtin(BuiltinError)
+    /// The instruction stream could not be read. Unreachable for bytecode this
+    /// compiler produced, but the machine will run any bytes it is handed.
+    case malformedBytecode(DecodeError)
+}
+
+impl RuntimeError {
+    public func describe(&self) -> string {
+        match self {
+            case .stackOverflow => return "stack overflow"
+            case .stackUnderflow => return "stack underflow"
+            case .frameOverflow => {
+                return std.sprintf("call depth exceeded %v nested calls", MAX_FRAMES)
+            }
+            case .unsupportedBinaryOperation(left, right) => {
+                return std.sprintf(
+                    "unsupported types for binary operation: %s %s",
+                    left.describe(),
+                    right.describe(),
+                )
+            }
+            case .unsupportedComparison(left, right) => {
+                return std.sprintf(
+                    "unsupported types for comparison: %s %s",
+                    left.describe(),
+                    right.describe(),
+                )
+            }
+            case .unsupportedNegation(kind) => {
+                return std.sprintf("unsupported type for negation: %s", kind.describe())
+            }
+            case .unusableAsHashKey(kind) => {
+                return std.sprintf("unusable as hash key: %s", kind.describe())
+            }
+            case .unsupportedIndex(collection, index) => {
+                return std.sprintf(
+                    "index operator not supported: %s[%s]",
+                    collection.describe(),
+                    index.describe(),
+                )
+            }
+            case .notAFunction(kind) => {
+                return std.sprintf("calling non-function: %s", kind.describe())
+            }
+            case .wrongArgumentCount(expected, found) => {
+                return std.sprintf(
+                    "wrong number of arguments: want %v, got %v",
+                    *expected,
+                    *found,
+                )
+            }
+            case .divisionByZero => return "division by zero"
+            case .unknownBuiltin(index) => {
+                return std.sprintf("no builtin at index %v", *index)
+            }
+            case .builtin(error) => return error.describe()
+            case .malformedBytecode(error) => return error.describe()
+        }
+    }
+}
+
+/// A stack machine that runs compiled Monkey.
+public struct VM {
+    constants: List[Object]
+    stack: List[Object]
+    globals: List[Object]
+    frames: List[Frame]
+    /// The value the last `OpPop` discarded, which for a whole program is what
+    /// its final expression evaluated to.
+    lastPopped: Object
+}
+
+/// Wraps a program's instructions as a callable with no parameters.
+///
+/// The machine only ever runs closures, so the top level is made to look like
+/// one. That removes the reference implementation's special case for the outermost
+/// frame, which has to be constructed differently from every other.
+func mainClosure(_ instructions: Instructions) -> &Closure {
+    let function = CompiledFunction {
+        instructions: instructions,
+        localCount: 0 as usize,
+        parameterCount: 0 as usize,
+    }
+    return boxClosure(Closure {
+        function: boxCompiledFunction(function),
+        free: List[Object](),
+    })
+}
+
+impl VM {
+    public func new(_ bytecode: Bytecode) -> Self {
+        return VM.withGlobals(bytecode, List[Object]())
+    }
+
+    /// A machine continuing with globals an earlier one bound.
+    ///
+    /// The REPL runs each line on a new machine but the bindings persist, so the
+    /// globals outlive the machine that made them.
+    public func withGlobals(_ bytecode: Bytecode, _ globals: List[Object]) -> Self {
+        var frames = List[Frame]()
+        frames.append(Frame.new(mainClosure(bytecode.instructions), 0 as usize))
+        return VM {
+            constants: bytecode.constants,
+            stack: List[Object](),
+            globals: globals,
+            frames: frames,
+            lastPopped: .null,
+        }
+    }
+
+    /// The globals bound so far, for a later machine to continue from.
+    public func globalStore(&self) -> List[Object] {
+        var copy = List[Object]()
+        for value in &self.globals {
+            copy.append(value.clone())
+        }
+        return copy
+    }
+
+    /// What the program's last expression evaluated to.
+    public func result(&self) -> Object {
+        return self.lastPopped.clone()
+    }
+
+    func push(&mut self, _ value: Object) -> Result[(), RuntimeError] {
+        if self.stack.len() >= MAX_STACK {
+            return .err(.stackOverflow)
+        }
+        self.stack.append(value)
+        return .ok(())
+    }
+
+    func pop(&mut self) -> Result[Object, RuntimeError] {
+        match self.stack.pop() {
+            case .some(value) => return .ok(value)
+            case .none => return .err(.stackUnderflow)
+        }
+    }
+
+    func frameIndex(&self) -> usize {
+        return self.frames.len() - (1 as usize)
+    }
+
+    /// Whether the innermost frame still has instructions to read.
+    func hasMore(&self) -> bool {
+        if self.frames.isEmpty() {
+            return false
+        }
+        let frame = self.frames.at(self.frames.len() - (1 as usize))
+        return frame.ip < frame.instructions().len()
+    }
+
+    func fetch(&self) -> Result[Decoded, RuntimeError] {
+        let frame = self.frames.at(self.frames.len() - (1 as usize))
+        match frame.instructions().decodeAt(frame.ip) {
+            case .ok(decoded) => return .ok(decoded)
+            case .err(error) => return .err(.malformedBytecode(error))
+        }
+    }
+
+    func advance(&mut self, _ width: usize) {
+        let index = self.frameIndex()
+        var frame = self.frames.at(index)
+        frame.ip += width
+    }
+
+    /// Sends the innermost frame to `target`.
+    func jump(&mut self, _ target: uint16) {
+        let index = self.frameIndex()
+        var frame = self.frames.at(index)
+        frame.ip = target as usize
+    }
+
+    /// Runs until the outermost frame is exhausted.
+    ///
+    /// Each instruction is decoded once, into a value carrying its operands, and
+    /// matched exhaustively. The reference implementation instead switches on a
+    /// raw byte and reads the operands by hand inside each arm, so an arm that
+    /// forgets to advance the instruction pointer by the right amount — or
+    /// forgets an arm entirely — is a run-time misbehaviour rather than a
+    /// compile error.
+    public func run(&mut self) -> Result[(), RuntimeError] {
+        while self.hasMore() {
+            let decoded = self.fetch()!
+            self.advance(decoded.width)
+
+            match decoded.instruction {
+                case .constant(index) => {
+                    let value = self.constants.at(index as usize).clone()
+                    self.push(value)!
+                }
+
+                case .pop => {
+                    self.lastPopped = self.pop()!
+                }
+
+                case .pushTrue => self.push(.boolean(true))!
+                case .pushFalse => self.push(.boolean(false))!
+                case .pushNull => self.push(.null)!
+
+                case .add => self.arithmetic(Opcode.add)!
+                case .subtract => self.arithmetic(Opcode.subtract)!
+                case .multiply => self.arithmetic(Opcode.multiply)!
+                case .divide => self.arithmetic(Opcode.divide)!
+
+                case .equal => self.comparison(Opcode.equal)!
+                case .notEqual => self.comparison(Opcode.notEqual)!
+                case .greaterThan => self.comparison(Opcode.greaterThan)!
+
+                case .negate => {
+                    let operand = self.pop()!
+                    match &operand {
+                        case .integer(value) => self.push(.integer(-(*value)))!
+                        case _ => return .err(.unsupportedNegation(operand.kind()))
+                    }
+                }
+
+                case .not => {
+                    let operand = self.pop()!
+                    self.push(.boolean(!operand.isTruthy()))!
+                }
+
+                case .jump(target) => self.jump(target)
+
+                case .jumpNotTruthy(target) => {
+                    let condition = self.pop()!
+                    if !condition.isTruthy() {
+                        self.jump(target)
+                    }
+                }
+
+                case .setGlobal(slot) => {
+                    let value = self.pop()!
+                    self.storeGlobal(slot as usize, value)
+                }
+
+                case .getGlobal(slot) => {
+                    let value = self.globals.at(slot as usize).clone()
+                    self.push(value)!
+                }
+
+                case .setLocal(slot) => {
+                    let value = self.pop()!
+                    let base = self.frames.at(self.frames.len() - (1 as usize)).base
+                    *self.stack.at(base + (slot as usize)) = value
+                }
+
+                case .getLocal(slot) => {
+                    let base = self.frames.at(self.frames.len() - (1 as usize)).base
+                    let value = self.stack.at(base + (slot as usize)).clone()
+                    self.push(value)!
+                }
+
+                case .getFree(slot) => {
+                    let frame = self.frames.at(self.frames.len() - (1 as usize))
+                    let captured = &frame.closure.free
+                    let value = captured.at(slot as usize).clone()
+                    self.push(value)!
+                }
+
+                case .getBuiltin(slot) => {
+                    match builtinAt(slot as usize) {
+                        case .some(builtin) => self.push(.builtin(builtin))!
+                        case .none => return .err(.unknownBuiltin(slot as usize))
+                    }
+                }
+
+                case .currentClosure => {
+                    let closure = self.frames.at(self.frames.len() - (1 as usize)).closure
+                    self.push(.closure(closure))!
+                }
+
+                case .array(count) => {
+                    let elements = self.take(count as usize)!
+                    self.push(.array(boxArray(elements)))!
+                }
+
+                case .hash(count) => {
+                    let values = self.take(count as usize)!
+                    var entries = Dictionary[HashKey, Object]()
+                    var position = 0 as usize
+                    while position < values.len() {
+                        let key = values.at(position)
+                        let value = values.at(position + (1 as usize))
+                        match key.toHashKey() {
+                            case .some(hashKey) => {
+                                entries.set(key: hashKey, value: value.clone())
+                            }
+                            case .none => return .err(.unusableAsHashKey(key.kind()))
+                        }
+                        position += 2 as usize
+                    }
+                    self.push(.hash(boxHash(entries)))!
+                }
+
+                case .index => {
+                    let index = self.pop()!
+                    let collection = self.pop()!
+                    let value = self.index(&collection, &index)!
+                    self.push(value)!
+                }
+
+                case .closure(constant, free) => {
+                    self.buildClosure(constant as usize, free as usize)!
+                }
+
+                case .call(arguments) => self.call(arguments as usize)!
+
+                case .returnValue => {
+                    let value = self.pop()!
+                    self.leaveFrame()
+                    self.push(value)!
+                }
+
+                case .returnNothing => {
+                    self.leaveFrame()
+                    self.push(.null)!
+                }
+            }
+        }
+        return .ok(())
+    }
+
+    /// Writes a global, growing the store to reach the slot.
+    func storeGlobal(&mut self, _ slot: usize, _ value: Object) {
+        while self.globals.len() <= slot {
+            self.globals.append(.null)
+        }
+        *self.globals.at(slot) = value
+    }
+
+    /// Removes the top `count` values, keeping their order.
+    func take(&mut self, _ count: usize) -> Result[List[Object], RuntimeError] {
+        if self.stack.len() < count {
+            return .err(.stackUnderflow)
+        }
+        var taken = List[Object]()
+        let start = self.stack.len() - count
+        var position = start
+        while position < self.stack.len() {
+            taken.append(self.stack.at(position).clone())
+            position += 1 as usize
+        }
+        while self.stack.len() > start {
+            self.stack.pop()
+        }
+        return .ok(taken)
+    }
+
+    func arithmetic(&mut self, _ opcode: Opcode) -> Result[(), RuntimeError] {
+        let right = self.pop()!
+        let left = self.pop()!
+
+        match &left {
+            case .integer(lhs) => {
+                match &right {
+                    case .integer(rhs) => {
+                        // Go's `/` panics on a zero divisor, taking the whole
+                        // interpreter with it. Reporting it hands the mistake
+                        // back to the program that made it.
+                        if opcode == Opcode.divide && *rhs == 0 {
+                            return .err(.divisionByZero)
+                        }
+                        let value = match opcode {
+                            case .add => *lhs + *rhs
+                            case .subtract => *lhs - *rhs
+                            case .multiply => *lhs * *rhs
+                            case _ => *lhs / *rhs
+                        }
+                        return self.push(.integer(value))
+                    }
+                    case _ => {}
+                }
+            }
+            case .text(lhs) => {
+                match &right {
+                    case .text(rhs) => {
+                        if opcode == Opcode.add {
+                            return self.push(.text(*lhs + *rhs))
+                        }
+                    }
+                    case _ => {}
+                }
+            }
+            case _ => {}
+        }
+
+        return .err(.unsupportedBinaryOperation(left: left.kind(), right: right.kind()))
+    }
+
+    func comparison(&mut self, _ opcode: Opcode) -> Result[(), RuntimeError] {
+        let right = self.pop()!
+        let left = self.pop()!
+
+        if opcode == Opcode.greaterThan {
+            match &left {
+                case .integer(lhs) => {
+                    match &right {
+                        case .integer(rhs) => return self.push(.boolean(*lhs > *rhs))
+                        case _ => {}
+                    }
+                }
+                case _ => {}
+            }
+            return .err(.unsupportedComparison(left: left.kind(), right: right.kind()))
+        }
+
+        // Equality is defined for every value, so it needs no kind check —
+        // unlike the reference implementation, which compares pointers for
+        // anything that is not an integer and quietly answers `false`.
+        let same = left.equals(&right)
+        if opcode == Opcode.equal {
+            return self.push(.boolean(same))
+        }
+        return self.push(.boolean(!same))
+    }
+
+    func index(
+        &self,
+        _ collection: &Object,
+        _ index: &Object,
+    ) -> Result[Object, RuntimeError] {
+        match collection {
+            case .array(elements) => {
+                match index {
+                    case .integer(position) => {
+                        if *position < 0 {
+                            return .ok(.null)
+                        }
+                        // Out of range yields null rather than failing, as
+                        // Monkey specifies.
+                        match elements.get(*position as usize) {
+                            case .some(found) => return .ok(found.clone())
+                            case .none => return .ok(.null)
+                        }
+                    }
+                    case _ => {}
+                }
+            }
+            case .hash(entries) => {
+                match index.toHashKey() {
+                    case .some(key) => {
+                        match entries.get(&key) {
+                            case .some(found) => return .ok(found.clone())
+                            case .none => return .ok(.null)
+                        }
+                    }
+                    case .none => return .err(.unusableAsHashKey(index.kind()))
+                }
+            }
+            case _ => {}
+        }
+        return .err(.unsupportedIndex(collection: collection.kind(), index: index.kind()))
+    }
+
+    /// Builds a closure over the top `free` values.
+    func buildClosure(&mut self, _ constant: usize, _ free: usize) -> Result[(), RuntimeError] {
+        let captured = self.take(free)!
+        let function = match self.constants.at(constant) {
+            case .compiledFunction(found) => *found
+            case _ => return .err(.notAFunction(self.constants.at(constant).kind()))
+        }
+        let closure = Closure { function: function, free: captured }
+        return self.push(.closure(boxClosure(closure)))
+    }
+
+    /// Calls whatever sits below the top `arguments` values.
+    func call(&mut self, _ arguments: usize) -> Result[(), RuntimeError] {
+        if self.stack.len() < arguments + (1 as usize) {
+            return .err(.stackUnderflow)
+        }
+        let calleeSlot = self.stack.len() - arguments - (1 as usize)
+        let callee = self.stack.at(calleeSlot).clone()
+
+        match &callee {
+            case .closure(closure) => {
+                if closure.function.parameterCount != arguments {
+                    return .err(.wrongArgumentCount(
+                        expected: closure.function.parameterCount,
+                        found: arguments,
+                    ))
+                }
+                if self.frames.len() >= MAX_FRAMES {
+                    return .err(.frameOverflow)
+                }
+
+                // The arguments are already where the call's first locals
+                // belong, so the frame starts just above the callee and the
+                // remaining slots are reserved.
+                let base = calleeSlot + (1 as usize)
+                self.frames.append(Frame.new(*closure, base))
+                var reserved = closure.function.parameterCount
+                while reserved < closure.function.localCount {
+                    self.push(.null)!
+                    reserved += 1 as usize
+                }
+                return .ok(())
+            }
+            case .builtin(builtin) => {
+                let taken = self.take(arguments)!
+                // The callee itself is still below; it goes with the call.
+                self.pop()!
+                match callBuiltin(*builtin, taken) {
+                    case .ok(value) => return self.push(value)
+                    case .err(error) => return .err(.builtin(error))
+                }
+            }
+            case _ => return .err(.notAFunction(callee.kind()))
+        }
+    }
+
+    /// Discards the finished call's frame, its locals and its callee.
+    func leaveFrame(&mut self) {
+        let base = match self.frames.pop() {
+            case .some(frame) => frame.base
+            case .none => return
+        }
+        // Everything from the callee upwards belongs to the call that just
+        // ended, so the stack goes back to just below where its locals began.
+        while self.stack.len() >= base && !self.stack.isEmpty() {
+            self.stack.pop()
+        }
+    }
+}

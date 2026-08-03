@@ -1,17 +1,17 @@
-import monkey.ast.endsWithBinding
-import monkey.lexer.Lexer
-import monkey.parser.Parser
+import monkey.ast.{Program, endsWithBinding}
+import monkey.compiler.Compiler
 import monkey.eval.Evaluator
-import monkey.object.{Environment, boxEnvironment}
-import monkey.repl.Repl
+import monkey.lexer.Lexer
+import monkey.object.{Object, Environment, boxEnvironment}
+import monkey.parser.Parser
+import monkey.repl.{Repl, Engine}
+import monkey.vm.VM
 
-/// Parses and evaluates a whole source, printing the result or the failure.
-///
-/// Answers whether it succeeded, so a script can set the exit status.
-func runSource(_ source: string, _ origin: string) -> bool {
+/// Parses `source`, reporting every failure against `origin`.
+func parse(_ source: string, _ origin: string) -> Optional[Program] {
     var parser = Parser(Lexer(source))
-    let program = match parser.parseProgram() {
-        case .ok(parsed) => parsed
+    match parser.parseProgram() {
+        case .ok(parsed) => return .some(parsed)
         case .err(errors) => {
             for error in &errors {
                 std.eprintf(
@@ -22,55 +22,212 @@ func runSource(_ source: string, _ origin: string) -> bool {
                     error.message,
                 )
             }
-            return false
+            return .none
         }
     }
+}
+/// Runs a whole source on `engine`, printing the result or the failure.
+///
+/// Answers whether it succeeded, so a script can set the exit status.
+func runSource(_ source: string, _ origin: string, _ engine: Engine) -> bool {
+    let program = match parse(source, origin) {
+        case .some(parsed) => parsed
+        case .none => return false
+    }
 
+    match engine {
+        case .tree => {
+            let env = boxEnvironment(Environment.new())
+            var evaluator = Evaluator()
+            match evaluator.run(&program, env) {
+                case .ok(value) => {
+                    if !endsWithBinding(&program) {
+                        std.printf("%s\n", value.inspect())
+                    }
+                    return true
+                }
+                case .err(error) => {
+                    std.eprintf("%s: %s\n", origin, error.describe())
+                    return false
+                }
+            }
+        }
+        case .bytecode => {
+            var compiler = Compiler.new()
+            match compiler.compile(&program) {
+                case .ok(_) => {}
+                case .err(error) => {
+                    std.eprintf("%s: %s\n", origin, error.describe())
+                    return false
+                }
+            }
+            var machine = VM.new(compiler.bytecode())
+            match machine.run() {
+                case .ok(_) => {
+                    if !endsWithBinding(&program) {
+                        std.printf("%s\n", machine.result().inspect())
+                    }
+                    return true
+                }
+                case .err(error) => {
+                    std.eprintf("%s: %s\n", origin, error.describe())
+                    return false
+                }
+            }
+        }
+    }
+}
+
+/// The benchmark the second book ends on: naive Fibonacci, both engines.
+///
+/// Recursive Fibonacci is almost entirely calls, so it measures what the two
+/// engines actually differ at — the tree-walker rebuilds an environment and
+/// walks the body for every call, while the machine pushes a frame and reads
+/// instructions it compiled once.
+/// The reference implementation's exact benchmark source, so timings here can
+/// be compared against published ones for other host languages.
+const FIBONACCI: string = "let fibonacci = fn(x) { if (x == 0) { 0 } else { if (x == 1) { return 1; } else { fibonacci(x - 1) + fibonacci(x - 2); } } };"
+
+/// Milliseconds in a duration, which `std.time` does not spell directly.
+func millis(_ duration: std.time.Duration) -> uint64 {
+    return duration.seconds() * (1000 as uint64)
+        + ((duration.subsecNanos() / (1000000 as uint32)) as uint64)
+}
+
+func benchmark(_ n: int64) {
+    let source = std.sprintf("%s fibonacci(%v);", FIBONACCI, n)
+    let program = match parse(source, "benchmark") {
+        case .some(parsed) => parsed
+        case .none => std.process.exit(1)
+    }
+
+    std.printf("fibonacci(%v)\n", n)
+
+    // The tree-walking evaluator bounds its own recursion, so a large enough
+    // input is refused rather than run. That is worth reporting, not hiding.
+    let treeStart = std.time.Instant.now()
     let env = boxEnvironment(Environment.new())
     var evaluator = Evaluator()
     match evaluator.run(&program, env) {
         case .ok(value) => {
-            if !endsWithBinding(&program) {
-                std.printf("%s\n", value.inspect())
-            }
-            return true
+            std.printf(
+                "  %-22s %6v ms   %s\n",
+                "tree-walking",
+                millis(treeStart.elapsed()),
+                value.inspect(),
+            )
         }
         case .err(error) => {
-            std.eprintf("%s: %s\n", origin, error.describe())
-            return false
+            std.printf("  %-22s %s\n", "tree-walking", error.describe())
+        }
+    }
+
+    let compileStart = std.time.Instant.now()
+    var compiler = Compiler.new()
+    match compiler.compile(&program) {
+        case .ok(_) => {}
+        case .err(error) => {
+            std.eprintf("benchmark: %s\n", error.describe())
+            std.process.exit(1)
+        }
+    }
+    let bytecode = compiler.bytecode()
+    let compileTime = millis(compileStart.elapsed())
+
+    let runStart = std.time.Instant.now()
+    var machine = VM.new(bytecode)
+    match machine.run() {
+        case .ok(_) => {
+            std.printf(
+                "  %-22s %6v ms   %s   (compiled in %v ms)\n",
+                "bytecode machine",
+                millis(runStart.elapsed()),
+                machine.result().inspect(),
+                compileTime,
+            )
+        }
+        case .err(error) => {
+            std.printf("  %-22s %s\n", "bytecode machine", error.describe())
         }
     }
 }
 
 func usage() {
-    std.eprint("usage: monkey [file | -e <source>]\n")
+    std.eprint("usage: monkey [file | -e <source>] [--engine vm|eval]\n")
     std.eprint("  with no arguments, starts a REPL\n")
+    std.eprint("  --bench [n]   time both engines on fibonacci(n)\n")
+}
+
+/// Reads `--engine <name>`, answering the engine and the arguments without it.
+func selectEngine(_ arguments: &List[string]) -> (Engine, List[string]) {
+    var engine = Engine.bytecode
+    var rest = List[string]()
+    var index = 0 as usize
+    while index < arguments.len() {
+        let argument = *arguments.at(index)
+        if argument == "--engine" && index + (1 as usize) < arguments.len() {
+            let name = *arguments.at(index + (1 as usize))
+            if name == "eval" || name == "tree" {
+                engine = .tree
+            }
+            index += 2 as usize
+            continue
+        }
+        rest.append(argument)
+        index += 1 as usize
+    }
+    return (engine, rest)
 }
 
 func main() {
-    let arguments = std.env.args()
+    let raw = std.env.args()
+    var passed = List[string]()
+    var index = 1 as usize
+    while index < raw.len() {
+        passed.append(raw.at(index))
+        index += 1 as usize
+    }
+
+    let selected = selectEngine(&passed)
+    let engine = selected.0
+    let arguments = selected.1
 
     // No arguments: interactive session.
-    if arguments.len() <= (1 as usize) {
-        var repl = Repl()
+    if arguments.isEmpty() {
+        var repl = Repl.using(engine)
         repl.run()
         return
     }
 
-    let first = arguments.at(1 as usize)
+    let first = *arguments.at(0 as usize)
 
     if first == "-h" || first == "--help" {
         usage()
         return
     }
 
+    if first == "--bench" {
+        var n = 30 as int64
+        if arguments.len() >= (2 as usize) {
+            match int64.parse(*arguments.at(1 as usize)) {
+                case .ok(parsed) => n = parsed
+                case .err(_) => {
+                    std.eprint("error: --bench needs a number\n")
+                    std.process.exit(2)
+                }
+            }
+        }
+        benchmark(n)
+        return
+    }
+
     if first == "-e" {
-        if arguments.len() < (3 as usize) {
+        if arguments.len() < (2 as usize) {
             std.eprint("error: -e needs a source argument\n")
             usage()
             std.process.exit(2)
         }
-        if !runSource(arguments.at(2 as usize), "-e") {
+        if !runSource(*arguments.at(1 as usize), "-e", engine) {
             std.process.exit(1)
         }
         return
@@ -78,7 +235,7 @@ func main() {
 
     match std.fs.readToString(first) {
         case .ok(source) => {
-            if !runSource(source, first) {
+            if !runSource(source, first, engine) {
                 std.process.exit(1)
             }
         }

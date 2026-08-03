@@ -45,6 +45,47 @@ impl Builtin {
             case _ => false
         }
     }
+
+    /// Where the machine finds this builtin.
+    ///
+    /// The index is an operand of `OpGetBuiltin`, so it is part of the bytecode:
+    /// the compiler and the machine have to agree on it. Deriving both
+    /// directions from this one function keeps them from drifting, where the
+    /// reference implementation relies on two orderings staying in step — a
+    /// `map` in the evaluator and a slice in the machine.
+    public func index(&self) -> usize {
+        match self {
+            case .len => 0 as usize
+            case .puts => 1 as usize
+            case .first => 2 as usize
+            case .last => 3 as usize
+            case .rest => 4 as usize
+            case .push => 5 as usize
+        }
+    }
+}
+
+/// The builtin at `index`, or `.none` when nothing is there.
+public func builtinAt(_ index: usize) -> Optional[Builtin] {
+    if index == 0 as usize { return .some(.len) }
+    if index == 1 as usize { return .some(.puts) }
+    if index == 2 as usize { return .some(.first) }
+    if index == 3 as usize { return .some(.last) }
+    if index == 4 as usize { return .some(.rest) }
+    if index == 5 as usize { return .some(.push) }
+    return .none
+}
+
+/// Every builtin, in index order.
+public func allBuiltins() -> List[Builtin] {
+    var all = List[Builtin]()
+    all.append(.len)
+    all.append(.puts)
+    all.append(.first)
+    all.append(.last)
+    all.append(.rest)
+    all.append(.push)
+    return all
 }
 
 /// Resolves a name to a builtin, or `.none` when no builtin has that name.
@@ -56,4 +97,146 @@ public func builtinNamed(_ name: string) -> Optional[Builtin] {
     if name == "push" { return .some(.push) }
     if name == "puts" { return .some(.puts) }
     return .none
+}
+
+/// Why a builtin refused its arguments.
+///
+/// Kept beside the builtins rather than inside either engine, because both the
+/// tree-walking evaluator and the bytecode machine call the same
+/// implementations and so have to report the same failures.
+public enum BuiltinError {
+    case wrongArgumentCount(function: string, expected: usize, found: usize)
+    case wrongArgumentType(function: string, expected: ObjectKind, found: ObjectKind)
+    /// A builtin that accepts several kinds was given none of them.
+    case unsupportedArgument(function: string, found: ObjectKind)
+}
+
+impl BuiltinError {
+    public func describe(&self) -> string {
+        match self {
+            case .wrongArgumentCount(function, expected, found) => {
+                return std.sprintf(
+                    "wrong number of arguments to `%s`: want %v, got %v",
+                    *function,
+                    *expected,
+                    *found,
+                )
+            }
+            case .wrongArgumentType(function, expected, found) => {
+                return std.sprintf(
+                    "argument to `%s` must be %s, got %s",
+                    *function,
+                    expected.describe(),
+                    found.describe(),
+                )
+            }
+            case .unsupportedArgument(function, found) => {
+                return std.sprintf(
+                    "argument to `%s` not supported, got %s",
+                    *function,
+                    found.describe(),
+                )
+            }
+        }
+    }
+}
+
+/// Applies a builtin to already-evaluated arguments.
+///
+/// Arity is checked once, from the builtin's own declaration, rather than
+/// repeated at the top of every implementation as the reference version does.
+public func callBuiltin(
+    _ builtin: Builtin,
+    _ arguments: List[Object],
+) -> Result[Object, BuiltinError] {
+    if !builtin.isVariadic() && arguments.len() != builtin.arity() {
+        return .err(.wrongArgumentCount(
+            function: builtin.name(),
+            expected: builtin.arity(),
+            found: arguments.len(),
+        ))
+    }
+
+    match builtin {
+        case .len => {
+            let argument = arguments.at(0 as usize)
+            match argument {
+                case .text(value) => return .ok(.integer(value.byteLen() as int64))
+                case .array(elements) => return .ok(.integer(elements.len() as int64))
+                // `len` takes a string or an array, so naming a single
+                // expected kind would misdescribe it.
+                case _ => {
+                    return .err(.unsupportedArgument(
+                        function: "len",
+                        found: argument.kind(),
+                    ))
+                }
+            }
+        }
+
+        case .first => {
+            let elements = arrayArgument("first", &arguments)!
+            match elements.get(0 as usize) {
+                case .some(found) => return .ok(found.clone())
+                case .none => return .ok(.null)
+            }
+        }
+
+        case .last => {
+            let elements = arrayArgument("last", &arguments)!
+            if elements.isEmpty() {
+                return .ok(.null)
+            }
+            return .ok(elements.at(elements.len() - (1 as usize)).clone())
+        }
+
+        case .rest => {
+            let elements = arrayArgument("rest", &arguments)!
+            if elements.isEmpty() {
+                return .ok(.null)
+            }
+            var tail = List[Object]()
+            var position = 1 as usize
+            while position < elements.len() {
+                tail.append(elements.at(position).clone())
+                position += 1 as usize
+            }
+            return .ok(.array(boxArray(tail)))
+        }
+
+        case .push => {
+            let elements = arrayArgument("push", &arguments)!
+            var extended = List[Object]()
+            for element in elements {
+                extended.append(element.clone())
+            }
+            extended.append(arguments.at(1 as usize).clone())
+            return .ok(.array(boxArray(extended)))
+        }
+
+        case .puts => {
+            for argument in &arguments {
+                std.printf("%s\n", argument.inspect())
+            }
+            return .ok(.null)
+        }
+    }
+}
+
+/// The first argument as an array, or a typed failure naming the builtin.
+func arrayArgument(
+    _ name: string,
+    _ arguments: &List[Object],
+) -> Result[&List[Object], BuiltinError] {
+    let argument = arguments.at(0 as usize)
+    match argument {
+        case .array(elements) => return .ok(*elements)
+        case _ => {
+            return .err(.wrongArgumentType(
+                function: name,
+                expected: .array,
+                found: argument.kind(),
+            ))
+        }
+    }
 }

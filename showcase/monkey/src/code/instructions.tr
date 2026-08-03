@@ -1,0 +1,147 @@
+/// A stream of encoded instructions.
+///
+/// The bytes are the artifact: this is what a compiler produces and a machine
+/// runs. Wrapping them keeps the invariant that the stream is always a whole
+/// number of instructions — everything that writes goes through `emit`, and
+/// everything that reads goes through `decode`.
+public struct Instructions {
+    bytes: List[uint8]
+}
+
+impl Instructions {
+    public func new() -> Self {
+        return Instructions { bytes: List[uint8]() }
+    }
+
+    /// How many bytes the stream occupies. Offsets are byte offsets, not
+    /// instruction counts, because a jump names a byte.
+    public func len(&self) -> usize {
+        return self.bytes.len()
+    }
+
+    public func isEmpty(&self) -> bool {
+        return self.bytes.isEmpty()
+    }
+
+    public func raw(&self) -> &List[uint8] {
+        return &self.bytes
+    }
+
+    /// Appends `instruction`, answering the offset it was written at.
+    ///
+    /// The offset is what a later jump is patched to point at, and what the
+    /// compiler records so it can revisit an instruction it has already emitted.
+    public func emit(&mut self, _ instruction: Instruction) -> usize {
+        let offset = self.bytes.len()
+        encode(instruction, into: &mut self.bytes)
+        return offset
+    }
+
+    /// Appends every instruction in `other`, keeping their order.
+    public func extend(&mut self, _ other: &Instructions) {
+        for byte in other.raw() {
+            self.bytes.append(*byte)
+        }
+    }
+
+    /// Reads the instruction at `offset`.
+    public func decodeAt(&self, _ offset: usize) -> Result[Decoded, DecodeError] {
+        return decode(&self.bytes, at: offset)
+    }
+
+    /// Drops everything from `length` onwards.
+    ///
+    /// Used to take back an instruction the compiler has just emitted, which is
+    /// safe only at an instruction boundary — the caller has the offset `emit`
+    /// returned, so it always is one.
+    public func truncate(&mut self, to length: usize) {
+        while self.bytes.len() > length {
+            self.bytes.pop()
+        }
+    }
+
+    /// Rewrites the destination of the jump at `offset`.
+    ///
+    /// A jump is emitted before the compiler knows where it lands, so it goes out
+    /// with a placeholder that is filled in once the branch has been compiled.
+    /// The reference implementation patches with a general `changeOperand` that
+    /// will overwrite any instruction with any operand, guarded only by a comment
+    /// noting the unchecked assumption that the replacement is the same width.
+    /// Narrowing this to the one instruction that is ever patched makes that
+    /// assumption hold by construction: both jumps take a single `uint16`, so the
+    /// widths cannot differ.
+    ///
+    /// Answers whether `offset` did name a jump.
+    public func patchJump(&mut self, at offset: usize, to target: uint16) -> bool {
+        match self.decodeAt(offset) {
+            case .ok(decoded) => {
+                match decoded.instruction {
+                    case .jump(_) => {}
+                    case .jumpNotTruthy(_) => {}
+                    case _ => return false
+                }
+            }
+            case .err(_) => return false
+        }
+
+        // The opcode stays; only its operand changes.
+        let operands = offset + (1 as usize)
+        *self.bytes.at(operands) = (target >> (8 as uint16)) as uint8
+        *self.bytes.at(operands + (1 as usize)) = (target & (255 as uint16)) as uint8
+        return true
+    }
+
+    /// The stream as text, one instruction per line.
+    ///
+    /// Reads the stream through the same `decode` the machine uses, so a
+    /// disassembly cannot describe the bytes differently from how they will run.
+    /// The reference implementation gives its disassembler its own operand
+    /// reader, which is a second place for the encoding to be misunderstood.
+    public func disassemble(&self) -> string {
+        var out = ""
+        var offset = 0 as usize
+        while offset < self.bytes.len() {
+            match self.decodeAt(offset) {
+                case .ok(decoded) => {
+                    out = out + std.sprintf(
+                        "%04v %s\n",
+                        offset,
+                        describeInstruction(&decoded.instruction),
+                    )
+                    offset += decoded.width
+                }
+                case .err(error) => {
+                    out = out + std.sprintf("%04v %s\n", offset, error.describe())
+                    return out
+                }
+            }
+        }
+        return out
+    }
+}
+
+/// An instruction's name and operands, as a disassembly line shows them.
+public func describeInstruction(_ instruction: &Instruction) -> string {
+    let name = instruction.opcode().name()
+    match instruction {
+        case .constant(index) => return std.sprintf("%s %v", name, *index)
+        case .jump(target) => return std.sprintf("%s %v", name, *target)
+        case .jumpNotTruthy(target) => return std.sprintf("%s %v", name, *target)
+        case .getGlobal(slot) => return std.sprintf("%s %v", name, *slot)
+        case .setGlobal(slot) => return std.sprintf("%s %v", name, *slot)
+        case .array(count) => return std.sprintf("%s %v", name, *count)
+        case .hash(count) => return std.sprintf("%s %v", name, *count)
+        case .getLocal(slot) => return std.sprintf("%s %v", name, *slot)
+        case .setLocal(slot) => return std.sprintf("%s %v", name, *slot)
+        case .getFree(slot) => return std.sprintf("%s %v", name, *slot)
+        case .getBuiltin(slot) => return std.sprintf("%s %v", name, *slot)
+        case .call(arguments) => return std.sprintf("%s %v", name, *arguments)
+        case .closure(constant, free) => {
+            return std.sprintf("%s %v %v", name, *constant, *free)
+        }
+        case .add | .subtract | .multiply | .divide | .pop
+            | .pushTrue | .pushFalse | .pushNull
+            | .equal | .notEqual | .greaterThan | .negate | .not
+            | .index | .returnValue | .returnNothing | .currentClosure => return name
+    }
+}

@@ -1,0 +1,301 @@
+/// A single bytecode instruction, with its operands.
+///
+/// The reference implementation represents an instruction as a bare `Opcode` byte
+/// and passes its operands separately as `...int`, checking them against a table
+/// of operand widths at run time. Nothing there ties an opcode to the number or
+/// size of the operands it takes: `Make(OpConstant)` with no operands, or
+/// `Make(OpGetLocal, 70000)` with one too large to fit the byte it is written
+/// into, are both accepted and produce silently wrong bytecode.
+///
+/// Carrying the operands in the case makes those states unrepresentable. An
+/// instruction cannot be built with the wrong operand count, and each operand is
+/// declared at the width it is encoded in, so a value that does not fit is a
+/// compile error at the emit site rather than a truncation at the write.
+///
+/// The encoded form is still a flat byte stream — this is bytecode, not a tree of
+/// instruction objects. `Instruction` is the typed way in and out of that stream.
+///
+/// Every operand is a scalar, so an instruction is a small value that copies
+/// rather than moves, and can be passed around as freely as the byte it replaces.
+public enum Instruction: std.marker.Copy {
+    /// Push constant `index` from the constant pool.
+    case constant(uint16)
+    case add
+    case subtract
+    case multiply
+    case divide
+    /// Discard the value on top of the stack.
+    case pop
+    case pushTrue
+    case pushFalse
+    case pushNull
+    case equal
+    case notEqual
+    case greaterThan
+    case negate
+    case not
+    /// Jump to `target`, an absolute offset into the enclosing instructions.
+    case jump(uint16)
+    /// Pop a value and jump to `target` when it is falsey.
+    case jumpNotTruthy(uint16)
+    case getGlobal(uint16)
+    case setGlobal(uint16)
+    case getLocal(uint8)
+    case setLocal(uint8)
+    case getFree(uint8)
+    case getBuiltin(uint8)
+    /// Build an array from the top `count` values.
+    case array(uint16)
+    /// Build a hash from the top `count` values, read as alternating key and value.
+    case hash(uint16)
+    case index
+    /// Call the function below the top `arguments` values.
+    case call(arguments: uint8)
+    case returnValue
+    /// Return from a function that produced no value; the caller receives null.
+    case returnNothing
+    /// Wrap constant `constant` in a closure over the top `free` values.
+    case closure(constant: uint16, free: uint8)
+    /// Push the closure currently executing, which is how a function names itself.
+    case currentClosure
+}
+
+/// Why a byte stream could not be read as an instruction.
+public enum DecodeError {
+    case unknownOpcode(byte: uint8, offset: usize)
+    case truncatedOperand(opcode: Opcode, offset: usize)
+}
+
+impl DecodeError {
+    public func describe(&self) -> string {
+        match self {
+            case .unknownOpcode(byte, offset) => {
+                return std.sprintf("unknown opcode %v at offset %v", *byte, *offset)
+            }
+            case .truncatedOperand(opcode, offset) => {
+                return std.sprintf(
+                    "instruction %s at offset %v is missing operand bytes",
+                    opcode.name(),
+                    *offset,
+                )
+            }
+        }
+    }
+}
+
+/// An instruction read out of a byte stream, with the width it occupied.
+public struct Decoded {
+    public instruction: Instruction
+    public width: usize
+}
+
+impl Instruction {
+    /// The opcode this instruction encodes to.
+    public func opcode(&self) -> Opcode {
+        match self {
+            case .constant(_) => .constant
+            case .add => .add
+            case .subtract => .subtract
+            case .multiply => .multiply
+            case .divide => .divide
+            case .pop => .pop
+            case .pushTrue => .pushTrue
+            case .pushFalse => .pushFalse
+            case .pushNull => .pushNull
+            case .equal => .equal
+            case .notEqual => .notEqual
+            case .greaterThan => .greaterThan
+            case .negate => .negate
+            case .not => .not
+            case .jump(_) => .jump
+            case .jumpNotTruthy(_) => .jumpNotTruthy
+            case .getGlobal(_) => .getGlobal
+            case .setGlobal(_) => .setGlobal
+            case .getLocal(_) => .getLocal
+            case .setLocal(_) => .setLocal
+            case .getFree(_) => .getFree
+            case .getBuiltin(_) => .getBuiltin
+            case .array(_) => .array
+            case .hash(_) => .hash
+            case .index => .index
+            case .call(_) => .call
+            case .returnValue => .returnValue
+            case .returnNothing => .returnNothing
+            case .closure(_, _) => .closure
+            case .currentClosure => .currentClosure
+        }
+    }
+
+    /// How many bytes the encoded form occupies, opcode included.
+    public func width(&self) -> usize {
+        return (1 as usize) + self.opcode().operandWidth()
+    }
+}
+
+impl Opcode {
+    /// How many bytes this opcode's operands occupy.
+    ///
+    /// Derived from the opcode alone, which is what lets a decoder know how far to
+    /// advance before it has understood the instruction.
+    public func operandWidth(&self) -> usize {
+        match self {
+            case .constant => 2 as usize
+            case .jump => 2 as usize
+            case .jumpNotTruthy => 2 as usize
+            case .getGlobal => 2 as usize
+            case .setGlobal => 2 as usize
+            case .array => 2 as usize
+            case .hash => 2 as usize
+            case .getLocal => 1 as usize
+            case .setLocal => 1 as usize
+            case .getFree => 1 as usize
+            case .getBuiltin => 1 as usize
+            case .call => 1 as usize
+            case .closure => 3 as usize
+            // Listed rather than left to a wildcard, so an opcode added later
+            // has to state its width here before it compiles.
+            case .add | .subtract | .multiply | .divide | .pop
+                | .pushTrue | .pushFalse | .pushNull
+                | .equal | .notEqual | .greaterThan | .negate | .not
+                | .index | .returnValue | .returnNothing | .currentClosure => 0 as usize
+        }
+    }
+}
+
+/// Appends `value` big-endian, matching the reference implementation's layout.
+func appendUint16(_ value: uint16, into bytes: &mut List[uint8]) {
+    bytes.append((value >> (8 as uint16)) as uint8)
+    bytes.append((value & (255 as uint16)) as uint8)
+}
+
+/// Reads a big-endian `uint16`, which the caller has already bounds-checked.
+func readUint16(_ bytes: &List[uint8], at offset: usize) -> uint16 {
+    let high = (*bytes.at(offset)) as uint16
+    let low = (*bytes.at(offset + (1 as usize))) as uint16
+    return (high << (8 as uint16)) | low
+}
+
+/// Appends the encoded form of `instruction` to `bytes`.
+///
+/// Every case is spelled out rather than driven by a width table: a new
+/// instruction does not compile until its operands are written, which is the
+/// check the reference implementation defers to a run-time lookup.
+public func encode(_ instruction: Instruction, into bytes: &mut List[uint8]) {
+    bytes.append(instruction.opcode().toByte())
+    match instruction {
+        case .constant(index) => appendUint16(index, into: bytes)
+        case .jump(target) => appendUint16(target, into: bytes)
+        case .jumpNotTruthy(target) => appendUint16(target, into: bytes)
+        case .getGlobal(slot) => appendUint16(slot, into: bytes)
+        case .setGlobal(slot) => appendUint16(slot, into: bytes)
+        case .array(count) => appendUint16(count, into: bytes)
+        case .hash(count) => appendUint16(count, into: bytes)
+        case .getLocal(slot) => bytes.append(slot)
+        case .setLocal(slot) => bytes.append(slot)
+        case .getFree(slot) => bytes.append(slot)
+        case .getBuiltin(slot) => bytes.append(slot)
+        case .call(arguments) => bytes.append(arguments)
+        case .closure(constant, free) => {
+            appendUint16(constant, into: bytes)
+            bytes.append(free)
+        }
+        case .add | .subtract | .multiply | .divide | .pop
+            | .pushTrue | .pushFalse | .pushNull
+            | .equal | .notEqual | .greaterThan | .negate | .not
+            | .index | .returnValue | .returnNothing | .currentClosure => {}
+    }
+}
+
+/// The encoded form of `instruction` on its own.
+public func encoded(_ instruction: Instruction) -> List[uint8] {
+    var bytes = List[uint8]()
+    encode(instruction, into: &mut bytes)
+    return bytes
+}
+
+/// Reads the instruction beginning at `offset`.
+///
+/// The bounds check happens once, against the width the opcode declares, so no
+/// case below can read past the end of the stream. The VM and the disassembler
+/// both come through here, which is what keeps them from disagreeing about how
+/// long an instruction is — in the reference implementation they are separate
+/// code paths that read the operands independently.
+public func decode(_ bytes: &List[uint8], at offset: usize) -> Result[Decoded, DecodeError] {
+    if offset >= bytes.len() {
+        return .err(.unknownOpcode(byte: 0, offset: offset))
+    }
+
+    let byte = *bytes.at(offset)
+    var opcode = Opcode.constant
+    match Opcode.fromByte(byte) {
+        case .some(found) => opcode = found
+        case .none => return .err(.unknownOpcode(byte: byte, offset: offset))
+    }
+
+    let operands = offset + (1 as usize)
+    if operands + opcode.operandWidth() > bytes.len() {
+        return .err(.truncatedOperand(opcode: opcode, offset: offset))
+    }
+
+    let width = (1 as usize) + opcode.operandWidth()
+    match opcode {
+        case .constant => {
+            return .ok(Decoded { instruction: .constant(readUint16(bytes, at: operands)), width: width })
+        }
+        case .jump => {
+            return .ok(Decoded { instruction: .jump(readUint16(bytes, at: operands)), width: width })
+        }
+        case .jumpNotTruthy => {
+            return .ok(Decoded { instruction: .jumpNotTruthy(readUint16(bytes, at: operands)), width: width })
+        }
+        case .getGlobal => {
+            return .ok(Decoded { instruction: .getGlobal(readUint16(bytes, at: operands)), width: width })
+        }
+        case .setGlobal => {
+            return .ok(Decoded { instruction: .setGlobal(readUint16(bytes, at: operands)), width: width })
+        }
+        case .array => {
+            return .ok(Decoded { instruction: .array(readUint16(bytes, at: operands)), width: width })
+        }
+        case .hash => {
+            return .ok(Decoded { instruction: .hash(readUint16(bytes, at: operands)), width: width })
+        }
+        case .getLocal => {
+            return .ok(Decoded { instruction: .getLocal(*bytes.at(operands)), width: width })
+        }
+        case .setLocal => {
+            return .ok(Decoded { instruction: .setLocal(*bytes.at(operands)), width: width })
+        }
+        case .getFree => {
+            return .ok(Decoded { instruction: .getFree(*bytes.at(operands)), width: width })
+        }
+        case .getBuiltin => {
+            return .ok(Decoded { instruction: .getBuiltin(*bytes.at(operands)), width: width })
+        }
+        case .call => {
+            return .ok(Decoded { instruction: .call(arguments: *bytes.at(operands)), width: width })
+        }
+        case .closure => {
+            let constant = readUint16(bytes, at: operands)
+            let free = *bytes.at(operands + (2 as usize))
+            return .ok(Decoded { instruction: .closure(constant: constant, free: free), width: width })
+        }
+        case .add => return .ok(Decoded { instruction: .add, width: width })
+        case .subtract => return .ok(Decoded { instruction: .subtract, width: width })
+        case .multiply => return .ok(Decoded { instruction: .multiply, width: width })
+        case .divide => return .ok(Decoded { instruction: .divide, width: width })
+        case .pop => return .ok(Decoded { instruction: .pop, width: width })
+        case .pushTrue => return .ok(Decoded { instruction: .pushTrue, width: width })
+        case .pushFalse => return .ok(Decoded { instruction: .pushFalse, width: width })
+        case .pushNull => return .ok(Decoded { instruction: .pushNull, width: width })
+        case .equal => return .ok(Decoded { instruction: .equal, width: width })
+        case .notEqual => return .ok(Decoded { instruction: .notEqual, width: width })
+        case .greaterThan => return .ok(Decoded { instruction: .greaterThan, width: width })
+        case .negate => return .ok(Decoded { instruction: .negate, width: width })
+        case .not => return .ok(Decoded { instruction: .not, width: width })
+        case .index => return .ok(Decoded { instruction: .index, width: width })
+        case .returnValue => return .ok(Decoded { instruction: .returnValue, width: width })
+        case .returnNothing => return .ok(Decoded { instruction: .returnNothing, width: width })
+        case .currentClosure => return .ok(Decoded { instruction: .currentClosure, width: width })
+    }
+}

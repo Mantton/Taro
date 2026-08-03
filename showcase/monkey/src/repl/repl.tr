@@ -1,11 +1,34 @@
-import monkey.ast.{renderProgram, endsWithBinding}
-import monkey.lexer.Lexer
-import monkey.parser.{Parser, ParseError}
+import monkey.ast.{Program, renderProgram, endsWithBinding}
+import monkey.compiler.{Compiler, SymbolTable, boxSymbolTable}
 import monkey.eval.Evaluator
+import monkey.lexer.Lexer
 import monkey.object.{Object, Environment, boxEnvironment}
+import monkey.parser.{Parser, ParseError}
 import monkey.token.TokenTag
+import monkey.vm.VM
 
 const PROMPT: string = ">> "
+
+/// Which engine runs the source.
+///
+/// Both are kept, and both are complete. The tree-walking evaluator is the
+/// first book's; the stack machine is this one's. Being able to switch between
+/// them on the same session is what makes it possible to check that they agree.
+public enum Engine: std.marker.Copy, std.ops.PartialEq {
+    /// Walks the syntax tree, evaluating as it goes.
+    case tree
+    /// Compiles to bytecode and runs it on the stack machine.
+    case bytecode
+}
+
+impl Engine {
+    public func describe(&self) -> string {
+        match self {
+            case .tree => "tree-walking evaluator"
+            case .bytecode => "bytecode machine"
+        }
+    }
+}
 
 /// What the user typed, once it has been classified.
 enum Input {
@@ -19,28 +42,46 @@ enum Input {
 
 /// A read-eval-print session.
 ///
-/// The environment lives for the whole session, so bindings made on one line are
-/// visible from the next. The reference implementation reaches this point by
-/// chapter 3; keeping it here from the start costs nothing.
+/// State outlives each line so bindings persist: the evaluator keeps an
+/// environment, and the machine keeps a symbol table, a constant pool and a set
+/// of globals. Each line is compiled on its own but numbered as though it were a
+/// continuation of the ones before, which is what lets a name bound on one line
+/// resolve on the next.
 public struct Repl {
+    engine: Engine
     env: &mut Environment
     evaluator: Evaluator
+    symbols: &mut SymbolTable
+    constants: List[Object]
+    globals: List[Object]
     /// Prints the parse tree alongside the value, for seeing how input grouped.
     showTree: bool
+    /// Prints the instructions a line compiled to.
+    showBytecode: bool
 }
 
 impl Repl {
     public func new() -> Self {
+        return Repl.using(Engine.bytecode)
+    }
+
+    public func using(_ engine: Engine) -> Self {
         return Repl {
+            engine: engine,
             env: boxEnvironment(Environment.new()),
             evaluator: Evaluator(),
+            symbols: freshSymbolTable(),
+            constants: List[Object](),
+            globals: List[Object](),
             showTree: false,
+            showBytecode: false,
         }
     }
 
     /// Reads, evaluates and prints until the input ends or the user quits.
     public func run(&mut self) {
         std.print(GREETING)
+        std.printf("Running on the %s. Type :engine to switch.\n", self.engine.describe())
 
         var reader = std.io.BufReader(std.io.stdin())
         loop {
@@ -81,6 +122,10 @@ impl Repl {
             std.print(HELP)
             return true
         }
+        if name == "engine" {
+            self.switchEngine(argument)
+            return true
+        }
         if name == "tree" {
             self.showTree = !self.showTree
             if self.showTree {
@@ -90,13 +135,25 @@ impl Repl {
             }
             return true
         }
+        if name == "bytecode" {
+            self.showBytecode = !self.showBytecode
+            if self.showBytecode {
+                std.print("showing compiled instructions\n")
+            } else {
+                std.print("hiding compiled instructions\n")
+            }
+            return true
+        }
         if name == "tokens" {
             printTokens(argument)
             return true
         }
         if name == "reset" {
             self.env = boxEnvironment(Environment.new())
-            std.print("environment cleared\n")
+            self.symbols = freshSymbolTable()
+            self.constants = List[Object]()
+            self.globals = List[Object]()
+            std.print("every binding forgotten\n")
             return true
         }
         if name == "quit" || name == "exit" {
@@ -107,7 +164,27 @@ impl Repl {
         return true
     }
 
-    /// Parses and evaluates one line, printing whatever comes back.
+    func switchEngine(&mut self, _ argument: string) {
+        if argument == "vm" || argument == "bytecode" {
+            self.engine = .bytecode
+        } else if argument == "eval" || argument == "tree" {
+            self.engine = .tree
+        } else if argument.isEmpty() {
+            // With no argument, switching is the useful thing to do.
+            match self.engine {
+                case .tree => self.engine = .bytecode
+                case .bytecode => self.engine = .tree
+            }
+        } else {
+            std.printf("unknown engine %s — try :engine vm or :engine eval\n", argument)
+            return
+        }
+        // Bindings live in whichever engine made them, so the two do not share
+        // them. Saying so is better than letting a name quietly vanish.
+        std.printf("now running on the %s (bindings are per engine)\n", self.engine.describe())
+    }
+
+    /// Parses one line and runs it on the current engine.
     func evaluate(&mut self, _ source: string) {
         var parser = Parser(Lexer(source))
         let program = match parser.parseProgram() {
@@ -122,18 +199,74 @@ impl Repl {
             std.printf("tree: %s\n", renderProgram(&program))
         }
 
-        match self.evaluator.run(&program, self.env) {
-            case .ok(value) => {
-                // A binding yields nothing to echo. Everything else yields a
-                // value, and `null` is one — hiding it would make `puts()` and a
-                // conditional with no match look like they did nothing at all.
-                if !endsWithBinding(&program) {
-                    std.printf("%s\n", value.inspect())
-                }
-            }
+        match self.engine {
+            case .tree => self.evaluateWalking(&program)
+            case .bytecode => self.evaluateCompiled(&program)
+        }
+    }
+
+    func evaluateWalking(&mut self, _ program: &Program) {
+        match self.evaluator.run(program, self.env) {
+            case .ok(value) => self.echo(program, value)
             case .err(error) => std.printf("error: %s\n", error.describe())
         }
     }
+
+    func evaluateCompiled(&mut self, _ program: &Program) {
+        var compiler = Compiler.withState(self.symbols, cloneObjects(&self.constants))
+        match compiler.compile(program) {
+            case .ok(_) => {}
+            case .err(error) => {
+                std.printf("compile error: %s\n", error.describe())
+                return
+            }
+        }
+
+        let bytecode = compiler.bytecode()
+        if self.showBytecode {
+            std.print(bytecode.instructions.disassemble())
+        }
+        self.constants = cloneObjects(&bytecode.constants)
+
+        var machine = VM.withGlobals(bytecode, cloneObjects(&self.globals))
+        match machine.run() {
+            case .ok(_) => {
+                self.globals = machine.globalStore()
+                self.echo(program, machine.result())
+            }
+            case .err(error) => {
+                // The globals a failed line did bind still stand, the same way
+                // the evaluator leaves an environment it partly updated.
+                self.globals = machine.globalStore()
+                std.printf("error: %s\n", error.describe())
+            }
+        }
+    }
+
+    /// Prints a result, unless the line was a binding.
+    ///
+    /// A binding yields nothing to echo. Everything else yields a value, and
+    /// `null` is one — hiding it would make `puts()` and a conditional with no
+    /// match look like they did nothing at all.
+    func echo(&self, _ program: &Program, _ value: Object) {
+        if !endsWithBinding(program) {
+            std.printf("%s\n", value.inspect())
+        }
+    }
+}
+
+/// A symbol table with the builtins already bound, as the compiler expects.
+func freshSymbolTable() -> &mut SymbolTable {
+    var compiler = Compiler.new()
+    return compiler.symbolTable()
+}
+
+func cloneObjects(_ values: &List[Object]) -> List[Object] {
+    var copy = List[Object]()
+    for value in values {
+        copy.append(value.clone())
+    }
+    return copy
 }
 
 /// Decides what a line of input means.
@@ -206,4 +339,4 @@ func printTokens(_ source: string) {
 
 const GREETING: string = "Monkey, in Taro.\nType :help for commands, :quit to leave.\n"
 
-const HELP: string = "  :help           show this message\n  :tokens <src>   print the token stream for <src>\n  :tree           toggle printing the parse tree\n  :reset          forget every binding\n  :quit           leave\n"
+const HELP: string = "  :help           show this message\n  :engine [name]  switch engine, or name one: vm, eval\n  :bytecode       toggle printing compiled instructions\n  :tokens <src>   print the token stream for <src>\n  :tree           toggle printing the parse tree\n  :reset          forget every binding\n  :quit           leave\n"

@@ -1,0 +1,328 @@
+import monkey.compiler.{Compiler, SymbolTable, SymbolScope, boxSymbolTable}
+import monkey.lexer.Lexer
+import monkey.object.Object
+import monkey.parser.Parser
+import std.testing.{assertTrue, assertEqual, fail}
+
+/// Compiles `source` and renders everything it produced.
+///
+/// The main instructions come first, then each constant: a literal by value, a
+/// function by its own disassembly. Comparing against text rather than against
+/// a list of encoded instructions — which is what the reference implementation's
+/// tests do — means a failure reports which instruction differs instead of which
+/// byte, and it exercises the disassembler on every case at the same time.
+func compiled(_ source: string) -> string {
+    var parser = Parser(Lexer(source))
+    let program = match parser.parseProgram() {
+        case .ok(parsed) => parsed
+        case .err(errors) => {
+            if errors.isEmpty() {
+                return "parse error"
+            }
+            return std.sprintf("parse error: %s", errors.at(0 as usize).message)
+        }
+    }
+
+    var compiler = Compiler.new()
+    match compiler.compile(&program) {
+        case .ok(_) => {}
+        case .err(error) => return std.sprintf("compile error: %s", error.describe())
+    }
+
+    let bytecode = compiler.bytecode()
+    var out = bytecode.instructions.disassemble()
+    var index = 0 as usize
+    for constant in &bytecode.constants {
+        match constant {
+            case .compiledFunction(function) => {
+                out = out + std.sprintf("constant %v: fn\n", index)
+                out = out + function.instructions.disassemble()
+            }
+            case _ => {
+                out = out + std.sprintf("constant %v: %s\n", index, constant.inspect())
+            }
+        }
+        index += 1 as usize
+    }
+    return out
+}
+
+func check(_ source: string, _ expected: string) {
+    let actual = compiled(source)
+    assertEqual(actual, expected, std.sprintf("%s compiled to\n%s\nwant\n%s", source, actual, expected))
+}
+
+@test
+func integerArithmeticCompiles() {
+    check("1 + 2", "0000 OpConstant 0\n0003 OpConstant 1\n0006 OpAdd\n0007 OpPop\n"
+        + "constant 0: 1\nconstant 1: 2\n")
+    // Two statements, each leaving nothing behind.
+    check("1; 2", "0000 OpConstant 0\n0003 OpPop\n0004 OpConstant 1\n0007 OpPop\n"
+        + "constant 0: 1\nconstant 1: 2\n")
+}
+
+@test
+func lessThanReordersItsOperands() {
+    // There is no "less than" instruction: `1 < 2` compiles as `2 > 1`, so the
+    // constants come out in the reverse of their source order.
+    check("1 < 2", "0000 OpConstant 0\n0003 OpConstant 1\n0006 OpGreaterThan\n0007 OpPop\n"
+        + "constant 0: 2\nconstant 1: 1\n")
+    check("1 > 2", "0000 OpConstant 0\n0003 OpConstant 1\n0006 OpGreaterThan\n0007 OpPop\n"
+        + "constant 0: 1\nconstant 1: 2\n")
+}
+
+@test
+func booleansAreOpcodesNotConstants() {
+    check("true", "0000 OpTrue\n0001 OpPop\n")
+    check("false", "0000 OpFalse\n0001 OpPop\n")
+}
+
+@test
+func conditionalsJumpAroundTheirBranches() {
+    // Without an `else`, the machine still has to leave a value, so the missing
+    // branch is an explicit null.
+    check(
+        "if (true) { 10 }; 3333",
+        "0000 OpTrue\n0001 OpJumpNotTruthy 10\n0004 OpConstant 0\n0007 OpJump 11\n"
+            + "0010 OpNull\n0011 OpPop\n0012 OpConstant 1\n0015 OpPop\n"
+            + "constant 0: 10\nconstant 1: 3333\n",
+    )
+    check(
+        "if (true) { 10 } else { 20 }; 3333",
+        "0000 OpTrue\n0001 OpJumpNotTruthy 10\n0004 OpConstant 0\n0007 OpJump 13\n"
+            + "0010 OpConstant 1\n0013 OpPop\n0014 OpConstant 2\n0017 OpPop\n"
+            + "constant 0: 10\nconstant 1: 20\nconstant 2: 3333\n",
+    )
+}
+
+@test
+func globalBindingsUseGlobalSlots() {
+    check(
+        "let one = 1; let two = 2;",
+        "0000 OpConstant 0\n0003 OpSetGlobal 0\n0006 OpConstant 1\n0009 OpSetGlobal 1\n"
+            + "constant 0: 1\nconstant 1: 2\n",
+    )
+    check(
+        "let one = 1; one;",
+        "0000 OpConstant 0\n0003 OpSetGlobal 0\n0006 OpGetGlobal 0\n0009 OpPop\n"
+            + "constant 0: 1\n",
+    )
+}
+
+@test
+func stringsAreConstants() {
+    check("\"monkey\"", "0000 OpConstant 0\n0003 OpPop\nconstant 0: monkey\n")
+    check(
+        "\"mon\" + \"key\"",
+        "0000 OpConstant 0\n0003 OpConstant 1\n0006 OpAdd\n0007 OpPop\n"
+            + "constant 0: mon\nconstant 1: key\n",
+    )
+}
+
+@test
+func compositesCountTheirElements() {
+    check("[]", "0000 OpArray 0\n0003 OpPop\n")
+    check(
+        "[1, 2, 3]",
+        "0000 OpConstant 0\n0003 OpConstant 1\n0006 OpConstant 2\n0009 OpArray 3\n0012 OpPop\n"
+            + "constant 0: 1\nconstant 1: 2\nconstant 2: 3\n",
+    )
+    check("{}", "0000 OpHash 0\n0003 OpPop\n")
+    // A hash counts keys and values together, because both are on the stack.
+    check(
+        "{1: 2}",
+        "0000 OpConstant 0\n0003 OpConstant 1\n0006 OpHash 2\n0009 OpPop\n"
+            + "constant 0: 1\nconstant 1: 2\n",
+    )
+}
+
+@test
+func indexingIsAnInstruction() {
+    check(
+        "[1][0]",
+        "0000 OpConstant 0\n0003 OpArray 1\n0006 OpConstant 1\n0009 OpIndex\n0010 OpPop\n"
+            + "constant 0: 1\nconstant 1: 0\n",
+    )
+}
+
+@test
+func functionsBecomeConstants() {
+    // The body is a constant of its own, and the literal builds a closure over it.
+    check(
+        "fn() { 5 + 10 }",
+        "0000 OpClosure 2 0\n0004 OpPop\n"
+            + "constant 0: 5\nconstant 1: 10\n"
+            + "constant 2: fn\n0000 OpConstant 0\n0003 OpConstant 1\n0006 OpAdd\n0007 OpReturnValue\n",
+    )
+    // An empty body answers with null rather than falling off the end.
+    check(
+        "fn() { }",
+        "0000 OpClosure 0 0\n0004 OpPop\nconstant 0: fn\n0000 OpReturn\n",
+    )
+}
+
+@test
+func localsUseFrameSlots() {
+    check(
+        "fn() { let n = 1; n }",
+        "0000 OpClosure 1 0\n0004 OpPop\n"
+            + "constant 0: 1\n"
+            + "constant 1: fn\n0000 OpConstant 0\n0003 OpSetLocal 0\n0005 OpGetLocal 0\n0007 OpReturnValue\n",
+    )
+    // A global stays a global even when read from inside a function.
+    check(
+        "let n = 1; fn() { n }",
+        "0000 OpConstant 0\n0003 OpSetGlobal 0\n0006 OpClosure 1 0\n0010 OpPop\n"
+            + "constant 0: 1\n"
+            + "constant 1: fn\n0000 OpGetGlobal 0\n0003 OpReturnValue\n",
+    )
+}
+
+@test
+func callsCountTheirArguments() {
+    check(
+        "let f = fn(a) { a }; f(1)",
+        "0000 OpClosure 0 0\n0004 OpSetGlobal 0\n0007 OpGetGlobal 0\n0010 OpConstant 1\n"
+            + "0013 OpCall 1\n0015 OpPop\n"
+            + "constant 0: fn\n0000 OpGetLocal 0\n0002 OpReturnValue\n"
+            + "constant 1: 1\n",
+    )
+}
+
+@test
+func builtinsAreLoadedByIndex() {
+    // A builtin needs no binding: its index is fixed and every scope knows it.
+    check("len([])", "0000 OpGetBuiltin 0\n0002 OpArray 0\n0005 OpCall 1\n0007 OpPop\n")
+    check("push([], 1)", "0000 OpGetBuiltin 5\n0002 OpArray 0\n0005 OpConstant 0\n"
+        + "0008 OpCall 2\n0010 OpPop\nconstant 0: 1\n")
+}
+
+@test
+func closuresLoadWhatTheyCapture() {
+    // The inner function reads `a` as free and `b` as its own local; the outer
+    // one pushes `a` before building the closure that captures it.
+    check(
+        "fn(a) { fn(b) { a + b } }",
+        "0000 OpClosure 1 0\n0004 OpPop\n"
+            + "constant 0: fn\n0000 OpGetFree 0\n0002 OpGetLocal 0\n0004 OpAdd\n0005 OpReturnValue\n"
+            + "constant 1: fn\n0000 OpGetLocal 0\n0002 OpClosure 0 1\n0006 OpReturnValue\n",
+    )
+}
+
+@test
+func recursionNamesTheRunningClosure() {
+    // A function calling itself loads the closure being executed, not the
+    // binding it is on its way into — which has not been written yet.
+    check(
+        "let countDown = fn(x) { countDown(x - 1); }; countDown(1);",
+        "0000 OpClosure 1 0\n0004 OpSetGlobal 0\n0007 OpGetGlobal 0\n0010 OpConstant 2\n"
+            + "0013 OpCall 1\n0015 OpPop\n"
+            + "constant 0: 1\n"
+            + "constant 1: fn\n0000 OpCurrentClosure\n0001 OpGetLocal 0\n0003 OpConstant 0\n"
+            + "0006 OpSub\n0007 OpCall 1\n0009 OpReturnValue\n"
+            + "constant 2: 1\n",
+    )
+}
+
+@test
+func undefinedNamesAreRefused() {
+    check("nope", "compile error: undefined variable nope")
+}
+
+@test
+func globalScopeDefinesAndResolves() {
+    var table = SymbolTable.new()
+    let a = table.define("a")
+    assertTrue(a.scope == SymbolScope.global, "a top-level binding is global")
+    assertEqual(a.index, 0 as usize, "the first binding takes slot zero")
+
+    let b = table.define("b")
+    assertEqual(b.index, 1 as usize, "the next takes the following slot")
+
+    match table.resolve("a") {
+        case .some(found) => {
+            assertTrue(found.scope == SymbolScope.global, "a resolves as global")
+            assertEqual(found.index, 0 as usize, "to the slot it was given")
+        }
+        case .none => fail("a should resolve")
+    }
+    match table.resolve("missing") {
+        case .some(_) => fail("an unbound name should not resolve")
+        case .none => {}
+    }
+}
+
+@test
+func nestedScopesResolveOutwards() {
+    var global = SymbolTable.new()
+    let _ = global.define("a")
+    var outerRef = boxSymbolTable(global)
+
+    var local = SymbolTable.enclosedBy(outerRef)
+    let b = local.define("b")
+    assertTrue(b.scope == SymbolScope.local, "a binding inside a function is local")
+    assertEqual(b.index, 0 as usize, "locals are numbered from zero in each function")
+
+    // A global stays a global when read from within a function.
+    match local.resolve("a") {
+        case .some(found) => {
+            assertTrue(found.scope == SymbolScope.global, "a is still global inside")
+        }
+        case .none => fail("a should resolve through the enclosing table")
+    }
+}
+
+@test
+func enclosingLocalsBecomeFree() {
+    var global = SymbolTable.new()
+    var globalRef = boxSymbolTable(global)
+
+    var outer = SymbolTable.enclosedBy(globalRef)
+    let _ = outer.define("a")
+    var outerRef = boxSymbolTable(outer)
+
+    var inner = SymbolTable.enclosedBy(outerRef)
+    // `a` belongs to the enclosing call's frame, so reaching it from here means
+    // capturing it.
+    match inner.resolve("a") {
+        case .some(found) => {
+            assertTrue(found.scope == SymbolScope.free, "an enclosing local is captured")
+            assertEqual(found.index, 0 as usize, "as the first captured value")
+        }
+        case .none => fail("a should resolve as free")
+    }
+    assertEqual(inner.free.len(), 1 as usize, "one value was captured")
+
+    // Resolving it again reuses the same capture rather than adding another.
+    let _ = inner.resolve("a")
+    assertEqual(inner.free.len(), 1 as usize, "a second read captures nothing new")
+}
+
+@test
+func builtinsResolveFromAnyDepth() {
+    var global = SymbolTable.new()
+    let _ = global.defineBuiltin(0 as usize, "len")
+    var globalRef = boxSymbolTable(global)
+    var inner = SymbolTable.enclosedBy(globalRef)
+
+    match inner.resolve("len") {
+        case .some(found) => {
+            assertTrue(found.scope == SymbolScope.builtin, "a builtin is never captured")
+            assertEqual(found.index, 0 as usize, "at its fixed index")
+        }
+        case .none => fail("len should resolve")
+    }
+    assertEqual(inner.free.len(), 0 as usize, "a builtin is reachable without capturing it")
+}
+
+@test
+func aFunctionCanNameItself() {
+    var global = SymbolTable.new()
+    let _ = global.defineFunctionName("myself")
+    match global.resolve("myself") {
+        case .some(found) => {
+            assertTrue(found.scope == SymbolScope.function, "the name is the running closure")
+        }
+        case .none => fail("myself should resolve")
+    }
+}

@@ -1,4 +1,5 @@
 import monkey.ast.{Statement, renderStatement}
+import monkey.code.Instructions
 import std.hash.{Hashable, Hasher}
 import std.ops.PartialEq
 
@@ -16,6 +17,10 @@ public enum ObjectKind: std.marker.Copy, PartialEq {
     case hash
     case function
     case builtin
+    /// A function the bytecode compiler produced. The tree-walking evaluator
+    /// never makes one, but both engines share this type.
+    case compiledFunction
+    case closure
 }
 
 impl ObjectKind {
@@ -29,6 +34,8 @@ impl ObjectKind {
             case .hash => "HASH"
             case .function => "FUNCTION"
             case .builtin => "BUILTIN"
+            case .compiledFunction => "COMPILED_FUNCTION"
+            case .closure => "CLOSURE"
         }
     }
 }
@@ -127,6 +134,27 @@ public struct Function {
     public env: &mut Environment
 }
 
+/// A function the compiler has turned into instructions.
+///
+/// The parameters are gone by this point — they are slots, and `localCount`
+/// counts them along with everything else the body binds, which is how large a
+/// frame the call needs.
+public struct CompiledFunction {
+    public instructions: Instructions
+    public localCount: usize
+    public parameterCount: usize
+}
+
+/// A compiled function together with the values it captured.
+///
+/// Every function the machine calls is one of these, even one that captures
+/// nothing. Treating the two the same removes the reference implementation's
+/// branch on whether a callee is a bare function or a closure.
+public struct Closure {
+    public function: &CompiledFunction
+    public free: List[Object]
+}
+
 /// A value.
 ///
 /// Aggregates are held by reference so that copying an `Object` stays cheap and
@@ -143,6 +171,8 @@ public enum Object {
     case hash(&Dictionary[HashKey, Object])
     case function(&Function)
     case builtin(Builtin)
+    case compiledFunction(&CompiledFunction)
+    case closure(&Closure)
 }
 
 /// Moves an array's elements to managed storage so an `Object` can refer to them.
@@ -163,6 +193,18 @@ public func boxFunction(_ function: Function) -> &Function {
     return &boxed
 }
 
+/// Moves a compiled function to managed storage so an `Object` can refer to it.
+public func boxCompiledFunction(_ function: CompiledFunction) -> &CompiledFunction {
+    let boxed = function
+    return &boxed
+}
+
+/// Moves a closure to managed storage so an `Object` can refer to it.
+public func boxClosure(_ closure: Closure) -> &Closure {
+    let boxed = closure
+    return &boxed
+}
+
 impl std.marker.Clone for Object {
     /// Copies the value, sharing rather than duplicating aggregates.
     public func clone(&self) -> Self {
@@ -175,6 +217,8 @@ impl std.marker.Clone for Object {
             case .hash(entries) => .hash(*entries)
             case .function(function) => .function(*function)
             case .builtin(builtin) => .builtin(*builtin)
+            case .compiledFunction(function) => .compiledFunction(*function)
+            case .closure(closure) => .closure(*closure)
         }
     }
 }
@@ -190,6 +234,8 @@ impl Object {
             case .hash(_) => .hash
             case .function(_) => .function
             case .builtin(_) => .builtin
+            case .compiledFunction(_) => .compiledFunction
+            case .closure(_) => .closure
         }
     }
 
@@ -210,6 +256,48 @@ impl Object {
             case .boolean(value) => .some(.boolean(*value))
             case .text(value) => .some(.text(*value))
             case _ => .none
+        }
+    }
+
+    /// Whether two values are the same, as Monkey's `==` asks.
+    ///
+    /// Only scalars compare by value; an array, hash or function compares as
+    /// unequal to everything, matching the reference implementation, where the
+    /// comparison falls through to a pointer test that a freshly built
+    /// aggregate never passes.
+    public func equals(&self, _ other: &Object) -> bool {
+        match self {
+            case .null => {
+                match other {
+                    case .null => return true
+                    case _ => return false
+                }
+            }
+            case .integer(lhs) => {
+                match other {
+                    case .integer(rhs) => return *lhs == *rhs
+                    case _ => return false
+                }
+            }
+            case .boolean(lhs) => {
+                match other {
+                    case .boolean(rhs) => return *lhs == *rhs
+                    case _ => return false
+                }
+            }
+            case .text(lhs) => {
+                match other {
+                    case .text(rhs) => return *lhs == *rhs
+                    case _ => return false
+                }
+            }
+            case .builtin(lhs) => {
+                match other {
+                    case .builtin(rhs) => return *lhs == *rhs
+                    case _ => return false
+                }
+            }
+            case _ => return false
         }
     }
 
@@ -258,6 +346,12 @@ impl Object {
                 return "fn(" + names + ") {\n" + body + "\n}"
             }
             case .builtin(builtin) => return std.sprintf("builtin function %s", builtin.name())
+            case .compiledFunction(function) => {
+                return std.sprintf("compiled function[%v locals]", function.localCount)
+            }
+            case .closure(closure) => {
+                return std.sprintf("closure[%v free]", closure.free.len())
+            }
         }
     }
 }

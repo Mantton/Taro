@@ -1,0 +1,341 @@
+import monkey.compiler.Compiler
+import monkey.lexer.Lexer
+import monkey.object.Object
+import monkey.parser.Parser
+import monkey.vm.VM
+import std.testing.{assertTrue, assertEqual, fail}
+
+/// Compiles and runs `source`, answering what its last expression produced.
+///
+/// Failures come back as text so a test can state the message it expects,
+/// the same shape the evaluator tests use.
+func run(_ source: string) -> string {
+    var parser = Parser(Lexer(source))
+    let program = match parser.parseProgram() {
+        case .ok(parsed) => parsed
+        case .err(errors) => {
+            if errors.isEmpty() {
+                return "parse error"
+            }
+            return std.sprintf("parse error: %s", errors.at(0 as usize).message)
+        }
+    }
+
+    var compiler = Compiler.new()
+    match compiler.compile(&program) {
+        case .ok(_) => {}
+        case .err(error) => return std.sprintf("compile error: %s", error.describe())
+    }
+
+    var machine = VM.new(compiler.bytecode())
+    match machine.run() {
+        case .ok(_) => {}
+        case .err(error) => return std.sprintf("error: %s", error.describe())
+    }
+    return machine.result().inspect()
+}
+
+func check(_ source: string, _ expected: string) {
+    let actual = run(source)
+    assertEqual(actual, expected, std.sprintf("%s => %s (want %s)", source, actual, expected))
+}
+
+@test
+func integerArithmetic() {
+    check("1", "1")
+    check("2", "2")
+    check("1 + 2", "3")
+    check("1 - 2", "-1")
+    check("1 * 2", "2")
+    check("4 / 2", "2")
+    check("50 / 2 * 2 + 10 - 5", "55")
+    check("5 + 5 + 5 + 5 - 10", "10")
+    check("2 * 2 * 2 * 2 * 2", "32")
+    check("5 * (2 + 10)", "60")
+    check("-5", "-5")
+    check("-10", "-10")
+    check("-50 + 100 + -50", "0")
+    check("(5 + 10 * 2 + 15 / 3) * 2 + -10", "50")
+}
+
+@test
+func booleanLogic() {
+    check("true", "true")
+    check("false", "false")
+    check("1 < 2", "true")
+    check("1 > 2", "false")
+    check("1 < 1", "false")
+    check("1 > 1", "false")
+    check("1 == 1", "true")
+    check("1 != 1", "false")
+    check("1 == 2", "false")
+    check("1 != 2", "true")
+    check("true == true", "true")
+    check("false == false", "true")
+    check("true == false", "false")
+    check("true != false", "true")
+    check("(1 < 2) == true", "true")
+    check("(1 < 2) == false", "false")
+    check("!true", "false")
+    check("!false", "true")
+    check("!5", "false")
+    check("!!true", "true")
+    check("!!false", "false")
+    check("!!5", "true")
+    check("!(if (false) { 5; })", "true")
+}
+
+@test
+func conditionals() {
+    check("if (true) { 10 }", "10")
+    check("if (true) { 10 } else { 20 }", "10")
+    check("if (false) { 10 } else { 20 }", "20")
+    check("if (1) { 10 }", "10")
+    check("if (1 < 2) { 10 }", "10")
+    check("if (1 < 2) { 10 } else { 20 }", "10")
+    check("if (1 > 2) { 10 } else { 20 }", "20")
+    // A conditional with no matching branch still yields a value.
+    check("if (1 > 2) { 10 }", "null")
+    check("if (false) { 10 }", "null")
+    check("if ((if (false) { 10 })) { 10 } else { 20 }", "20")
+}
+
+@test
+func globalBindings() {
+    check("let one = 1; one", "1")
+    check("let one = 1; let two = 2; one + two", "3")
+    check("let one = 1; let two = one + one; one + two", "3")
+    // A later binding shadows an earlier one.
+    check("let a = 1; let a = 2; a", "2")
+}
+
+@test
+func strings() {
+    check("\"monkey\"", "monkey")
+    check("\"mon\" + \"key\"", "monkey")
+    check("\"mon\" + \"key\" + \"banana\"", "monkeybanana")
+    check("\"a\" == \"a\"", "true")
+    check("\"a\" == \"b\"", "false")
+    check("\"a\" != \"b\"", "true")
+}
+
+@test
+func arrays() {
+    check("[]", "[]")
+    check("[1, 2, 3]", "[1, 2, 3]")
+    check("[1 + 2, 3 * 4, 5 + 6]", "[3, 12, 11]")
+    check("[1, 2, 3][0]", "1")
+    check("[1, 2, 3][2]", "3")
+    check("[1, 2, 3][1 + 1]", "3")
+    check("[[1, 1, 1]][0][0]", "1")
+    // Out of range is null, not a failure.
+    check("[1, 2, 3][3]", "null")
+    check("[1, 2, 3][-1]", "null")
+    check("[][0]", "null")
+}
+
+@test
+func hashes() {
+    check("{}", "{}")
+    check("{1: 2}[1]", "2")
+    check("{1: 2, 2: 3}[2]", "3")
+    check("{1: 1, 2: 2}[3]", "null")
+    check("{}[0]", "null")
+    check("{\"a\": 5}[\"a\"]", "5")
+    check("{true: 7}[true]", "7")
+    check("{1 + 1: 2 * 2}[2]", "4")
+}
+
+@test
+func functionsWithoutArguments() {
+    check("let fivePlusTen = fn() { 5 + 10; }; fivePlusTen();", "15")
+    check("let one = fn() { 1; }; let two = fn() { 2; }; one() + two()", "3")
+    check("let a = fn() { 1 }; let b = fn() { a() + 1 }; let c = fn() { b() + 1 }; c();", "3")
+    // An explicit return stops the body.
+    check("let early = fn() { return 99; 100; }; early();", "99")
+    check("let early = fn() { return 99; return 100; }; early();", "99")
+    // A body with nothing to yield answers null.
+    check("let nothing = fn() { }; nothing();", "null")
+    check("let nothing = fn() { }; let caller = fn() { nothing(); }; caller();", "null")
+}
+
+@test
+func functionsWithBindings() {
+    check("let one = fn() { let one = 1; one }; one();", "1")
+    check("let two = fn() { let one = 1; let two = 2; one + two }; two();", "3")
+    check(
+        "let a = fn() { let one = 1; let two = 2; one + two };"
+            + "let b = fn() { let three = 3; let four = 4; three + four };"
+            + "a() + b();",
+        "10",
+    )
+    // A local shadows a global of the same name without disturbing it.
+    check("let n = 50; let f = fn() { let n = 1; n }; f() + n", "51")
+    check("let n = 50; let f = fn() { let n = 1; n }; let g = fn() { n }; f() + g()", "51")
+}
+
+@test
+func functionsWithArguments() {
+    check("let identity = fn(a) { a; }; identity(4);", "4")
+    check("let sum = fn(a, b) { a + b; }; sum(1, 2);", "3")
+    check("let sum = fn(a, b) { let c = a + b; c; }; sum(1, 2);", "3")
+    check("let sum = fn(a, b) { let c = a + b; c; }; sum(1, 2) + sum(3, 4);", "10")
+    check(
+        "let sum = fn(a, b) { let c = a + b; c; };"
+            + "let outer = fn() { sum(1, 2) + sum(3, 4); };"
+            + "outer();",
+        "10",
+    )
+    // Arguments and globals resolve together.
+    check(
+        "let globalNum = 10;"
+            + "let sum = fn(a, b) { let c = a + b; c + globalNum; };"
+            + "let outer = fn() { sum(1, 2) + sum(3, 4) + globalNum; };"
+            + "outer() + globalNum;",
+        "50",
+    )
+}
+
+@test
+func wrongArgumentCountIsReported() {
+    check("fn() { 1; }(1);", "error: wrong number of arguments: want 0, got 1")
+    check("fn(a) { a; }();", "error: wrong number of arguments: want 1, got 0")
+    check("fn(a, b) { a + b; }(1);", "error: wrong number of arguments: want 2, got 1")
+}
+
+@test
+func firstClassFunctions() {
+    check("let returnsOne = fn() { 1; }; let returner = fn() { returnsOne; }; returner()();", "1")
+    check(
+        "let returner = fn() { let one = fn() { 1; }; one };"
+            + "returner()();",
+        "1",
+    )
+}
+
+@test
+func closures() {
+    check("let newAdder = fn(a) { fn(b) { a + b } }; let addTwo = newAdder(2); addTwo(3);", "5")
+    check(
+        "let newAdder = fn(a, b) { let c = a + b; fn(d) { c + d } };"
+            + "let adder = newAdder(1, 2);"
+            + "adder(8);",
+        "11",
+    )
+    // A closure closing over another closure's capture.
+    check(
+        "let a = 1;"
+            + "let newAdderOuter = fn(b) { fn(c) { fn(d) { a + b + c + d } } };"
+            + "newAdderOuter(2)(3)(8);",
+        "14",
+    )
+    check(
+        "let newClosure = fn(a, b) { let one = fn() { a; }; let two = fn() { b; };"
+            + "fn() { one() + two(); } };"
+            + "newClosure(9, 90)();",
+        "99",
+    )
+}
+
+@test
+func recursiveFunctions() {
+    check("let countDown = fn(x) { if (x == 0) { return 0; } else { countDown(x - 1); } }; countDown(1);", "0")
+    check(
+        "let wrapper = fn() {"
+            + "let countDown = fn(x) { if (x == 0) { return 0; } else { countDown(x - 1); } };"
+            + "countDown(1); };"
+            + "wrapper();",
+        "0",
+    )
+    check(
+        "let fibonacci = fn(x) {"
+            + "if (x == 0) { return 0; } else {"
+            + "if (x == 1) { return 1; } else { fibonacci(x - 1) + fibonacci(x - 2); } } };"
+            + "fibonacci(15);",
+        "610",
+    )
+}
+
+@test
+func builtins() {
+    check("len(\"\")", "0")
+    check("len(\"four\")", "4")
+    check("len(\"hello world\")", "11")
+    check("len([1, 2, 3])", "3")
+    check("len([])", "0")
+    check("first([1, 2, 3])", "1")
+    check("first([])", "null")
+    check("last([1, 2, 3])", "3")
+    check("last([])", "null")
+    check("rest([1, 2, 3])", "[2, 3]")
+    check("rest([])", "null")
+    check("push([], 1)", "[1]")
+    check("push([1], 2)", "[1, 2]")
+    // A builtin is a value, so it can be passed around.
+    check("let f = len; f(\"abc\")", "3")
+}
+
+@test
+func builtinFailuresAreReported() {
+    check("len(1)", "error: argument to `len` not supported, got INTEGER")
+    check("len(\"one\", \"two\")", "error: wrong number of arguments to `len`: want 1, got 2")
+    check("first(1)", "error: argument to `first` must be ARRAY, got INTEGER")
+    check("push(1, 1)", "error: argument to `push` must be ARRAY, got INTEGER")
+}
+
+@test
+func runtimeFailuresAreReported() {
+    check("1 + true", "error: unsupported types for binary operation: INTEGER BOOLEAN")
+    check("\"a\" - \"b\"", "error: unsupported types for binary operation: STRING STRING")
+    check("-true", "error: unsupported type for negation: BOOLEAN")
+    check("1 > true", "error: unsupported types for comparison: INTEGER BOOLEAN")
+    check("1 / 0", "error: division by zero")
+    check("1();", "error: calling non-function: INTEGER")
+    check("[1, 2, 3][fn(x) { x }]", "error: index operator not supported: ARRAY[CLOSURE]")
+    check("{[1]: 2}", "error: unusable as hash key: ARRAY")
+    check("{}[[1]]", "error: unusable as hash key: ARRAY")
+}
+
+@test
+func undefinedNamesAreReported() {
+    check("nope", "compile error: undefined variable nope")
+    check("let a = 1; b", "compile error: undefined variable b")
+}
+
+@test
+func higherOrderFunctions() {
+    let map = "let map = fn(arr, f) {"
+        + "let iter = fn(arr, accumulated) {"
+        + "if (len(arr) == 0) { accumulated }"
+        + "else { iter(rest(arr), push(accumulated, f(first(arr)))); } };"
+        + "iter(arr, []); };"
+    check(map + "map([1, 2, 3], fn(x) { x * 2 });", "[2, 4, 6]")
+
+    let reduce = "let reduce = fn(arr, initial, f) {"
+        + "let iter = fn(arr, result) {"
+        + "if (len(arr) == 0) { result }"
+        + "else { iter(rest(arr), f(result, first(arr))); } };"
+        + "iter(arr, initial); };"
+    check(reduce + "reduce([1, 2, 3, 4, 5], 0, fn(a, b) { a + b });", "15")
+}
+
+@test
+func deepRecursionIsBounded() {
+    // A runaway recursion is reported rather than exhausting anything. The
+    // machine keeps frames in a list, so this bound is its own, not the
+    // native stack's.
+    let actual = run("let f = fn(x) { f(x + 1) }; f(0)")
+    assertTrue(
+        actual == "error: call depth exceeded 1024 nested calls"
+            || actual == "error: stack overflow",
+        std.sprintf("runaway recursion should be reported, got %s", actual),
+    )
+}
+
+@test
+func recursionGoesDeeperThanTheTreeWalker() {
+    // The tree-walking evaluator stops at 128 nested calls because each one
+    // costs native frames. The machine has no such cost, so this succeeds here
+    // and is refused there.
+    check("let count = fn(x) { if (x == 0) { 0 } else { count(x - 1) } }; count(500)", "0")
+}

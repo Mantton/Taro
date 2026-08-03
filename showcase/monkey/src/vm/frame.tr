@@ -1,0 +1,25 @@
+import monkey.code.{Instructions, Decoded, DecodeError}
+import monkey.object.Closure
+
+/// One call in progress.
+///
+/// A frame is where the machine remembers what it was doing before a call: which
+/// closure is running, how far through its instructions it has read, and where
+/// that call's locals begin on the stack.
+public struct Frame {
+    public closure: &Closure
+    /// The offset of the next instruction to read.
+    public ip: usize
+    /// The stack slot the call's locals start at.
+    public base: usize
+}
+
+impl Frame {
+    public func new(_ closure: &Closure, _ base: usize) -> Self {
+        return Frame { closure: closure, ip: 0 as usize, base: base }
+    }
+
+    public func instructions(&self) -> &Instructions {
+        return &self.closure.function.instructions
+    }
+}

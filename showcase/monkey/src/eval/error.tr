@@ -1,5 +1,5 @@
 import monkey.ast.{PrefixOperator, InfixOperator}
-import monkey.object.{Object, ObjectKind}
+import monkey.object.{Object, ObjectKind, BuiltinError}
 
 /// Why evaluation failed.
 ///
@@ -17,9 +17,9 @@ public enum EvalError {
     case unusableAsHashKey(ObjectKind)
     case unsupportedIndex(collection: ObjectKind, index: ObjectKind)
     case wrongArgumentCount(function: string, expected: usize, found: usize)
-    case wrongArgumentType(function: string, expected: ObjectKind, found: ObjectKind)
-    /// A builtin that accepts several kinds was given none of them.
-    case unsupportedArgument(function: string, found: ObjectKind)
+    /// A builtin refused its arguments. Both engines call the same builtins, so
+    /// the failure is theirs to describe rather than this enum's to restate.
+    case builtin(BuiltinError)
     case divisionByZero
     case callDepthExceeded(usize)
 }
@@ -70,21 +70,7 @@ impl EvalError {
                     *found,
                 )
             }
-            case .wrongArgumentType(function, expected, found) => {
-                return std.sprintf(
-                    "argument to `%s` must be %s, got %s",
-                    *function,
-                    expected.describe(),
-                    found.describe(),
-                )
-            }
-            case .unsupportedArgument(function, found) => {
-                return std.sprintf(
-                    "argument to `%s` not supported, got %s",
-                    *function,
-                    found.describe(),
-                )
-            }
+            case .builtin(error) => return error.describe()
             case .divisionByZero => return "division by zero"
             case .callDepthExceeded(limit) => {
                 return std.sprintf("call depth exceeded %v nested calls", *limit)

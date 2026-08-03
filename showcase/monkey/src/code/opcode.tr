@@ -1,0 +1,160 @@
+/// The byte that identifies an instruction in the encoded stream.
+///
+/// This is to `Instruction` what `ObjectKind` is to `Object`: the same closed set
+/// of alternatives with the payloads stripped off. Keeping it separate gives the
+/// compiler something cheap to compare — "was the instruction I just emitted an
+/// `OpPop`?" — without having to equate operands it does not care about.
+///
+/// The byte values are the reference implementation's, assigned in the order the
+/// book introduces them, so bytecode produced here disassembles the same as
+/// bytecode produced by the Go version.
+public enum Opcode: std.marker.Copy, std.ops.PartialEq {
+    case constant
+    case add
+    case pop
+    case subtract
+    case multiply
+    case divide
+    case pushTrue
+    case pushFalse
+    case equal
+    case notEqual
+    case greaterThan
+    case negate
+    case not
+    case jumpNotTruthy
+    case jump
+    case pushNull
+    case getGlobal
+    case setGlobal
+    case array
+    case hash
+    case index
+    case call
+    case returnValue
+    case returnNothing
+    case getLocal
+    case setLocal
+    case getBuiltin
+    case closure
+    case getFree
+    case currentClosure
+}
+
+impl Opcode {
+    /// The encoded byte.
+    public func toByte(&self) -> uint8 {
+        match self {
+            case .constant => 0
+            case .add => 1
+            case .pop => 2
+            case .subtract => 3
+            case .multiply => 4
+            case .divide => 5
+            case .pushTrue => 6
+            case .pushFalse => 7
+            case .equal => 8
+            case .notEqual => 9
+            case .greaterThan => 10
+            case .negate => 11
+            case .not => 12
+            case .jumpNotTruthy => 13
+            case .jump => 14
+            case .pushNull => 15
+            case .getGlobal => 16
+            case .setGlobal => 17
+            case .array => 18
+            case .hash => 19
+            case .index => 20
+            case .call => 21
+            case .returnValue => 22
+            case .returnNothing => 23
+            case .getLocal => 24
+            case .setLocal => 25
+            case .getBuiltin => 26
+            case .closure => 27
+            case .getFree => 28
+            case .currentClosure => 29
+        }
+    }
+
+    /// The opcode a byte denotes, or `.none` when it denotes none.
+    ///
+    /// This is the only place a byte becomes an opcode, so an unrecognised one is
+    /// rejected once, here, rather than falling through to a default branch in
+    /// the machine that runs it.
+    public func fromByte(_ byte: uint8) -> Optional[Opcode] {
+        match byte {
+            case 0 => .some(.constant)
+            case 1 => .some(.add)
+            case 2 => .some(.pop)
+            case 3 => .some(.subtract)
+            case 4 => .some(.multiply)
+            case 5 => .some(.divide)
+            case 6 => .some(.pushTrue)
+            case 7 => .some(.pushFalse)
+            case 8 => .some(.equal)
+            case 9 => .some(.notEqual)
+            case 10 => .some(.greaterThan)
+            case 11 => .some(.negate)
+            case 12 => .some(.not)
+            case 13 => .some(.jumpNotTruthy)
+            case 14 => .some(.jump)
+            case 15 => .some(.pushNull)
+            case 16 => .some(.getGlobal)
+            case 17 => .some(.setGlobal)
+            case 18 => .some(.array)
+            case 19 => .some(.hash)
+            case 20 => .some(.index)
+            case 21 => .some(.call)
+            case 22 => .some(.returnValue)
+            case 23 => .some(.returnNothing)
+            case 24 => .some(.getLocal)
+            case 25 => .some(.setLocal)
+            case 26 => .some(.getBuiltin)
+            case 27 => .some(.closure)
+            case 28 => .some(.getFree)
+            case 29 => .some(.currentClosure)
+            case _ => .none
+        }
+    }
+
+    /// The name a disassembly prints.
+    ///
+    /// The reference implementation's spellings, so a disassembly here can be
+    /// compared against the book's output line for line.
+    public func name(&self) -> string {
+        match self {
+            case .constant => "OpConstant"
+            case .add => "OpAdd"
+            case .pop => "OpPop"
+            case .subtract => "OpSub"
+            case .multiply => "OpMul"
+            case .divide => "OpDiv"
+            case .pushTrue => "OpTrue"
+            case .pushFalse => "OpFalse"
+            case .equal => "OpEqual"
+            case .notEqual => "OpNotEqual"
+            case .greaterThan => "OpGreaterThan"
+            case .negate => "OpMinus"
+            case .not => "OpBang"
+            case .jumpNotTruthy => "OpJumpNotTruthy"
+            case .jump => "OpJump"
+            case .pushNull => "OpNull"
+            case .getGlobal => "OpGetGlobal"
+            case .setGlobal => "OpSetGlobal"
+            case .array => "OpArray"
+            case .hash => "OpHash"
+            case .index => "OpIndex"
+            case .call => "OpCall"
+            case .returnValue => "OpReturnValue"
+            case .returnNothing => "OpReturn"
+            case .getLocal => "OpGetLocal"
+            case .setLocal => "OpSetLocal"
+            case .getBuiltin => "OpGetBuiltin"
+            case .closure => "OpClosure"
+            case .getFree => "OpGetFree"
+            case .currentClosure => "OpCurrentClosure"
+        }
+    }
+}

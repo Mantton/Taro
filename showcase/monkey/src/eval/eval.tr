@@ -7,6 +7,7 @@ import monkey.object.{
     Environment,
     Builtin,
     builtinNamed,
+    callBuiltin,
     boxArray,
     boxHash,
     boxFunction,
@@ -217,7 +218,12 @@ impl Evaluator {
                     }
                 }
             }
-            case .builtin(builtin) => return callBuiltin(*builtin, arguments)
+            case .builtin(builtin) => {
+                match callBuiltin(*builtin, arguments) {
+                    case .ok(value) => return .ok(value)
+                    case .err(error) => return .err(.failed(.builtin(error)))
+                }
+            }
             case _ => return .err(.failed(.notAFunction(target.kind())))
         }
     }
@@ -269,8 +275,8 @@ func evalInfix(_ left: Object, _ op: InfixOperator, _ right: Object) -> Result[O
     // Equality is defined across every pair of kinds, as it is in Monkey, where
     // mismatched kinds simply compare unequal rather than failing.
     match op {
-        case .equal => return .ok(.boolean(objectsEqual(&left, &right)))
-        case .notEqual => return .ok(.boolean(!objectsEqual(&left, &right)))
+        case .equal => return .ok(.boolean(left.equals(&right)))
+        case .notEqual => return .ok(.boolean(!left.equals(&right)))
         case _ => {}
     }
 
@@ -318,42 +324,6 @@ func evalStringInfix(_ left: string, _ op: InfixOperator, _ right: string) -> Re
 ///
 /// Aggregates compare unequal unless they are the same value, matching Monkey's
 /// pointer comparison; only the scalar kinds have a structural answer.
-func objectsEqual(_ left: &Object, _ right: &Object) -> bool {
-    match left {
-        case .null => {
-            match right {
-                case .null => return true
-                case _ => return false
-            }
-        }
-        case .integer(lhs) => {
-            match right {
-                case .integer(rhs) => return *lhs == *rhs
-                case _ => return false
-            }
-        }
-        case .boolean(lhs) => {
-            match right {
-                case .boolean(rhs) => return *lhs == *rhs
-                case _ => return false
-            }
-        }
-        case .text(lhs) => {
-            match right {
-                case .text(rhs) => return *lhs == *rhs
-                case _ => return false
-            }
-        }
-        case .builtin(lhs) => {
-            match right {
-                case .builtin(rhs) => return *lhs == *rhs
-                case _ => return false
-            }
-        }
-        case _ => return false
-    }
-}
-
 func evalIndex(_ collection: Object, _ index: Object) -> Result[Object, Signal] {
     match &collection {
         case .array(elements) => {
