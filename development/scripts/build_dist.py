@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import subprocess
 import shutil
 import sys
 from pathlib import Path
-
-from llvm_toolchain import LLVMToolchainError, resolve_llvm_toolchain
 
 """
 build_dist.py
@@ -98,26 +97,11 @@ def main():
     if not std_src.exists():
         raise FileNotFoundError(f"std path does not exist: {std_src}")
 
-    # Resolve before cleaning dist so a missing/wrong LLVM installation cannot
-    # destroy an otherwise usable local toolchain.
-    llvm_toolchain = resolve_llvm_toolchain()
-    build_env = llvm_toolchain.environment()
-
     print(f"Repository Root: {repo_root}")
     print(f"Distribution Dir: {dist_dir}")
     print(f"Profile: {profile}")
     print(f"Std Path: {std_src}")
     print(f"Target: {target or 'host'}")
-    print(f"LLVM: {llvm_toolchain.version} ({llvm_toolchain.prefix})")
-
-    # Clean dist dir
-    if dist_dir.exists():
-        if dist_dir.is_symlink():
-            raise RuntimeError(
-                f"refusing to remove symlink dist directory: {dist_dir}"
-            )
-        shutil.rmtree(dist_dir)
-    dist_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Build Runtime
     print("\n--- Building Runtime ---")
@@ -130,7 +114,7 @@ def main():
     ]
     if target:
         runtime_command.extend(["--target", target])
-    run_command(runtime_command, cwd=repo_root, env=build_env)
+    run_command(runtime_command, cwd=repo_root)
 
     # 2. Build Compiler CLI
     print("\n--- Building Compiler CLI ---")
@@ -143,8 +127,16 @@ def main():
             *release_flag(profile),
         ],
         cwd=repo_root,
-        env=build_env,
     )
+
+    # Preserve an existing distribution if either source build fails.
+    if dist_dir.exists():
+        if dist_dir.is_symlink():
+            raise RuntimeError(
+                f"refusing to remove symlink dist directory: {dist_dir}"
+            )
+        shutil.rmtree(dist_dir)
+    dist_dir.mkdir(parents=True, exist_ok=True)
 
     # 3. Create Distribution Structure
     print("\n--- These files go to dist ---")
@@ -177,7 +169,7 @@ def main():
     manifest_command = [str(dst_bin), "runtime-manifest", str(dst_lib)]
     if target:
         manifest_command.extend(["--target", target])
-    run_command(manifest_command, cwd=repo_root, env=build_env)
+    run_command(manifest_command, cwd=repo_root)
     
     # std - symlink instead of copy for development
     std_dst = dist_dir / "std"
@@ -188,7 +180,7 @@ def main():
 
     # 4. Build attached std artifacts into TARO_HOME (dist)
     print("\n--- Building Attached Std Artifacts ---")
-    env = build_env.copy()
+    env = os.environ.copy()
     env["TARO_HOME"] = str(dist_dir)
     bootstrap_src = dist_dir / ".std_bootstrap.tr"
     bootstrap_src.write_text(
@@ -220,9 +212,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except LLVMToolchainError as e:
-        print(f"\nError: {e}")
-        sys.exit(2)
     except subprocess.CalledProcessError as e:
         import traceback
         traceback.print_exc()

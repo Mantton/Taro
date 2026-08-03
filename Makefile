@@ -13,21 +13,18 @@ CODEGEN_BENCHMARK := $(ROOT)/development/scripts/codegen_benchmarks.py
 JSON_VERIFIER := $(ROOT)/development/verifiers/json/verify.py
 JSON_BENCHMARK_PACKAGE := $(ROOT)/development/benchmarks/json
 RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
-LLVM_TOOLCHAIN := $(ROOT)/development/scripts/llvm_toolchain.py
-LLVM_TOOLCHAIN_TESTS := $(ROOT)/development/scripts/test_llvm_toolchain.py
 CODEGEN_MATRIX := $(ROOT)/language_tests/codegen_matrix.txt
 
 DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help llvm-check llvm-tests compiler compiler-release dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
+.PHONY: help compiler compiler-release dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
 
 help:
 	@echo "Taro development shortcuts"
 	@echo ""
 	@echo "Build:"
-	@echo "  make llvm-check               Show the LLVM 22.1 toolchain used by Taro"
 	@echo "  make compiler                 Build taro-bin (debug)"
 	@echo "  make compiler-release         Build taro-bin (release)"
 	@echo "  make dist                     Build dist/ layout (compiler + runtime + std link)"
@@ -37,7 +34,6 @@ help:
 	@echo "  make check FILE=examples/hello.tr"
 	@echo ""
 	@echo "Tests:"
-	@echo "  make llvm-tests               Run LLVM toolchain resolver tests"
 	@echo "  make test                     Run cargo workspace tests"
 	@echo "  make language-tests           Run language tests"
 	@echo "  make language-tests JOBS=4"
@@ -63,17 +59,11 @@ help:
 	@echo "  make codegen-benchmark        Compare release baseline and O2 code generation"
 	@echo "  make codegen-benchmark RUNS=10"
 
-llvm-check:
-	$(PYTHON) $(LLVM_TOOLCHAIN)
-
-llvm-tests:
-	$(PYTHON) $(LLVM_TOOLCHAIN_TESTS)
-
 compiler:
-	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-bin
+	$(CARGO) build -p taro-bin
 
 compiler-release:
-	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) build -p taro-bin --release
+	$(CARGO) build -p taro-bin --release
 
 dist:
 	$(PYTHON) $(BUILD_DIST)
@@ -93,7 +83,7 @@ check: dist
 	TARO_HOME=$(DIST_DIR) $(TARO) check $(FILE) --std-path $(STD_PATH)
 
 cargo-test:
-	$(PYTHON) $(LLVM_TOOLCHAIN) $(CARGO) test --workspace
+	$(CARGO) test --workspace
 
 test: cargo-test
 
