@@ -220,8 +220,25 @@ fn parse_specs(input: &str) -> Result<Vec<FormatSpec>, FormatParseError> {
             return Err(FormatParseError::DanglingPercent);
         }
 
+        // An escaped percent takes no flags, so it is settled before they are
+        // read — otherwise the `0` in `%%04d` would be eaten as a flag.
+        if bytes[idx] == b'%' {
+            idx += 1;
+            continue;
+        }
+
+        // Flags and field width, matching what `std.fmt` renders.
+        while idx < bytes.len() && matches!(bytes[idx], b'-' | b'0') {
+            idx += 1;
+        }
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            return Err(FormatParseError::DanglingPercent);
+        }
+
         match bytes[idx] {
-            b'%' => {}
             b'd' => specs.push(FormatSpec::Decimal),
             b's' => specs.push(FormatSpec::String),
             b'v' => specs.push(FormatSpec::Value),

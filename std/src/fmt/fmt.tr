@@ -3,22 +3,28 @@ import std.mem.Span
 import std.string.Builder
 
 const BYTE_ZERO: uint8 = 48
+const BYTE_NINE: uint8 = 57
 const BYTE_MINUS: uint8 = 45
+const BYTE_SPACE: uint8 = 32
 const BYTE_PERCENT: uint8 = 37
 const BYTE_D: uint8 = 100
 const BYTE_S: uint8 = 115
 const BYTE_V: uint8 = 118
 
+/// The width and flags a conversion was written with.
+///
+/// Passed to every `Formattable`, so an implementation can honour them itself
+/// when the default field padding is not what the type wants.
 public struct FormatState {
-    width: usize
-    precision: usize
-    hasWidth: bool
-    hasPrecision: bool
-    alternate: bool
-    zeroPad: bool
-    leftAlign: bool
-    signPlus: bool
-    signSpace: bool
+    public width: usize
+    public precision: usize
+    public hasWidth: bool
+    public hasPrecision: bool
+    public alternate: bool
+    public zeroPad: bool
+    public leftAlign: bool
+    public signPlus: bool
+    public signSpace: bool
 }
 
 impl FormatState {
@@ -143,12 +149,63 @@ func formatUnsignedInteger(_ into: &mut Formatter, _ value: uint64, _ spec: rune
     writeUnsignedInteger(into, value)
 }
 
+/// Writes `count` copies of `fill`.
+func writeFill(_ into: &mut Formatter, _ fill: uint8, _ count: usize) {
+    var written: usize = 0
+    while written < count {
+        into.writeByte(fill)
+        written += 1
+    }
+}
+
+/// Writes `rendered` into a field `state.width` wide.
+///
+/// Padding is applied here, once, rather than by each `Formattable`, so every
+/// type is padded consistently and a new one gets the behaviour for free.
+func writePadded(_ into: &mut Formatter, _ rendered: string, _ state: &FormatState) {
+    if !state.hasWidth {
+        into.writeString(rendered)
+        return
+    }
+
+    // Width counts characters, not bytes, so a multi-byte rune occupies one
+    // column rather than as many columns as it takes bytes to encode.
+    let visible = rendered.runeCount()
+    if visible >= state.width {
+        into.writeString(rendered)
+        return
+    }
+
+    let padding = state.width - visible
+    if state.leftAlign {
+        into.writeString(rendered)
+        writeFill(into, BYTE_SPACE, padding)
+        return
+    }
+
+    if state.zeroPad {
+        // A sign belongs in front of the zeros: `%04d` of -7 is `-007`.
+        if rendered.startsWith("-") {
+            let digits = std.string.stringLen(rendered) - 1
+            into.writeByte(BYTE_MINUS)
+            writeFill(into, BYTE_ZERO, padding)
+            into.writeString(rendered.substring(1, digits))
+            return
+        }
+        writeFill(into, BYTE_ZERO, padding)
+        into.writeString(rendered)
+        return
+    }
+
+    writeFill(into, BYTE_SPACE, padding)
+    into.writeString(rendered)
+}
+
 public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string {
     let format_len = std.string.stringLen(format)
     let format_data = std.string.stringData(format)
 
     var writer = Formatter.new()
-    let state = FormatState.default()
     var index: usize = 0
     var arg_index: usize = 0
 
@@ -165,13 +222,45 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
             std.panic.panic("printf: dangling '%' at end of format string")
         }
 
-        let spec_byte = format_data.add(index).read()
-        if spec_byte == BYTE_PERCENT {
-            writer.writeByte(spec_byte)
+        // An escaped percent takes no flags, so it is settled before they are read.
+        if format_data.add(index).read() == BYTE_PERCENT {
+            writer.writeByte(BYTE_PERCENT)
             index += 1
             continue
         }
 
+        // Flags, then width. `%-8s` and `%04d` are what a column of aligned
+        // output needs, and are the forms this understands.
+        var state = FormatState.default()
+        var readingFlags = true
+        while readingFlags && index < format_len {
+            let flag = format_data.add(index).read()
+            if flag == BYTE_MINUS {
+                state.leftAlign = true
+                index += 1
+            } else if flag == BYTE_ZERO {
+                state.zeroPad = true
+                index += 1
+            } else {
+                readingFlags = false
+            }
+        }
+
+        while index < format_len {
+            let digit = format_data.add(index).read()
+            if digit < BYTE_ZERO || digit > BYTE_NINE {
+                break
+            }
+            state.width = state.width * 10 + ((digit - BYTE_ZERO) as usize)
+            state.hasWidth = true
+            index += 1
+        }
+
+        if index >= format_len {
+            std.panic.panic("printf: dangling '%' at end of format string")
+        }
+
+        let spec_byte = format_data.add(index).read()
         if spec_byte != BYTE_D && spec_byte != BYTE_S && spec_byte != BYTE_V {
             std.panic.panic("printf: unknown format specifier")
         }
@@ -188,15 +277,19 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
             'v'
         }
 
+        // Rendered aside first so the field width can be measured against the
+        // finished text, whatever the argument's own formatting produced.
+        var scratch = Formatter.new()
         let value = args.at(arg_index)
         let maybe_formattable = (*value) as? any Formattable
         match maybe_formattable {
-            case .some(formattable) => formattable.format(&mut writer, spec, &state)
+            case .some(formattable) => formattable.format(&mut scratch, spec, &state)
             case .none => match spec == 'v' {
-                case true => (*value).display(&mut writer)
+                case true => (*value).display(&mut scratch)
                 case false => std.panic.panic("printf: argument does not support requested format specifier")
             }
         }
+        writePadded(&mut writer, scratch.intoString(), &state)
         arg_index += 1
         index += 1
     }

@@ -158,3 +158,49 @@ func testSprintfDynamicRuntimePanic() {
     let format = "%q"
     let _ = std.sprintf(format, 1)
 }
+
+@test
+func testWidthPadsOnTheLeft() {
+    std.testing.assertEqual(std.sprintf("%5d", 42), "   42", "a narrow value is right-aligned")
+    std.testing.assertEqual(std.sprintf("%5s", "ab"), "   ab", "strings pad the same way")
+    std.testing.assertEqual(std.sprintf("%3v", 7), "  7", "%v honours width too")
+}
+
+@test
+func testWidthNeverTruncates() {
+    std.testing.assertEqual(std.sprintf("%2d", 12345), "12345", "a value wider than the field is written whole")
+    std.testing.assertEqual(std.sprintf("%0d", 7), "7", "a zero width is no width at all")
+}
+
+@test
+func testLeftAlignPadsOnTheRight() {
+    std.testing.assertEqual(std.sprintf("%-5d|", 42), "42   |", "a dash aligns left")
+    std.testing.assertEqual(std.sprintf("%-5s|", "ab"), "ab   |", "strings align left too")
+    // Left alignment wins over zero padding, as it does in C and Go.
+    std.testing.assertEqual(std.sprintf("%-05d|", 42), "42   |", "a dash beats a zero")
+}
+
+@test
+func testZeroPadKeepsTheSignInFront() {
+    std.testing.assertEqual(std.sprintf("%04d", 7), "0007", "zeros fill the field")
+    std.testing.assertEqual(std.sprintf("%04d", -7), "-007", "the sign stays leftmost")
+    std.testing.assertEqual(std.sprintf("%04d", 12345), "12345", "a wide value is untouched")
+}
+
+@test
+func testZeroPadOnStringsFillsWithZeros() {
+    std.testing.assertEqual(std.sprintf("%04s", "ab"), "00ab", "the flag is not restricted to numbers")
+}
+
+@test
+func testWidthCountsRunesNotBytes() {
+    // "é" is two bytes but one column, so the field is measured in characters.
+    std.testing.assertEqual(std.sprintf("%3s|", "é"), "  é|", "padding counts runes")
+}
+
+@test
+func testEscapedPercentIsNotAFlag() {
+    // The `0` here is literal text, not a zero-pad flag on the conversion.
+    std.testing.assertEqual(std.sprintf("%%04d"), "%04d", "an escaped percent consumes no flags")
+    std.testing.assertEqual(std.sprintf("100%% of %d", 3), "100% of 3", "escapes still work beside conversions")
+}

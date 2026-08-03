@@ -1,0 +1,21 @@
+// A conversion may carry the `-` and `0` flags and a field width. The validator
+// has to step over them to reach the specifier, and the renderer has to apply
+// them; this checks that the two agree on where the conversion ends.
+func main() {
+    printf("[%5d]\n", 42)
+    printf("[%-5d]\n", 42)
+    printf("[%04d]\n", 7)
+    printf("[%04d]\n", -7)
+    printf("[%5s]\n", "ab")
+    printf("[%-5s]\n", "ab")
+    printf("[%3v]\n", 7)
+
+    // A value wider than its field is never truncated.
+    printf("[%2d]\n", 12345)
+
+    // An escaped percent takes no flags, so `04d` here is literal text.
+    printf("[%%04d]\n")
+
+    // Width is measured in characters, so a two-byte rune takes one column.
+    printf("[%3s]\n", "é")
+}
