@@ -118,7 +118,7 @@ unsafe fn evaluate_root_location(
         storage = next;
     }
 
-    for recipe in &location.recipes {
+    for recipe in location.recipes.iter() {
         if output.len() >= MAX_CAPTURED_ROOTS {
             return;
         }
@@ -181,14 +181,19 @@ unsafe extern "C" fn trace_frame(
     if pc == 0 {
         return URC_NO_REASON;
     }
-    pc_metadata::with_record_at_pc(pc, |function, record| {
-        if output.capture_roots {
-            append_roots(context, function, record, &mut output.roots);
-        }
-        if output.capture_frames {
-            append_frames(&record.logical_frames, &mut output.frames);
-        }
-    });
+    pc_metadata::with_record_at_pc(
+        pc,
+        output.capture_roots,
+        output.capture_frames,
+        |function, record| {
+            if output.capture_roots {
+                append_roots(context, function, record, &mut output.roots);
+            }
+            if output.capture_frames {
+                append_frames(record.logical_frames.as_ref(), &mut output.frames);
+            }
+        },
+    );
     URC_NO_REASON
 }
 
@@ -199,7 +204,7 @@ fn append_roots(
     record: &PcRecord,
     output: &mut Vec<*const u8>,
 ) {
-    for location in &record.roots {
+    for location in record.roots.iter() {
         if output.len() >= MAX_CAPTURED_ROOTS {
             return;
         }

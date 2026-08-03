@@ -6,7 +6,7 @@ use crate::{
         stack_maps::{
             PendingLogicalFrame, PendingRootOperand, PendingRootRecipe, PendingStackMapModule,
             PendingStackMapRecord, StackMapSiteKind, deterministic_map_id, normalize_object,
-            write_pending_module,
+            strip_object, write_pending_module,
         },
     },
     compile::{
@@ -2818,6 +2818,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     self.gcx.dcx().emit_error(message, None);
                     crate::error::ReportedError
                 })?;
+                strip_object(&path).map_err(|message| {
+                    self.gcx.dcx().emit_error(message, None);
+                    crate::error::ReportedError
+                })?;
                 Some(metadata_path)
             }
             ModuleArtifactKind::LlvmBitcode => {
@@ -3629,6 +3633,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
     /// Anchor the caller's root map at the current machine return PC.
     fn emit_stack_map(&mut self, span: crate::span::Span, kind: StackMapSiteKind) {
+        // A poll cannot throw and an empty poll map publishes no roots. Keeping
+        // such a record would nevertheless force an otherwise-pure leaf to
+        // remain uninlined, so omit it without weakening either GC or panic
+        // metadata. Other site kinds remain useful logical callsites even when
+        // their root set is empty.
+        if kind == StackMapSiteKind::Poll && self.stack_map_roots.is_empty() {
+            return;
+        }
         let body = self
             .current_body
             .expect("stack map emitted outside a MIR body");

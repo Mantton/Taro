@@ -22,7 +22,8 @@ use crate::{
         artifact::ModuleArtifact,
         pc_metadata,
         stack_maps::{
-            PendingStackMapModule, normalize_object, read_pending_modules, write_pending_module,
+            PendingStackMapModule, normalize_object, read_pending_modules, strip_object,
+            write_pending_module,
         },
     },
     compile::{
@@ -562,6 +563,10 @@ pub fn emit_full_lto_object(gcx: GlobalContext<'_>) -> CompileResult<ModuleArtif
             crate::error::ReportedError
         },
     )?;
+    strip_object(&output).map_err(|message| {
+        gcx.dcx().emit_error(message, None);
+        crate::error::ReportedError
+    })?;
 
     let module_suffix = if inputs.len() == 1 { "" } else { "s" };
     if gcx.config.debug.timings {
@@ -806,6 +811,10 @@ pub fn emit_thin_lto_objects(
                 crate::error::ReportedError
             },
         )?;
+        strip_object(&path).map_err(|message| {
+            gcx.dcx().emit_error(message, None);
+            crate::error::ReportedError
+        })?;
         object_artifacts.push(
             ModuleArtifact::new(ModuleArtifactKind::Object, path)
                 .with_stack_maps(merged_descriptors.clone(), Some(pc_metadata_path)),

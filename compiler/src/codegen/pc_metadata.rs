@@ -11,7 +11,7 @@ use inkwell::{
     module::{Linkage, Module},
     targets::{FileType, TargetMachine},
     types::StructType,
-    values::{BasicValue, PointerValue, StructValue},
+    values::{BasicValue, GlobalValue, IntValue, PointerValue, StructValue},
 };
 
 use super::stack_maps::{PC_METADATA_SCHEMA_VERSION, StackMapSiteKind};
@@ -58,13 +58,13 @@ impl PcArchitecture {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PcRootRecipe {
     pub offset: u64,
     pub deref_depth: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PcRootLocation {
     pub dwarf_register: u16,
     pub frame_offset: i32,
@@ -72,7 +72,7 @@ pub(crate) struct PcRootLocation {
     pub recipes: Vec<PcRootRecipe>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PcLogicalFrame {
     pub function: String,
     pub file: String,
@@ -117,14 +117,17 @@ struct AbiTypes<'ctx> {
 struct ObjectBuilder<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
+    module_global: GlobalValue<'ctx>,
     types: AbiTypes<'ctx>,
     strings: BTreeMap<String, PointerValue<'ctx>>,
+    recipes: BTreeMap<Vec<PcRootRecipe>, PointerValue<'ctx>>,
+    roots: BTreeMap<Vec<PcRootLocation>, PointerValue<'ctx>>,
+    frames: BTreeMap<Vec<PcLogicalFrame>, PointerValue<'ctx>>,
     next_global: usize,
 }
 
 impl<'ctx> ObjectBuilder<'ctx> {
     fn new(context: &'ctx Context, module: Module<'ctx>) -> Self {
-        let ptr = context.ptr_type(AddressSpace::default());
         let i8 = context.i8_type();
         let i16 = context.i16_type();
         let i32 = context.i32_type();
@@ -132,7 +135,7 @@ impl<'ctx> ObjectBuilder<'ctx> {
         let recipe = context.struct_type(&[i64.into(), i8.into(), i8.array_type(7).into()], false);
         let root = context.struct_type(
             &[
-                ptr.into(),
+                i64.into(),
                 i32.into(),
                 i32.into(),
                 i16.into(),
@@ -141,15 +144,15 @@ impl<'ctx> ObjectBuilder<'ctx> {
             ],
             false,
         );
-        let string = context.struct_type(&[ptr.into(), i32.into(), i32.into()], false);
+        let string = context.struct_type(&[i64.into(), i32.into(), i32.into()], false);
         let frame = context.struct_type(
             &[string.into(), string.into(), i32.into(), i32.into()],
             false,
         );
         let record = context.struct_type(
             &[
-                ptr.into(),
-                ptr.into(),
+                i64.into(),
+                i64.into(),
                 i32.into(),
                 i32.into(),
                 i32.into(),
@@ -160,8 +163,8 @@ impl<'ctx> ObjectBuilder<'ctx> {
         );
         let function = context.struct_type(
             &[
-                ptr.into(),
-                ptr.into(),
+                i64.into(),
+                i64.into(),
                 string.into(),
                 i64.into(),
                 i32.into(),
@@ -171,7 +174,7 @@ impl<'ctx> ObjectBuilder<'ctx> {
         );
         let module_ty = context.struct_type(
             &[
-                ptr.into(),
+                i64.into(),
                 i32.into(),
                 i32.into(),
                 i8.into(),
@@ -180,19 +183,26 @@ impl<'ctx> ObjectBuilder<'ctx> {
             ],
             false,
         );
+        let types = AbiTypes {
+            recipe,
+            root,
+            string,
+            frame,
+            record,
+            function,
+            module: module_ty,
+        };
+        let module_global = module.add_global(types.module, None, "__taro_pc_metadata_module");
+        module_global.set_linkage(Linkage::Internal);
         Self {
             context,
             module,
-            types: AbiTypes {
-                recipe,
-                root,
-                string,
-                frame,
-                record,
-                function,
-                module: module_ty,
-            },
+            module_global,
+            types,
             strings: BTreeMap::new(),
+            recipes: BTreeMap::new(),
+            roots: BTreeMap::new(),
+            frames: BTreeMap::new(),
             next_global: 0,
         }
     }
@@ -201,6 +211,20 @@ impl<'ctx> ObjectBuilder<'ctx> {
         let index = self.next_global;
         self.next_global += 1;
         format!("__taro_pc_{kind}_{index}")
+    }
+
+    /// Encode a reference as a signed byte offset from the module header.
+    /// Linkers resolve these subtractor expressions statically, leaving the
+    /// dynamic loader only the constructor's single module pointer to rebase.
+    fn relative(&self, pointer: PointerValue<'ctx>) -> IntValue<'ctx> {
+        let i64 = self.context.i64_type();
+        if pointer.is_null() {
+            i64.const_zero()
+        } else {
+            pointer
+                .const_to_int(i64)
+                .const_sub(self.module_global.as_pointer_value().const_to_int(i64))
+        }
     }
 
     fn private_global(
@@ -234,7 +258,7 @@ impl<'ctx> ObjectBuilder<'ctx> {
     fn string(&mut self, value: &str) -> StructValue<'ctx> {
         let pointer = self.bytes(value);
         self.types.string.const_named_struct(&[
-            pointer.into(),
+            self.relative(pointer).into(),
             self.context
                 .i32_type()
                 .const_int(value.len() as u64, false)
@@ -257,6 +281,12 @@ impl<'ctx> ObjectBuilder<'ctx> {
     }
 
     fn recipes(&mut self, recipes: &[PcRootRecipe]) -> PointerValue<'ctx> {
+        if recipes.is_empty() {
+            return self.context.ptr_type(AddressSpace::default()).const_null();
+        }
+        if let Some(pointer) = self.recipes.get(recipes) {
+            return *pointer;
+        }
         let zero7 = self.context.i8_type().const_zero().get_type().array_type(7);
         let reserved = zero7.const_zero();
         let values: Vec<_> = recipes
@@ -275,16 +305,24 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 ])
             })
             .collect();
-        self.struct_array(self.types.recipe, &values, "recipes")
+        let pointer = self.struct_array(self.types.recipe, &values, "recipes");
+        self.recipes.insert(recipes.to_vec(), pointer);
+        pointer
     }
 
     fn roots(&mut self, roots: &[PcRootLocation]) -> PointerValue<'ctx> {
+        if roots.is_empty() {
+            return self.context.ptr_type(AddressSpace::default()).const_null();
+        }
+        if let Some(pointer) = self.roots.get(roots) {
+            return *pointer;
+        }
         let values: Vec<_> = roots
             .iter()
             .map(|root| {
                 let recipes = self.recipes(&root.recipes);
                 self.types.root.const_named_struct(&[
-                    recipes.into(),
+                    self.relative(recipes).into(),
                     self.context
                         .i32_type()
                         .const_int(root.frame_offset as u32 as u64, false)
@@ -305,10 +343,18 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 ])
             })
             .collect();
-        self.struct_array(self.types.root, &values, "roots")
+        let pointer = self.struct_array(self.types.root, &values, "roots");
+        self.roots.insert(roots.to_vec(), pointer);
+        pointer
     }
 
     fn frames(&mut self, frames: &[PcLogicalFrame]) -> PointerValue<'ctx> {
+        if frames.is_empty() {
+            return self.context.ptr_type(AddressSpace::default()).const_null();
+        }
+        if let Some(pointer) = self.frames.get(frames) {
+            return *pointer;
+        }
         let values: Vec<_> = frames
             .iter()
             .map(|frame| {
@@ -328,7 +374,9 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 ])
             })
             .collect();
-        self.struct_array(self.types.frame, &values, "frames")
+        let pointer = self.struct_array(self.types.frame, &values, "frames");
+        self.frames.insert(frames.to_vec(), pointer);
+        pointer
     }
 
     fn records(&mut self, records: &[PcRecord]) -> PointerValue<'ctx> {
@@ -339,8 +387,8 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 let roots = self.roots(&record.roots);
                 let frames = self.frames(&record.logical_frames);
                 self.types.record.const_named_struct(&[
-                    roots.into(),
-                    frames.into(),
+                    self.relative(roots).into(),
+                    self.relative(frames).into(),
                     self.context
                         .i32_type()
                         .const_int(u64::from(record.pc_offset), false)
@@ -376,8 +424,9 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 let records = self.records(&function.records);
                 let symbol = self.string(&function.symbol);
                 self.types.function.const_named_struct(&[
-                    declaration.as_global_value().as_pointer_value().into(),
-                    records.into(),
+                    self.relative(declaration.as_global_value().as_pointer_value())
+                        .into(),
+                    self.relative(records).into(),
                     symbol.into(),
                     self.context
                         .i64_type()
@@ -398,7 +447,7 @@ impl<'ctx> ObjectBuilder<'ctx> {
         let functions = self.functions(&metadata.functions);
         let reserved = self.context.i8_type().array_type(6).const_zero();
         let initializer = self.types.module.const_named_struct(&[
-            functions.into(),
+            self.relative(functions).into(),
             self.context
                 .i32_type()
                 .const_int(metadata.functions.len() as u64, false)
@@ -417,12 +466,8 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 .into(),
             reserved.into(),
         ]);
-        let module_global =
-            self.module
-                .add_global(self.types.module, None, "__taro_pc_metadata_module");
-        module_global.set_initializer(&initializer);
-        module_global.set_constant(true);
-        module_global.set_linkage(Linkage::Internal);
+        self.module_global.set_initializer(&initializer);
+        self.module_global.set_constant(true);
 
         let ptr = self.context.ptr_type(AddressSpace::default());
         let register = self.module.add_function(
@@ -439,7 +484,11 @@ impl<'ctx> ObjectBuilder<'ctx> {
         let builder = self.context.create_builder();
         builder.position_at_end(entry);
         builder
-            .build_call(register, &[module_global.as_pointer_value().into()], "")
+            .build_call(
+                register,
+                &[self.module_global.as_pointer_value().into()],
+                "",
+            )
             .unwrap();
         builder.build_return(None).unwrap();
 

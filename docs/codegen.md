@@ -57,6 +57,28 @@ ThinLTO also maintains a profile-scoped backend cache under
 `target/<profile>/objects/thinlto-cache/`. `--no-incremental` bypasses package
 reuse and ThinLTO cache reads without deleting existing entries.
 
+## Compiler PC Metadata
+
+Every native Taro object has a compiler-owned stack-map descriptor and a linked
+`.pcmeta.o` sidecar. After ordinary, full-LTO, or ThinLTO machine-code emission,
+the compiler normalizes LLVM's target-specific stack-map records into the
+versioned Taro format and strips the raw LLVM stack-map section from the native
+object. The runtime never parses LLVM's experimental format.
+
+The sidecar stores signed offsets relative to one module header instead of
+absolute pointers. The linker resolves those differences statically, leaving
+only the constructor's module pointer for the dynamic loader to rebase. Root
+recipes, root-location arrays, strings, and logical-frame arrays are
+deduplicated within the sidecar. Runtime registration is constant-size; the
+first stack walk indexes function headers, and the selected PC record is decoded
+only when its roots or logical frames are requested.
+
+Poll sites with no live GC roots are omitted because they cannot throw and
+carry no collector or diagnostic information. This leaves pure poll-only
+functions eligible for normal LLVM inlining. Managed calls, allocation sites,
+blocking transitions, and panic-capable sites retain PC records even when their
+root set is empty.
+
 ## Incremental Compilation
 
 Incremental reuse is enabled for `build`, `run`, `test`, and `check`. Artifacts
@@ -66,6 +88,8 @@ are profile-, target-, compiler-, option-, and source-fingerprinted.
 | --- | --- |
 | `target/<profile>/metadata/` | Internal semantic metadata |
 | `target/<profile>/objects/*.o` | Native package objects |
+| `target/<profile>/objects/*.pcmeta.o` | Linked Taro PC metadata sidecars |
+| `target/<profile>/objects/*.stackmaps` | Compiler stack-map descriptors |
 | `target/<profile>/objects/*.bc` | Package bitcode for bitcode/LTO modes |
 | `target/<profile>/objects/*.lto.o` | Full-LTO output |
 | `target/<profile>/objects/thinlto-*` | ThinLTO objects and cache |

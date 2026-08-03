@@ -210,16 +210,20 @@ fn register_current_thread_state() -> Arc<ThreadState> {
 }
 
 fn unregister_thread(state: &ThreadState) {
-    // A collector may already hold this state in a registry snapshot. Publish
-    // stable roots before removing the registry entry so that collector can
-    // finish its wait, observe the epoch change, and retry the snapshot.
+    // Serialize the request check with registry snapshots. If no collection is
+    // pending, removal itself guarantees that a later snapshot cannot include
+    // this thread, so there is no stack to publish. If a collector already
+    // requested the world, publish before removal so an existing snapshot can
+    // finish its wait, observe the epoch change, and retry.
+    let mut reg = THREAD_REGISTRY.lock().unwrap();
     if !state.at_safepoint.load(Ordering::Relaxed) {
-        let roots = crate::stack_walk::capture_current_roots();
-        unsafe { *state.published_roots.get() = roots };
+        if gc_requested(Ordering::Acquire) {
+            let roots = crate::stack_walk::capture_current_roots();
+            unsafe { *state.published_roots.get() = roots };
+        }
         state.at_safepoint.store(true, Ordering::Release);
     }
 
-    let mut reg = THREAD_REGISTRY.lock().unwrap();
     let len_before = reg.len();
     reg.retain(|registered| registered.id != state.id);
     if reg.len() != len_before {

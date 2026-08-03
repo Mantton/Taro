@@ -19,7 +19,7 @@ use super::pc_metadata::{
 };
 
 pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
-pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 1;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 2;
 
 /// Kind of machine site represented by a PC record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,6 +332,11 @@ struct NativeParsedStackMap {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+struct NativeObjectRewrite {
+    _private: [u8; 0],
+}
+
 unsafe extern "C" {
     fn taro_stack_map_parse_object(
         path: *const u8,
@@ -400,6 +405,18 @@ unsafe extern "C" {
         record_index: usize,
         location_index: usize,
     ) -> i64;
+    fn taro_stack_map_strip_object(
+        input_path: *const u8,
+        input_path_length: usize,
+        output_path: *const u8,
+        output_path_length: usize,
+    ) -> *mut NativeObjectRewrite;
+    fn taro_object_rewrite_dispose(result: *mut NativeObjectRewrite);
+    fn taro_object_rewrite_is_valid(result: *const NativeObjectRewrite) -> bool;
+    fn taro_object_rewrite_error(
+        result: *const NativeObjectRewrite,
+        length: *mut usize,
+    ) -> *const u8;
 }
 
 struct NativeStackMap(NonNull<NativeParsedStackMap>);
@@ -426,6 +443,33 @@ impl NativeStackMap {
 impl Drop for NativeStackMap {
     fn drop(&mut self) {
         unsafe { taro_stack_map_dispose(self.0.as_ptr()) };
+    }
+}
+
+struct NativeRewrite(NonNull<NativeObjectRewrite>);
+
+impl NativeRewrite {
+    fn strip(input: &Path, output: &Path) -> Result<Self, String> {
+        let input = path_bytes(input)?;
+        let output = path_bytes(output)?;
+        let rewritten = NonNull::new(unsafe {
+            taro_stack_map_strip_object(input.as_ptr(), input.len(), output.as_ptr(), output.len())
+        })
+        .ok_or_else(|| "LLVM failed to allocate an object rewrite result".to_owned())?;
+        let rewritten = Self(rewritten);
+        if !unsafe { taro_object_rewrite_is_valid(rewritten.0.as_ptr()) } {
+            return Err(read_native_string(|length| unsafe {
+                taro_object_rewrite_error(rewritten.0.as_ptr(), length)
+            })
+            .unwrap_or_else(|error| format!("LLVM failed to strip stack-map data ({error})")));
+        }
+        Ok(rewritten)
+    }
+}
+
+impl Drop for NativeRewrite {
+    fn drop(&mut self) {
+        unsafe { taro_object_rewrite_dispose(self.0.as_ptr()) };
     }
 }
 
@@ -589,6 +633,30 @@ pub(crate) fn parse_object(path: &Path) -> Result<RawStackMap, String> {
     })
 }
 
+/// Remove LLVM's implementation-specific stack-map section after it has been
+/// normalized into Taro's stable sidecar ABI.
+///
+/// Rewriting to a sibling first keeps the original object intact if LLVM
+/// rejects the input or the output cannot be flushed.
+pub(crate) fn strip_object(path: &Path) -> Result<(), String> {
+    let temporary = path.with_extension("stackmap-strip.tmp");
+    let result = NativeRewrite::strip(path, &temporary);
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!(
+            "failed to strip raw LLVM stack maps from '{}': {error}",
+            path.display()
+        ));
+    }
+    fs::rename(&temporary, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        format!(
+            "failed to replace '{}' with its stripped object: {error}",
+            path.display()
+        )
+    })
+}
+
 fn read_native_string(read: impl FnOnce(*mut usize) -> *const u8) -> Result<String, String> {
     let mut length = 0;
     let pointer = read(&mut length);
@@ -618,7 +686,7 @@ fn path_bytes(path: &Path) -> Result<Cow<'_, [u8]>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RawStackMapLocationKind, parse_object};
+    use super::{RawStackMapLocationKind, parse_object, strip_object};
     use inkwell::{
         OptimizationLevel,
         context::Context,
@@ -796,5 +864,20 @@ mod tests {
             .expect("emit empty object");
         let error = parse_object(&path).expect_err("missing section must fail");
         assert!(error.contains("does not contain an LLVM stack map section"));
+    }
+
+    #[test]
+    fn strips_normalized_sections_from_elf_and_macho_objects() {
+        let directory = TestDirectory::new();
+        for (triple, name) in [
+            ("x86_64-unknown-linux-gnu", "strip-elf"),
+            ("aarch64-apple-darwin", "strip-macho"),
+        ] {
+            let object = emit_probe_object(triple, OptimizationLevel::Default, &directory, name);
+            assert!(parse_object(&object).is_ok());
+            strip_object(&object).expect("strip raw stack-map section");
+            let error = parse_object(&object).expect_err("stripped section must be absent");
+            assert!(error.contains("does not contain an LLVM stack map section"));
+        }
     }
 }

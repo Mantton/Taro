@@ -4,6 +4,9 @@
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Module.h"
 #include "llvm/LTO/legacy/ThinLTOCodeGenerator.h"
+#include "llvm/ObjCopy/ConfigManager.h"
+#include "llvm/ObjCopy/ObjCopy.h"
+#include "llvm/Object/Binary.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/StackMapParser.h"
 #include "llvm/Support/CBindingWrapping.h"
@@ -60,6 +63,10 @@ struct TaroParsedStackMap {
   std::uint8_t PointerBytes = 0;
   std::vector<TaroStackMapFunction> Functions;
   std::vector<TaroStackMapRecord> Records;
+};
+
+struct TaroObjectRewriteResult {
+  std::string Error;
 };
 
 llvm::StringRef string_ref(const std::uint8_t *data, std::size_t length) {
@@ -452,6 +459,77 @@ TaroParsedStackMap *taro_stack_map_parse_object(const std::uint8_t *path,
   if (path == nullptr)
     return nullptr;
   return parse_stack_map_object(path, path_length);
+}
+
+TaroObjectRewriteResult *
+taro_stack_map_strip_object(const std::uint8_t *input_path,
+                            std::size_t input_path_length,
+                            const std::uint8_t *output_path,
+                            std::size_t output_path_length) {
+  auto *Result = new (std::nothrow) TaroObjectRewriteResult();
+  if (Result == nullptr)
+    return nullptr;
+  if (input_path == nullptr || output_path == nullptr) {
+    Result->Error = "stack-map strip path is null";
+    return Result;
+  }
+
+  auto Input = llvm::object::createBinary(
+      string_ref(input_path, input_path_length));
+  if (!Input) {
+    Result->Error = llvm::toString(Input.takeError());
+    return Result;
+  }
+
+  llvm::objcopy::ConfigManager Config;
+  Config.Common.InputFilename = string_ref(input_path, input_path_length);
+  Config.Common.OutputFilename = string_ref(output_path, output_path_length);
+  auto PropagateError = [](llvm::Error Error) { return Error; };
+  for (llvm::StringRef Name : {
+           llvm::StringRef("__LLVM_STACKMAPS,__llvm_stackmaps"),
+           llvm::StringRef("__llvm_stackmaps"),
+           llvm::StringRef(".llvm_stackmaps")}) {
+    if (llvm::Error Error = Config.Common.ToRemove.addMatcher(
+            llvm::objcopy::NameOrPattern::create(
+                Name, llvm::objcopy::MatchStyle::Literal, PropagateError))) {
+      Result->Error = llvm::toString(std::move(Error));
+      return Result;
+    }
+  }
+
+  std::error_code FileError;
+  llvm::raw_fd_ostream Output(string_ref(output_path, output_path_length),
+                             FileError, llvm::sys::fs::OF_None);
+  if (FileError) {
+    Result->Error = FileError.message();
+    return Result;
+  }
+  if (llvm::Error Error = llvm::objcopy::executeObjcopyOnBinary(
+          Config, *Input->getBinary(), Output)) {
+    Result->Error = llvm::toString(std::move(Error));
+    return Result;
+  }
+  Output.flush();
+  if (Output.has_error())
+    Result->Error = "failed to flush stripped stack-map object";
+  return Result;
+}
+
+void taro_object_rewrite_dispose(TaroObjectRewriteResult *result) {
+  delete result;
+}
+
+bool taro_object_rewrite_is_valid(const TaroObjectRewriteResult *result) {
+  return result != nullptr && result->Error.empty();
+}
+
+const std::uint8_t *
+taro_object_rewrite_error(const TaroObjectRewriteResult *result,
+                          std::size_t *length) {
+  if (result == nullptr || length == nullptr)
+    return nullptr;
+  *length = result->Error.size();
+  return reinterpret_cast<const std::uint8_t *>(result->Error.data());
 }
 
 void taro_stack_map_dispose(TaroParsedStackMap *stack_map) {
