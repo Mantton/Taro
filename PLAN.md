@@ -116,12 +116,14 @@ Files/functions:
 
 ### 3. Preserve logical inline provenance in MIR
 
-- Add source-scope identity to MIR statements and terminators, with scope zero
-  representing the physical function.
 - Add a per-body inline-scope table containing callee definition, callsite span,
-  and parent scope.
-- Have MIR inlining create/remap a child scope for copied statements and
-  terminators.
+  and parent scope, with scope zero representing the physical function.
+- Add a `SourceScope` marker statement at the beginning of each inlined MIR
+  region. Code generation resets to scope zero at each basic block and treats
+  markers as no-ops that update the active scope. This preserves provenance
+  through block concatenation without adding a field to every MIR node.
+- Have MIR inlining create/remap child scopes and markers for copied regions.
+- Insert poll statements after a block's leading scope marker.
 - Preserve/remap scopes through CFG simplification, async transformation,
   metadata serialization, and cross-package MIR loading.
 - Extend MIR structural validation and pretty printing.
@@ -129,7 +131,7 @@ Files/functions:
 Files/functions:
 
 - `compiler/src/mir/mod.rs`
-  - `Statement`, `Terminator`, `Body`
+  - `Body`, `StatementKind::SourceScope`
   - new `SourceScopeId` / `InlineSourceScope`
 - `compiler/src/mir/builder.rs` and builder submodules
 - `compiler/src/mir/optimize/inline.rs::inline_call` and remap helpers
@@ -179,8 +181,8 @@ rootless functions emit no root operands, and maps survive O0/O2 and inlining.
 
 ### 5. Normalize object metadata after code generation
 
-- Add the established `object` crate for target-independent object/relocation
-  parsing.
+- Extend the existing pinned-LLVM native shim with LLVM's maintained
+  `ObjectFile` and `StackMapParser` APIs. Do not add a second object parser.
 - Parse `.llvm_stackmaps` / `__llvm_stackmaps` after ordinary object emission,
   full-LTO emission, and each ThinLTO backend object.
 - Validate stack-map version, architecture, unique IDs, record counts, operand
@@ -194,8 +196,8 @@ rootless functions emit no root operands, and maps survive O0/O2 and inlining.
 
 Files/functions:
 
-- `compiler/Cargo.toml` / `Cargo.lock`
-- new `compiler/src/codegen/stack_maps/object.rs`
+- `compiler/native/llvm_shims.cpp`
+- `compiler/src/codegen/stack_maps.rs`
 - new `compiler/src/codegen/pc_metadata.rs`
 - `compiler/src/codegen/artifact.rs` (primary object plus metadata sidecar)
 - `compiler/src/codegen/llvm.rs::emit_module_artifact`

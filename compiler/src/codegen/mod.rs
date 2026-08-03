@@ -4,6 +4,7 @@ pub mod link;
 pub mod llvm;
 pub mod lto;
 pub mod mangle;
+pub mod stack_maps;
 pub mod target;
 
 use std::{ffi::CString, ptr, sync::Once};
