@@ -3,10 +3,11 @@
 //! # Thread Safety
 //!
 //! This collector uses a single global heap with stop-the-world collection
-//! coordinated through per-thread safepoints. Each thread maintains its own
-//! shadow stack, all registered threads rendezvous before collection, and the
-//! global heap remains protected by a mutex. This keeps multithreaded mutation
-//! safe, but allocation and collection are still globally serialized.
+//! coordinated through per-thread safepoints. Each mutator publishes roots
+//! from compiler PC maps before parking, all registered threads rendezvous
+//! before collection, and the global heap remains protected by a mutex. This
+//! keeps multithreaded mutation safe, but allocation and collection are still
+//! globally serialized.
 //!
 //! # Overview
 //!
@@ -21,7 +22,7 @@
 //! 2) Root collection
 //!    - Manual roots (gc_add_root) for embeddings/tests.
 //!    - Static/global ranges (gc_register_static).
-//!    - Shadow stack frames (compiler emits push/pop + pointer slots).
+//!    - Compiler-produced stack maps, resolved and published by each mutator.
 //!
 //! 3) Mark
 //!    - For each root pointer, find the owning span via the page map.
@@ -41,7 +42,7 @@
 //! - Scan/noscan lanes: separate span lists so the GC can skip scanning
 //!   pointer-free objects entirely.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -71,18 +72,6 @@ pub struct GcDesc {
 // GcDesc values are immutable and safe to share across threads.
 unsafe impl Send for GcDesc {}
 unsafe impl Sync for GcDesc {}
-
-/// Shadow stack frame layout emitted by the compiler.
-///
-/// - prev: linked list to the previous frame.
-/// - slots: pointer to an array of GC root pointers.
-/// - count: number of slots.
-#[repr(C)]
-pub struct GcShadowFrame {
-    pub prev: *mut GcShadowFrame,
-    pub slots: *mut *mut u8,
-    pub count: usize,
-}
 
 /// Runtime-only hook used to reclaim native state associated with a dead GC
 /// allocation. Reclaimers never receive the allocation itself and must not
@@ -120,16 +109,11 @@ impl CollectionWork {
     }
 }
 
-// Thread-local shadow stack top. Each thread maintains its own shadow stack,
-// ensuring no data races on the root set. The GC iterates all thread-local
-// stacks during collection.
-std::thread_local! {
-    pub(crate) static GC_SHADOW_TOP: std::cell::Cell<*mut GcShadowFrame> = const { std::cell::Cell::new(std::ptr::null_mut()) };
-}
-
 pub(crate) struct ThreadState {
     pub id: std::thread::ThreadId,
-    pub shadow_top: *const std::cell::Cell<*mut GcShadowFrame>,
+    /// Owned by this mutator and read by the collector only after the
+    /// `at_safepoint` release/acquire handshake.
+    published_roots: UnsafeCell<Vec<*const u8>>,
     pub at_safepoint: AtomicBool,
 }
 unsafe impl Send for ThreadState {}
@@ -162,7 +146,16 @@ pub static GC_POLL_FLAGS: AtomicU8 = AtomicU8::new(0);
 /// operation returns.
 static GC_RESUME_COND: Condvar = Condvar::new();
 static GC_RESUME_LOCK: Mutex<()> = Mutex::new(());
+static GC_STRESS: OnceLock<bool> = OnceLock::new();
 
+fn gc_stress_enabled() -> bool {
+    *GC_STRESS.get_or_init(|| {
+        std::env::var("TARO_GC_STRESS").ok().is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    })
+}
 #[inline]
 fn gc_requested(ordering: Ordering) -> bool {
     GC_POLL_FLAGS.load(ordering) & GC_REQUESTED_FLAG != 0
@@ -174,7 +167,7 @@ fn gc_needed(ordering: Ordering) -> bool {
 }
 
 fn set_gc_needed(needed: bool) {
-    if needed {
+    if needed || gc_stress_enabled() {
         GC_POLL_FLAGS.fetch_or(GC_NEEDED_FLAG, Ordering::Release);
     } else {
         GC_POLL_FLAGS.fetch_and(!GC_NEEDED_FLAG, Ordering::Release);
@@ -211,7 +204,7 @@ fn register_thread_state(state: Arc<ThreadState>) -> Arc<ThreadState> {
 fn register_current_thread_state() -> Arc<ThreadState> {
     register_thread_state(Arc::new(ThreadState {
         id: std::thread::current().id(),
-        shadow_top: GC_SHADOW_TOP.with(|top| top as *const _),
+        published_roots: UnsafeCell::new(Vec::new()),
         at_safepoint: AtomicBool::new(false),
     }))
 }
@@ -220,7 +213,11 @@ fn unregister_thread(state: &ThreadState) {
     // A collector may already hold this state in a registry snapshot. Publish
     // stable roots before removing the registry entry so that collector can
     // finish its wait, observe the epoch change, and retry the snapshot.
-    state.at_safepoint.store(true, Ordering::Release);
+    if !state.at_safepoint.load(Ordering::Relaxed) {
+        let roots = crate::stack_walk::capture_current_roots();
+        unsafe { *state.published_roots.get() = roots };
+        state.at_safepoint.store(true, Ordering::Release);
+    }
 
     let mut reg = THREAD_REGISTRY.lock().unwrap();
     let len_before = reg.len();
@@ -244,7 +241,7 @@ fn ensure_current_thread_state() -> Arc<ThreadState> {
                     // cycles (for example, the main test thread running
                     // multiple async roots). Reinsert the existing state into
                     // the global registry so later collections keep scanning
-                    // this thread's shadow stack.
+                    // this thread's published roots.
                     current.state = register_thread_state(current.state.clone());
                     current.attached = true;
                 }
@@ -275,6 +272,16 @@ fn with_current_thread_state<R>(f: impl FnOnce(&ThreadState) -> R) -> R {
 fn set_current_thread_safepoint(at_safepoint: bool) {
     with_current_thread_state(|state| {
         state.at_safepoint.store(at_safepoint, Ordering::Release);
+    });
+}
+
+fn publish_current_thread_roots() {
+    with_current_thread_state(|state| {
+        let roots = crate::stack_walk::capture_current_roots();
+        // SAFETY: only the owning mutator writes this vector. A collector does
+        // not read it until a release store publishes `at_safepoint`, or this
+        // same thread has become the stop-the-world collector.
+        unsafe { *state.published_roots.get() = roots };
     });
 }
 
@@ -326,24 +333,6 @@ pub(crate) fn ensure_thread_registered() {
     }
 }
 
-/// Whether this thread is already executing managed code and no collection is
-/// asking it to park.
-///
-/// The false state is published before a managed thread begins changing roots.
-/// A request that races after this check will be observed at the callee's entry
-/// poll, after its new shadow frame is fully linked.
-fn current_thread_is_managed() -> bool {
-    CURRENT_THREAD_STATE.with(|slot| {
-        let slot = slot.borrow();
-        let Some(current) = slot.as_ref() else {
-            return false;
-        };
-        current.attached
-            && !current.state.at_safepoint.load(Ordering::Relaxed)
-            && !gc_requested(Ordering::Acquire)
-    })
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__thread_attach() {
     enter_safepoint();
@@ -357,6 +346,9 @@ pub extern "C" fn __gc__thread_attach() {
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__thread_enter_managed() {
     ensure_thread_registered();
+    if gc_stress_enabled() {
+        set_gc_needed(true);
+    }
     leave_safepoint();
 }
 
@@ -374,15 +366,20 @@ pub extern "C" fn __gc__thread_detach() {
 }
 
 pub(crate) fn enter_safepoint() {
-    CURRENT_THREAD_STATE.with(|_| {});
+    let already_parked =
+        with_current_thread_state(|state| state.at_safepoint.load(Ordering::Relaxed));
+    if already_parked {
+        return;
+    }
+    publish_current_thread_roots();
     set_current_thread_safepoint(true);
 }
 
 pub(crate) fn leave_safepoint() {
     loop {
         // Publish that this thread intends to resume before checking the GC
-        // request. If a collection is already pending, immediately republish
-        // the stable shadow stack and wait. This ordering prevents a thread
+        // request. If a collection is already pending, keep the published root
+        // snapshot stable and wait. This ordering prevents a thread
         // from changing roots after the collector has observed it parked.
         set_current_thread_safepoint(false);
         if !gc_requested(Ordering::Acquire) {
@@ -398,8 +395,8 @@ pub(crate) fn park_at_safepoint() {
     leave_safepoint();
 }
 
-/// Mark the current thread's shadow stack stable before entering a foreign
-/// call that may block indefinitely.
+/// Publish the current roots before entering a foreign call that may block
+/// indefinitely.
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__gc_enter_blocking() {
     enter_safepoint();
@@ -461,6 +458,10 @@ fn initiate_collection() {
     let pause_started = Instant::now();
 
     let current_id = std::thread::current().id();
+    // The initiating mutator is not parked (and therefore is not waited on),
+    // but its generated callers are suspended inside this runtime call. Walk
+    // them now while this thread still owns all of its register state.
+    publish_current_thread_roots();
     let threads = threads_for_collection(current_id);
 
     // Now all other threads are parked. Discovery and heap reclamation happen
@@ -493,48 +494,6 @@ fn initiate_collection() {
         (reclaimer.callback)(reclaimer.data);
     }
     crate::cleanup::enqueue(work.cleanup_handles);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__gc_push_frame(frame: *mut GcShadowFrame) {
-    if !current_thread_is_managed() {
-        // Preserve lazy registration and native/runtime callback entry. Normal
-        // generated-to-generated calls take the cheap managed fast path.
-        __gc__thread_enter_managed();
-    }
-    GC_SHADOW_TOP.with(|top| {
-        unsafe { (*frame).prev = top.get() };
-        top.set(frame);
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __rt__gc_pop_frame(frame: *mut GcShadowFrame) {
-    let reached_thread_root = GC_SHADOW_TOP.with(|top| {
-        if top.get() == frame {
-            let prev = unsafe { (*frame).prev };
-            top.set(prev);
-            prev.is_null()
-        } else {
-            // Frame is not at top - this can happen with unwinding.
-            // Always walk and unlink so stale frame pointers cannot survive
-            // into a later collection cycle.
-            let mut current = top.get();
-            while !current.is_null() {
-                let prev = unsafe { (*current).prev };
-                if prev == frame {
-                    unsafe { (*current).prev = (*frame).prev };
-                    return false;
-                }
-                current = prev;
-            }
-            debug_assert!(false, "gc_pop_frame: frame not found in shadow stack");
-            false
-        }
-    });
-    if reached_thread_root {
-        enter_safepoint();
-    }
 }
 
 /// Allocate a GC-managed object with a payload of `size` bytes.
@@ -1749,7 +1708,7 @@ impl Gc {
             }
         }
 
-        self.push_shadow_roots(&mut stack, threads);
+        self.push_published_roots(&mut stack, threads);
         self.trace_stack(&mut stack);
     }
 
@@ -1854,47 +1813,12 @@ impl Gc {
         }
     }
 
-    fn push_shadow_roots(&self, stack: &mut Vec<*const u8>, threads: &[Arc<ThreadState>]) {
-        // Walk the shadow stack frames of the parked thread snapshot.
-        const MAX_SHADOW_SLOTS: usize = 1 << 16;
-        const MAX_FRAME_SLOT_DISTANCE: usize = 8 << 20; // 8 MiB
-
+    fn push_published_roots(&self, stack: &mut Vec<*const u8>, threads: &[Arc<ThreadState>]) {
         for thread in threads {
-            let top_cell = unsafe { &*thread.shadow_top };
-            let mut frame = top_cell.get();
-            while !frame.is_null() {
-                let prev = unsafe { (*frame).prev };
-                let count = unsafe { (*frame).count };
-                let slots = unsafe { (*frame).slots };
-
-                // Corrupted frames can appear after unwinding edge cases. Keep the
-                // collector resilient by ignoring implausible metadata instead of
-                // blindly dereferencing arbitrary pointers.
-                let slots_look_sane = if count == 0 {
-                    true
-                } else if count > MAX_SHADOW_SLOTS || slots.is_null() {
-                    false
-                } else {
-                    let frame_addr = frame as usize;
-                    let slots_addr = slots as usize;
-                    let near_frame = frame_addr.abs_diff(slots_addr) <= MAX_FRAME_SLOT_DISTANCE;
-                    let in_gc_heap = self.segment_index_for_ptr(slots as *const u8).is_some();
-                    near_frame || in_gc_heap
-                };
-
-                if slots_look_sane && !slots.is_null() {
-                    for i in 0..count {
-                        let val = unsafe { *slots.add(i) };
-                        if !val.is_null() {
-                            stack.push(val as *const u8);
-                        }
-                    }
-                }
-                if prev == frame {
-                    break;
-                }
-                frame = prev;
-            }
+            // The collector either observed this thread parked with Acquire,
+            // or is reading its own buffer after synchronously publishing it.
+            let roots = unsafe { &*thread.published_roots.get() };
+            stack.extend(roots.iter().copied().filter(|root| !root.is_null()));
         }
     }
 
@@ -2205,10 +2129,10 @@ fn register_segment_arenas(
 mod tests {
     use super::{
         __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach,
-        __rt__gc_enter_blocking, __rt__gc_exit_blocking, __rt__gc_pop_frame, __rt__gc_push_frame,
-        CURRENT_THREAD_STATE, CleanupRegistration, GC_SHADOW_TOP, Gc, GcDesc, GcShadowFrame,
-        GcStats, MAX_GC_PAUSE_SAMPLES, PAGE_SIZE, SEGMENT_SIZE, Segment, THREAD_REGISTRY,
-        ensure_thread_registered, register_segment_arenas,
+        __gc__thread_enter_managed, __rt__gc_enter_blocking, __rt__gc_exit_blocking,
+        CURRENT_THREAD_STATE, CleanupRegistration, Gc, GcDesc, GcStats, MAX_GC_PAUSE_SAMPLES,
+        PAGE_SIZE, SEGMENT_SIZE, Segment, THREAD_REGISTRY, ensure_thread_registered,
+        register_segment_arenas,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -2597,38 +2521,18 @@ mod tests {
     }
 
     #[test]
-    fn shadow_frames_preserve_lazy_entry_and_nested_managed_calls() {
+    fn managed_entry_registers_and_resumes_the_current_thread() {
         std::thread::spawn(|| {
-            let mut outer = GcShadowFrame {
-                prev: std::ptr::null_mut(),
-                slots: std::ptr::null_mut(),
-                count: 0,
-            };
-            let mut inner = GcShadowFrame {
-                prev: std::ptr::null_mut(),
-                slots: std::ptr::null_mut(),
-                count: 0,
-            };
-
-            __rt__gc_push_frame(&mut outer);
-            assert!(CURRENT_THREAD_STATE.with(|slot| {
-                slot.borrow().as_ref().is_some_and(|current| {
-                    current.attached && !current.state.at_safepoint.load(Ordering::Acquire)
-                })
-            }));
-            assert!(GC_SHADOW_TOP.with(|top| std::ptr::eq(top.get(), &outer)));
-
-            __rt__gc_push_frame(&mut inner);
-            assert!(std::ptr::eq(inner.prev, &outer));
-            assert!(GC_SHADOW_TOP.with(|top| std::ptr::eq(top.get(), &inner)));
-
-            __rt__gc_pop_frame(&mut inner);
-            assert!(GC_SHADOW_TOP.with(|top| std::ptr::eq(top.get(), &outer)));
-            __rt__gc_pop_frame(&mut outer);
-            assert!(GC_SHADOW_TOP.with(|top| top.get().is_null()));
+            __gc__thread_attach();
             assert!(CURRENT_THREAD_STATE.with(|slot| {
                 slot.borrow().as_ref().is_some_and(|current| {
                     current.attached && current.state.at_safepoint.load(Ordering::Acquire)
+                })
+            }));
+            __gc__thread_enter_managed();
+            assert!(CURRENT_THREAD_STATE.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|current| {
+                    current.attached && !current.state.at_safepoint.load(Ordering::Acquire)
                 })
             }));
             __gc__thread_detach();

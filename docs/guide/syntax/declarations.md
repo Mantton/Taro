@@ -461,7 +461,7 @@ extern "C" {
 
 Use the `blocking` ABI for foreign calls that may park indefinitely. It uses
 the C calling convention and symbol name while publishing the current GC
-shadow roots for the duration of the call.
+stack-map roots for the duration of the call.
 
 ```taro
 extern "blocking" {

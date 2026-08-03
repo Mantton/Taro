@@ -1421,8 +1421,8 @@ impl Scheduler {
             };
 
         if !frame.is_null() {
-            // The async frame may contain compiler-emitted shadow roots. Keep it
-            // as a persistent root from enqueue until finalization/teardown.
+            // The async frame owns suspended task state outside a managed
+            // native stack. Keep it as a persistent root until finalization.
             with_gc(|gc| gc.add_persistent_root(frame as *const u8));
         }
 

@@ -1,4 +1,4 @@
-// Regression coverage for GC descriptor tracing and compiler shadow roots.
+// Regression coverage for GC descriptor tracing and compiler stack-map roots.
 //
 // This test keeps GC-managed strings and buffers reachable through nested
 // structs, fixed arrays, tuples, optionals, closures, and List element buffers.

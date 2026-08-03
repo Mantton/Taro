@@ -1681,7 +1681,7 @@ impl<'arena> GlobalContext<'arena> {
                     crate::compile::config::ModuleArtifactKind::Object
                 )
             })
-            .map(|artifact| artifact.path.clone())
+            .flat_map(|artifact| artifact.link_inputs().cloned())
             .collect();
         inputs.extend(self.context.store.all_link_inputs());
         inputs

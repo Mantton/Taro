@@ -1060,7 +1060,6 @@ pub enum StatementKindWire {
     SourceScope(u32),
     StorageLive(u32),
     Assign(PlaceWire, RvalueWire),
-    ShadowResync(Vec<u32>),
     GcSafepoint,
     Nop,
     SetDiscriminant {
@@ -3936,9 +3935,6 @@ pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
             mir::StatementKind::Assign(place, rvalue) => {
                 StatementKindWire::Assign(place_to_wire(place), rvalue_to_wire(rvalue))
             }
-            mir::StatementKind::ShadowResync(locals) => StatementKindWire::ShadowResync(
-                locals.iter().map(|local| local.index() as u32).collect(),
-            ),
             mir::StatementKind::GcSafepoint => StatementKindWire::GcSafepoint,
             mir::StatementKind::Nop => StatementKindWire::Nop,
             mir::StatementKind::SetDiscriminant {
@@ -3969,12 +3965,6 @@ pub fn statement_from_wire<'a>(
             StatementKindWire::Assign(place, rvalue) => mir::StatementKind::Assign(
                 place_from_wire(gcx, place),
                 rvalue_from_wire(gcx, rvalue),
-            ),
-            StatementKindWire::ShadowResync(locals) => mir::StatementKind::ShadowResync(
-                locals
-                    .iter()
-                    .map(|local| mir::LocalId::from_raw(*local))
-                    .collect(),
             ),
             StatementKindWire::GcSafepoint => mir::StatementKind::GcSafepoint,
             StatementKindWire::Nop => mir::StatementKind::Nop,

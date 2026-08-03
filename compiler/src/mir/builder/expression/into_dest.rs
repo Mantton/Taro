@@ -553,8 +553,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             return self.lower_panic_payload_rethrow_call(destination, block, args, span);
         }
 
-        let shadow_resync_locals = self.shadow_resync_locals_for_call(args);
-
         let mut variadic_split_idx = None;
         let callee_expr = &self.thir.exprs[callee];
         let is_known_variadic = match callee_expr.kind {
@@ -865,7 +863,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 unwind,
             },
         );
-        self.push_shadow_resync(next, shadow_resync_locals, span);
         next.unit()
     }
 

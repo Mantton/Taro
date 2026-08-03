@@ -22,7 +22,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 23;
+const META_FORMAT_VERSION: u32 = 24;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -61,6 +61,8 @@ struct MetadataHeader {
     dependency_fingerprints: Vec<DependencyFingerprint>,
     artifact_kind: Option<ModuleArtifactKind>,
     artifact_relpath: Option<String>,
+    stack_map_descriptors_relpath: Option<String>,
+    pc_metadata_relpath: Option<String>,
     payload_checksum_hex: String,
     has_semantic_payload: bool,
     has_mir_payload: bool,
@@ -130,7 +132,25 @@ fn validate_artifact_header(header: &MetadataHeader) -> Result<(), String> {
     if has_kind != header.has_artifact_ref || has_path != header.has_artifact_ref {
         return Err("metadata artifact capability mismatch".into());
     }
-    Ok(())
+    if !header.has_artifact_ref {
+        if header.stack_map_descriptors_relpath.is_some() || header.pc_metadata_relpath.is_some() {
+            return Err("metadata companion artifact capability mismatch".into());
+        }
+        return Ok(());
+    }
+    if header.stack_map_descriptors_relpath.is_none() {
+        return Err("metadata stack-map descriptor reference missing".into());
+    }
+    match header.artifact_kind {
+        Some(ModuleArtifactKind::Object) if header.pc_metadata_relpath.is_none() => {
+            Err("metadata PC metadata object reference missing".into())
+        }
+        Some(ModuleArtifactKind::LlvmBitcode) if header.pc_metadata_relpath.is_some() => {
+            Err("LLVM bitcode metadata unexpectedly references a PC metadata object".into())
+        }
+        Some(_) => Ok(()),
+        None => Err("metadata artifact kind missing".into()),
+    }
 }
 
 fn validate_payload_capabilities(
@@ -206,6 +226,78 @@ fn resolve_metadata_artifact_path(output_root: &Path, relative: &str) -> Result<
     Ok(output_root.join(relative))
 }
 
+fn relative_artifact_path(
+    output_root: &Path,
+    path: &Path,
+    description: &str,
+) -> io::Result<String> {
+    if !path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{description} missing at '{}'", path.display()),
+        ));
+    }
+    let relative = path.strip_prefix(output_root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{description} is outside the compiler output directory"),
+        )
+    })?;
+    relative.to_str().map(str::to_owned).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{description} relative path is not valid Unicode"),
+        )
+    })
+}
+
+fn resolve_companion_beside(primary: &Path, relative: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(relative);
+    let name = relative
+        .file_name()
+        .ok_or_else(|| "metadata companion artifact path has no file name".to_owned())?;
+    Ok(primary.with_file_name(name))
+}
+
+fn artifact_from_explicit_path(
+    header: &MetadataHeader,
+    kind: ModuleArtifactKind,
+    primary: &Path,
+) -> Result<ModuleArtifact, String> {
+    if !primary.exists() {
+        return Err(format!(
+            "{} artifact missing at '{}'",
+            kind.display_name(),
+            primary.display()
+        ));
+    }
+    let descriptor_relative = header
+        .stack_map_descriptors_relpath
+        .as_deref()
+        .ok_or_else(|| "metadata stack-map descriptor reference missing".to_owned())?;
+    let descriptors = resolve_companion_beside(primary, descriptor_relative)?;
+    if !descriptors.exists() {
+        return Err(format!(
+            "stack-map descriptors missing at '{}'",
+            descriptors.display()
+        ));
+    }
+    let pc_metadata = match header.pc_metadata_relpath.as_deref() {
+        Some(relative) => {
+            let path = resolve_companion_beside(primary, relative)?;
+            if !path.exists() {
+                return Err(format!(
+                    "PC metadata object missing at '{}'",
+                    path.display()
+                ));
+            }
+            Some(path)
+        }
+        None => None,
+    };
+    Ok(ModuleArtifact::new(kind, primary.to_path_buf()).with_stack_maps(descriptors, pc_metadata))
+}
+
 pub fn metadata_path_for_config(config: &Config, output_root: &Path) -> PathBuf {
     metadata_dir(output_root).join(format!("{}.taro_meta", config.identifier))
 }
@@ -218,46 +310,70 @@ pub fn write_package_metadata<'ctx>(
     let pkg = gcx.package_index();
     let config = gcx.config;
 
-    let (artifact_kind, artifact_relpath) = match mode {
-        ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
-            let artifact = gcx.get_module_artifact(pkg).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("{} artifact missing from compiler state", config.identifier),
+    let (artifact_kind, artifact_relpath, stack_map_descriptors_relpath, pc_metadata_relpath) =
+        match mode {
+            ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
+                let artifact = gcx.get_module_artifact(pkg).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("{} artifact missing from compiler state", config.identifier),
+                    )
+                })?;
+                if artifact.kind != config.codegen.artifact {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "cached module artifact kind does not match codegen configuration",
+                    ));
+                }
+                let artifact_relpath = relative_artifact_path(
+                    gcx.output_root(),
+                    &artifact.path,
+                    artifact.kind.display_name(),
+                )?;
+                let descriptor_path = artifact.stack_map_descriptors.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "module artifact is missing stack-map descriptors",
+                    )
+                })?;
+                let stack_map_descriptors_relpath = relative_artifact_path(
+                    gcx.output_root(),
+                    descriptor_path,
+                    "stack-map descriptors",
+                )?;
+                let pc_metadata_relpath = match artifact.kind {
+                    ModuleArtifactKind::Object => {
+                        let path = artifact.pc_metadata.as_ref().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "object artifact is missing its PC metadata object",
+                            )
+                        })?;
+                        Some(relative_artifact_path(
+                            gcx.output_root(),
+                            path,
+                            "PC metadata object",
+                        )?)
+                    }
+                    ModuleArtifactKind::LlvmBitcode => {
+                        if artifact.pc_metadata.is_some() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "LLVM bitcode artifact unexpectedly has a PC metadata object",
+                            ));
+                        }
+                        None
+                    }
+                };
+                (
+                    Some(artifact.kind),
+                    Some(artifact_relpath),
+                    Some(stack_map_descriptors_relpath),
+                    pc_metadata_relpath,
                 )
-            })?;
-            if artifact.kind != config.codegen.artifact {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "cached module artifact kind does not match codegen configuration",
-                ));
             }
-            if !artifact.path.exists() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "{} artifact missing at '{}'",
-                        artifact.kind.display_name(),
-                        artifact.path.display()
-                    ),
-                ));
-            }
-            let relative = artifact.path.strip_prefix(gcx.output_root()).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "module artifact is outside the compiler output directory",
-                )
-            })?;
-            let relative = relative.to_str().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "module artifact relative path is not valid Unicode",
-                )
-            })?;
-            (Some(artifact.kind), Some(relative.to_owned()))
-        }
-        ReuseMode::SemanticDependency => (None, None),
-    };
+            ReuseMode::SemanticDependency => (None, None, None, None),
+        };
 
     let payload = build_payload_wire(gcx, mode)?;
     let payload_bytes = bincode::serialize(&payload)
@@ -296,6 +412,8 @@ pub fn write_package_metadata<'ctx>(
         dependency_fingerprints: fp.dependencies.clone(),
         artifact_kind,
         artifact_relpath,
+        stack_map_descriptors_relpath,
+        pc_metadata_relpath,
         payload_checksum_hex: checksum,
         has_semantic_payload,
         has_mir_payload,
@@ -438,16 +556,42 @@ pub fn try_load_package_metadata<'ctx>(
                 Ok(path) => path,
                 Err(message) => return MetadataLoadStatus::Miss(message),
             };
+        let descriptor_path = match header.stack_map_descriptors_relpath.as_deref() {
+            Some(relative) => match resolve_metadata_artifact_path(gcx.output_root(), relative) {
+                Ok(path) => path,
+                Err(message) => return MetadataLoadStatus::Miss(message),
+            },
+            None => {
+                return MetadataLoadStatus::Miss(
+                    "metadata stack-map descriptor reference missing".into(),
+                );
+            }
+        };
+        let pc_metadata_path = match header.pc_metadata_relpath.as_deref() {
+            Some(relative) => match resolve_metadata_artifact_path(gcx.output_root(), relative) {
+                Ok(path) => Some(path),
+                Err(message) => return MetadataLoadStatus::Miss(message),
+            },
+            None => None,
+        };
         if matches!(mode, ReuseMode::CodegenDependency | ReuseMode::CodegenRoot)
-            && !artifact_path.exists()
+            && (!artifact_path.exists()
+                || !descriptor_path.exists()
+                || pc_metadata_path.as_ref().is_some_and(|path| !path.exists()))
         {
             return MetadataLoadStatus::Miss(format!(
-                "cached {} artifact missing",
+                "cached {} artifact set is incomplete",
                 kind.display_name()
             ));
         }
-        if artifact_path.exists() {
-            Some(ModuleArtifact::new(kind, artifact_path))
+        if artifact_path.exists()
+            && descriptor_path.exists()
+            && pc_metadata_path.as_ref().is_none_or(|path| path.exists())
+        {
+            Some(
+                ModuleArtifact::new(kind, artifact_path)
+                    .with_stack_maps(descriptor_path, pc_metadata_path),
+            )
         } else {
             None
         }
@@ -572,19 +716,13 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
                     kind.display_name()
                 ));
             };
-            if !path.exists() {
-                return MetadataLoadStatus::Miss(format!(
-                    "{} artifact missing at '{}'",
-                    kind.display_name(),
-                    path.display()
-                ));
+            match artifact_from_explicit_path(&header, kind, path) {
+                Ok(artifact) => Some(artifact),
+                Err(message) => return MetadataLoadStatus::Miss(message),
             }
-            Some(ModuleArtifact::new(kind, path.to_path_buf()))
         }
         ReuseMode::SemanticDependency => match (header.artifact_kind, artifact_path) {
-            (Some(kind), Some(path)) if path.exists() => {
-                Some(ModuleArtifact::new(kind, path.to_path_buf()))
-            }
+            (Some(kind), Some(path)) => artifact_from_explicit_path(&header, kind, path).ok(),
             _ => None,
         },
     };
@@ -977,6 +1115,8 @@ fn encode_header(header: &MetadataHeader) -> Vec<u8> {
 
     write_optional_artifact_kind(&mut out, header.artifact_kind);
     write_optional_string(&mut out, header.artifact_relpath.as_deref());
+    write_optional_string(&mut out, header.stack_map_descriptors_relpath.as_deref());
+    write_optional_string(&mut out, header.pc_metadata_relpath.as_deref());
     write_string(&mut out, &header.payload_checksum_hex);
     out.push(header.has_semantic_payload as u8);
     out.push(header.has_mir_payload as u8);
@@ -1014,6 +1154,8 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
 
     let artifact_kind = read_optional_artifact_kind(&mut cursor)?;
     let artifact_relpath = read_optional_string(&mut cursor)?;
+    let stack_map_descriptors_relpath = read_optional_string(&mut cursor)?;
+    let pc_metadata_relpath = read_optional_string(&mut cursor)?;
     let payload_checksum_hex = read_string(&mut cursor)?;
     let has_semantic_payload = read_bool(&mut cursor)?;
     let has_mir_payload = read_bool(&mut cursor)?;
@@ -1037,6 +1179,8 @@ fn decode_header(bytes: &[u8]) -> io::Result<MetadataHeader> {
         dependency_fingerprints,
         artifact_kind,
         artifact_relpath,
+        stack_map_descriptors_relpath,
+        pc_metadata_relpath,
         payload_checksum_hex,
         has_semantic_payload,
         has_mir_payload,
@@ -1159,6 +1303,8 @@ mod tests {
             dependency_fingerprints: vec![],
             artifact_kind: Some(ModuleArtifactKind::Object),
             artifact_relpath: Some("std.o".into()),
+            stack_map_descriptors_relpath: Some("std.stackmaps".into()),
+            pc_metadata_relpath: Some("std.pcmeta.o".into()),
             payload_checksum_hex: "checksum".into(),
             has_semantic_payload: true,
             has_mir_payload: true,
@@ -1193,6 +1339,8 @@ mod tests {
         header.has_artifact_ref = false;
         header.artifact_kind = None;
         header.artifact_relpath = None;
+        header.stack_map_descriptors_relpath = None;
+        header.pc_metadata_relpath = None;
         assert!(validate_mode_capabilities(&header, ReuseMode::SemanticDependency).is_ok());
     }
 
@@ -1242,6 +1390,11 @@ mod tests {
         assert_eq!(decoded.harness_mode, header.harness_mode);
         assert_eq!(decoded.artifact_kind, header.artifact_kind);
         assert_eq!(decoded.artifact_relpath, header.artifact_relpath);
+        assert_eq!(
+            decoded.stack_map_descriptors_relpath,
+            header.stack_map_descriptors_relpath
+        );
+        assert_eq!(decoded.pc_metadata_relpath, header.pc_metadata_relpath);
         assert_eq!(decoded_payload, payload);
     }
 
@@ -1257,6 +1410,7 @@ mod tests {
         let mut header = sample_header();
         header.artifact_kind = Some(ModuleArtifactKind::LlvmBitcode);
         header.artifact_relpath = Some("std.bc".into());
+        header.pc_metadata_relpath = None;
         let mut bytes = Vec::new();
         write_envelope(&mut bytes, &header, b"payload").expect("envelope write should succeed");
 

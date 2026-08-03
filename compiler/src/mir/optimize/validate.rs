@@ -350,11 +350,6 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                 self.check_place(place, statement.span);
                 self.check_rvalue(rvalue, statement.span);
             }
-            StatementKind::ShadowResync(locals) => {
-                for local in locals {
-                    self.check_local(*local, statement.span);
-                }
-            }
             StatementKind::SetDiscriminant { place, .. } => self.check_place(place, statement.span),
             StatementKind::GcSafepoint | StatementKind::Nop => {}
         }
@@ -1320,17 +1315,6 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                     reinitialize_borrowed_content_if_needed(body, dest, &mut state);
                     collect_moves_from_rvalue(body, rvalue, &mut state);
                 }
-                StatementKind::ShadowResync(locals) => {
-                    for &local in locals {
-                        check_place_not_moved(
-                            gcx,
-                            body,
-                            &state,
-                            &Place::from_local(local),
-                            stmt.span,
-                        )?;
-                    }
-                }
                 StatementKind::SourceScope(_)
                 | StatementKind::SetDiscriminant { .. }
                 | StatementKind::GcSafepoint
@@ -1762,7 +1746,6 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                     }
                 }
                 StatementKind::SourceScope(_)
-                | StatementKind::ShadowResync(_)
                 | StatementKind::SetDiscriminant { .. }
                 | StatementKind::GcSafepoint
                 | StatementKind::Nop => {}
@@ -1971,11 +1954,6 @@ fn apply_statement_liveness<'ctx>(
                 live_use_place(dest, live);
             }
             live_use_rvalue(rvalue, live);
-        }
-        StatementKind::ShadowResync(locals) => {
-            for &local in locals {
-                live.insert(local);
-            }
         }
         StatementKind::SetDiscriminant { place, .. } => {
             if !place.projection.is_empty() {

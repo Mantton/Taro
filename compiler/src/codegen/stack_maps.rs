@@ -4,7 +4,328 @@
 //! consumes only Taro's versioned PC metadata, which is built from these owned
 //! records after machine-code emission.
 
-use std::{borrow::Cow, path::Path, ptr::NonNull, slice};
+use serde::{Deserialize, Serialize};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    ptr::NonNull,
+    slice,
+};
+
+use super::pc_metadata::{
+    PcArchitecture, PcFunction, PcLogicalFrame, PcMetadata, PcRecord, PcRootLocation, PcRootRecipe,
+};
+
+pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 1;
+
+/// Kind of machine site represented by a PC record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub(crate) enum StackMapSiteKind {
+    Poll = 1,
+    Call = 2,
+    Allocation = 3,
+    Blocking = 4,
+    Panic = 5,
+}
+
+/// One pointer field reachable from a stack-map operand's storage base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingRootRecipe {
+    pub offset: u64,
+    pub deref_depth: u8,
+}
+
+/// Root recipes associated with one LLVM stack-map operand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingRootOperand {
+    /// Number of pointer loads needed to turn the direct machine location into
+    /// the MIR local's storage address. Indirect ABI storage uses one.
+    pub storage_deref_depth: u8,
+    pub recipes: Vec<PendingRootRecipe>,
+}
+
+/// A logical Taro frame to render for a PC, innermost first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingLogicalFrame {
+    pub function: String,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// Compiler meaning associated with one raw LLVM stack-map ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingStackMapRecord {
+    pub id: u64,
+    pub emitted_function: String,
+    pub kind: StackMapSiteKind,
+    pub roots: Vec<PendingRootOperand>,
+    pub logical_frames: Vec<PendingLogicalFrame>,
+}
+
+/// Package sidecar retained beside object or bitcode artifacts until machine
+/// records can be normalized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingStackMapModule {
+    pub schema_version: u32,
+    pub target_triple: String,
+    pub records: Vec<PendingStackMapRecord>,
+}
+
+impl PendingStackMapModule {
+    pub fn new(target_triple: String, records: Vec<PendingStackMapRecord>) -> Self {
+        Self {
+            schema_version: DESCRIPTOR_SCHEMA_VERSION,
+            target_triple,
+            records,
+        }
+    }
+}
+
+/// Stable map ID for one site in a pre-optimization LLVM function.
+///
+/// LLVM may duplicate the intrinsic while inlining. Duplicate machine records
+/// intentionally retain the same ID and therefore the same root recipes.
+pub(crate) fn deterministic_map_id(
+    package_identifier: &str,
+    function_symbol: &str,
+    ordinal: u64,
+) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"taro-stack-map-id-v1\0");
+    hasher.update(package_identifier.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(function_symbol.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&ordinal.to_le_bytes());
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
+    u64::from_le_bytes(bytes)
+}
+
+pub(crate) fn write_pending_module(
+    path: &Path,
+    module: &PendingStackMapModule,
+) -> Result<(), String> {
+    let encoded = bincode::serialize(module)
+        .map_err(|error| format!("failed to encode stack-map descriptors: {error}"))?;
+    fs::write(path, encoded).map_err(|error| {
+        format!(
+            "failed to write stack-map descriptors '{}': {error}",
+            path.display()
+        )
+    })
+}
+
+pub(crate) fn read_pending_modules(
+    paths: impl IntoIterator<Item = PathBuf>,
+    expected_triple: &str,
+) -> Result<BTreeMap<u64, PendingStackMapRecord>, String> {
+    let mut records = BTreeMap::new();
+    for path in paths {
+        let bytes = fs::read(&path).map_err(|error| {
+            format!(
+                "failed to read stack-map descriptors '{}': {error}",
+                path.display()
+            )
+        })?;
+        let module: PendingStackMapModule = bincode::deserialize(&bytes).map_err(|error| {
+            format!(
+                "failed to decode stack-map descriptors '{}': {error}",
+                path.display()
+            )
+        })?;
+        if module.schema_version != DESCRIPTOR_SCHEMA_VERSION {
+            return Err(format!(
+                "stack-map descriptor schema mismatch in '{}': {}",
+                path.display(),
+                module.schema_version
+            ));
+        }
+        if module.target_triple != expected_triple {
+            return Err(format!(
+                "stack-map descriptor target mismatch in '{}': expected '{}', found '{}'",
+                path.display(),
+                expected_triple,
+                module.target_triple
+            ));
+        }
+        for record in module.records {
+            if let Some(previous) = records.insert(record.id, record.clone())
+                && previous != record
+            {
+                return Err(format!(
+                    "stack-map ID {:#018x} has conflicting compiler descriptors",
+                    record.id
+                ));
+            }
+        }
+    }
+    Ok(records)
+}
+
+/// Join LLVM's target-specific records to compiler descriptors and reject any
+/// machine location the runtime could not evaluate precisely.
+pub(crate) fn normalize_object(
+    object: &Path,
+    descriptor_paths: impl IntoIterator<Item = PathBuf>,
+    expected_triple: &str,
+) -> Result<PcMetadata, String> {
+    let descriptors = read_pending_modules(descriptor_paths, expected_triple)?;
+    let architecture = PcArchitecture::from_target_triple(expected_triple)?;
+    let raw = match parse_object(object) {
+        Ok(raw) => Some(raw),
+        Err(error) if error.contains("does not contain an LLVM stack map section") => None,
+        Err(error) => return Err(error),
+    };
+    let Some(raw) = raw else {
+        return Ok(PcMetadata {
+            version: PC_METADATA_SCHEMA_VERSION,
+            architecture,
+            pointer_bytes: architecture.pointer_bytes(),
+            functions: Vec::new(),
+        });
+    };
+
+    if !architecture.matches_llvm_name(&raw.architecture) {
+        return Err(format!(
+            "stack-map architecture mismatch: target '{}' produced '{}'",
+            expected_triple, raw.architecture
+        ));
+    }
+    if raw.pointer_bytes != architecture.pointer_bytes() {
+        return Err(format!(
+            "stack-map pointer width mismatch: target '{}' uses {} bytes, object reports {}",
+            expected_triple,
+            architecture.pointer_bytes(),
+            raw.pointer_bytes
+        ));
+    }
+
+    let mut functions: BTreeMap<String, PcFunction> = BTreeMap::new();
+    for raw_record in &raw.records {
+        let descriptor = descriptors.get(&raw_record.id).ok_or_else(|| {
+            format!(
+                "LLVM stack-map ID {:#018x} has no compiler descriptor",
+                raw_record.id
+            )
+        })?;
+        let raw_function = &raw.functions[raw_record.function_index];
+        if descriptor.emitted_function != raw_function.symbol {
+            return Err(format!(
+                "LLVM moved stack-map ID {:#018x} from '{}' into '{}'; functions containing collection sites must remain uninlined after MIR lowering",
+                raw_record.id, descriptor.emitted_function, raw_function.symbol
+            ));
+        }
+        if raw_record.locations.len() != descriptor.roots.len() {
+            return Err(format!(
+                "stack-map ID {:#018x} root count mismatch: compiler described {}, LLVM emitted {}",
+                raw_record.id,
+                descriptor.roots.len(),
+                raw_record.locations.len()
+            ));
+        }
+
+        let roots = raw_record
+            .locations
+            .iter()
+            .zip(&descriptor.roots)
+            .map(|(location, operand)| {
+                if location.kind != RawStackMapLocationKind::Direct {
+                    return Err(format!(
+                        "stack-map ID {:#018x} root used {:?}; a direct frame location is required",
+                        raw_record.id, location.kind
+                    ));
+                }
+                if location.size != u16::from(raw.pointer_bytes) {
+                    return Err(format!(
+                        "stack-map ID {:#018x} root has size {}, expected {}",
+                        raw_record.id, location.size, raw.pointer_bytes
+                    ));
+                }
+                if !architecture.supports_dwarf_base_register(location.dwarf_register) {
+                    return Err(format!(
+                        "stack-map ID {:#018x} uses unsupported DWARF base register {} for {:?}",
+                        raw_record.id, location.dwarf_register, architecture
+                    ));
+                }
+                let frame_offset = i32::try_from(location.value).map_err(|_| {
+                    format!(
+                        "stack-map ID {:#018x} frame offset {} exceeds the PC metadata ABI",
+                        raw_record.id, location.value
+                    )
+                })?;
+                Ok(PcRootLocation {
+                    dwarf_register: location.dwarf_register,
+                    frame_offset,
+                    storage_deref_depth: operand.storage_deref_depth,
+                    recipes: operand
+                        .recipes
+                        .iter()
+                        .map(|recipe| PcRootRecipe {
+                            offset: recipe.offset,
+                            deref_depth: recipe.deref_depth,
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let logical_frames = descriptor
+            .logical_frames
+            .iter()
+            .map(|frame| PcLogicalFrame {
+                function: frame.function.clone(),
+                file: frame.file.clone(),
+                line: frame.line,
+                column: frame.column,
+            })
+            .collect();
+        let record = PcRecord {
+            pc_offset: raw_record.instruction_offset,
+            kind: descriptor.kind,
+            roots,
+            logical_frames,
+        };
+        let function = functions
+            .entry(raw_function.symbol.clone())
+            .or_insert_with(|| PcFunction {
+                symbol: raw_function.symbol.clone(),
+                stack_size: raw_function.stack_size,
+                records: Vec::new(),
+            });
+        if function.stack_size != raw_function.stack_size {
+            return Err(format!(
+                "LLVM reported conflicting stack sizes for '{}'",
+                raw_function.symbol
+            ));
+        }
+        function.records.push(record);
+    }
+
+    for function in functions.values_mut() {
+        function.records.sort_by_key(|record| record.pc_offset);
+        for pair in function.records.windows(2) {
+            if pair[0].pc_offset == pair[1].pc_offset && pair[0] != pair[1] {
+                return Err(format!(
+                    "function '{}' has conflicting PC records at offset {:#x}",
+                    function.symbol, pair[0].pc_offset
+                ));
+            }
+        }
+        function.records.dedup();
+    }
+
+    Ok(PcMetadata {
+        version: PC_METADATA_SCHEMA_VERSION,
+        architecture,
+        pointer_bytes: raw.pointer_bytes,
+        functions: functions.into_values().collect(),
+    })
+}
 
 #[repr(C)]
 struct NativeParsedStackMap {

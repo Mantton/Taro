@@ -71,15 +71,23 @@ pub(crate) struct TaskTraceFrame {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LogicalTraceFrame {
+    pub(crate) function: String,
+    pub(crate) file: String,
+    pub(crate) line: usize,
+    pub(crate) column: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PanicReport {
     pub(crate) message: String,
     pub(crate) backtrace: String,
     pub(crate) location: Option<String>,
-    pub(crate) logical_stack: Vec<String>,
+    pub(crate) logical_stack: Vec<LogicalTraceFrame>,
     pub(crate) task_trace: Vec<TaskTraceFrame>,
 }
 
-const PANIC_PAYLOAD_MAGIC: &[u8; 8] = b"TAROPN\0\x02";
+const PANIC_PAYLOAD_MAGIC: &[u8; 8] = b"TAROPN\0\x03";
 
 fn append_payload_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
     let len = u64::try_from(bytes.len()).expect("panic payload field exceeds u64::MAX bytes");
@@ -114,7 +122,18 @@ pub(crate) fn serialize_panic_report(report: &PanicReport) -> Vec<u8> {
         u64::try_from(report.logical_stack.len()).expect("panic logical stack is too large");
     output.extend_from_slice(&frame_count.to_le_bytes());
     for frame in &report.logical_stack {
-        append_payload_bytes(&mut output, frame.as_bytes());
+        append_payload_bytes(&mut output, frame.function.as_bytes());
+        append_payload_bytes(&mut output, frame.file.as_bytes());
+        output.extend_from_slice(
+            &u64::try_from(frame.line)
+                .expect("panic frame line exceeds u64::MAX")
+                .to_le_bytes(),
+        );
+        output.extend_from_slice(
+            &u64::try_from(frame.column)
+                .expect("panic frame column exceeds u64::MAX")
+                .to_le_bytes(),
+        );
     }
     let task_frame_count =
         u64::try_from(report.task_trace.len()).expect("panic task trace is too large");
@@ -158,16 +177,29 @@ pub(crate) fn deserialize_panic_report(payload: &[u8]) -> Option<PanicReport> {
     let count_bytes: [u8; 8] = payload.get(cursor..count_end)?.try_into().ok()?;
     cursor = count_end;
     let frame_count = usize::try_from(u64::from_le_bytes(count_bytes)).ok()?;
-    // Every encoded frame needs at least its eight-byte length prefix. Reject
-    // impossible counts before reserving attacker- or corruption-controlled
-    // capacity, even though payloads are normally private runtime values.
-    if frame_count > payload.len().saturating_sub(cursor) / std::mem::size_of::<u64>() {
+    // Each structured frame needs two length prefixes and two integer fields.
+    // Reject impossible counts before reserving corruption-controlled capacity.
+    let minimum_frame_size = 4 * std::mem::size_of::<u64>();
+    if frame_count > payload.len().saturating_sub(cursor) / minimum_frame_size {
         return None;
     }
     let mut logical_stack = Vec::with_capacity(frame_count);
     for _ in 0..frame_count {
-        logical_stack
-            .push(String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?);
+        let function =
+            String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?;
+        let file = String::from_utf8(read_payload_bytes(payload, &mut cursor)?.to_vec()).ok()?;
+        let line_end = cursor.checked_add(std::mem::size_of::<u64>())?;
+        let line_bytes: [u8; 8] = payload.get(cursor..line_end)?.try_into().ok()?;
+        cursor = line_end;
+        let column_end = cursor.checked_add(std::mem::size_of::<u64>())?;
+        let column_bytes: [u8; 8] = payload.get(cursor..column_end)?.try_into().ok()?;
+        cursor = column_end;
+        logical_stack.push(LogicalTraceFrame {
+            function,
+            file,
+            line: usize::try_from(u64::from_le_bytes(line_bytes)).ok()?,
+            column: usize::try_from(u64::from_le_bytes(column_bytes)).ok()?,
+        });
     }
     let task_count_end = cursor.checked_add(std::mem::size_of::<u64>())?;
     let task_count_bytes: [u8; 8] = payload.get(cursor..task_count_end)?.try_into().ok()?;
@@ -294,12 +326,21 @@ fn set_panic_report(message: String) {
 #[inline]
 fn set_panic_report_with_location(message: String, location: Option<String>) {
     let backtrace = format!("{:#}", Backtrace::force_capture());
+    let logical_stack = crate::stack_walk::capture_logical_frames()
+        .into_iter()
+        .map(|frame| LogicalTraceFrame {
+            function: frame.function,
+            file: frame.file,
+            line: frame.line as usize,
+            column: frame.column as usize,
+        })
+        .collect();
     PANIC_REPORT.with(|slot| {
         *slot.borrow_mut() = Some(PanicReport {
             message,
             backtrace,
             location,
-            logical_stack: Vec::new(),
+            logical_stack,
             task_trace: Vec::new(),
         });
     });
@@ -574,18 +615,20 @@ fn format_logical_symbol(symbol: &str) -> String {
 
 const MAX_COMPACT_TARO_FRAMES: usize = 64;
 
-fn render_logical_stack(frames: &[String]) -> String {
+fn render_logical_stack(frames: &[LogicalTraceFrame]) -> String {
     if frames.is_empty() {
         return String::new();
     }
     let mut lines = Vec::new();
-    for (idx, frame) in frames
-        .iter()
-        .rev()
-        .take(MAX_COMPACT_TARO_FRAMES)
-        .enumerate()
-    {
-        lines.push(format!("  {idx:>2}: {}", format_logical_symbol(frame)));
+    for (idx, frame) in frames.iter().take(MAX_COMPACT_TARO_FRAMES).enumerate() {
+        let function = format_logical_symbol(&frame.function);
+        let location = match (frame.file.is_empty(), frame.line, frame.column) {
+            (true, _, _) => String::new(),
+            (false, 0, _) => format!(" at {}", frame.file),
+            (false, line, 0) => format!(" at {}:{line}", frame.file),
+            (false, line, column) => format!(" at {}:{line}:{column}", frame.file),
+        };
+        lines.push(format!("  {idx:>2}: {function}{location}"));
     }
     if frames.len() > MAX_COMPACT_TARO_FRAMES {
         lines.push(format!(
@@ -887,7 +930,7 @@ pub extern "C" fn __rt__test_panic_status(
 }
 
 /// Emit actionable details for a failed test panic classification, then reset
-/// all per-test panic and shadow-stack state. The harness prints its one-line
+/// all per-test panic state. The harness prints its one-line
 /// result before calling this function, so flush C stdio before writing the
 /// multi-line diagnostic through Rust's stderr handle.
 #[unsafe(no_mangle)]
@@ -944,10 +987,6 @@ pub extern "C" fn __rt__panic_clear() {
     PANIC_REPORT.with(|slot| {
         slot.borrow_mut().take();
     });
-    // The test harness calls this after each test. Clear any stray shadow-stack
-    // link left behind by unwinding so later explicit collections don't walk a
-    // stale frame chain from a prior test.
-    crate::garbage_collector::GC_SHADOW_TOP.with(|top| top.set(std::ptr::null_mut()));
 }
 
 /// Zero-sized marker type used as the `panic_any` payload for Taro panics
@@ -1184,11 +1223,11 @@ extern "C" fn forced_unwind_stop(
 #[cfg(test)]
 mod tests {
     use super::{
-        BacktracePolicy, FrameKind, PanicReport, TEST_PANIC_MESSAGE_MISMATCH, TEST_PANIC_MISSING,
-        TEST_PANIC_PASSED, TEST_PANIC_UNEXPECTED, TaskTraceFrame, classify_test_panic,
-        deserialize_panic_report, parse_backtrace_frames, parse_backtrace_policy,
-        render_native_taro_stack, render_panic_backtrace_with_policy, serialize_panic_report,
-        serialized_panic_message, write_captured_report,
+        BacktracePolicy, FrameKind, LogicalTraceFrame, PanicReport, TEST_PANIC_MESSAGE_MISMATCH,
+        TEST_PANIC_MISSING, TEST_PANIC_PASSED, TEST_PANIC_UNEXPECTED, TaskTraceFrame,
+        classify_test_panic, deserialize_panic_report, parse_backtrace_frames,
+        parse_backtrace_policy, render_native_taro_stack, render_panic_backtrace_with_policy,
+        serialize_panic_report, serialized_panic_message, write_captured_report,
     };
 
     #[test]
@@ -1197,7 +1236,20 @@ mod tests {
             message: "child failed".into(),
             backtrace: "frame one\nframe two".into(),
             location: Some("src/main.tr:12:7".into()),
-            logical_stack: vec!["app__bt_usr__main".into(), "std__bt_std__task".into()],
+            logical_stack: vec![
+                LogicalTraceFrame {
+                    function: "app__bt_usr__main".into(),
+                    file: "src/main.tr".into(),
+                    line: 12,
+                    column: 7,
+                },
+                LogicalTraceFrame {
+                    function: "std__bt_std__task".into(),
+                    file: "std/task.tr".into(),
+                    line: 3,
+                    column: 1,
+                },
+            ],
             task_trace: vec![TaskTraceFrame {
                 name: "worker".into(),
                 file: "src/main.tr".into(),
@@ -1240,7 +1292,12 @@ mod tests {
             message: "detached child failed".into(),
             backtrace: String::new(),
             location: Some("src/main.tr:4:5".into()),
-            logical_stack: vec!["app__bt_usr__child".into()],
+            logical_stack: vec![LogicalTraceFrame {
+                function: "app__bt_usr__child".into(),
+                file: "src/main.tr".into(),
+                line: 4,
+                column: 5,
+            }],
             task_trace: vec![TaskTraceFrame {
                 name: "child".into(),
                 file: "src/main.tr".into(),

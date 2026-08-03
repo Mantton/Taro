@@ -1017,7 +1017,7 @@ fn rewrite_statement<'ctx>(
             // write must target the pointee just like an ordinary assignment.
             rewrite_place(place, heapified, param_replacements);
         }
-        StatementKind::ShadowResync(_) | StatementKind::GcSafepoint | StatementKind::Nop => {}
+        StatementKind::GcSafepoint | StatementKind::Nop => {}
     }
 }
 

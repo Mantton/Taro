@@ -11,7 +11,7 @@ use crate::{
     thir,
 };
 use index_vec::IndexVec;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::{mem, rc::Rc};
 
 mod block;
@@ -96,7 +96,6 @@ pub struct MirBuilder<'ctx, 'thir> {
     thir: &'thir thir::ThirFunction<'ctx>,
     body: Body<'ctx>,
     locals: FxHashMap<hir::NodeID, LocalId>,
-    immutable_binding_initializers: FxHashMap<hir::NodeID, thir::ExprId>,
     place_bindings: FxHashMap<hir::NodeID, Place<'ctx>>,
     /// Tracks MIR locals by (arm_id, binding_name) for or-patterns.
     /// Ensures all alternatives in an or-pattern share the same local.
@@ -141,31 +140,11 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         body.escape_locals.push(false);
         body.return_local = ret_local;
 
-        let mut immutable_binding_initializers = FxHashMap::default();
-        for stmt in &function.stmts {
-            let thir::StmtKind::Let {
-                pattern,
-                expr: Some(expr),
-                mutable: false,
-                ..
-            } = &stmt.kind
-            else {
-                continue;
-            };
-
-            let thir::PatternKind::Binding { local, .. } = pattern.kind else {
-                continue;
-            };
-
-            immutable_binding_initializers.insert(local, *expr);
-        }
-
         let mut builder = MirBuilder {
             gcx,
             thir: function,
             body,
             locals: FxHashMap::default(),
-            immutable_binding_initializers,
             place_bindings: FxHashMap::default(),
             arm_binding_locals: FxHashMap::default(),
             task_drop_flags: FxHashMap::default(),
@@ -207,209 +186,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             ty.kind(),
             TyKind::Adt(def, _) if Some(def.id) == self.gcx.std_item_def(StdItem::Task)
         )
-    }
-
-    fn definition_belongs_to_std_item(&self, def_id: hir::DefinitionID, item: StdItem) -> bool {
-        let Some(owner) = self.gcx.std_item_def(item) else {
-            return false;
-        };
-
-        let mut current = Some(def_id);
-        while let Some(id) = current {
-            if id == owner {
-                return true;
-            }
-            current = self.gcx.definition_parent(id);
-        }
-        false
-    }
-
-    fn is_maybe_uninit_ty(&self, ty: Ty<'ctx>) -> bool {
-        matches!(
-            ty.kind(),
-            TyKind::Adt(def, _) if Some(def.id) == self.gcx.std_item_def(StdItem::MaybeUninit)
-        )
-    }
-
-    fn is_maybe_uninit_pointer_method(&self, expr_id: thir::ExprId) -> bool {
-        let thir::ExprKind::Zst { id, .. } = self.thir.exprs[expr_id].kind else {
-            return false;
-        };
-
-        if !self.definition_belongs_to_std_item(id, StdItem::MaybeUninit) {
-            return false;
-        }
-
-        matches!(
-            self.gcx.definition_ident(id).symbol.as_str(),
-            "asPtr" | "asMutPtr"
-        )
-    }
-
-    fn maybe_uninit_place_local(
-        &self,
-        expr_id: thir::ExprId,
-        seen_bindings: &mut FxHashSet<hir::NodeID>,
-    ) -> Option<hir::NodeID> {
-        match self.thir.exprs[expr_id].kind {
-            thir::ExprKind::Local(id) => {
-                if self.is_maybe_uninit_ty(self.thir.exprs[expr_id].ty) {
-                    return Some(id);
-                }
-
-                let init = *self.immutable_binding_initializers.get(&id)?;
-                if !seen_bindings.insert(id) {
-                    return None;
-                }
-                self.maybe_uninit_place_local(init, seen_bindings)
-            }
-            thir::ExprKind::Reference { expr, .. } => {
-                self.maybe_uninit_place_local(expr, seen_bindings)
-            }
-            thir::ExprKind::Cast { value } => self.maybe_uninit_place_local(value, seen_bindings),
-            _ => None,
-        }
-    }
-
-    fn maybe_uninit_local_from_call_arg(
-        &self,
-        expr_id: thir::ExprId,
-        seen_bindings: &mut FxHashSet<hir::NodeID>,
-    ) -> Option<hir::NodeID> {
-        match self.thir.exprs[expr_id].kind {
-            thir::ExprKind::Reference { expr, .. } => {
-                self.maybe_uninit_place_local(expr, seen_bindings)
-            }
-            thir::ExprKind::Cast { value } => {
-                self.maybe_uninit_local_from_call_arg(value, seen_bindings)
-            }
-            thir::ExprKind::Call {
-                callee, ref args, ..
-            } => {
-                if !self.is_maybe_uninit_pointer_method(callee) {
-                    return None;
-                }
-
-                args.first()
-                    .and_then(|receiver| self.maybe_uninit_place_local(*receiver, seen_bindings))
-            }
-            thir::ExprKind::Local(id) => {
-                let init = *self.immutable_binding_initializers.get(&id)?;
-                if !seen_bindings.insert(id) {
-                    return None;
-                }
-                self.maybe_uninit_local_from_call_arg(init, seen_bindings)
-            }
-            _ => None,
-        }
-    }
-
-    fn place_base_local_from_expr(
-        &self,
-        expr_id: thir::ExprId,
-        seen_bindings: &mut FxHashSet<hir::NodeID>,
-    ) -> Option<LocalId> {
-        match self.thir.exprs[expr_id].kind {
-            thir::ExprKind::Local(id) => {
-                if let Some(place) = self.place_bindings.get(&id) {
-                    return Some(place.local);
-                }
-                if let Some(&local) = self.locals.get(&id) {
-                    return Some(local);
-                }
-
-                let init = *self.immutable_binding_initializers.get(&id)?;
-                if !seen_bindings.insert(id) {
-                    return None;
-                }
-                self.place_base_local_from_expr(init, seen_bindings)
-            }
-            thir::ExprKind::Field { lhs, .. }
-            | thir::ExprKind::Deref(lhs)
-            | thir::ExprKind::Cast { value: lhs }
-            | thir::ExprKind::Reference { expr: lhs, .. } => {
-                self.place_base_local_from_expr(lhs, seen_bindings)
-            }
-            thir::ExprKind::Upvar { .. } => Some(LocalId::from_raw(1)),
-            _ => None,
-        }
-    }
-
-    fn is_mutable_indirect_ty(&self, ty: Ty<'ctx>) -> bool {
-        let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
-        matches!(
-            ty.kind(),
-            TyKind::Reference(_, hir::Mutability::Mutable)
-                | TyKind::Pointer(_, hir::Mutability::Mutable)
-        )
-    }
-
-    fn mutable_indirect_call_arg_base_local(
-        &self,
-        expr_id: thir::ExprId,
-        seen_bindings: &mut FxHashSet<hir::NodeID>,
-    ) -> Option<LocalId> {
-        let expr = &self.thir.exprs[expr_id];
-        match expr.kind {
-            thir::ExprKind::Reference {
-                mutable: true,
-                expr,
-            } => self.place_base_local_from_expr(expr, seen_bindings),
-            thir::ExprKind::Cast { value } if self.is_mutable_indirect_ty(expr.ty) => self
-                .mutable_indirect_call_arg_base_local(value, seen_bindings)
-                .or_else(|| self.place_base_local_from_expr(value, seen_bindings)),
-            thir::ExprKind::Local(id) if self.is_mutable_indirect_ty(expr.ty) => {
-                if let Some(&init) = self.immutable_binding_initializers.get(&id) {
-                    if seen_bindings.insert(id) {
-                        if let Some(local) =
-                            self.mutable_indirect_call_arg_base_local(init, seen_bindings)
-                        {
-                            return Some(local);
-                        }
-                        if let Some(local) = self.place_base_local_from_expr(init, seen_bindings) {
-                            return Some(local);
-                        }
-                    }
-                }
-
-                self.place_base_local_from_expr(expr_id, seen_bindings)
-            }
-            thir::ExprKind::Field { .. } | thir::ExprKind::Deref(_) => {
-                if self.is_mutable_indirect_ty(expr.ty) {
-                    self.place_base_local_from_expr(expr_id, seen_bindings)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn shadow_resync_locals_for_call(&self, args: &[thir::ExprId]) -> Vec<LocalId> {
-        let mut locals = Vec::new();
-        let mut seen_locals = FxHashSet::default();
-
-        for &arg in args {
-            let mut seen_bindings = FxHashSet::default();
-            if let Some(local_id) = self.maybe_uninit_local_from_call_arg(arg, &mut seen_bindings) {
-                if let Some(&mir_local) = self.locals.get(&local_id) {
-                    if seen_locals.insert(mir_local) {
-                        locals.push(mir_local);
-                    }
-                }
-            }
-
-            let mut seen_bindings = FxHashSet::default();
-            if let Some(mir_local) =
-                self.mutable_indirect_call_arg_base_local(arg, &mut seen_bindings)
-            {
-                if seen_locals.insert(mir_local) {
-                    locals.push(mir_local);
-                }
-            }
-        }
-
-        locals
     }
 
     fn declare_parameters(&mut self, signature: &LabeledFunctionSignature<'ctx>) {
@@ -709,17 +485,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         if let Some(state) = self.task_drop_flags.get(&place.local).copied() {
             self.push_task_active_assignment(block, state.active_local, false, span);
         }
-    }
-
-    fn push_shadow_resync(&mut self, block: BasicBlockId, locals: Vec<LocalId>, span: Span) {
-        if locals.is_empty() {
-            return;
-        }
-
-        self.body.basic_blocks[block].statements.push(Statement {
-            kind: StatementKind::ShadowResync(locals),
-            span,
-        });
     }
 
     #[track_caller]

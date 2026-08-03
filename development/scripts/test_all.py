@@ -307,14 +307,25 @@ def main() -> int:
                 )
                 bitcode_inputs = list(object_root.glob("*.bc"))
                 lto_objects = list(object_root.glob("*.lto.o"))
-                native_objects = list(object_root.glob("*.o"))
+                pc_metadata_objects = list(object_root.glob("*.pcmeta.o"))
+                native_objects = [
+                    path
+                    for path in object_root.glob("*.o")
+                    if not path.name.endswith(".pcmeta.o")
+                ]
+                stack_map_descriptors = list(object_root.glob("*.lto.stackmaps"))
                 if len(bitcode_inputs) != 2:
                     raise RuntimeError(
                         f"full LTO expected two package bitcode inputs, found {len(bitcode_inputs)}"
                     )
-                if len(lto_objects) != 1 or native_objects != lto_objects:
+                if (
+                    len(lto_objects) != 1
+                    or native_objects != lto_objects
+                    or len(pc_metadata_objects) != 1
+                    or len(stack_map_descriptors) != 1
+                ):
                     raise RuntimeError(
-                        "full LTO did not replace package objects with exactly one final object"
+                        "full LTO did not emit one code object and its PC metadata companions"
                     )
                 for artifact in bitcode_inputs:
                     if not is_llvm_bitcode(artifact.read_bytes()):
@@ -398,15 +409,26 @@ def main() -> int:
                     raise RuntimeError("ThinLTO executable produced unexpected output")
 
                 bitcode_inputs = list(object_root.glob("*.bc"))
-                generated_objects = list(generated_dir.glob("*.o"))
+                generated_pc_metadata = list(generated_dir.glob("*.pcmeta.o"))
+                generated_objects = [
+                    path
+                    for path in generated_dir.glob("*.o")
+                    if not path.name.endswith(".pcmeta.o")
+                ]
                 top_level_objects = list(object_root.glob("*.o"))
+                stack_map_descriptors = list(object_root.glob("*.thinlto.stackmaps"))
                 if len(bitcode_inputs) != 2:
                     raise RuntimeError(
                         f"ThinLTO expected two package bitcode inputs, found {len(bitcode_inputs)}"
                     )
-                if len(generated_objects) != 2 or top_level_objects:
+                if (
+                    len(generated_objects) != 2
+                    or len(generated_pc_metadata) != 2
+                    or len(stack_map_descriptors) != 1
+                    or top_level_objects
+                ):
                     raise RuntimeError(
-                        "ThinLTO did not isolate exactly two generated linker objects"
+                        "ThinLTO did not isolate two code objects and their PC metadata companions"
                     )
                 for artifact in bitcode_inputs:
                     if not is_llvm_bitcode(artifact.read_bytes()):

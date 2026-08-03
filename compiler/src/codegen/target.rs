@@ -12,10 +12,6 @@ use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetData, TargetMachine, TargetTriple,
 };
 use inkwell::{AddressSpace, OptimizationLevel as LlvmOptimizationLevel, context::Context};
-use std::{ffi::CString, sync::Once};
-
-static CONFIGURE_LLVM_CODEGEN: Once = Once::new();
-const STRICT_GLOBAL_ISEL_ENV: &str = "TARO_LLVM_STRICT_GLOBAL_ISEL";
 
 unsafe extern "C" {
     #[cfg(test)]
@@ -38,30 +34,6 @@ fn backend_optimization_level(
         }
         OptimizationMode::Level(OptLevel::O3) => LlvmOptimizationLevel::Aggressive,
     }
-}
-
-fn configure_llvm_codegen() {
-    CONFIGURE_LLVM_CODEGEN.call_once(|| {
-        // LLVM 22's AArch64 target owns the selector policy: GlobalISel at O0
-        // with per-function SelectionDAG fallback, and SelectionDAG above O0.
-        // The certification matrix makes fallback fatal so new unsupported IR
-        // is caught without turning a production compiler fallback into a
-        // process abort.
-        if std::env::var_os(STRICT_GLOBAL_ISEL_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
-            return;
-        }
-        let program = CString::new("taro-llvm").expect("static string has no NUL");
-        let option = CString::new("--global-isel-abort=1").expect("static string has no NUL");
-        let overview = CString::new("Taro LLVM options").expect("static string has no NUL");
-        let arguments = [program.as_ptr(), option.as_ptr()];
-        unsafe {
-            inkwell::llvm_sys::support::LLVMParseCommandLineOptions(
-                arguments.len() as i32,
-                arguments.as_ptr(),
-                overview.as_ptr(),
-            );
-        }
-    });
 }
 
 #[cfg(test)]
@@ -88,8 +60,6 @@ impl TargetLayout {
         target_override: Option<&str>,
         profile: BuildProfile,
     ) -> CompileResult<Self> {
-        configure_llvm_codegen();
-
         // Initialize all targets if cross-compiling, otherwise just native
         if target_override.is_some() {
             Target::initialize_all(&InitializationConfig::default());

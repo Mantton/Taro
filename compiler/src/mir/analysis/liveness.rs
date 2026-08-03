@@ -90,11 +90,6 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
                     }
                     use_rvalue(&rvalue, &mut in_set);
                 }
-                StatementKind::ShadowResync(locals) => {
-                    for &local in locals {
-                        in_set.insert(local);
-                    }
-                }
                 StatementKind::SetDiscriminant { place, .. } => {
                     if !place.projection.is_empty() {
                         use_place(&place, &mut in_set);

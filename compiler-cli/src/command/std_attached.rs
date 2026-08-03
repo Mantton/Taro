@@ -113,7 +113,16 @@ pub fn compile_std<'a>(
         let local_metadata =
             metadata::metadata_path_for_config(config, compiler.context.output_root().as_path());
         let local_object = compiler.context.output_root().join("std.o");
-        publish_attached_std_artifacts(&local_metadata, &local_object, &attached).map_err(|e| {
+        let local_descriptors = compiler.context.output_root().join("std.stackmaps");
+        let local_pc_metadata = compiler.context.output_root().join("std.pcmeta.o");
+        publish_attached_std_artifacts(
+            &local_metadata,
+            &local_object,
+            &local_descriptors,
+            &local_pc_metadata,
+            &attached,
+        )
+        .map_err(|e| {
             ctx.dcx.emit_error(
                 format!("failed to publish attached std artifacts: {}", e),
                 None,
@@ -126,10 +135,13 @@ pub fn compile_std<'a>(
             ReuseMode::CodegenDependency | ReuseMode::CodegenRoot
         ) {
             // Ensure downstream codegen links against the attached std object path.
-            compiler.context.cache_module_artifact(ModuleArtifact::new(
-                ModuleArtifactKind::Object,
-                attached.object.clone(),
-            ));
+            compiler.context.cache_module_artifact(
+                ModuleArtifact::new(ModuleArtifactKind::Object, attached.object.clone())
+                    .with_stack_maps(
+                        attached.stack_map_descriptors.clone(),
+                        Some(attached.pc_metadata.clone()),
+                    ),
+            );
         }
     } else {
         let attached_object_for_load = match reuse_mode {
@@ -168,9 +180,11 @@ pub fn compile_std<'a>(
                 let expected_files = match reuse_mode {
                     ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
                         format!(
-                            "  {}\n  {}",
+                            "  {}\n  {}\n  {}\n  {}",
                             attached.metadata.display(),
-                            attached.object.display()
+                            attached.object.display(),
+                            attached.stack_map_descriptors.display(),
+                            attached.pc_metadata.display()
                         )
                     }
                     ReuseMode::SemanticDependency => {
@@ -270,6 +284,8 @@ struct AttachedStdArtifacts {
     dir: PathBuf,
     metadata: PathBuf,
     object: PathBuf,
+    stack_map_descriptors: PathBuf,
+    pc_metadata: PathBuf,
 }
 
 fn attached_std_artifacts(ctx: &CompilerContext<'_>) -> Result<AttachedStdArtifacts, String> {
@@ -289,6 +305,8 @@ fn attached_std_artifacts(ctx: &CompilerContext<'_>) -> Result<AttachedStdArtifa
     Ok(AttachedStdArtifacts {
         metadata: dir.join("std.taro_meta"),
         object: dir.join("std.o"),
+        stack_map_descriptors: dir.join("std.stackmaps"),
+        pc_metadata: dir.join("std.pcmeta.o"),
         dir,
     })
 }
@@ -296,6 +314,8 @@ fn attached_std_artifacts(ctx: &CompilerContext<'_>) -> Result<AttachedStdArtifa
 fn publish_attached_std_artifacts(
     metadata: &Path,
     object: &Path,
+    stack_map_descriptors: &Path,
+    pc_metadata: &Path,
     attached: &AttachedStdArtifacts,
 ) -> Result<(), String> {
     if !metadata.exists() {
@@ -308,6 +328,18 @@ fn publish_attached_std_artifacts(
         return Err(format!(
             "local std object missing at '{}'",
             object.display()
+        ));
+    }
+    if !stack_map_descriptors.exists() {
+        return Err(format!(
+            "local std stack-map descriptors missing at '{}'",
+            stack_map_descriptors.display()
+        ));
+    }
+    if !pc_metadata.exists() {
+        return Err(format!(
+            "local std PC metadata object missing at '{}'",
+            pc_metadata.display()
         ));
     }
 
@@ -334,6 +366,22 @@ fn publish_attached_std_artifacts(
             e
         )
     })?;
+    atomic_copy_file(stack_map_descriptors, &attached.stack_map_descriptors).map_err(|e| {
+        format!(
+            "failed to publish stack-map descriptors '{}' -> '{}': {}",
+            stack_map_descriptors.display(),
+            attached.stack_map_descriptors.display(),
+            e
+        )
+    })?;
+    atomic_copy_file(pc_metadata, &attached.pc_metadata).map_err(|e| {
+        format!(
+            "failed to publish PC metadata object '{}' -> '{}': {}",
+            pc_metadata.display(),
+            attached.pc_metadata.display(),
+            e
+        )
+    })?;
     Ok(())
 }
 
@@ -357,9 +405,16 @@ fn fingerprint_attached_std_artifacts(
             attached.object.display()
         ));
     }
+    if matches!(
+        reuse_mode,
+        ReuseMode::CodegenDependency | ReuseMode::CodegenRoot
+    ) && (!attached.stack_map_descriptors.exists() || !attached.pc_metadata.exists())
+    {
+        return Err("attached std stack-map artifact set is incomplete".into());
+    }
 
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"taro.attached.std.v2");
+    hasher.update(b"taro.attached.std.v3");
     match reuse_mode {
         ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
             hasher.update(b"mode:codegen");
@@ -371,6 +426,8 @@ fn fingerprint_attached_std_artifacts(
     hash_file_into_hasher(&attached.metadata, &mut hasher)?;
     if attached.object.exists() {
         hash_file_into_hasher(&attached.object, &mut hasher)?;
+        hash_file_into_hasher(&attached.stack_map_descriptors, &mut hasher)?;
+        hash_file_into_hasher(&attached.pc_metadata, &mut hasher)?;
     } else {
         hasher.update(b"object:missing");
     }

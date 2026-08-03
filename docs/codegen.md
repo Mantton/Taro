@@ -14,9 +14,11 @@ Build profile and LLVM optimization level are independent:
 - `--overflow-checks` and `--no-overflow-checks` override the language profile
   default.
 
-LLVM owns instruction selection. On supported AArch64 targets, Taro permits
-GlobalISel at O0 with per-function SelectionDAG fallback; optimized builds use
-LLVM's maintained target defaults.
+LLVM owns instruction selection. On supported AArch64 targets, rootless O0
+functions may use GlobalISel. Functions containing compiler PC stack maps use
+LLVM's maintained per-function SelectionDAG fallback because GlobalISel does
+not select `llvm.experimental.stackmap`; optimized builds use LLVM's maintained
+target defaults.
 
 ## Output Modes
 

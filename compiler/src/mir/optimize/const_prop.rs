@@ -144,11 +144,6 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                     invalid[place.local.index()] = true;
                     record_place_use(place, block_id, statement_index, &mut uses, &mut invalid);
                 }
-                StatementKind::ShadowResync(locals) => {
-                    for local in locals {
-                        invalid[local.index()] = true;
-                    }
-                }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
                 | StatementKind::GcSafepoint

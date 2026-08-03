@@ -3,7 +3,7 @@
 // This intentionally uses `f"iter {v}"` at the allocation site instead of an
 // explicit `std.sprintf` call. F-strings lower to formatting internally, and
 // this catches regressions where the parser-generated call shape misses the
-// shadow-stack rooting behavior covered by gc_loop_printf_regression.tr.
+// stack-map rooting behavior covered by gc_loop_printf_regression.tr.
 
 struct FStringCounter {
     count: usize

@@ -28,6 +28,6 @@ func testMaybeUninitPointerWriteSurvivesCollect() {
     std.testing.assertEqual(
         value,
         "pointer maybe",
-        "MaybeUninit pointer writes should resync shadow roots after the call",
+        "MaybeUninit pointer writes should remain visible to compiler stack maps",
     )
 }

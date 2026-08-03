@@ -3,6 +3,11 @@ use crate::{
         abi,
         artifact::ModuleArtifact,
         mangle::{mangle, mangle_instance},
+        stack_maps::{
+            PendingLogicalFrame, PendingRootOperand, PendingRootRecipe, PendingStackMapModule,
+            PendingStackMapRecord, StackMapSiteKind, deterministic_map_id, normalize_object,
+            write_pending_module,
+        },
     },
     compile::{
         config::{
@@ -535,13 +540,17 @@ struct Emitter<'llvm, 'gcx> {
     rt_conformance_entry_ty: inkwell::types::StructType<'llvm>,
     rt_type_metadata_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
-    shadow: Option<ShadowStackInfo<'llvm>>,
+    stack_map_roots: Vec<StackMapRoot<'llvm>>,
+    pending_stack_maps: Vec<PendingStackMapRecord>,
+    current_stack_map_ordinal: u64,
+    current_body: Option<&'gcx mir::Body<'gcx>>,
     eh_personality: Option<FunctionValue<'llvm>>,
     eh_slot: Option<PointerValue<'llvm>>,
     current_fn: Option<FunctionValue<'llvm>>,
     current_fn_abi: Option<abi::FnAbi<'gcx>>,
     current_sret_ptr: Option<PointerValue<'llvm>>,
     current_source_scope: mir::SourceScopeId,
+    current_span: Option<crate::span::Span>,
     indirect_return_threshold_bytes: u64,
     indirect_arg_threshold_bytes: u64,
     repeat_memset_enabled: bool,
@@ -566,18 +575,16 @@ enum StdPanicCallKind {
     Unreachable,
 }
 
-struct ShadowStackInfo<'llvm> {
-    frame_ptr: PointerValue<'llvm>,
-    slots_ptr: PointerValue<'llvm>,
-    slot_defs: Vec<ShadowSlotDef>,
-    slot_map: Vec<Vec<usize>>,
+#[derive(Clone)]
+struct StackMapRoot<'llvm> {
+    location: PointerValue<'llvm>,
+    descriptor: PendingRootOperand,
 }
 
-#[derive(Clone)]
-struct ShadowSlotDef {
-    local: mir::LocalId,
-    offset: u64,
-    deref_depth: u8,
+#[derive(Clone, Copy)]
+struct StackMapStorageBase<'llvm> {
+    location: PointerValue<'llvm>,
+    storage_deref_depth: u8,
 }
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
@@ -649,13 +656,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             rt_conformance_entry_ty,
             rt_type_metadata_ty,
             usize_ty,
-            shadow: None,
+            stack_map_roots: Vec::new(),
+            pending_stack_maps: Vec::new(),
+            current_stack_map_ordinal: 0,
+            current_body: None,
             eh_personality: None,
             eh_slot: None,
             current_fn: None,
             current_fn_abi: None,
             current_sret_ptr: None,
             current_source_scope: mir::SourceScopeId::from_raw(0),
+            current_span: None,
             indirect_return_threshold_bytes,
             indirect_arg_threshold_bytes,
             repeat_memset_enabled,
@@ -2692,6 +2703,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             unwind_target,
             "panic_unwind_at",
         )?;
+        self.emit_stack_map(span, StackMapSiteKind::Panic);
         if let Some(ret) = call_site.try_as_basic_value().basic() {
             self.store_place(destination, body, locals, ret)?;
         }
@@ -2761,8 +2773,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.gcx.config.identifier,
             kind.extension()
         ));
+        let descriptors_path = out_dir.join(format!("{}.stackmaps", self.gcx.config.identifier));
+        let target_triple = self
+            .gcx
+            .store
+            .target_layout
+            .triple()
+            .as_str()
+            .to_string_lossy()
+            .into_owned();
+        let descriptors =
+            PendingStackMapModule::new(target_triple.clone(), self.pending_stack_maps.clone());
+        write_pending_module(&descriptors_path, &descriptors).map_err(|message| {
+            self.gcx.dcx().emit_error(message, None);
+            crate::error::ReportedError
+        })?;
 
-        match kind {
+        let pc_metadata = match kind {
             ModuleArtifactKind::Object => {
                 self.target_machine
                     .write_to_file(&self.module, FileType::Object, &path)
@@ -2772,6 +2799,26 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             .emit_error(format!("failed to write object file: {error}"), None);
                         crate::error::ReportedError
                     })?;
+                let metadata = normalize_object(&path, [descriptors_path.clone()], &target_triple)
+                    .map_err(|message| {
+                        self.gcx.dcx().emit_error(
+                            format!("failed to normalize compiler PC metadata: {message}"),
+                            None,
+                        );
+                        crate::error::ReportedError
+                    })?;
+                let metadata_path =
+                    out_dir.join(format!("{}.pcmeta.o", self.gcx.config.identifier));
+                crate::codegen::pc_metadata::emit_object(
+                    &metadata,
+                    &self.target_machine,
+                    &metadata_path,
+                )
+                .map_err(|message| {
+                    self.gcx.dcx().emit_error(message, None);
+                    crate::error::ReportedError
+                })?;
+                Some(metadata_path)
             }
             ModuleArtifactKind::LlvmBitcode => {
                 // Inkwell's path-based bitcode writer requires Unicode and
@@ -2788,16 +2835,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .emit_error(format!("failed to write LLVM bitcode: {error}"), None);
                     crate::error::ReportedError
                 })?;
+                None
             }
-        }
+        };
 
-        Ok(ModuleArtifact::new(kind, path))
+        Ok(ModuleArtifact::new(kind, path).with_stack_maps(descriptors_path, pc_metadata))
     }
 
     fn lower_body(
         &mut self,
         instance: Instance<'gcx>,
-        body: &mir::Body<'gcx>,
+        body: &'gcx mir::Body<'gcx>,
     ) -> CompileResult<()> {
         // Set substitution context for monomorphization
         self.current_subst = instance.args();
@@ -2813,6 +2861,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .expect("function ABI must be declared");
         self.current_fn = Some(function);
         self.current_fn_abi = Some(fn_abi.clone());
+        self.current_body = Some(body);
+        self.current_stack_map_ordinal = 0;
+        let first_stack_map = self.pending_stack_maps.len();
         if let Some(debug) = &mut self.debug {
             debug.begin_function(function, body, self.gcx);
         }
@@ -2824,8 +2875,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             None
         };
 
-        // Create a preamble block for allocas and the shadow stack before
-        // branching into the MIR entry block.
+        // Create a preamble block for allocas before branching into the MIR
+        // entry block.
         let preamble_block = self.context.append_basic_block(function, "preamble");
         let llvm_blocks = self.create_blocks(function, body);
         let mir_entry_block = llvm_blocks[body.start_block.index()];
@@ -2835,9 +2886,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         } else {
             self.eh_slot = None;
         }
-        let mut locals = self.allocate_locals(body, preamble_block, function, &fn_abi);
+        let (mut locals, stack_map_bases) =
+            self.allocate_locals(body, preamble_block, function, &fn_abi);
         self.builder.position_at_end(preamble_block);
-        self.setup_shadow_stack(body, preamble_block, &locals)?;
+        self.setup_stack_map_roots(body, &locals, &stack_map_bases)?;
         self.builder
             .build_unconditional_branch(mir_entry_block)
             .unwrap();
@@ -2848,11 +2900,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.current_source_scope = mir::SourceScopeId::from_raw(0);
 
             for stmt in &bb.statements {
+                self.current_span = Some(stmt.span);
                 self.set_debug_location(stmt.span);
                 self.lower_statement(body, &mut locals, stmt)?;
             }
 
             if let Some(term) = &bb.terminator {
+                self.current_span = Some(term.span);
                 self.set_debug_location(term.span);
                 self.lower_terminator(body, &mut locals, term, &llvm_blocks)?;
             } else if llvm_bb.get_terminator().is_none() {
@@ -2864,11 +2918,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some(debug) = &mut self.debug {
             debug.end_function(&self.builder);
         }
-        self.shadow = None;
+        if self.pending_stack_maps.len() != first_stack_map {
+            // Explicit map operands are complete only before LLVM inlining.
+            // MIR is Taro's map-aware inliner; mapped LLVM functions must keep
+            // their physical frame so caller roots cannot be lost.
+            self.prevent_post_map_inlining(function);
+        }
+        self.stack_map_roots.clear();
         self.eh_slot = None;
         self.current_fn = None;
         self.current_fn_abi = None;
         self.current_sret_ptr = None;
+        self.current_body = None;
+        self.current_span = None;
         Ok(())
     }
 
@@ -3217,13 +3279,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         call_site: CallSiteValue<'llvm>,
     ) -> CompileResult<()> {
         if matches!(fn_abi.ret.mode, abi::PassMode::Indirect { .. }) {
-            if !destination
-                .projection
-                .iter()
-                .any(|proj| matches!(proj, mir::PlaceElem::Deref))
-            {
-                let _ = self.update_shadow_for_local(body, locals, destination.local);
-            }
             return Ok(());
         }
         if let Some(ret) = call_site.try_as_basic_value().basic() {
@@ -3326,7 +3381,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         entry_block: inkwell::basic_block::BasicBlock<'llvm>,
         function: FunctionValue<'llvm>,
         fn_abi: &abi::FnAbi<'gcx>,
-    ) -> Vec<LocalStorage<'llvm>> {
+    ) -> (
+        Vec<LocalStorage<'llvm>>,
+        Vec<Option<StackMapStorageBase<'llvm>>>,
+    ) {
         let alloc_builder = self.context.create_builder();
         alloc_builder.position_at_end(entry_block);
         let indirect_ret_ptr = match fn_abi.ret.mode {
@@ -3340,12 +3398,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
 
         let mut locals = Vec::with_capacity(body.locals.len());
+        let mut adopted_storage = vec![false; body.locals.len()];
         for (idx, decl) in body.locals.iter().enumerate() {
             // For indirect returns, write the MIR return local directly into the hidden
             // sret destination to avoid a giant aggregate load/store at function exit.
             if idx == body.return_local.index() {
                 if let Some(sret_ptr) = indirect_ret_ptr {
                     locals.push(LocalStorage::Stack(sret_ptr));
+                    adopted_storage[idx] = true;
                     continue;
                 }
             }
@@ -3416,217 +3476,213 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     // `indirect_arg_may_share_storage`), so writes to the
                     // parameter never leak back into a caller place.
                     locals[local_index] = LocalStorage::Stack(arg.into_pointer_value());
+                    adopted_storage[local_index] = true;
                 }
             }
         }
 
-        locals
-    }
-
-    fn setup_shadow_stack(
-        &mut self,
-        body: &mir::Body<'gcx>,
-        entry_block: inkwell::basic_block::BasicBlock<'llvm>,
-        locals: &[LocalStorage<'llvm>],
-    ) -> CompileResult<()> {
-        let (slot_defs, slot_map) = self.collect_shadow_slots(body);
-        if slot_defs.is_empty() {
-            self.shadow = None;
-            return Ok(());
-        }
-
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let slot_count = slot_defs.len() as u64;
-        let slots_ptr = self
-            .builder
-            .build_array_alloca(
-                ptr_ty,
-                self.usize_ty.const_int(slot_count, false),
-                "gc_slots",
-            )
-            .unwrap();
+        let stack_map_bases = locals
+            .iter()
+            .enumerate()
+            .map(|(index, storage)| match storage {
+                LocalStorage::Stack(pointer) if adopted_storage[index] => {
+                    // LLVM stack-map operands must themselves lower to direct
+                    // frame locations. ABI-adopted storage points into the
+                    // caller, so retain that pointer in one local wrapper.
+                    let wrapper = alloc_builder
+                        .build_alloca(ptr_ty, &format!("gc_storage_{index}"))
+                        .unwrap();
+                    alloc_builder.build_store(wrapper, *pointer).unwrap();
+                    Some(StackMapStorageBase {
+                        location: wrapper,
+                        storage_deref_depth: 1,
+                    })
+                }
+                LocalStorage::Stack(pointer) => Some(StackMapStorageBase {
+                    location: *pointer,
+                    storage_deref_depth: 0,
+                }),
+                LocalStorage::Value(_) => None,
+            })
+            .collect();
 
-        let frame_ty = self.shadow_frame_ty();
-        let frame_ptr = self
-            .builder
-            .build_alloca(frame_ty, "gc_shadow_frame")
-            .unwrap();
-
-        let prev_ptr = self
-            .builder
-            .build_struct_gep(frame_ty, frame_ptr, 0, "gc_frame_prev")
-            .unwrap();
-        let slots_ptr_gep = self
-            .builder
-            .build_struct_gep(frame_ty, frame_ptr, 1, "gc_frame_slots")
-            .unwrap();
-        let count_ptr = self
-            .builder
-            .build_struct_gep(frame_ty, frame_ptr, 2, "gc_frame_count")
-            .unwrap();
-        let _ = self
-            .builder
-            .build_store(prev_ptr, ptr_ty.const_null())
-            .unwrap();
-        let _ = self.builder.build_store(slots_ptr_gep, slots_ptr).unwrap();
-        let _ = self
-            .builder
-            .build_store(count_ptr, self.usize_ty.const_int(slot_count, false))
-            .unwrap();
-
-        let push_ty = self.context.void_type().fn_type(&[ptr_ty.into()], false);
-        let push_fn = self
-            .module
-            .get_function("__rt__gc_push_frame")
-            .unwrap_or_else(|| {
-                self.module
-                    .add_function("__rt__gc_push_frame", push_ty, Some(Linkage::External))
-            });
-        let _ = self
-            .builder
-            .build_call(push_fn, &[frame_ptr.into()], "gc_push")
-            .unwrap();
-
-        let shadow = ShadowStackInfo {
-            frame_ptr,
-            slots_ptr,
-            slot_defs,
-            slot_map,
-        };
-        self.shadow = Some(shadow);
-
-        // Initialize slots to null before any user code runs.
-        for idx in 0..slot_count as usize {
-            self.store_shadow_slot(idx, ptr_ty.const_null());
-        }
-
-        // Seed parameter locals into the shadow stack.
-        for (idx, decl) in body.locals.iter().enumerate() {
-            if matches!(decl.kind, mir::LocalKind::Param) {
-                self.update_shadow_for_local(body, locals, mir::LocalId::from_raw(idx as u32))?;
-            }
-        }
-
-        // Ensure setup happens before any user instructions in the entry block.
-        self.builder.position_at_end(entry_block);
-        Ok(())
+        (locals, stack_map_bases)
     }
 
-    fn collect_shadow_slots(
+    fn setup_stack_map_roots(
         &mut self,
         body: &mir::Body<'gcx>,
-    ) -> (Vec<ShadowSlotDef>, Vec<Vec<usize>>) {
-        let mut slot_defs = Vec::new();
-        let mut slot_map = vec![Vec::new(); body.locals.len()];
+        locals: &[LocalStorage<'llvm>],
+        bases: &[Option<StackMapStorageBase<'llvm>>],
+    ) -> CompileResult<()> {
+        self.stack_map_roots.clear();
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
 
         for (local, decl) in body.locals.iter_enumerated() {
-            for (offset, deref_depth) in self.shadow_root_offsets_for_ty(decl.ty) {
-                let slot_index = slot_defs.len();
-                slot_defs.push(ShadowSlotDef {
-                    local,
+            let recipes: Vec<_> = self
+                .stack_map_root_recipes_for_ty(decl.ty)
+                .into_iter()
+                .map(|(offset, deref_depth)| PendingRootRecipe {
                     offset,
                     deref_depth,
-                });
-                slot_map[local.index()].push(slot_index);
+                })
+                .collect();
+            if recipes.is_empty() {
+                continue;
             }
-        }
+            let Some(base) = bases[local.index()] else {
+                self.gcx.dcx().emit_error(
+                    format!(
+                        "GC-bearing MIR local {} has no addressable LLVM storage",
+                        local.index()
+                    ),
+                    Some(decl.span),
+                );
+                return Err(crate::error::ReportedError);
+            };
 
-        (slot_defs, slot_map)
-    }
-
-    fn shadow_frame_ty(&self) -> StructType<'llvm> {
-        if let Some(ty) = self.context.get_struct_type("_gcShadowFrame") {
-            if ty.is_opaque() {
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                ty.set_body(&[ptr_ty.into(), ptr_ty.into(), self.usize_ty.into()], false);
-            }
-            return ty;
-        }
-
-        let ty = self.context.opaque_struct_type("_gcShadowFrame");
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        ty.set_body(&[ptr_ty.into(), ptr_ty.into(), self.usize_ty.into()], false);
-        ty
-    }
-
-    fn store_shadow_slot(&mut self, slot_idx: usize, value: PointerValue<'llvm>) {
-        let Some(shadow) = &self.shadow else {
-            return;
-        };
-        let idx = self.usize_ty.const_int(slot_idx as u64, false);
-        let slot_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    self.context.ptr_type(AddressSpace::default()),
-                    shadow.slots_ptr,
-                    &[idx],
-                    "gc_slot_ptr",
-                )
-                .unwrap()
-        };
-        let _ = self.builder.build_store(slot_ptr, value).unwrap();
-    }
-
-    fn update_shadow_for_local(
-        &mut self,
-        _body: &mir::Body<'gcx>,
-        locals: &[LocalStorage<'llvm>],
-        local: mir::LocalId,
-    ) -> CompileResult<()> {
-        let Some(shadow) = self.shadow.as_ref() else {
-            return Ok(());
-        };
-        let slot_indices = shadow
-            .slot_map
-            .get(local.index())
-            .cloned()
-            .unwrap_or_default();
-        if slot_indices.is_empty() {
-            return Ok(());
-        }
-        let slot_defs = shadow.slot_defs.clone();
-
-        for slot_idx in slot_indices {
-            let def = slot_defs.get(slot_idx).cloned().expect("shadow slot def");
-            let ptr_val = match locals[def.local.index()] {
-                LocalStorage::Stack(ptr) => {
-                    let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                    let mut base = self
-                        .builder
-                        .build_bit_cast(ptr, ptr_ty, "gc_base_i8")
-                        .unwrap()
-                        .into_pointer_value();
-                    for _ in 0..def.deref_depth {
-                        base = self
-                            .builder
-                            .build_load(ptr_ty, base, "gc_deref_root")
-                            .unwrap()
-                            .into_pointer_value();
-                    }
-                    let field_ptr = build_byte_offset_ptr(
+            // Maps intentionally retain every root-bearing local rather than
+            // depending on an optimistic liveness result. Make not-yet-live
+            // pointer fields benign before the first possible safepoint.
+            if !matches!(decl.kind, mir::LocalKind::Param) {
+                let LocalStorage::Stack(storage) = locals[local.index()] else {
+                    unreachable!("addressable GC local must use stack storage");
+                };
+                let mut initialized_offsets: Vec<u64> = recipes
+                    .iter()
+                    .filter(|recipe| recipe.deref_depth == 0)
+                    .map(|recipe| recipe.offset)
+                    .collect();
+                initialized_offsets.sort_unstable();
+                initialized_offsets.dedup();
+                for offset in initialized_offsets {
+                    let field = build_byte_offset_ptr(
                         self.context,
                         &self.builder,
                         self.usize_ty,
-                        base,
-                        def.offset,
-                        "gc_root_ptr",
+                        storage,
+                        offset,
+                        "gc_root_init",
                     );
                     self.builder
-                        .build_load(ptr_ty, field_ptr, "gc_root_load")
-                        .unwrap()
-                        .into_pointer_value()
+                        .build_store(field, ptr_ty.const_null())
+                        .unwrap();
                 }
-                LocalStorage::Value(_) => {
-                    self.context.ptr_type(AddressSpace::default()).const_null()
-                }
-            };
-            self.store_shadow_slot(slot_idx, ptr_val);
-        }
+            }
 
+            self.stack_map_roots.push(StackMapRoot {
+                location: base.location,
+                descriptor: PendingRootOperand {
+                    storage_deref_depth: base.storage_deref_depth,
+                    recipes,
+                },
+            });
+        }
         Ok(())
     }
 
-    fn shadow_root_offsets_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<(u64, u8)> {
+    fn logical_frames_for_site(
+        &self,
+        body: &mir::Body<'gcx>,
+        span: crate::span::Span,
+    ) -> Vec<PendingLogicalFrame> {
+        let mut frames = Vec::new();
+        let mut scope = self.current_source_scope;
+        let mut location = span;
+        loop {
+            let data = body
+                .source_scopes
+                .get(scope)
+                .expect("validated MIR source scope");
+            let name = self
+                .gcx
+                .try_definition_ident(data.definition)
+                .map(|ident| self.gcx.symbol_text(ident.symbol).to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        "p{}_d{}",
+                        data.definition.package().raw(),
+                        data.definition.index().raw()
+                    )
+                });
+            let file = self
+                .gcx
+                .dcx()
+                .file_path(location.file)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "<unknown>".into());
+            frames.push(PendingLogicalFrame {
+                function: name,
+                file,
+                line: u32::try_from(location.start.line.saturating_add(1)).unwrap_or(u32::MAX),
+                column: u32::try_from(location.start.offset.saturating_add(1)).unwrap_or(u32::MAX),
+            });
+            let Some(parent) = data.parent else {
+                break;
+            };
+            location = data.callsite.unwrap_or(location);
+            scope = parent;
+        }
+        frames
+    }
+
+    /// Anchor the caller's root map at the current machine return PC.
+    fn emit_stack_map(&mut self, span: crate::span::Span, kind: StackMapSiteKind) {
+        let body = self
+            .current_body
+            .expect("stack map emitted outside a MIR body");
+        let function = self
+            .current_fn
+            .expect("stack map emitted outside a function");
+        let symbol = function.get_name().to_string_lossy().into_owned();
+        let ordinal = self.current_stack_map_ordinal;
+        self.current_stack_map_ordinal = self
+            .current_stack_map_ordinal
+            .checked_add(1)
+            .expect("stack-map ordinal overflow");
+        let id = deterministic_map_id(&self.gcx.config.identifier, &symbol, ordinal);
+
+        let intrinsic = Intrinsic::find("llvm.experimental.stackmap")
+            .expect("LLVM stack-map intrinsic must exist");
+        let declaration = intrinsic
+            .get_declaration(&self.module, &[])
+            .expect("declare LLVM stack-map intrinsic");
+        let mut operands: Vec<BasicMetadataValueEnum<'llvm>> =
+            Vec::with_capacity(self.stack_map_roots.len().saturating_add(2));
+        operands.push(self.context.i64_type().const_int(id, false).into());
+        operands.push(self.context.i32_type().const_zero().into());
+        operands.extend(
+            self.stack_map_roots
+                .iter()
+                .map(|root| BasicMetadataValueEnum::from(root.location)),
+        );
+        self.builder
+            .build_call(declaration, &operands, "")
+            .expect("emit LLVM stack map");
+
+        self.pending_stack_maps.push(PendingStackMapRecord {
+            id,
+            emitted_function: symbol,
+            kind,
+            roots: self
+                .stack_map_roots
+                .iter()
+                .map(|root| root.descriptor.clone())
+                .collect(),
+            logical_frames: self.logical_frames_for_site(body, span),
+        });
+    }
+
+    fn prevent_post_map_inlining(&self, function: FunctionValue<'llvm>) {
+        let inline_hint = Attribute::get_named_enum_kind_id("inlinehint");
+        if inline_hint != 0 {
+            function.remove_enum_attribute(AttributeLoc::Function, inline_hint);
+        }
+        add_llvm_enum_function_attribute(self.context, function, "noinline");
+    }
+
+    fn stack_map_root_recipes_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<(u64, u8)> {
         let mut roots = Vec::new();
         let mut deref_depth = 0u8;
         let mut current = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
@@ -3643,43 +3699,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         roots.sort_unstable();
         roots.dedup();
         roots
-    }
-
-    fn should_refresh_shadow_for_place(
-        &self,
-        body: &mir::Body<'gcx>,
-        place: &mir::Place<'gcx>,
-    ) -> bool {
-        if !place
-            .projection
-            .iter()
-            .any(|proj| matches!(proj, mir::PlaceElem::Deref))
-        {
-            return true;
-        }
-
-        let local_ty =
-            crate::sema::tycheck::utils::normalize_aliases(self.gcx, body.locals[place.local].ty);
-        matches!(local_ty.kind(), TyKind::Reference(..))
-    }
-
-    fn emit_shadow_pop(&mut self) {
-        let Some(shadow) = &self.shadow else {
-            return;
-        };
-        let ptr_ty = self.context.ptr_type(AddressSpace::default());
-        let pop_ty = self.context.void_type().fn_type(&[ptr_ty.into()], false);
-        let pop_fn = self
-            .module
-            .get_function("__rt__gc_pop_frame")
-            .unwrap_or_else(|| {
-                self.module
-                    .add_function("__rt__gc_pop_frame", pop_ty, Some(Linkage::External))
-            });
-        let _ = self
-            .builder
-            .build_call(pop_fn, &[shadow.frame_ptr.into()], "gc_pop")
-            .unwrap();
     }
 
     fn lower_statement(
@@ -3706,13 +3725,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     self.store_place(place, body, locals, value)?;
                 }
             }
-            mir::StatementKind::ShadowResync(resynced_locals) => {
-                for &local in resynced_locals {
-                    self.update_shadow_for_local(body, locals, local)?;
-                }
-            }
             mir::StatementKind::GcSafepoint => {
-                self.emit_gc_poll();
+                self.emit_gc_poll(stmt.span);
             }
             mir::StatementKind::SetDiscriminant {
                 place,
@@ -3808,10 +3822,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .builder
             .build_memmove(dest_ptr, dest_align, src_ptr, src_align, count)
             .unwrap();
-
-        if self.should_refresh_shadow_for_place(body, destination) {
-            let _ = self.update_shadow_for_local(body, locals, destination.local);
-        }
 
         Ok(true)
     }
@@ -4046,6 +4056,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         "gc_alloc",
                     )
                     .unwrap();
+                self.emit_stack_map(
+                    self.current_span.expect("allocation outside MIR lowering"),
+                    StackMapSiteKind::Allocation,
+                );
                 let ptr_val = call
                     .try_as_basic_value()
                     .basic()
@@ -4157,14 +4171,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .builder
             .build_memset(dest_ptr, 1, fill_val, count_val)
             .unwrap();
-
-        if !place
-            .projection
-            .iter()
-            .any(|proj| matches!(proj, mir::PlaceElem::Deref))
-        {
-            let _ = self.update_shadow_for_local(body, locals, place.local);
-        }
 
         Ok(true)
     }
@@ -4797,6 +4803,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             unwind_bb,
             "arith_panic",
         )?;
+        self.emit_stack_map(span, StackMapSiteKind::Panic);
         let _ = self.builder.build_unreachable().unwrap();
         Ok(())
     }
@@ -5073,6 +5080,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 "exist_alloc",
             )
             .unwrap();
+        self.emit_stack_map(
+            self.current_span.expect("boxing outside MIR lowering"),
+            StackMapSiteKind::Allocation,
+        );
         let raw_ptr = call
             .try_as_basic_value()
             .basic()
@@ -5173,7 +5184,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
             }
             mir::TerminatorKind::Return => {
-                self.emit_shadow_pop();
                 let fn_abi = self
                     .current_fn_abi
                     .as_ref()
@@ -5196,7 +5206,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
             mir::TerminatorKind::ResumeUnwind => {
-                self.emit_shadow_pop();
                 let Some(eh_slot) = self.eh_slot else {
                     self.gcx.dcx().emit_error(
                         "resume_unwind without EH slot".into(),
@@ -5266,6 +5275,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         normal_bb,
                         unwind_bb,
                     )? {
+                        self.emit_stack_map(terminator.span, StackMapSiteKind::Call);
                         let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
                         return Ok(());
                     }
@@ -5278,6 +5288,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         "__rt__gc_enter_blocking",
                         "gc_blocking_enter",
                     );
+                    self.emit_stack_map(terminator.span, StackMapSiteKind::Blocking);
                     let call_site = self.emit_direct_call_maybe_unwind(
                         callable,
                         &lowered_args,
@@ -5341,6 +5352,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     )?;
                     self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 }
+                self.emit_stack_map(terminator.span, StackMapSiteKind::Call);
                 let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
             mir::TerminatorKind::Yield { .. } => {
@@ -6808,8 +6820,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
             }
         }
-
-        let _ = self.update_shadow_for_local(body, locals, local);
     }
 
     fn store_place(
@@ -6826,9 +6836,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let ptr = self.project_place(place, body, locals)?;
         self.builder.build_store(ptr, value).unwrap();
-        if self.should_refresh_shadow_for_place(body, place) {
-            let _ = self.update_shadow_for_local(body, locals, place.local);
-        }
         Ok(())
     }
 
@@ -7219,7 +7226,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     /// Managed entry shims register the thread before any Taro code runs. A
     /// zero flag therefore means there is no GC coordination work to perform;
     /// only the uncommon non-zero case crosses into the runtime.
-    fn emit_gc_poll(&mut self) {
+    fn emit_gc_poll(&mut self, span: crate::span::Span) {
         let flags = self
             .builder
             .build_load(
@@ -7254,6 +7261,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.builder
             .build_call(self.get_gc_poll(), &[], "gc_poll_slow")
             .unwrap();
+        self.emit_stack_map(span, StackMapSiteKind::Poll);
         self.builder.build_unconditional_branch(resume).unwrap();
         self.builder.position_at_end(resume);
     }

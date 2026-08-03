@@ -1,0 +1,66 @@
+// Run this fixture with TARO_GC_STRESS=1 to collect at every generated poll.
+// It keeps roots live through recursion, mutable indirect calls, List growth,
+// aggregate fields, optionals, and closure capture.
+
+import std.collections.List
+
+struct StackMapBundle {
+    text: string
+    nested: (string, string?)
+}
+
+func textFor(_ value: usize) -> string {
+    std.sprintf("stack map value %v", value)
+}
+
+func replaceBundle(_ bundle: &mut StackMapBundle, _ value: usize) {
+    bundle.text = textFor(value)
+    bundle.nested = (textFor(value + (1 as usize)), Optional.some(textFor(value + (2 as usize))))
+}
+
+func recurseWithRoots(_ depth: usize, _ bundle: &StackMapBundle) -> usize {
+    let local = textFor(depth + (100 as usize))
+    if depth == 0 {
+        std.runtime.collect()
+        assert(local == textFor(100 as usize), "recursive leaf root should survive")
+        return std.string.stringLen(bundle.text)
+    }
+
+    let nested = recurseWithRoots(depth - (1 as usize), bundle)
+    assert(local == textFor(depth + (100 as usize)), "recursive caller root should survive")
+    return nested + std.string.stringLen(local)
+}
+
+func invokeClosure[F: Fn() -> string](_ closure: F) -> string {
+    std.runtime.collect()
+    return closure()
+}
+
+func main() {
+    var bundle = StackMapBundle {
+        text: textFor(0),
+        nested: (textFor(1), Optional.some(textFor(2))),
+    }
+    var values = List[string]()
+    var index: usize = 0
+    while index < (32 as usize) {
+        replaceBundle(&mut bundle, index)
+        values.append(bundle.text)
+        let recursiveLength = recurseWithRoots(4 as usize, &bundle)
+        assert(recursiveLength > 0, "recursive stack-map walk should run")
+        index += 1
+    }
+
+    assert(values.len() == (32 as usize), "List root should retain every value")
+    index = 0
+    while index < values.len() {
+        assert(*values.at(index) == textFor(index), "List element should survive stress GC")
+        index += 1
+    }
+
+    let captured = bundle.text
+    let closureValue = invokeClosure(|| -> string { return captured })
+    assert(closureValue == textFor(31 as usize), "closure capture should survive stress GC")
+
+    print("PASS: compiler stack-map GC stress\n")
+}

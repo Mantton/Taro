@@ -195,8 +195,8 @@ pub extern "C" fn __rt__cleanup_cancel(token: usize) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn __rt__cleanup_wait() {
     // The waiting thread must not prevent a callback from initiating a
-    // collection. This mirrors other blocking runtime waits: publish a stable
-    // shadow stack, then resume ordinary mutator execution before returning.
+    // collection. This mirrors other blocking runtime waits: publish stable
+    // compiler roots, then resume ordinary mutator execution before returning.
     crate::garbage_collector::enter_safepoint();
     wait_until_idle();
     crate::garbage_collector::leave_safepoint();

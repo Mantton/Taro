@@ -140,7 +140,6 @@ pub enum StatementKind<'ctx> {
     /// local to stable storage use it to distinguish rebinding from mutation.
     StorageLive(LocalId),
     Assign(Place<'ctx>, Rvalue<'ctx>),
-    ShadowResync(Vec<LocalId>),
     GcSafepoint,
     Nop,
     SetDiscriminant {
@@ -364,7 +363,6 @@ pub fn for_each_function_constant_in_body<'ctx>(
                 }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
-                | StatementKind::ShadowResync(_)
                 | StatementKind::GcSafepoint
                 | StatementKind::Nop
                 | StatementKind::SetDiscriminant { .. } => {}

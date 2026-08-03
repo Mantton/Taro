@@ -89,8 +89,8 @@ extern "C" {
 }
 
 /// Calls in this block may park in the kernel. The blocking ABI keeps their
-/// caller's shadow roots visible without making stop-the-world GC wait for the
-/// syscall to return.
+/// caller's published stack-map roots visible without making stop-the-world GC
+/// wait for the syscall to return.
 extern "blocking" {
     public func pipe(_ fds: *mut int32) -> int32
     public func read(_ fd: int32, _ buf: *mut uint8, _ count: size_t) -> ssize_t

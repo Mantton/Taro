@@ -18,13 +18,46 @@ use inkwell::{
 };
 
 use crate::{
-    codegen::artifact::ModuleArtifact,
+    codegen::{
+        artifact::ModuleArtifact,
+        pc_metadata,
+        stack_maps::{
+            PendingStackMapModule, normalize_object, read_pending_modules, write_pending_module,
+        },
+    },
     compile::{
         config::{BuildProfile, LtoMode, ModuleArtifactKind, OptLevel, OptimizationMode},
         context::GlobalContext,
     },
     error::CompileResult,
 };
+
+fn descriptor_paths(artifacts: &[ModuleArtifact]) -> Result<Vec<PathBuf>, String> {
+    artifacts
+        .iter()
+        .map(|artifact| {
+            artifact.stack_map_descriptors.clone().ok_or_else(|| {
+                format!(
+                    "{} artifact '{}' is missing stack-map descriptors",
+                    artifact.kind.display_name(),
+                    artifact.path.display()
+                )
+            })
+        })
+        .collect()
+}
+
+fn write_merged_descriptors(
+    inputs: &[PathBuf],
+    target_triple: &str,
+    output: &Path,
+) -> Result<(), String> {
+    let records = read_pending_modules(inputs.iter().cloned(), target_triple)?;
+    write_pending_module(
+        output,
+        &PendingStackMapModule::new(target_triple.to_owned(), records.into_values().collect()),
+    )
+}
 
 #[repr(C)]
 struct NativeThinLtoCodegen {
@@ -417,6 +450,10 @@ pub fn emit_full_lto_object(gcx: GlobalContext<'_>) -> CompileResult<ModuleArtif
             })
             .map(|(_, artifact)| artifact),
     );
+    let descriptor_inputs = descriptor_paths(&inputs).map_err(|message| {
+        gcx.dcx().emit_error(message, None);
+        crate::error::ReportedError
+    })?;
 
     let started_at = Instant::now();
     let context = Context::create();
@@ -498,6 +535,33 @@ pub fn emit_full_lto_object(gcx: GlobalContext<'_>) -> CompileResult<ModuleArtif
                 .emit_error(format!("failed to write full-LTO object: {error}"), None);
             crate::error::ReportedError
         })?;
+    let target_triple = expected_triple.as_str().to_string_lossy().into_owned();
+    let merged_descriptors = gcx
+        .output_root()
+        .join(format!("{}.lto.stackmaps", gcx.config.identifier));
+    write_merged_descriptors(&descriptor_inputs, &target_triple, &merged_descriptors).map_err(
+        |message| {
+            gcx.dcx().emit_error(message, None);
+            crate::error::ReportedError
+        },
+    )?;
+    let metadata =
+        normalize_object(&output, descriptor_inputs, &target_triple).map_err(|message| {
+            gcx.dcx().emit_error(
+                format!("failed to normalize full-LTO PC metadata: {message}"),
+                None,
+            );
+            crate::error::ReportedError
+        })?;
+    let pc_metadata_output = gcx
+        .output_root()
+        .join(format!("{}.lto.pcmeta.o", gcx.config.identifier));
+    pc_metadata::emit_object(&metadata, &target_machine, &pc_metadata_output).map_err(
+        |message| {
+            gcx.dcx().emit_error(message, None);
+            crate::error::ReportedError
+        },
+    )?;
 
     let module_suffix = if inputs.len() == 1 { "" } else { "s" };
     if gcx.config.debug.timings {
@@ -510,7 +574,8 @@ pub fn emit_full_lto_object(gcx: GlobalContext<'_>) -> CompileResult<ModuleArtif
     } else {
         eprintln!("Full LTO – {} module{}", inputs.len(), module_suffix);
     }
-    Ok(ModuleArtifact::new(ModuleArtifactKind::Object, output))
+    Ok(ModuleArtifact::new(ModuleArtifactKind::Object, output)
+        .with_stack_maps(merged_descriptors, Some(pc_metadata_output)))
 }
 
 struct ThinLtoInput {
@@ -563,6 +628,10 @@ pub fn emit_thin_lto_objects(
             })
             .map(|(_, artifact)| artifact),
     );
+    let descriptor_inputs = descriptor_paths(&artifacts).map_err(|message| {
+        gcx.dcx().emit_error(message, None);
+        crate::error::ReportedError
+    })?;
 
     let started_at = Instant::now();
     let context = Context::create();
@@ -704,14 +773,53 @@ pub fn emit_thin_lto_objects(
         }
     }
 
+    let target_triple = expected_triple.as_str().to_string_lossy().into_owned();
+    let merged_descriptors = gcx
+        .output_root()
+        .join(format!("{}.thinlto.stackmaps", gcx.config.identifier));
+    write_merged_descriptors(&descriptor_inputs, &target_triple, &merged_descriptors).map_err(
+        |message| {
+            gcx.dcx().emit_error(message, None);
+            crate::error::ReportedError
+        },
+    )?;
+    let target_machine = gcx.store.target_layout.create_target_machine(
+        gcx.dcx(),
+        gcx.config.profile,
+        gcx.config.codegen.optimization,
+    )?;
+    let mut object_artifacts = Vec::with_capacity(output_paths.len());
+    for path in output_paths {
+        let metadata = normalize_object(&path, descriptor_inputs.clone(), &target_triple).map_err(
+            |message| {
+                gcx.dcx().emit_error(
+                    format!("failed to normalize ThinLTO PC metadata: {message}"),
+                    None,
+                );
+                crate::error::ReportedError
+            },
+        )?;
+        let pc_metadata_path = path.with_extension("pcmeta.o");
+        pc_metadata::emit_object(&metadata, &target_machine, &pc_metadata_path).map_err(
+            |message| {
+                gcx.dcx().emit_error(message, None);
+                crate::error::ReportedError
+            },
+        )?;
+        object_artifacts.push(
+            ModuleArtifact::new(ModuleArtifactKind::Object, path)
+                .with_stack_maps(merged_descriptors.clone(), Some(pc_metadata_path)),
+        );
+    }
+
     let module_suffix = if inputs.len() == 1 { "" } else { "s" };
-    let object_suffix = if output_paths.len() == 1 { "" } else { "s" };
+    let object_suffix = if object_artifacts.len() == 1 { "" } else { "s" };
     if gcx.config.debug.timings {
         eprintln!(
             "Thin LTO – {} module{}, {} object{} in {:.3} ms",
             inputs.len(),
             module_suffix,
-            output_paths.len(),
+            object_artifacts.len(),
             object_suffix,
             started_at.elapsed().as_secs_f64() * 1000.0
         );
@@ -720,15 +828,12 @@ pub fn emit_thin_lto_objects(
             "Thin LTO – {} module{}, {} object{}",
             inputs.len(),
             module_suffix,
-            output_paths.len(),
+            object_artifacts.len(),
             object_suffix
         );
     }
 
-    Ok(output_paths
-        .into_iter()
-        .map(|path| ModuleArtifact::new(ModuleArtifactKind::Object, path))
-        .collect())
+    Ok(object_artifacts)
 }
 
 #[cfg(test)]

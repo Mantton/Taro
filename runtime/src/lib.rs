@@ -13,10 +13,12 @@ mod io_poller;
 mod net;
 mod observability;
 pub mod panic_unwind;
+mod pc_metadata;
 #[cfg(unix)]
 mod process;
 mod scalar_parse;
 mod stack_guard;
+mod stack_walk;
 mod sync;
 pub mod task;
 #[cfg(unix)]

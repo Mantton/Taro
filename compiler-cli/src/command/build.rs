@@ -583,11 +583,15 @@ fn link_emitted_modules(
         Lto::Off => {}
         Lto::Full => {
             let artifact = codegen::lto::emit_full_lto_object(context)?;
-            context.store.add_link_input(artifact.path);
+            for input in artifact.link_inputs().cloned() {
+                context.store.add_link_input(input);
+            }
         }
         Lto::Thin => {
             for artifact in codegen::lto::emit_thin_lto_objects(context, incremental_enabled)? {
-                context.store.add_link_input(artifact.path);
+                for input in artifact.link_inputs().cloned() {
+                    context.store.add_link_input(input);
+                }
             }
         }
     }

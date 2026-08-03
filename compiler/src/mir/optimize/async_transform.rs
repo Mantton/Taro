@@ -346,9 +346,6 @@ fn rewrite_resident_local_places<'ctx>(
                 StatementKind::SetDiscriminant { place, .. } => {
                     remap_resident_place(place, &remaps);
                 }
-                StatementKind::ShadowResync(locals) => {
-                    locals.retain(|local| remaps[local.index()].is_none());
-                }
                 StatementKind::GcSafepoint | StatementKind::Nop => {}
             }
         }

@@ -200,12 +200,6 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
                         }
                         record_rvalue_use_counts(rv, &mut use_counts);
                     }
-                    StatementKind::ShadowResync(locals) => {
-                        for &local in locals {
-                            use_counts[local.index()] += 1;
-                            address_taken[local.index()] = true;
-                        }
-                    }
                     StatementKind::SetDiscriminant { place, .. } => {
                         if place.projection.is_empty() {
                             use_counts[place.local.index()] += 1;
@@ -352,12 +346,6 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                         }
                         record_rvalue_use_counts(rv, &mut use_counts);
                     }
-                    StatementKind::ShadowResync(locals) => {
-                        for &local in locals {
-                            use_counts[local.index()] += 1;
-                            address_taken[local.index()] = true;
-                        }
-                    }
                     StatementKind::SetDiscriminant { place, .. } => {
                         if place.projection.is_empty() {
                             use_counts[place.local.index()] += 1;
@@ -499,12 +487,6 @@ fn gap_is_safe_source(
                 if rvalue_mentions_local(rv, source) {
                     return false;
                 }
-            }
-            StatementKind::ShadowResync(locals) => {
-                if locals.contains(&source) {
-                    return false;
-                }
-                return false;
             }
             StatementKind::SourceScope(_)
             | StatementKind::StorageLive(_)
@@ -745,16 +727,6 @@ fn replace_stmt_operands<'ctx>(
     match &mut stmt.kind {
         StatementKind::SourceScope(_) | StatementKind::StorageLive(_) => {}
         StatementKind::Assign(_, rv) => replace_rvalue_operands(rv, replace_map),
-        StatementKind::ShadowResync(locals) => {
-            for local in locals {
-                match &replace_map[local.index()] {
-                    Some(Replacement::Copy(src)) => {
-                        *local = *src;
-                    }
-                    Some(Replacement::Constant(_)) | None => {}
-                }
-            }
-        }
         StatementKind::SetDiscriminant { .. } => {}
         StatementKind::GcSafepoint | StatementKind::Nop => {}
     }

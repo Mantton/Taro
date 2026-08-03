@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 11;
+pub const RUNTIME_ABI_REVISION: u32 = 13;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -400,8 +400,10 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     additional("__rt__gc_enter_blocking", "()->void"),
     additional("__rt__gc_exit_blocking", "()->void"),
-    additional("__rt__gc_pop_frame", "(*mut gc_shadow_frame)->void"),
-    additional("__rt__gc_push_frame", "(*mut gc_shadow_frame)->void"),
+    additional(
+        "__rt__pc_metadata_register",
+        "(*const pc_metadata_module)->void",
+    ),
     additional("__rt__hash_seed0", "()->u64"),
     additional("__rt__hash_seed1", "()->u64"),
     additional("__rt__keep_alive", "(*const u8)->void"),

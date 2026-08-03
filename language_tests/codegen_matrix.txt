@@ -8,6 +8,7 @@ valid/gc_descriptor_shadow_roots_regression.tr
 valid/gc_generic_make_descriptor_cache_regression.tr
 valid/gc_offsets_linkage_regression.tr
 valid/gc_static_roots_regression.tr
+valid/gc_stack_map_stress.tr
 valid/gc_loop_fstring_regression.tr
 valid/gc_loop_printf_regression.tr
 valid/cleanup_panic_observation.tr

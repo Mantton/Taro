@@ -1,10 +1,10 @@
-// Regression test for a shadow-stack rooting bug where tight allocation loops
-// calling printf/sprintf through a `&mut self` method would crash during GC.
+// Regression test for a historical root-publication bug where tight allocation
+// loops calling printf/sprintf through a `&mut self` method crashed during GC.
 //
 // The failure mode: the `&mut Formatter` built by formatPrintf held the only
-// handle to a heap-escaped Formatter, but the shadow stack only rooted the
-// GC pointers reachable *through* the reference, not the reference value
-// itself. When a collection fired inside List.grow / bytesToString, the
+// handle to a heap-escaped Formatter, but the old root mechanism only retained
+// GC pointers reachable *through* the reference, not the reference itself.
+// When a collection fired inside List.grow / bytesToString, the
 // Formatter was swept and the next writer.writeByte scribbled into a dead
 // span, producing SIGBUS inside libsystem_platform memmove.
 //

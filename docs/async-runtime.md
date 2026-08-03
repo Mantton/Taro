@@ -20,7 +20,7 @@ Compiler-generated async functions return an opaque runtime handle created by
 - `__rt__async_poll(handle, out)` owns the one-shot transition to completed for
   a handle and calls `drop_fn` once on readiness.
 - `__rt__async_destroy(handle)` is the final handle cleanup path. It also
-  unlinks shadow frames and removes persistent roots.
+  destroys the suspended frame and removes its persistent root.
 - `__rt__async_cancel(handle)` gives a suspended compiler-generated child one
   cancellation poll so its active language-level cleanups run, then destroys
   the handle. Runtime-provided leaf futures without cleanup state are destroyed
@@ -201,13 +201,16 @@ Executor threads participate in the stop-the-world collector.
 - Workers leave the safepoint while polling user async code and re-enter it
   immediately after polling returns or panics.
 - Idle workers remain parked at a safepoint.
+- `TARO_GC_STRESS=1` keeps the collection-needed flag set so every generated
+  poll takes the slow path and starts a collection; this is intended for root
+  and rendezvous regression tests.
 - Rooted and spawned async frames are persistent roots while live. Finalization
-  unlinks shadow frames before removing roots.
+  destroys their compiler frames before removing those roots.
 - A foreign declaration using `extern "blocking"` is wrapped with
-  `__rt__gc_enter_blocking`/`__rt__gc_exit_blocking`. Its shadow roots remain
-  visible while the native call is parked, but collection does not wait for
-  that call to return. Blocking functions must not call back into Taro before
-  the annotated call returns.
+  `__rt__gc_enter_blocking`/`__rt__gc_exit_blocking`. Its compiler stack-map
+  roots are published before the native call parks, but collection does not
+  wait for that call to return. Blocking functions must not call back into Taro
+  before the annotated call returns.
 
 ## Blocking Work
 

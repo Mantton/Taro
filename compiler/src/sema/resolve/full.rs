@@ -835,9 +835,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                 }
                 Resolution::Definition(def_id, kind) => match kind {
                     DefinitionKind::Module | DefinitionKind::Namespace => unreachable!(),
-                    DefinitionKind::Enum
-                        if self.resolver.has_enum_variant(def_id, name.symbol) =>
-                    {
+                    DefinitionKind::Enum if self.resolver.has_enum_variant(def_id, name.symbol) => {
                         return Ok(ResolvedEntity::DeferredEnumVariant);
                     }
                     DefinitionKind::Enum

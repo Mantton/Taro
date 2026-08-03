@@ -1,5 +1,19 @@
 # Compiler Stack Maps and PC Metadata
 
+## Status
+
+Phases 1-8 are implemented. Compiler PC maps are authoritative, the shadow
+frame ABI and `ShadowResync` MIR have been removed, and compact panic reports
+consume structured physical/inline frames from the same registered metadata.
+Full-suite verification and paired final benchmarks remain in progress.
+
+On AArch64 O0, functions containing PC maps intentionally take LLVM's
+per-function SelectionDAG fallback because GlobalISel cannot select the stack
+map intrinsic. Rootless functions remain eligible for GlobalISel; optimized
+builds already use SelectionDAG. The codegen matrix therefore validates actual
+debug/release emission and execution instead of making every selector fallback
+fatal.
+
 ## Outcome
 
 Replace Taro's per-function shadow-root maintenance with compiler-produced,
@@ -153,14 +167,15 @@ optimization and wire round trips.
   initialized root-bearing locals only if the liveness analysis cannot prove a
   smaller safe set; never omit an uncertain root.
 - Emit `llvm.experimental.stackmap`:
-  - in the poll slow block before `__gc__poll`;
+  - in the poll slow block immediately after `__gc__poll`;
   - at managed callsites so suspended caller frames have maps;
-  - before allocation calls that may initiate collection;
-  - before blocking transitions whose snapshot remains authoritative while
+  - immediately after allocation calls that may initiate collection;
+  - immediately after blocking transitions whose snapshot remains authoritative while
     native code runs.
 - Attach deterministic IDs and collect the Taro root recipes and source scopes
   corresponding to each intrinsic operand.
-- Ensure LLVM inlining retains unique IDs and imported metadata.
+- Keep functions containing maps physically intact after MIR's map-aware
+  inliner; LLVM remains free to inline pure functions that contain no maps.
 
 Files/functions:
 
@@ -249,10 +264,17 @@ The root buffer is written only by its owning mutator and read only after the
 existing stop-the-world handshake. It must not require a lock on the poll fast
 path.
 
+LLVM may place a zero-width map a few instructions after the architectural
+return PC while finishing a call sequence. Runtime lookup therefore resolves a
+suspended return PC forward to the adjacent post-call record in the same
+mapped function.
+
 ### 7. Validate, switch authority, and remove shadow frames
 
-- During development, scan both mechanisms under tests/stress and assert the
-  new root set contains every heap object found by the shadow-root oracle.
+- During development, scan both mechanisms and then run the root regression
+  suite with compiler maps as the sole authority. Raw equality is not a valid
+  oracle: alias mutation can leave conservative shadow slots pointing at a
+  superseded object after the mapped local already contains its replacement.
 - Add collection-at-every-safepoint stress coverage for:
   - nested calls and recursion;
   - aggregate/interior/reference roots;
@@ -288,7 +310,8 @@ Files/functions:
   is present.
 - Preserve the 64-frame compact limit and omission count.
 - Verify debug short names, stripped release binaries, MIR-inlined functions,
-  LLVM-inlined functions, recursion, async task traces, and double panic.
+  recursion, async task traces, and double panic. Functions with PC records are
+  not eligible for post-map LLVM inlining.
 
 Files/functions:
 
@@ -354,5 +377,5 @@ Acceptance criteria:
 - If LLVM cannot provide direct root locations on a supported target, stop at
   the object-normalization gate and resolve that backend design explicitly
   before changing collector authority.
-- If a new map misses a shadow-oracle root, preserve the failing artifact and
-  minimize it before continuing the cutover.
+- If an authoritative-map stress test loses a live object, preserve the failing
+  artifact and minimize it before continuing.

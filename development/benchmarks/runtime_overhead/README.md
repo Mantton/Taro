@@ -7,7 +7,7 @@ runtime bookkeeping in release builds:
 - `function_calls.tr`: the same loop through a one-line function.
 - `string_byte_len.tr`: 10 million direct reads from a rooted string value.
 - `rooted_function_calls.tr`: 10 million calls through a one-line function
-  around the same string read, isolating managed shadow-frame call overhead.
+  around the same string read, isolating managed root-bearing call overhead.
 - `list_reads.tr`: 20 million reads from a one-element list.
 
 Build each program with `taro build <file> --release -o <binary>`. Print the

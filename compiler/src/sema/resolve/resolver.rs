@@ -172,20 +172,19 @@ impl<'a> Resolver<'a> {
 
         let mut variants = FxHashSet::default();
         {
-            let mut collect = |parents: &FxHashMap<DefinitionID, DefinitionID>,
-                               kinds: &FxHashMap<DefinitionID, DefinitionKind>,
-                               idents: &FxHashMap<DefinitionID, Identifier>| {
-                for (id, parent) in parents {
-                    if *parent != enum_id
-                        || kinds.get(id) != Some(&DefinitionKind::Variant)
-                    {
-                        continue;
+            let mut collect =
+                |parents: &FxHashMap<DefinitionID, DefinitionID>,
+                 kinds: &FxHashMap<DefinitionID, DefinitionKind>,
+                 idents: &FxHashMap<DefinitionID, Identifier>| {
+                    for (id, parent) in parents {
+                        if *parent != enum_id || kinds.get(id) != Some(&DefinitionKind::Variant) {
+                            continue;
+                        }
+                        if let Some(ident) = idents.get(id) {
+                            variants.insert(ident.symbol);
+                        }
                     }
-                    if let Some(ident) = idents.get(id) {
-                        variants.insert(ident.symbol);
-                    }
-                }
-            };
+                };
 
             if enum_id.is_local_to_index(self.package_index()) {
                 collect(&self.def_to_parent, &self.def_to_kind, &self.def_to_ident);

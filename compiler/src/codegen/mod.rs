@@ -4,6 +4,7 @@ pub mod link;
 pub mod llvm;
 pub mod lto;
 pub mod mangle;
+pub(crate) mod pc_metadata;
 pub mod stack_maps;
 pub mod target;
 
