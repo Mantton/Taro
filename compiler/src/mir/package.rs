@@ -168,6 +168,7 @@ fn build_async_entry_wrapper<'ctx>(
 
     let mut body = Body {
         owner: wrapper_id,
+        source_scopes: Body::initial_source_scopes(wrapper_id),
         locals: Default::default(),
         basic_blocks: Default::default(),
         start_block: BasicBlockId::from_raw(0),

@@ -342,13 +342,17 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
                 continue;
             }
             let statements = &mut body.basic_blocks[bb].statements;
+            let insertion_index = statements
+                .iter()
+                .take_while(|stmt| matches!(stmt.kind, StatementKind::SourceScope(_)))
+                .count();
             let needs = statements
-                .first()
+                .get(insertion_index)
                 .map(|stmt| !matches!(stmt.kind, StatementKind::GcSafepoint))
                 .unwrap_or(true);
             if needs {
                 statements.insert(
-                    0,
+                    insertion_index,
                     Statement {
                         kind: StatementKind::GcSafepoint,
                         span,

@@ -1007,6 +1007,7 @@ pub struct MirPackageWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BodyWire {
     pub owner: DefIdWire,
+    pub source_scopes: Vec<SourceScopeDataWire>,
     pub locals: Vec<LocalDeclWire>,
     pub basic_blocks: Vec<BasicBlockDataWire>,
     pub start_block: u32,
@@ -1015,6 +1016,13 @@ pub struct BodyWire {
     pub phase: MirPhaseWire,
     #[serde(default)]
     pub is_async: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceScopeDataWire {
+    pub definition: DefIdWire,
+    pub callsite: Option<SpanWire>,
+    pub parent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1049,6 +1057,7 @@ pub struct StatementWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StatementKindWire {
+    SourceScope(u32),
     StorageLive(u32),
     Assign(PlaceWire, RvalueWire),
     ShadowResync(Vec<u32>),
@@ -3918,6 +3927,9 @@ pub fn rvalue_from_wire<'a>(gcx: GlobalContext<'a>, v: &RvalueWire) -> mir::Rval
 pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
     StatementWire {
         kind: match &v.kind {
+            mir::StatementKind::SourceScope(scope) => {
+                StatementKindWire::SourceScope(scope.index() as u32)
+            }
             mir::StatementKind::StorageLive(local) => {
                 StatementKindWire::StorageLive(local.index() as u32)
             }
@@ -3948,6 +3960,9 @@ pub fn statement_from_wire<'a>(
 ) -> mir::Statement<'a> {
     mir::Statement {
         kind: match &v.kind {
+            StatementKindWire::SourceScope(scope) => {
+                mir::StatementKind::SourceScope(mir::SourceScopeId::from_raw(*scope))
+            }
             StatementKindWire::StorageLive(local) => {
                 mir::StatementKind::StorageLive(mir::LocalId::from_raw(*local))
             }
@@ -4141,6 +4156,15 @@ pub fn terminator_from_wire<'a>(
 pub fn mir_body_to_wire(v: &mir::Body<'_>) -> BodyWire {
     BodyWire {
         owner: def_to_wire(v.owner),
+        source_scopes: v
+            .source_scopes
+            .iter()
+            .map(|scope| SourceScopeDataWire {
+                definition: def_to_wire(scope.definition),
+                callsite: scope.callsite.map(span_to_wire),
+                parent: scope.parent.map(|parent| parent.index() as u32),
+            })
+            .collect(),
         locals: v
             .locals
             .iter()
@@ -4176,6 +4200,18 @@ pub fn mir_body_from_wire<'a>(
 ) -> mir::Body<'a> {
     mir::Body {
         owner: def_from_wire(&v.owner),
+        source_scopes: v
+            .source_scopes
+            .iter()
+            .map(|scope| mir::SourceScopeData {
+                definition: def_from_wire(&scope.definition),
+                callsite: scope
+                    .callsite
+                    .as_ref()
+                    .map(|span| span_from_wire(span, remap)),
+                parent: scope.parent.map(mir::SourceScopeId::from_raw),
+            })
+            .collect(),
         locals: v
             .locals
             .iter()
@@ -5562,6 +5598,53 @@ mod tests {
             let wire = abi_to_wire(abi);
             assert_eq!(abi_from_wire(&wire), abi);
         }
+    }
+
+    #[test]
+    fn mir_inline_source_scopes_roundtrip_through_wire() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let mut body = crate::mir::test_support::minimal_body(gcx);
+            let nested_definition = DefinitionID::new(
+                crate::PackageIndex::new(2),
+                crate::sema::resolve::models::DefinitionIndex::from_raw(7),
+            );
+            let span = body.locals[body.return_local].span;
+            let nested_scope = body.source_scopes.push(mir::SourceScopeData {
+                definition: nested_definition,
+                callsite: Some(span),
+                parent: Some(mir::SourceScopeId::from_raw(0)),
+            });
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(mir::Statement {
+                    kind: mir::StatementKind::SourceScope(nested_scope),
+                    span,
+                });
+
+            let wire = mir_body_to_wire(&body);
+            let file_remap = FxHashMap::from_iter([(span.file.index() as u32, span.file)]);
+            let decoded = mir_body_from_wire(
+                gcx,
+                &wire,
+                FileRemap {
+                    old_to_new: &file_remap,
+                },
+            );
+
+            assert_eq!(decoded.source_scopes.len(), 2);
+            assert_eq!(
+                decoded.source_scopes[nested_scope].definition,
+                nested_definition
+            );
+            assert_eq!(
+                decoded.source_scopes[nested_scope].parent,
+                Some(mir::SourceScopeId::from_raw(0))
+            );
+            assert!(matches!(
+                decoded.basic_blocks[decoded.start_block].statements[0].kind,
+                mir::StatementKind::SourceScope(scope) if scope == nested_scope
+            ));
+        });
     }
 
     #[test]

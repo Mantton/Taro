@@ -120,6 +120,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         let mut body = Body {
             owner: function.id,
+            source_scopes: Body::initial_source_scopes(function.id),
             locals: Default::default(),
             basic_blocks: Default::default(),
             start_block: BasicBlockId::from_raw(0),

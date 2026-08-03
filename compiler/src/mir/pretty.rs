@@ -39,6 +39,15 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
 
     fn write_statement(&self, stmt: &Statement<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &stmt.kind {
+            StatementKind::SourceScope(scope) => {
+                let data = &self.body.source_scopes[*scope];
+                write!(
+                    f,
+                    "source_scope({}: {})",
+                    scope.index(),
+                    self.gcx.definition_symbol_or_fallback(data.definition)
+                )
+            }
             StatementKind::StorageLive(local) => {
                 write!(f, "storage_live(%{:?})", local)
             }

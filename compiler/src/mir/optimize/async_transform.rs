@@ -338,7 +338,7 @@ fn rewrite_resident_local_places<'ctx>(
     for block in body.basic_blocks.iter_mut() {
         for statement in &mut block.statements {
             match &mut statement.kind {
-                StatementKind::StorageLive(_) => {}
+                StatementKind::SourceScope(_) | StatementKind::StorageLive(_) => {}
                 StatementKind::Assign(destination, rvalue) => {
                     remap_resident_place(destination, &remaps);
                     remap_resident_rvalue(rvalue, &remaps);
@@ -1099,6 +1099,7 @@ fn build_async_constructor<'ctx>(
 
     let mut body = Body {
         owner: original.owner,
+        source_scopes: Body::initial_source_scopes(original.owner),
         locals: Default::default(),
         basic_blocks: Default::default(),
         start_block: BasicBlockId::from_raw(0),
@@ -1452,6 +1453,7 @@ fn build_async_drop_body<'ctx>(
 
     let mut body = Body {
         owner: drop_id,
+        source_scopes: Body::initial_source_scopes(drop_id),
         locals: Default::default(),
         basic_blocks: Default::default(),
         start_block: BasicBlockId::from_raw(0),

@@ -23,6 +23,10 @@ index_vec::define_index_type! {
     pub struct BasicBlockId = u32;
 }
 
+index_vec::define_index_type! {
+    pub struct SourceScopeId = u32;
+}
+
 #[derive(Debug, Default)]
 pub struct MirPackage<'ctx> {
     pub functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>>,
@@ -59,6 +63,9 @@ pub struct EscapeSummary {
 #[derive(Debug, Clone)]
 pub struct Body<'ctx> {
     pub owner: DefinitionID,
+    /// Logical source functions represented in this physical MIR body.
+    /// Scope zero is always the physical function itself.
+    pub source_scopes: IndexVec<SourceScopeId, SourceScopeData>,
     pub locals: IndexVec<LocalId, LocalDecl<'ctx>>,
     pub basic_blocks: IndexVec<BasicBlockId, BasicBlockData<'ctx>>,
     pub start_block: BasicBlockId,
@@ -66,6 +73,29 @@ pub struct Body<'ctx> {
     pub escape_locals: Vec<bool>,
     pub phase: MirPhase,
     pub is_async: bool,
+}
+
+impl Body<'_> {
+    pub fn initial_source_scopes(owner: DefinitionID) -> IndexVec<SourceScopeId, SourceScopeData> {
+        let mut scopes: IndexVec<SourceScopeId, SourceScopeData> = IndexVec::new();
+        let root: SourceScopeId = scopes.push(SourceScopeData {
+            definition: owner,
+            callsite: None,
+            parent: None,
+        });
+        debug_assert_eq!(root.index(), 0);
+        scopes
+    }
+}
+
+/// One logical function scope represented inside a physical MIR body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceScopeData {
+    pub definition: DefinitionID,
+    /// Source location at which this scope was inlined into its parent.
+    /// The physical root has no callsite.
+    pub callsite: Option<Span>,
+    pub parent: Option<SourceScopeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +130,9 @@ pub struct Statement<'ctx> {
 
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
+    /// Switches the logical source scope for subsequent operations in this
+    /// basic block. Code generation resets to scope zero at every block.
+    SourceScope(SourceScopeId),
     /// Starts a new source-level binding lifetime for `local`.
     ///
     /// Unlike an assignment, this marker runs again whenever control re-enters
@@ -329,7 +362,8 @@ pub fn for_each_function_constant_in_body<'ctx>(
                 StatementKind::Assign(_, rvalue) => {
                     for_each_function_constant_in_rvalue(rvalue, &mut visit);
                 }
-                StatementKind::StorageLive(_)
+                StatementKind::SourceScope(_)
+                | StatementKind::StorageLive(_)
                 | StatementKind::ShadowResync(_)
                 | StatementKind::GcSafepoint
                 | StatementKind::Nop

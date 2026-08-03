@@ -149,8 +149,10 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                         invalid[local.index()] = true;
                     }
                 }
-                StatementKind::StorageLive(_) | StatementKind::GcSafepoint | StatementKind::Nop => {
-                }
+                StatementKind::SourceScope(_)
+                | StatementKind::StorageLive(_)
+                | StatementKind::GcSafepoint
+                | StatementKind::Nop => {}
             }
         }
 

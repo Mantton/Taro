@@ -541,6 +541,7 @@ struct Emitter<'llvm, 'gcx> {
     current_fn: Option<FunctionValue<'llvm>>,
     current_fn_abi: Option<abi::FnAbi<'gcx>>,
     current_sret_ptr: Option<PointerValue<'llvm>>,
+    current_source_scope: mir::SourceScopeId,
     indirect_return_threshold_bytes: u64,
     indirect_arg_threshold_bytes: u64,
     repeat_memset_enabled: bool,
@@ -654,6 +655,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             current_fn: None,
             current_fn_abi: None,
             current_sret_ptr: None,
+            current_source_scope: mir::SourceScopeId::from_raw(0),
             indirect_return_threshold_bytes,
             indirect_arg_threshold_bytes,
             repeat_memset_enabled,
@@ -2843,6 +2845,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         for (bb_id, bb) in body.basic_blocks.iter_enumerated() {
             let llvm_bb = llvm_blocks[bb_id.index()];
             self.builder.position_at_end(llvm_bb);
+            self.current_source_scope = mir::SourceScopeId::from_raw(0);
 
             for stmt in &bb.statements {
                 self.set_debug_location(stmt.span);
@@ -3686,6 +3689,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         stmt: &mir::Statement<'gcx>,
     ) -> CompileResult<()> {
         match &stmt.kind {
+            mir::StatementKind::SourceScope(scope) => {
+                self.current_source_scope = *scope;
+            }
             mir::StatementKind::StorageLive(_) => {}
             mir::StatementKind::Assign(place, rvalue) => {
                 if self.try_lower_large_place_move(body, locals, place, rvalue)? {

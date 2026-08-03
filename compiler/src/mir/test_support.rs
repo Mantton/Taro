@@ -80,6 +80,10 @@ pub(crate) fn minimal_body<'ctx>(gcx: Gcx<'ctx>) -> Body<'ctx> {
 
     Body {
         owner: DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(0)),
+        source_scopes: Body::initial_source_scopes(DefinitionID::new(
+            PackageIndex::new(1),
+            DefinitionIndex::from_raw(0),
+        )),
         locals,
         basic_blocks,
         start_block,

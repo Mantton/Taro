@@ -95,8 +95,45 @@ pub fn validate_body_structure<'ctx>(
         after_pass,
         local_count,
         block_count,
+        source_scope_count: body.source_scopes.len(),
         valid: true,
     };
+
+    if body.source_scopes.is_empty() {
+        validator.error("body has no physical source scope", None);
+    } else {
+        for (scope, data) in body.source_scopes.iter_enumerated() {
+            if scope.index() == 0 {
+                if data.definition != body.owner || data.parent.is_some() || data.callsite.is_some()
+                {
+                    validator.error(
+                        "source scope zero is not the physical function root",
+                        data.callsite,
+                    );
+                }
+                continue;
+            }
+            let Some(parent) = data.parent else {
+                validator.error(
+                    format!("non-root source scope {scope:?} has no parent"),
+                    data.callsite,
+                );
+                continue;
+            };
+            if parent.index() >= scope.index() {
+                validator.error(
+                    format!("source scope {scope:?} has non-ancestral parent {parent:?}"),
+                    data.callsite,
+                );
+            }
+            if data.callsite.is_none() {
+                validator.error(
+                    format!("inlined source scope {scope:?} has no callsite"),
+                    None,
+                );
+            }
+        }
+    }
 
     if block_count == 0 {
         validator.error("body has no basic blocks", None);
@@ -176,6 +213,7 @@ struct StructureValidator<'ctx, 'name> {
     after_pass: &'name str,
     local_count: usize,
     block_count: usize,
+    source_scope_count: usize,
     valid: bool,
 }
 
@@ -203,6 +241,15 @@ impl<'ctx> StructureValidator<'ctx, '_> {
         if block.index() >= self.block_count {
             self.error(
                 format!("edge targets out-of-bounds block {block:?}"),
+                Some(span),
+            );
+        }
+    }
+
+    fn check_source_scope(&mut self, scope: crate::mir::SourceScopeId, span: crate::span::Span) {
+        if scope.index() >= self.source_scope_count {
+            self.error(
+                format!("source scope {scope:?} is out of bounds"),
                 Some(span),
             );
         }
@@ -297,6 +344,7 @@ impl<'ctx> StructureValidator<'ctx, '_> {
 
     fn check_statement(&mut self, statement: &crate::mir::Statement<'ctx>) {
         match &statement.kind {
+            StatementKind::SourceScope(scope) => self.check_source_scope(*scope, statement.span),
             StatementKind::StorageLive(local) => self.check_local(*local, statement.span),
             StatementKind::Assign(place, rvalue) => {
                 self.check_place(place, statement.span);
@@ -1283,7 +1331,8 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                         )?;
                     }
                 }
-                StatementKind::SetDiscriminant { .. }
+                StatementKind::SourceScope(_)
+                | StatementKind::SetDiscriminant { .. }
                 | StatementKind::GcSafepoint
                 | StatementKind::Nop => {}
             }
@@ -1712,7 +1761,8 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                         }
                     }
                 }
-                StatementKind::ShadowResync(_)
+                StatementKind::SourceScope(_)
+                | StatementKind::ShadowResync(_)
                 | StatementKind::SetDiscriminant { .. }
                 | StatementKind::GcSafepoint
                 | StatementKind::Nop => {}
@@ -1910,6 +1960,7 @@ fn apply_statement_liveness<'ctx>(
     live: &mut FxHashSet<LocalId>,
 ) {
     match &stmt.kind {
+        StatementKind::SourceScope(_) => {}
         StatementKind::StorageLive(local) => {
             live.remove(local);
         }

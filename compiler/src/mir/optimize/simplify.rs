@@ -408,8 +408,10 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                         mark_place_used(place, &mut used);
                     }
                 }
-                StatementKind::StorageLive(_) | StatementKind::GcSafepoint | StatementKind::Nop => {
-                }
+                StatementKind::SourceScope(_)
+                | StatementKind::StorageLive(_)
+                | StatementKind::GcSafepoint
+                | StatementKind::Nop => {}
             }
         }
 
@@ -550,6 +552,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
     for block in body.basic_blocks.iter_mut() {
         for stmt in block.statements.iter_mut() {
             stmt.kind = match &stmt.kind {
+                StatementKind::SourceScope(scope) => StatementKind::SourceScope(*scope),
                 StatementKind::StorageLive(local) => remap[*local]
                     .map(StatementKind::StorageLive)
                     .unwrap_or(StatementKind::Nop),

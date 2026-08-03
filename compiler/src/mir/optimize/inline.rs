@@ -8,8 +8,8 @@ use crate::compile::context::Gcx;
 use crate::hir::{Abi, DefinitionID, KnownAttribute};
 use crate::mir::{
     AggregateKind, BasicBlockData, BasicBlockId, Body, CallUnwindAction, Constant, ConstantKind,
-    LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue, Statement,
-    StatementKind, Terminator, TerminatorKind,
+    LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue, SourceScopeData,
+    SourceScopeId, Statement, StatementKind, Terminator, TerminatorKind,
 };
 use crate::sema::models::{GenericArguments, Ty};
 use crate::sema::tycheck::utils::instantiate::{
@@ -111,6 +111,7 @@ impl Inline {
                             target: *target,
                             unwind: *unwind,
                             span: terminator.span,
+                            source_scope: source_scope_at_block_end(block),
                         });
                     }
                 }
@@ -200,6 +201,8 @@ impl Inline {
         callee: &Body<'ctx>,
     ) {
         let gen_args = site.gen_args;
+        let source_scope_map = remap_source_scopes(caller, callee, site);
+        let callee_root_scope = source_scope_map[0];
 
         let (mapped_return_local, return_target) = prepare_inline_return(
             gcx,
@@ -209,6 +212,7 @@ impl Inline {
             gen_args,
             site.target,
             site.span,
+            site.source_scope,
         );
 
         // Copy callee's locals (except return place, which maps to destination)
@@ -243,7 +247,10 @@ impl Inline {
         let callee_name = gcx.definition_ident(site.callee_id).symbol;
         let inline_entry = caller.basic_blocks.push(BasicBlockData {
             note: Some(format!("inlined: {}", callee_name)),
-            statements: Vec::new(),
+            statements: vec![Statement {
+                kind: StatementKind::SourceScope(callee_root_scope),
+                span: site.span,
+            }],
             terminator: None,
         });
 
@@ -281,10 +288,14 @@ impl Inline {
         // Fill in the blocks with remapped content
         for (callee_bb_id, callee_block) in callee.basic_blocks.iter_enumerated() {
             let new_bb_id = block_map[callee_bb_id.index()];
+            caller.basic_blocks[new_bb_id].statements.push(Statement {
+                kind: StatementKind::SourceScope(callee_root_scope),
+                span: site.span,
+            });
 
             // Remap statements
             for stmt in &callee_block.statements {
-                let new_stmt = remap_statement(gcx, stmt, &local_map, gen_args);
+                let new_stmt = remap_statement(gcx, stmt, &local_map, &source_scope_map, gen_args);
                 caller.basic_blocks[new_bb_id].statements.push(new_stmt);
             }
 
@@ -338,6 +349,7 @@ fn prepare_inline_return<'ctx>(
     gen_args: GenericArguments<'ctx>,
     target: BasicBlockId,
     span: crate::span::Span,
+    source_scope: SourceScopeId,
 ) -> (LocalId, BasicBlockId) {
     if destination.projection.is_empty() {
         return (destination.local, target);
@@ -354,13 +366,19 @@ fn prepare_inline_return<'ctx>(
 
     let return_target = caller.basic_blocks.push(BasicBlockData {
         note: Some("inlined return destination".into()),
-        statements: vec![Statement {
-            kind: StatementKind::Assign(
-                destination.clone(),
-                Rvalue::Use(Operand::move_(Place::from_local(return_local))),
-            ),
-            span,
-        }],
+        statements: vec![
+            Statement {
+                kind: StatementKind::SourceScope(source_scope),
+                span,
+            },
+            Statement {
+                kind: StatementKind::Assign(
+                    destination.clone(),
+                    Rvalue::Use(Operand::move_(Place::from_local(return_local))),
+                ),
+                span,
+            },
+        ],
         terminator: Some(Terminator {
             kind: TerminatorKind::Goto { target },
             span,
@@ -387,6 +405,50 @@ struct CallSite<'ctx> {
     target: BasicBlockId,
     unwind: CallUnwindAction,
     span: crate::span::Span,
+    source_scope: SourceScopeId,
+}
+
+fn source_scope_at_block_end(block: &BasicBlockData<'_>) -> SourceScopeId {
+    block
+        .statements
+        .iter()
+        .rev()
+        .find_map(|statement| match statement.kind {
+            StatementKind::SourceScope(scope) => Some(scope),
+            _ => None,
+        })
+        .unwrap_or_else(|| SourceScopeId::from_raw(0))
+}
+
+/// Copy the callee's logical scope tree into the caller. The callee's physical
+/// root becomes a child of the logical scope containing the callsite.
+fn remap_source_scopes(
+    caller: &mut Body<'_>,
+    callee: &Body<'_>,
+    site: &CallSite<'_>,
+) -> Vec<SourceScopeId> {
+    debug_assert!(!callee.source_scopes.is_empty());
+    let mut scope_map = Vec::with_capacity(callee.source_scopes.len());
+    for (scope, data) in callee.source_scopes.iter_enumerated() {
+        let mapped = if scope.index() == 0 {
+            caller.source_scopes.push(SourceScopeData {
+                definition: data.definition,
+                callsite: Some(site.span),
+                parent: Some(site.source_scope),
+            })
+        } else {
+            let parent = data
+                .parent
+                .expect("non-root source scope must have a parent");
+            caller.source_scopes.push(SourceScopeData {
+                definition: data.definition,
+                callsite: data.callsite,
+                parent: Some(scope_map[parent.index()]),
+            })
+        };
+        scope_map.push(mapped);
+    }
+    scope_map
 }
 
 /// Extract callee definition ID and generic args from a call operand.
@@ -423,7 +485,12 @@ pub(crate) fn is_body_small(body: &Body<'_>) -> bool {
         .basic_blocks
         .iter()
         .flat_map(|bb| &bb.statements)
-        .filter(|statement| !matches!(statement.kind, StatementKind::StorageLive(_)))
+        .filter(|statement| {
+            !matches!(
+                statement.kind,
+                StatementKind::SourceScope(_) | StatementKind::StorageLive(_)
+            )
+        })
         .count();
 
     stmt_count <= SMALL_BODY_STMT_LIMIT
@@ -447,10 +514,14 @@ fn remap_statement<'ctx>(
     gcx: Gcx<'ctx>,
     stmt: &Statement<'ctx>,
     local_map: &[LocalId],
+    source_scope_map: &[SourceScopeId],
     gen_args: GenericArguments<'ctx>,
 ) -> Statement<'ctx> {
     Statement {
         kind: match &stmt.kind {
+            StatementKind::SourceScope(scope) => {
+                StatementKind::SourceScope(source_scope_map[scope.index()])
+            }
             StatementKind::StorageLive(local) => {
                 StatementKind::StorageLive(local_map[local.index()])
             }
@@ -801,12 +872,17 @@ fn instantiate_mono_ty<'ctx>(
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_inline_return, remap_terminator};
+    use super::{
+        CallSite, prepare_inline_return, remap_source_scopes, remap_statement, remap_terminator,
+    };
+    use crate::PackageIndex;
+    use crate::hir::DefinitionID;
     use crate::mir::{
-        CallUnwindAction, LocalDecl, LocalKind, Operand, Place, PlaceElem, Rvalue, StatementKind,
-        Terminator, TerminatorKind, test_support,
+        CallUnwindAction, LocalDecl, LocalKind, Operand, Place, PlaceElem, Rvalue, SourceScopeData,
+        SourceScopeId, Statement, StatementKind, Terminator, TerminatorKind, test_support,
     };
     use crate::sema::models::GenericArguments;
+    use crate::sema::resolve::models::DefinitionIndex;
 
     #[test]
     fn inlined_resume_targets_the_callers_cleanup_edge() {
@@ -860,12 +936,13 @@ mod tests {
                 GenericArguments::empty(),
                 target,
                 callee_return.span,
+                crate::mir::SourceScopeId::from_raw(0),
             );
 
             assert_ne!(mapped_return, destination.local);
             let block = &caller.basic_blocks[return_target];
             assert!(matches!(
-                &block.statements[0].kind,
+                &block.statements[1].kind,
                 StatementKind::Assign(place, Rvalue::Use(Operand::Move(source)))
                     if place == &destination
                         && *source == Place::from_local(mapped_return)
@@ -873,6 +950,72 @@ mod tests {
             assert!(matches!(
                 block.terminator.as_ref().map(|term| &term.kind),
                 Some(TerminatorKind::Goto { target: actual }) if *actual == target
+            ));
+        });
+    }
+
+    #[test]
+    fn nested_inline_source_scopes_are_reparented_at_the_callsite() {
+        test_support::with_test_gcx(|gcx| {
+            let mut caller = test_support::minimal_body(gcx);
+            let caller_inline_definition =
+                DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(10));
+            let caller_inline_scope = caller.source_scopes.push(SourceScopeData {
+                definition: caller_inline_definition,
+                callsite: Some(caller.locals[caller.return_local].span),
+                parent: Some(SourceScopeId::from_raw(0)),
+            });
+
+            let mut callee = test_support::minimal_body(gcx);
+            let callee_definition =
+                DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(20));
+            callee.owner = callee_definition;
+            callee.source_scopes[SourceScopeId::from_raw(0)].definition = callee_definition;
+            let nested_definition =
+                DefinitionID::new(PackageIndex::new(2), DefinitionIndex::from_raw(30));
+            let nested_scope = callee.source_scopes.push(SourceScopeData {
+                definition: nested_definition,
+                callsite: Some(callee.locals[callee.return_local].span),
+                parent: Some(SourceScopeId::from_raw(0)),
+            });
+
+            let span = caller.locals[caller.return_local].span;
+            let site = CallSite {
+                caller_block: caller.start_block,
+                callee_id: callee_definition,
+                gen_args: GenericArguments::empty(),
+                args: Vec::new(),
+                destination: Place::from_local(caller.return_local),
+                target: caller.start_block,
+                unwind: CallUnwindAction::Terminate,
+                span,
+                source_scope: caller_inline_scope,
+            };
+            let scope_map = remap_source_scopes(&mut caller, &callee, &site);
+
+            assert_eq!(
+                caller.source_scopes[scope_map[0]].parent,
+                Some(caller_inline_scope)
+            );
+            assert_eq!(
+                caller.source_scopes[scope_map[nested_scope.index()]].parent,
+                Some(scope_map[0])
+            );
+            assert_eq!(
+                caller.source_scopes[scope_map[nested_scope.index()]].definition,
+                nested_definition
+            );
+
+            let marker = Statement {
+                kind: StatementKind::SourceScope(nested_scope),
+                span,
+            };
+            let remapped =
+                remap_statement(gcx, &marker, &[], &scope_map, GenericArguments::empty());
+            assert!(matches!(
+                remapped.kind,
+                StatementKind::SourceScope(scope)
+                    if scope == scope_map[nested_scope.index()]
             ));
         });
     }
