@@ -68,6 +68,18 @@ pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileR
 /// Note: escape::compute_escape_summaries must be called before these passes
 /// to enable interprocedural escape analysis.
 pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+    // Escaping source bindings must be heapified before async lowering moves
+    // Copy locals into the coroutine frame. Otherwise a loop declaration would
+    // reuse one frame field on every poll, losing its StorageLive boundary
+    // before the regular post-lowering escape pass can act on it.
+    if body.is_async {
+        let mut pre_async_passes: Vec<Box<dyn MirPass>> = vec![
+            Box::new(escape::EscapeAnalysis),
+            Box::new(escape::ApplyEscapeAnalysis),
+        ];
+        run_passes(gcx, body, &mut pre_async_passes)?;
+    }
+
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(async_transform::AsyncTransform),
         Box::new(devirtualize::DevirtualizeStaticCalls),

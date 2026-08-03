@@ -589,6 +589,13 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         }
     }
 
+    fn push_storage_live(&mut self, block: BasicBlockId, local: LocalId, span: Span) {
+        self.body.basic_blocks[block].statements.push(Statement {
+            kind: StatementKind::StorageLive(local),
+            span,
+        });
+    }
+
     fn push_task_token_assignment(
         &mut self,
         block: BasicBlockId,

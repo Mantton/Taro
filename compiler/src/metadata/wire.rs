@@ -1049,6 +1049,7 @@ pub struct StatementWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StatementKindWire {
+    StorageLive(u32),
     Assign(PlaceWire, RvalueWire),
     ShadowResync(Vec<u32>),
     GcSafepoint,
@@ -3917,6 +3918,9 @@ pub fn rvalue_from_wire<'a>(gcx: GlobalContext<'a>, v: &RvalueWire) -> mir::Rval
 pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
     StatementWire {
         kind: match &v.kind {
+            mir::StatementKind::StorageLive(local) => {
+                StatementKindWire::StorageLive(local.index() as u32)
+            }
             mir::StatementKind::Assign(place, rvalue) => {
                 StatementKindWire::Assign(place_to_wire(place), rvalue_to_wire(rvalue))
             }
@@ -3944,6 +3948,9 @@ pub fn statement_from_wire<'a>(
 ) -> mir::Statement<'a> {
     mir::Statement {
         kind: match &v.kind {
+            StatementKindWire::StorageLive(local) => {
+                mir::StatementKind::StorageLive(mir::LocalId::from_raw(*local))
+            }
             StatementKindWire::Assign(place, rvalue) => mir::StatementKind::Assign(
                 place_from_wire(gcx, place),
                 rvalue_from_wire(gcx, rvalue),

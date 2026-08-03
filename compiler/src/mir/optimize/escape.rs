@@ -593,11 +593,15 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
         }
 
         rewrite_fresh_heapified_initializations(body, &heapified);
+        let declaration_allocated = materialize_heapified_storage_lives(body, &heapified);
 
         let span = body.locals[body.return_local].span;
         let mut allocs: Vec<Statement<'ctx>> = Vec::new();
         for (idx, ty) in heapified.iter().enumerate() {
             let Some(old_ty) = ty else { continue };
+            if declaration_allocated[idx] {
+                continue;
+            }
             let place = Place::from_local(LocalId::from_raw(idx as u32));
             allocs.push(Statement {
                 kind: StatementKind::Assign(place, Rvalue::Alloc { ty: *old_ty }),
@@ -633,6 +637,36 @@ impl<'ctx> MirPass<'ctx> for ApplyEscapeAnalysis {
     }
 }
 
+/// Replaces source binding boundaries with allocations for heapified locals.
+///
+/// A marker in a loop executes once per iteration, so each source binding gets
+/// distinct storage. Locals without a marker are compiler-generated or
+/// parameter replacements and retain the entry-block allocation fallback.
+fn materialize_heapified_storage_lives<'ctx>(
+    body: &mut Body<'ctx>,
+    heapified: &[Option<Ty<'ctx>>],
+) -> Vec<bool> {
+    let mut declaration_allocated = vec![false; heapified.len()];
+
+    for block in &mut body.basic_blocks {
+        for statement in &mut block.statements {
+            let StatementKind::StorageLive(local) = &statement.kind else {
+                continue;
+            };
+            let local = *local;
+            let Some(pointee_ty) = heapified.get(local.index()).and_then(|ty| *ty) else {
+                continue;
+            };
+
+            declaration_allocated[local.index()] = true;
+            statement.kind =
+                StatementKind::Assign(Place::from_local(local), Rvalue::Alloc { ty: pointee_ty });
+        }
+    }
+
+    declaration_allocated
+}
+
 fn rewrite_fresh_heapified_initializations<'ctx>(
     body: &mut Body<'ctx>,
     heapified: &[Option<Ty<'ctx>>],
@@ -648,6 +682,13 @@ fn rewrite_fresh_heapified_initializations<'ctx>(
         for stmt in old_statements {
             let span = stmt.span;
             match stmt.kind {
+                StatementKind::StorageLive(local) => {
+                    assigned.remove(&local);
+                    new_statements.push(Statement {
+                        kind: StatementKind::StorageLive(local),
+                        span,
+                    });
+                }
                 StatementKind::Assign(destination, rvalue) => {
                     if let Some(pointee_ty) =
                         heapified_direct_deref_pointee_ty(&destination, heapified)
@@ -797,10 +838,18 @@ fn apply_heapified_statement_def<'ctx>(
     heapified: &[Option<Ty<'ctx>>],
     assigned: &mut FxHashSet<LocalId>,
 ) {
-    if let StatementKind::Assign(destination, _) = &stmt.kind {
-        if heapified_direct_deref_pointee_ty(destination, heapified).is_some() {
-            assigned.insert(destination.local);
+    match &stmt.kind {
+        StatementKind::StorageLive(local) => {
+            if heapified.get(local.index()).and_then(|ty| *ty).is_some() {
+                assigned.remove(local);
+            }
         }
+        StatementKind::Assign(destination, _) => {
+            if heapified_direct_deref_pointee_ty(destination, heapified).is_some() {
+                assigned.insert(destination.local);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -957,6 +1006,7 @@ fn rewrite_statement<'ctx>(
     param_replacements: &[Option<LocalId>],
 ) {
     match &mut stmt.kind {
+        StatementKind::StorageLive(_) => {}
         StatementKind::Assign(place, rvalue) => {
             rewrite_place(place, heapified, param_replacements);
             rewrite_rvalue(rvalue, heapified, param_replacements);
@@ -1032,6 +1082,12 @@ fn rewrite_terminator<'ctx>(
             }
             rewrite_place(destination, heapified, param_replacements);
         }
+        TerminatorKind::Yield {
+            value, resume_arg, ..
+        } => {
+            rewrite_operand(value, heapified, param_replacements);
+            rewrite_place(resume_arg, heapified, param_replacements);
+        }
         _ => {}
     }
 }
@@ -1060,12 +1116,14 @@ fn rewrite_place<'ctx>(
 
 #[cfg(test)]
 mod tests {
-    use super::analyze_function_for_summary;
+    use super::{ApplyEscapeAnalysis, analyze_function_for_summary};
     use crate::{
         hir::Mutability,
         mir::{
-            AggregateKind, CastKind, LocalDecl, LocalId, LocalKind, Operand, Place, PlaceElem,
-            Rvalue, Statement, StatementKind,
+            AggregateKind, BasicBlockData, CastKind, Constant, ConstantKind, LocalDecl, LocalId,
+            LocalKind, Operand, Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator,
+            TerminatorKind,
+            optimize::MirPass,
             test_support::{minimal_body, push_temp, with_test_gcx},
         },
         sema::models::{Ty, TyKind},
@@ -1083,6 +1141,181 @@ mod tests {
             name: None,
             span,
         })
+    }
+
+    fn push_user<'ctx>(body: &mut crate::mir::Body<'ctx>, ty: Ty<'ctx>) -> LocalId {
+        let span = body.locals[body.return_local].span;
+        body.escape_locals.push(false);
+        body.locals.push(LocalDecl {
+            ty,
+            kind: LocalKind::User,
+            mutable: true,
+            name: None,
+            span,
+        })
+    }
+
+    fn integer<'ctx>(ty: Ty<'ctx>, value: u64) -> Rvalue<'ctx> {
+        Rvalue::Use(Operand::Constant(Constant {
+            ty,
+            value: ConstantKind::Integer(value),
+        }))
+    }
+
+    #[test]
+    fn heapified_storage_live_allocates_inside_loop() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let local = push_user(&mut body, gcx.types.int64);
+            body.escape_locals[local.index()] = true;
+
+            let loop_block = body.basic_blocks.push(BasicBlockData {
+                note: Some("loop declaration".into()),
+                statements: vec![
+                    Statement {
+                        kind: StatementKind::StorageLive(local),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(local),
+                            integer(gcx.types.int64, 1),
+                        ),
+                        span,
+                    },
+                ],
+                terminator: None,
+            });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: loop_block },
+                span,
+            });
+            body.basic_blocks[loop_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: loop_block },
+                span,
+            });
+
+            assert!(ApplyEscapeAnalysis.run(gcx, &mut body).is_ok());
+
+            assert!(
+                body.basic_blocks[body.start_block]
+                    .statements
+                    .iter()
+                    .all(|statement| !matches!(
+                        &statement.kind,
+                        StatementKind::Assign(destination, Rvalue::Alloc { .. })
+                            if destination.local == local
+                    )),
+                "source binding allocation must not be hoisted to entry"
+            );
+            assert!(matches!(
+                &body.basic_blocks[loop_block].statements[0].kind,
+                StatementKind::Assign(destination, Rvalue::Alloc { ty })
+                    if destination.local == local
+                        && destination.projection.is_empty()
+                        && *ty == gcx.types.int64
+            ));
+            assert!(
+                body.basic_blocks[loop_block]
+                    .statements
+                    .iter()
+                    .any(|statement| {
+                        matches!(
+                            &statement.kind,
+                            StatementKind::Assign(
+                                destination,
+                                Rvalue::Use(Operand::CopyWith(_, modifiers)),
+                            ) if destination.local == local
+                                && destination.projection == [PlaceElem::Deref]
+                                && modifiers.init
+                                && modifiers.take
+                        )
+                    })
+            );
+        });
+    }
+
+    #[test]
+    fn heapified_reassignment_reuses_declaration_allocation() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let local = push_user(&mut body, gcx.types.int64);
+            let reference_ty = Ty::new(
+                TyKind::Reference(gcx.types.int64, Mutability::Immutable),
+                gcx,
+            );
+            let reference = push_temp(&mut body, reference_ty);
+            body.escape_locals[local.index()] = true;
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::StorageLive(local),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(local),
+                        integer(gcx.types.int64, 1),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(reference),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place::from_local(local),
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(local),
+                        integer(gcx.types.int64, 2),
+                    ),
+                    span,
+                },
+            ]);
+
+            assert!(ApplyEscapeAnalysis.run(gcx, &mut body).is_ok());
+
+            let allocation_count = body
+                .basic_blocks
+                .iter()
+                .flat_map(|block| &block.statements)
+                .filter(|statement| {
+                    matches!(
+                        &statement.kind,
+                        StatementKind::Assign(destination, Rvalue::Alloc { .. })
+                            if destination.local == local
+                    )
+                })
+                .count();
+            assert_eq!(
+                allocation_count, 1,
+                "reassignment must reuse the binding cell"
+            );
+            assert!(
+                body.basic_blocks[body.start_block]
+                    .statements
+                    .iter()
+                    .any(|statement| {
+                        matches!(
+                            &statement.kind,
+                            StatementKind::Assign(
+                                destination,
+                                Rvalue::Use(Operand::Constant(Constant {
+                                    value: ConstantKind::Integer(2),
+                                    ..
+                                })),
+                            ) if destination.local == local
+                                && destination.projection == [PlaceElem::Deref]
+                        )
+                    })
+            );
+        });
     }
 
     #[test]

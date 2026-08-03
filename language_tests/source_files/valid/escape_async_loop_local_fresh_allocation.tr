@@ -1,0 +1,44 @@
+struct AsyncEscapeRefNode {
+    value: &int64
+    next: Optional[&AsyncEscapeRefNode]
+}
+
+func buildAsyncEscapeRefChain() async -> Optional[&AsyncEscapeRefNode] {
+    var head: Optional[&AsyncEscapeRefNode] = .none
+    var i = 0 as int64
+    while i < 3 {
+        var value = i
+        let node = AsyncEscapeRefNode { value: &value, next: head }
+        head = .some(&node)
+
+        // Keep the address-taken Copy binding live across suspension so async
+        // lowering places it in the coroutine frame.
+        await std.testing.yieldNow()
+        if value > 100 {
+            std.printf("unreachable %v\n", value)
+        }
+        i += 1
+    }
+    return head
+}
+
+func main() async {
+    var cursor = await buildAsyncEscapeRefChain()
+    var steps = 0 as int64
+    std.printf("async:")
+    while steps < 5 {
+        match cursor {
+            case .some(node) => {
+                std.printf(" %v", *node.value)
+                cursor = node.next
+            }
+            case .none => break
+        }
+        steps += 1
+    }
+
+    match cursor {
+        case .none => std.printf(" end\n")
+        case .some(_) => std.printf(" cycle\n")
+    }
+}

@@ -408,7 +408,8 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                         mark_place_used(place, &mut used);
                     }
                 }
-                StatementKind::GcSafepoint | StatementKind::Nop => {}
+                StatementKind::StorageLive(_) | StatementKind::GcSafepoint | StatementKind::Nop => {
+                }
             }
         }
 
@@ -549,6 +550,9 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
     for block in body.basic_blocks.iter_mut() {
         for stmt in block.statements.iter_mut() {
             stmt.kind = match &stmt.kind {
+                StatementKind::StorageLive(local) => remap[*local]
+                    .map(StatementKind::StorageLive)
+                    .unwrap_or(StatementKind::Nop),
                 StatementKind::Assign(dest, rv) => {
                     if let Some(new_local) = remap[dest.local] {
                         StatementKind::Assign(

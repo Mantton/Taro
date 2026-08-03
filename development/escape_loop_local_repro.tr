@@ -1,0 +1,53 @@
+// Repro for: an escaping `let` inside a loop shares one heap cell.
+// See development/escape_loop_local_bug.md.
+//
+// NOT in language_tests/ yet, because it fails today and the harness has no
+// expected-failure directive. Move it to
+// language_tests/source_files/valid/escape_loop_local.tr — with the expected
+// output below in outputs/valid/escape_loop_local.out — as part of the fix.
+//
+// The walk is deliberately bounded. The bug turns the chain into a node whose
+// `next` points at itself, so an unbounded walk never terminates, and the
+// harness runs `taro run` without a timeout.
+
+struct Node {
+    value: int64
+    next: Optional[&Node]
+}
+
+func main() {
+    // Each iteration declares a new `node`, so each escaping one needs storage
+    // of its own.
+    var head: Optional[&Node] = .none
+    var i = 0 as int64
+    while i < 4 {
+        let node = Node { value: i, next: head }
+        head = .some(&node)
+        i += 1
+    }
+
+    var steps = 0
+    var cursor = head
+    while steps < 10 {
+        match cursor {
+            case .some(node) => {
+                std.printf("step %v value %v\n", steps, node.value)
+                cursor = node.next
+            }
+            case .none => {
+                std.printf("end after %v steps\n", steps)
+                break
+            }
+        }
+        steps += 1
+    }
+
+    // The other direction: taking the address of a `var` must not start a new
+    // binding on reassignment, or a live reference is stranded on stale data.
+    var counter = 1 as int64
+    let alias = &mut counter
+    counter = 2
+    std.printf("alias sees %v\n", *alias)
+    *alias = 3
+    std.printf("counter is %v\n", counter)
+}

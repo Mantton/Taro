@@ -1,0 +1,4 @@
+loop: 3 2 1 0 end
+nested: 11 10 1 0 end
+closure: 2 1 0 end
+mutation: 2

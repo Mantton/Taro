@@ -149,7 +149,8 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                         invalid[local.index()] = true;
                     }
                 }
-                StatementKind::GcSafepoint | StatementKind::Nop => {}
+                StatementKind::StorageLive(_) | StatementKind::GcSafepoint | StatementKind::Nop => {
+                }
             }
         }
 

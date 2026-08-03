@@ -419,7 +419,12 @@ pub(crate) fn is_body_small(body: &Body<'_>) -> bool {
         return false;
     }
 
-    let stmt_count: usize = body.basic_blocks.iter().map(|bb| bb.statements.len()).sum();
+    let stmt_count = body
+        .basic_blocks
+        .iter()
+        .flat_map(|bb| &bb.statements)
+        .filter(|statement| !matches!(statement.kind, StatementKind::StorageLive(_)))
+        .count();
 
     stmt_count <= SMALL_BODY_STMT_LIMIT
 }
@@ -446,6 +451,9 @@ fn remap_statement<'ctx>(
 ) -> Statement<'ctx> {
     Statement {
         kind: match &stmt.kind {
+            StatementKind::StorageLive(local) => {
+                StatementKind::StorageLive(local_map[local.index()])
+            }
             StatementKind::Assign(place, rvalue) => StatementKind::Assign(
                 remap_place(gcx, place, local_map, gen_args),
                 remap_rvalue(gcx, rvalue, local_map, gen_args),

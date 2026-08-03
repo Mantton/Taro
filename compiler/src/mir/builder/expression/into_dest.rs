@@ -3932,6 +3932,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             // This ensures the body can find the local regardless of which
             // alternative's NodeID it references.
             self.locals.insert(binding.local, local);
+            // A shared or-pattern local still begins a distinct binding on
+            // every alternative that reaches the arm.
+            self.push_storage_live(block, local, binding.span);
 
             let is_deref_place = src_place
                 .projection

@@ -3686,6 +3686,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         stmt: &mir::Statement<'gcx>,
     ) -> CompileResult<()> {
         match &stmt.kind {
+            mir::StatementKind::StorageLive(_) => {}
             mir::StatementKind::Assign(place, rvalue) => {
                 if self.try_lower_large_place_move(body, locals, place, rvalue)? {
                     return Ok(());

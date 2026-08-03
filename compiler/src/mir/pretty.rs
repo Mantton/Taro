@@ -39,6 +39,9 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
 
     fn write_statement(&self, stmt: &Statement<'ctx>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &stmt.kind {
+            StatementKind::StorageLive(local) => {
+                write!(f, "storage_live(%{:?})", local)
+            }
             StatementKind::Assign(place, rvalue) => {
                 self.write_place(place, f)?;
                 write!(f, " = ")?;

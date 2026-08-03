@@ -100,6 +100,12 @@ pub struct Statement<'ctx> {
 
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
+    /// Starts a new source-level binding lifetime for `local`.
+    ///
+    /// Unlike an assignment, this marker runs again whenever control re-enters
+    /// a declaration (for example, on each loop iteration). Passes that move a
+    /// local to stable storage use it to distinguish rebinding from mutation.
+    StorageLive(LocalId),
     Assign(Place<'ctx>, Rvalue<'ctx>),
     ShadowResync(Vec<LocalId>),
     GcSafepoint,
@@ -323,7 +329,8 @@ pub fn for_each_function_constant_in_body<'ctx>(
                 StatementKind::Assign(_, rvalue) => {
                     for_each_function_constant_in_rvalue(rvalue, &mut visit);
                 }
-                StatementKind::ShadowResync(_)
+                StatementKind::StorageLive(_)
+                | StatementKind::ShadowResync(_)
                 | StatementKind::GcSafepoint
                 | StatementKind::Nop
                 | StatementKind::SetDiscriminant { .. } => {}

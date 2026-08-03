@@ -297,6 +297,7 @@ impl<'ctx> StructureValidator<'ctx, '_> {
 
     fn check_statement(&mut self, statement: &crate::mir::Statement<'ctx>) {
         match &statement.kind {
+            StatementKind::StorageLive(local) => self.check_local(*local, statement.span),
             StatementKind::Assign(place, rvalue) => {
                 self.check_place(place, statement.span);
                 self.check_rvalue(rvalue, statement.span);
@@ -1262,6 +1263,9 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
 
         for stmt in &block.statements {
             match &stmt.kind {
+                StatementKind::StorageLive(local) => {
+                    state.reinitialize(*local);
+                }
                 StatementKind::Assign(dest, rvalue) => {
                     check_rvalue_uses(gcx, body, &state, rvalue, stmt.span)?;
                     state.reinitialize(dest.local);
@@ -1671,6 +1675,10 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
 
         for (idx, stmt) in statements.iter().enumerate() {
             match &stmt.kind {
+                StatementKind::StorageLive(local) => {
+                    kill_borrower(*local, &mut active_borrows);
+                    active_borrows.remove(local);
+                }
                 StatementKind::Assign(dest, rvalue) => {
                     check_rvalue_moves_borrowed(
                         gcx,
@@ -1902,6 +1910,9 @@ fn apply_statement_liveness<'ctx>(
     live: &mut FxHashSet<LocalId>,
 ) {
     match &stmt.kind {
+        StatementKind::StorageLive(local) => {
+            live.remove(local);
+        }
         StatementKind::Assign(dest, rvalue) => {
             if dest.projection.is_empty() {
                 live.remove(&dest.local);

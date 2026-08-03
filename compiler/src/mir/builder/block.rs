@@ -169,6 +169,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     pattern.span,
                 );
                 self.locals.insert(*pat_id, local);
+                self.push_storage_live(block, local, pattern.span);
                 if self.is_task_ty(*ty) {
                     self.register_task_cleanup(local, block, pattern.span, false);
                 }

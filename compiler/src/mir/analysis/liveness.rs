@@ -79,6 +79,9 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
         // Statements
         for stmt in block.statements.iter().rev() {
             match &stmt.kind {
+                StatementKind::StorageLive(local) => {
+                    in_set.remove(local);
+                }
                 StatementKind::Assign(dest, rvalue) => {
                     if dest.projection.is_empty() {
                         in_set.remove(&dest.local);

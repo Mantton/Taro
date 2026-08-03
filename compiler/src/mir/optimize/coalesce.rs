@@ -211,7 +211,9 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
                             use_counts[place.local.index()] += 1;
                         }
                     }
-                    StatementKind::GcSafepoint | StatementKind::Nop => {}
+                    StatementKind::StorageLive(_)
+                    | StatementKind::GcSafepoint
+                    | StatementKind::Nop => {}
                 }
             }
 
@@ -360,7 +362,9 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                             use_counts[place.local.index()] += 1;
                         }
                     }
-                    StatementKind::GcSafepoint | StatementKind::Nop => {}
+                    StatementKind::StorageLive(_)
+                    | StatementKind::GcSafepoint
+                    | StatementKind::Nop => {}
                 }
             }
 
@@ -500,7 +504,8 @@ fn gap_is_safe_source(
                 }
                 return false;
             }
-            StatementKind::GcSafepoint
+            StatementKind::StorageLive(_)
+            | StatementKind::GcSafepoint
             | StatementKind::SetDiscriminant { .. }
             | StatementKind::Nop => {
                 return false;
@@ -735,6 +740,7 @@ fn replace_stmt_operands<'ctx>(
     replace_map: &[Option<Replacement<'ctx>>],
 ) {
     match &mut stmt.kind {
+        StatementKind::StorageLive(_) => {}
         StatementKind::Assign(_, rv) => replace_rvalue_operands(rv, replace_map),
         StatementKind::ShadowResync(locals) => {
             for local in locals {

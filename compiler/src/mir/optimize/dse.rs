@@ -83,6 +83,9 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
 
             for (idx, stmt) in data.statements.iter().enumerate().rev() {
                 match &stmt.kind {
+                    StatementKind::StorageLive(local) => {
+                        live.remove(local);
+                    }
                     StatementKind::Assign(dest, rvalue) => {
                         // Check if assignment is needed (destination is live)
                         let needed = if dest.projection.is_empty() {

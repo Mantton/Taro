@@ -299,6 +299,11 @@ fn apply_statement_points_to<'ctx>(
     state: &mut [FxHashSet<LocalId>],
     alloc_defs: &[usize],
 ) {
+    if let StatementKind::StorageLive(local) = &stmt.kind {
+        state[local.index()].clear();
+        return;
+    }
+
     let StatementKind::Assign(dest, rvalue) = &stmt.kind else {
         return;
     };
