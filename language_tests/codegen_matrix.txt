@@ -28,6 +28,7 @@ valid/async_spawn_main.tr
 valid/panic_unwind_defer_lifo.tr
 valid/panic_unwind_double_panic.tr
 valid/panic_unwind_nested_defer.tr
+valid/panic_stack_named_frame.tr
 valid/task_deadlock_diagnostics.tr
 
 # Existentials and data layout

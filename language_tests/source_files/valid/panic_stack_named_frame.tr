@@ -1,0 +1,15 @@
+// EXPECT_EXIT: 101
+// EXPECT_STDERR_CONTAINS: panic: named-frame
+// EXPECT_STDERR_CONTAINS: taro stack:
+// EXPECT_STDERR_CONTAINS: namedPanicFrame
+@noinline
+func namedPanicFrame(_ value: int64) -> int64 {
+    if value > 0 {
+        panic("named-frame")
+    }
+    return value
+}
+
+func main() {
+    std.printf("%v\n", namedPanicFrame(1) + 1)
+}

@@ -392,7 +392,16 @@ fn parse_frame_header(line: &str) -> Option<(usize, &str)> {
     Some((index, symbol))
 }
 
-fn classify_frame(symbol: &str) -> FrameKind {
+fn has_taro_source_location(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        let Some(location) = line.trim_start().strip_prefix("at ") else {
+            return false;
+        };
+        location.ends_with(".tr") || location.contains(".tr:")
+    })
+}
+
+fn classify_frame(symbol: &str, lines: &[String]) -> FrameKind {
     let symbol = symbol.trim_start_matches('_');
 
     if symbol == "taro_start" {
@@ -407,6 +416,14 @@ fn classify_frame(symbol: &str) -> FrameKind {
     }
     if symbol.contains("__bt_syn__") {
         return FrameKind::Synthetic;
+    }
+
+    // With line-table debug information the resolver reports the DWARF short
+    // name (`level3`) instead of Taro's tagged linkage symbol. The source file
+    // is then the authoritative language boundary and remains available even
+    // when the short name carries no package or frame-kind marker.
+    if has_taro_source_location(lines) {
+        return FrameKind::User;
     }
 
     if symbol.starts_with("taro_runtime::")
@@ -457,11 +474,12 @@ fn parse_backtrace_frames(backtrace: &str) -> Vec<ParsedFrame> {
             if let (Some(prev_index), Some(prev_symbol)) =
                 (current_index.take(), current_symbol.take())
             {
+                let lines = std::mem::take(&mut current_lines);
                 frames.push(ParsedFrame {
                     _index: prev_index,
-                    kind: classify_frame(&prev_symbol),
+                    kind: classify_frame(&prev_symbol, &lines),
                     symbol: prev_symbol,
-                    lines: std::mem::take(&mut current_lines),
+                    lines,
                 });
             }
             current_index = Some(index);
@@ -473,9 +491,10 @@ fn parse_backtrace_frames(backtrace: &str) -> Vec<ParsedFrame> {
     }
 
     if let (Some(last_index), Some(last_symbol)) = (current_index, current_symbol) {
+        let kind = classify_frame(&last_symbol, &current_lines);
         frames.push(ParsedFrame {
             _index: last_index,
-            kind: classify_frame(&last_symbol),
+            kind,
             symbol: last_symbol,
             lines: current_lines,
         });
@@ -1333,6 +1352,22 @@ mod tests {
         assert!(kinds.contains(&FrameKind::Runtime));
         assert!(kinds.contains(&FrameKind::Toolchain));
         assert!(kinds.contains(&FrameKind::Native));
+    }
+
+    #[test]
+    fn parse_backtrace_frames_classifies_short_names_from_taro_locations() {
+        let raw = r#"   4: 0x1004 - level3
+                       at /tmp/panictrace.tr:3:9
+   5: 0x1005 - level2
+                       at /tmp/panictrace.tr:8:43
+   6: 0x1006 - _taro_start"#;
+        let frames = parse_backtrace_frames(raw);
+
+        assert_eq!(frames[0].symbol, "level3");
+        assert_eq!(frames[0].kind, FrameKind::User);
+        assert_eq!(frames[1].symbol, "level2");
+        assert_eq!(frames[1].kind, FrameKind::User);
+        assert!(render_native_taro_stack(raw).contains("level3"));
     }
 
     #[test]
