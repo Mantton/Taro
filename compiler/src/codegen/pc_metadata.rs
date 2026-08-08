@@ -66,6 +66,16 @@ pub(crate) struct PcRootLocation {
     pub nodes: Vec<GcLayoutNode>,
 }
 
+/// Frame-local discriminator written immediately before a collecting site.
+/// Records at one machine PC remain distinct and the runtime selects the one
+/// whose discriminator value was published on the executed control-flow path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct PcSafepointSelector {
+    pub dwarf_register: u16,
+    pub frame_offset: i32,
+    pub value: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PcLogicalFrame {
     pub function: String,
@@ -78,6 +88,7 @@ pub(crate) struct PcLogicalFrame {
 pub(crate) struct PcRecord {
     pub pc_offset: u32,
     pub kind: StackMapSiteKind,
+    pub selector: PcSafepointSelector,
     pub roots: Vec<PcRootLocation>,
     pub logical_frames: Vec<PcLogicalFrame>,
 }
@@ -159,11 +170,14 @@ impl<'ctx> ObjectBuilder<'ctx> {
             &[
                 i64.into(),
                 i64.into(),
+                i64.into(),
                 i32.into(),
                 i32.into(),
                 i32.into(),
+                i32.into(),
+                i16.into(),
                 i8.into(),
-                i8.array_type(3).into(),
+                i8.into(),
             ],
             false,
         );
@@ -395,7 +409,6 @@ impl<'ctx> ObjectBuilder<'ctx> {
     }
 
     fn records(&mut self, records: &[PcRecord]) -> PointerValue<'ctx> {
-        let reserved = self.context.i8_type().array_type(3).const_zero();
         let values: Vec<_> = records
             .iter()
             .map(|record| {
@@ -404,6 +417,10 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 self.types.record.const_named_struct(&[
                     self.relative(roots).into(),
                     self.relative(frames).into(),
+                    self.context
+                        .i64_type()
+                        .const_int(record.selector.value, false)
+                        .into(),
                     self.context
                         .i32_type()
                         .const_int(u64::from(record.pc_offset), false)
@@ -417,10 +434,18 @@ impl<'ctx> ObjectBuilder<'ctx> {
                         .const_int(record.logical_frames.len() as u64, false)
                         .into(),
                     self.context
+                        .i32_type()
+                        .const_int(record.selector.frame_offset as u32 as u64, false)
+                        .into(),
+                    self.context
+                        .i16_type()
+                        .const_int(u64::from(record.selector.dwarf_register), false)
+                        .into(),
+                    self.context
                         .i8_type()
                         .const_int(record.kind as u64, false)
                         .into(),
-                    reserved.into(),
+                    self.context.i8_type().const_zero().into(),
                 ])
             })
             .collect();
@@ -581,7 +606,7 @@ mod tests {
         assert_eq!(data.get_store_size(&root.as_any_type_enum()), 24);
         assert_eq!(data.get_store_size(&string.as_any_type_enum()), 16);
         assert_eq!(data.get_store_size(&frame.as_any_type_enum()), 40);
-        assert_eq!(data.get_store_size(&record.as_any_type_enum()), 32);
+        assert_eq!(data.get_store_size(&record.as_any_type_enum()), 48);
         assert_eq!(data.get_store_size(&function.as_any_type_enum()), 48);
         assert_eq!(data.get_store_size(&module.as_any_type_enum()), 24);
         assert_eq!(data.get_pointer_byte_size(None), 8);

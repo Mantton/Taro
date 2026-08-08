@@ -260,7 +260,9 @@ actually happens, and the poll became an inline flag load with a cold slow path.
 Per-call overhead fell from **12.5 ns to under 1 ns**.
 
 **GC roots moved to LLVM stack maps**, off a shadow stack the runtime maintained,
-which removed the per-function frame bookkeeping too.
+which removed the per-function frame bookkeeping too. Collecting frames now
+publish a site selector as well, so rootless and same-address safepoints resolve
+to the executed path instead of borrowing or unioning another path's roots.
 
 **`List` told the collector its length on every push and pop.** `__gc__set_buf_len`
 resolved the buffer to a span under that same global mutex, so a push/pop pair

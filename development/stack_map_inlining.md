@@ -21,11 +21,14 @@ Every ordinary or synthesized async function has two stored representations:
 2. **Final codegen MIR** has completed global passes and is the body lowered to
    LLVM.
 
-Metadata format 26 serializes both forms into separate stores. The inliner
+Metadata format 27 serializes both forms into separate stores. The inliner
 always reads canonical bodies, including for cached dependencies, so a source
 callee and the same attached callee produce the same decision. Retention is
 computed from canonical inline candidates while final bodies still needed for
-generic downstream codegen are retained independently.
+generic downstream codegen are retained independently. The ordinary-body
+retention bound is 115 cost units, matching O3's threshold plus the maximum loop
+and constant-argument bonuses; explicit-inline and generic bodies remain
+independent retention roots.
 
 The effective order is:
 
@@ -81,13 +84,13 @@ After MIR inlining and root-map emission, every physical function containing
 an entry/loop poll, managed or collecting-runtime call, allocation, blocking
 transition, or panic site is marked `noinline`, and LLVM tail-call elimination
 is disabled for that function. It also receives synchronous unwind metadata so
-the native walker can traverse the frame even when a rootless poll emitted no PC
-record. This is based on collecting-site presence, not record count: even a
-rootless poll must preserve an unwindable managed frame boundary. Without the
-tail-call barrier, the callee frame can disappear; without its unwind entry, the
-walk can stop there and hide mapped callers. Either failure loses arguments that
-a managed caller intentionally transferred to the callee. Functions with no
-collecting site remain eligible for LLVM inlining and tail-call optimization.
+the native walker can traverse the frame even when a poll has no roots. This is
+based on collecting-site presence, not root count: even a rootless poll must
+emit an empty record and preserve an unwindable managed frame boundary. Without
+the tail-call barrier, the callee frame can disappear; without its unwind entry,
+the walk can stop there and hide mapped callers. Either failure loses arguments
+that a managed caller intentionally transferred to the callee. Functions with
+no collecting site remain eligible for LLVM inlining and tail-call optimization.
 
 ## Precise roots
 
@@ -107,13 +110,19 @@ Root storage is keyed by `LocalId`, and each site selects its own subset:
 - allocations use values live after the allocation and values used across it;
 - panic sites use cleanup-live values and GC-bearing arguments.
 
-Records that resolve to one machine PC are merged by root union. The stack-map
-intrinsic is `nounwind`, so an enclosing unwind edge never converts it to an
-invalid LLVM `invoke`.
+Every collecting site emits a record, including rootless polls. A collecting
+physical frame has one selector slot, and each site volatile-stores a distinct
+nonzero value before its stack-map anchor. The runtime reads that value from the
+parked frame. Records that resolve to one machine PC therefore remain distinct
+instead of unioning typed roots from mutually exclusive paths; PC order selects
+only among machine duplicates of the observed selector. The stack-map intrinsic
+is `nounwind`, so an enclosing unwind edge never converts it to an invalid LLVM
+`invoke`. Blocking-call codegen publishes its selector and map before calling
+`__rt__gc_enter_blocking`, because that transition parks and walks the frame.
 
 ## Typed layout and PC metadata contract
 
-PC schema 3, pending-descriptor schema 2, and runtime ABI 14 share one indexed
+PC schema 4, pending-descriptor schema 3, and runtime ABI 15 share one indexed
 `GcLayoutNode` graph for stack, heap, static, and buffer traversal. The graph
 supports pointer, reference, aggregate, fixed-repeat, and tagged nodes. Tagged
 nodes visit only the variant selected by a 1-, 2-, 4-, or 8-byte discriminator;
@@ -128,9 +137,11 @@ address plus its exact descriptor rather than an untyped range.
 
 The PC sidecar remains a separate linked object. Normalization records exact
 machine-function bounds, attributes moved/duplicated records to their final
-function, and merges same-PC records. Layout nodes and recipes are copied and
-deduplicated inside the sidecar, so it never relocates against an internal
-layout symbol in another object file.
+function, and preserves selector-disambiguated same-PC records. It rejects
+selector-location disagreement and machine duplicates whose GC semantics have
+changed. Layout nodes and recipes are copied and deduplicated inside the
+sidecar, so it never relocates against an internal layout symbol in another
+object file.
 
 ## Runtime consequences
 
@@ -141,8 +152,11 @@ global collector lock. Mutators flush checked-out spans before safepoint
 publication, blocking, detach, or collection.
 
 Adaptive pacing uses 64 KiB per-mutator debt quanta, `TARO_GC_PERCENT`, and the
-soft `TARO_GC_MEMORY_LIMIT`. Sweep releases empty segments and, on Unix,
-`DontNeed`s free page runs. See `docs/async-runtime.md` for the full environment
+soft `TARO_GC_MEMORY_LIMIT`. Once surviving live data exceeds that limit, the
+percentage goal backs off by at least 1 MiB rather than remaining immediately
+due; future segment growth still receives one collect-and-scavenge pressure
+attempt. Sweep releases empty segments and, on Unix, `DontNeed`s only wholly
+free native-OS-page ranges. See `docs/async-runtime.md` for the full environment
 and publication contract.
 
 The collector deliberately remains stop-the-world, non-moving mark-sweep.
@@ -152,8 +166,9 @@ MMTk integration are deferred.
 ## Verification and benchmark method
 
 Correctness is covered by MIR liveness/effect/inliner tests, codegen schema and
-same-PC tests, typed scanner and allocator tests, language weak-reference and
-unwind regressions, the debug/release codegen matrix, and runtime stress. Release
+selector-disambiguated same-PC tests, typed scanner and allocator tests,
+language weak-reference and unwind regressions, the debug/release codegen
+matrix, and runtime stress. Release
 performance is measured as medians from repeated runs on an otherwise idle
 machine, recording the exact command and `TARO_GC_STATS=1` output. Optimized MIR
 or LLVM output must also show the target wrapper call absent; elapsed time alone
@@ -176,6 +191,11 @@ list fixture performs nine timed samples in one process and reports the median.
 The final `fibonacci(28)` tree-walker median was 3.238 s. The same-machine Go VM
 measurement remains 3.7 s for `fibonacci(35)`, so it is context rather than a
 hardware-independent gate: the final Taro median is 1.17x slower.
+
+After adding selector-disambiguated records, native-page scavenging, and the
+soft-limit backoff, a fresh five-run `fibonacci(28)` regression check measured a
+147 ms VM median and a 3.276 s tree-walker median. The selector publication did
+not regress the prior 154 ms VM result.
 
 Optimized LLVM for the list fixture contains the element load and bounds guard
 inside `main` and no call to `List.at`. Optimized `VM.run` contains no calls to

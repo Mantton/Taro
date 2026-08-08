@@ -570,6 +570,7 @@ struct Emitter<'llvm, 'gcx> {
     stack_map_roots: Vec<StackMapRoot<'llvm>>,
     pending_stack_maps: Vec<PendingStackMapRecord>,
     current_stack_map_ordinal: u64,
+    current_stack_map_selector: Option<PointerValue<'llvm>>,
     current_body: Option<&'gcx mir::Body<'gcx>>,
     current_liveness: Option<mir::analysis::liveness::LivenessResult>,
     current_mir_location: Option<mir::analysis::liveness::MirLocation>,
@@ -702,6 +703,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             stack_map_roots: Vec::new(),
             pending_stack_maps: Vec::new(),
             current_stack_map_ordinal: 0,
+            current_stack_map_selector: None,
             current_body: None,
             current_liveness: None,
             current_mir_location: None,
@@ -2908,6 +2910,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.current_liveness = Some(mir::analysis::liveness::compute_liveness(body));
         self.current_mir_location = None;
         self.current_stack_map_ordinal = 0;
+        let has_collecting_site = self.body_has_collecting_site(body)?;
         if let Some(debug) = &mut self.debug {
             debug.begin_function(function, body, self.gcx);
         }
@@ -2933,6 +2936,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let (mut locals, stack_map_bases) =
             self.allocate_locals(body, preamble_block, function, &fn_abi);
         self.builder.position_at_end(preamble_block);
+        self.current_stack_map_selector = has_collecting_site.then(|| {
+            let selector = self
+                .builder
+                .build_alloca(self.context.i64_type(), "gc_safepoint_selector")
+                .expect("allocate safepoint selector");
+            let initialize = self
+                .builder
+                .build_store(selector, self.context.i64_type().const_zero())
+                .expect("initialize safepoint selector");
+            initialize
+                .set_volatile(true)
+                .expect("safepoint selector initialization must be volatile");
+            selector
+        });
         self.setup_stack_map_roots(body, &locals, &stack_map_bases)?;
         self.builder
             .build_unconditional_branch(mir_entry_block)
@@ -2968,7 +2985,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some(debug) = &mut self.debug {
             debug.end_function(&self.builder);
         }
-        if self.body_has_collecting_site(body)? {
+        if has_collecting_site {
             // Explicit map operands are complete only before LLVM inlining.
             // MIR is Taro's map-aware inliner; collecting LLVM functions must
             // keep their physical frame against both inlining and tail-call
@@ -2989,6 +3006,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.current_liveness = None;
         self.current_mir_location = None;
         self.current_span = None;
+        self.current_stack_map_selector = None;
         Ok(())
     }
 
@@ -3792,8 +3810,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
     }
 
     /// Anchor the caller's root map immediately before the collecting operation.
-    /// Runtime stack walking resolves the operation's return PC backward to
-    /// this record within the physical function's explicit code bounds.
+    /// Runtime stack walking bounds the return PC to this physical function,
+    /// then uses the frame-local selector to identify the executed source site.
     fn emit_stack_map(&mut self, span: crate::span::Span, kind: StackMapSiteKind) {
         let roots = self.default_live_roots_for_site(kind);
         self.emit_stack_map_with_roots(span, kind, &roots);
@@ -3810,12 +3828,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .iter()
             .filter(|root| live_roots.contains(&root.local))
             .collect();
-        // A poll cannot throw and an empty poll map publishes no roots, so it
-        // needs no PC record. Collecting-site presence independently applies
-        // the physical `noinline` barrier even for this rootless poll.
-        if kind == StackMapSiteKind::Poll && selected_roots.is_empty() {
-            return;
-        }
         let body = self
             .current_body
             .expect("stack map emitted outside a MIR body");
@@ -3824,11 +3836,27 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .expect("stack map emitted outside a function");
         let symbol = function.get_name().to_string_lossy().into_owned();
         let ordinal = self.current_stack_map_ordinal;
+        let selector_value = ordinal
+            .checked_add(1)
+            .expect("stack-map selector value overflow");
         self.current_stack_map_ordinal = self
             .current_stack_map_ordinal
             .checked_add(1)
             .expect("stack-map ordinal overflow");
         let id = deterministic_map_id(&self.gcx.config.identifier, &symbol, ordinal);
+        let selector = self
+            .current_stack_map_selector
+            .expect("stack map emitted without a frame selector");
+        let selector_store = self
+            .builder
+            .build_store(
+                selector,
+                self.context.i64_type().const_int(selector_value, false),
+            )
+            .expect("publish safepoint selector");
+        selector_store
+            .set_volatile(true)
+            .expect("safepoint selector store must be volatile");
 
         let intrinsic = Intrinsic::find("llvm.experimental.stackmap")
             .expect("LLVM stack-map intrinsic must exist");
@@ -3836,9 +3864,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .get_declaration(&self.module, &[])
             .expect("declare LLVM stack-map intrinsic");
         let mut operands: Vec<BasicMetadataValueEnum<'llvm>> =
-            Vec::with_capacity(selected_roots.len().saturating_add(2));
+            Vec::with_capacity(selected_roots.len().saturating_add(3));
         operands.push(self.context.i64_type().const_int(id, false).into());
         operands.push(self.context.i32_type().const_zero().into());
+        operands.push(selector.into());
         operands.extend(
             selected_roots
                 .iter()
@@ -3864,6 +3893,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             id,
             emitted_function: symbol,
             kind,
+            selector_value,
             roots: selected_roots
                 .iter()
                 .map(|root| root.descriptor.clone())
@@ -3884,10 +3914,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // even for a rootless poll: the managed caller may still depend on the
         // frame boundary to transfer root ownership.
         add_llvm_string_function_attribute(self.context, function, "disable-tail-calls", "true");
-        // Rootless functions have no stack-map intrinsic to incidentally make
-        // LLVM emit unwind metadata. The runtime still has to walk through
-        // them to mapped callers, so request synchronous unwind tables for
-        // every collecting frame. Value 1 is LLVM's UWTableKind::Sync.
+        // A stack-map intrinsic does not itself guarantee unwind metadata. The
+        // runtime still has to walk through rootless collecting frames to
+        // mapped callers, so request synchronous unwind tables for every
+        // collecting frame. Value 1 is LLVM's UWTableKind::Sync.
         add_llvm_enum_function_attribute_with_value(self.context, function, "uwtable", 1);
     }
 
@@ -5492,16 +5522,20 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let (callable, fn_abi) = self.lower_callable_with_abi(func);
                     let lowered_args =
                         self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
-                    self.emit_gc_blocking_transition(
-                        "__rt__gc_enter_blocking",
-                        "gc_blocking_enter",
-                    );
                     let roots =
                         self.live_roots_for_call(mir::CallGcEffect::BlockingSafepoint, args);
+                    // `enter_blocking` parks the mutator and immediately walks
+                    // this frame. Publish the selector and stack-map anchor
+                    // first, otherwise the walker can observe selector zero (or
+                    // a stale selector from an earlier site) before the syscall.
                     self.emit_stack_map_with_roots(
                         terminator.span,
                         StackMapSiteKind::Blocking,
                         &roots,
+                    );
+                    self.emit_gc_blocking_transition(
+                        "__rt__gc_enter_blocking",
+                        "gc_blocking_enter",
                     );
                     let call_site = self.emit_direct_call_maybe_unwind(
                         callable,

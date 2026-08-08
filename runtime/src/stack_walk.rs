@@ -3,7 +3,9 @@
 use std::ffi::c_void;
 
 use crate::gc_layout::{TraceMode, trace_layout};
-use crate::pc_metadata::{self, LogicalFrame, PcFunction, PcRecord, RootLocation};
+use crate::pc_metadata::{
+    self, LogicalFrame, PcFunction, PcRecord, RootLocation, SafepointSelector,
+};
 
 const MAX_WALKED_FRAMES: usize = 4096;
 const MAX_CAPTURED_ROOTS: usize = 1 << 20;
@@ -84,17 +86,28 @@ const CALL_FRAME_BYTES: usize = 0;
 unsafe fn location_base(
     context: *mut UnwindContext,
     function: &PcFunction,
-    location: &RootLocation,
+    dwarf_register: u16,
 ) -> Option<usize> {
-    if location.dwarf_register == STACK_POINTER_DWARF_REGISTER {
+    if dwarf_register == STACK_POINTER_DWARF_REGISTER {
         let cfa = unsafe { _Unwind_GetCFA(context) };
         let stack_size = usize::try_from(function.stack_size).ok()?;
         cfa.checked_sub(CALL_FRAME_BYTES)?.checked_sub(stack_size)
-    } else if location.dwarf_register == FRAME_POINTER_DWARF_REGISTER {
-        Some(unsafe { _Unwind_GetGR(context, i32::from(location.dwarf_register)) })
+    } else if dwarf_register == FRAME_POINTER_DWARF_REGISTER {
+        Some(unsafe { _Unwind_GetGR(context, i32::from(dwarf_register)) })
     } else {
         None
     }
+}
+
+#[cfg(unix)]
+unsafe fn selector_value(
+    context: *mut UnwindContext,
+    function: &PcFunction,
+    selector: SafepointSelector,
+) -> Option<u64> {
+    let base = unsafe { location_base(context, function, selector.dwarf_register) }?;
+    let storage = add_signed(base, selector.frame_offset)?;
+    unsafe { load_pointer(storage) }.map(|value| value as u64)
 }
 
 unsafe fn load_pointer(address: usize) -> Option<usize> {
@@ -166,10 +179,11 @@ unsafe extern "C" fn trace_frame(
     if pc == 0 {
         return URC_NO_REASON;
     }
-    pc_metadata::with_record_at_pc(
+    let result = pc_metadata::with_record_at_pc(
         pc,
         output.capture_roots,
         output.capture_frames,
+        |function, selector| unsafe { selector_value(context, function, selector) },
         |function, record| {
             if output.capture_roots {
                 append_roots(context, function, record, &mut output.roots);
@@ -179,6 +193,10 @@ unsafe extern "C" fn trace_frame(
             }
         },
     );
+    if let Err(message) = result {
+        eprintln!("fatal: invalid safepoint selector: {message}");
+        std::process::abort();
+    }
     URC_NO_REASON
 }
 
@@ -193,7 +211,8 @@ fn append_roots(
         if output.len() >= MAX_CAPTURED_ROOTS {
             return;
         }
-        let Some(base) = (unsafe { location_base(context, function, location) }) else {
+        let Some(base) = (unsafe { location_base(context, function, location.dwarf_register) })
+        else {
             continue;
         };
         let Some(storage) = add_signed(base, location.frame_offset) else {

@@ -16,10 +16,11 @@ use std::{
 
 use super::pc_metadata::{
     PcArchitecture, PcFunction, PcLogicalFrame, PcMetadata, PcRecord, PcRootLocation,
+    PcSafepointSelector,
 };
 
-pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 2;
-pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 3;
+pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 3;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 4;
 
 /// Kind of machine site represented by a PC record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +79,7 @@ pub(crate) struct PendingStackMapRecord {
     pub id: u64,
     pub emitted_function: String,
     pub kind: StackMapSiteKind,
+    pub selector_value: u64,
     pub roots: Vec<PendingRootOperand>,
     pub logical_frames: Vec<PendingLogicalFrame>,
 }
@@ -183,41 +185,58 @@ pub(crate) fn read_pending_modules(
     Ok(records)
 }
 
-/// Collapse records that ended up at the same instruction into one.
+/// Validate path-discriminated records in one physical machine function.
 ///
-/// Optimization can bring two sites to a single machine offset — most often by
-/// merging blocks that end in the same call — and the paths reaching it need not
-/// agree on which slots hold roots. The collector gets one answer per address,
-/// so the answer has to cover every path: the roots are unioned.
-///
-/// Scanning a slot that is live on one path and stale on another is safe. The
-/// collector resolves each candidate against its spans before marking, so a
-/// value that is not a live object is ignored and one that is merely stale
-/// retains an object a little longer. Scanning too few would instead free
-/// something still reachable, so where the two cannot be reconciled this errs
-/// towards keeping.
-fn merge_records_sharing_a_pc(function: &mut PcFunction) -> Result<(), String> {
-    let mut merged: Vec<PcRecord> = Vec::with_capacity(function.records.len());
-    for record in function.records.drain(..) {
-        let Some(previous) = merged.last_mut() else {
-            merged.push(record);
-            continue;
-        };
-        if previous.pc_offset != record.pc_offset {
-            merged.push(record);
-            continue;
-        }
-        // Two kinds can meet here too — a call that may panic merging with the
-        // panic site itself, say. The kind describes what a site is for a
-        // reader; the runtime range-checks it and never consults it when
-        // scanning, so the first is kept and the roots below are what matter.
-        for root in record.roots {
-            if !previous.roots.contains(&root) {
-                previous.roots.push(root);
+/// A union is not safe for typed roots: an inactive enum or reference layout
+/// may interpret storage initialized for another path. Each source site writes
+/// a distinct selector value instead. Every record must retain the same
+/// physical selector slot, equal-PC alternatives must use distinct values, and
+/// LLVM machine duplicates of one source selector must preserve GC semantics.
+fn validate_record_selectors(function: &PcFunction) -> Result<(), String> {
+    if let Some(first) = function.records.first() {
+        for record in &function.records[1..] {
+            if record.selector.dwarf_register != first.selector.dwarf_register
+                || record.selector.frame_offset != first.selector.frame_offset
+            {
+                return Err(format!(
+                    "function '{}' has stack maps with different selector locations",
+                    function.symbol
+                ));
             }
         }
     }
-    function.records = merged;
+    let mut sites = BTreeMap::<u64, &PcRecord>::new();
+    for record in &function.records {
+        if let Some(previous) = sites.insert(record.selector.value, record)
+            && (previous.kind != record.kind
+                || previous.roots != record.roots
+                || previous.logical_frames != record.logical_frames)
+        {
+            return Err(format!(
+                "function '{}' has machine duplicates of selector {} with different GC semantics",
+                function.symbol, record.selector.value
+            ));
+        }
+    }
+    for group in function
+        .records
+        .chunk_by(|left, right| left.pc_offset == right.pc_offset)
+    {
+        let Some(first) = group.first() else {
+            continue;
+        };
+        for (index, record) in group.iter().enumerate() {
+            if group[..index]
+                .iter()
+                .any(|previous| previous.selector.value == record.selector.value)
+            {
+                return Err(format!(
+                    "function '{}' has duplicate selector value {} at stack-map offset {}",
+                    function.symbol, record.selector.value, first.pc_offset
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -274,18 +293,49 @@ pub(crate) fn normalize_object(
         // layout, the Taro frames it stands for — and that travels with the ID
         // wherever the code goes, so only the placement has to come from LLVM.
         let raw_function = &raw.functions[raw_record.function_index];
-        if raw_record.locations.len() != descriptor.roots.len() {
+        if raw_record.locations.len() != descriptor.roots.len().saturating_add(1) {
             return Err(format!(
-                "stack-map ID {:#018x} root count mismatch: compiler described {}, LLVM emitted {}",
+                "stack-map ID {:#018x} operand count mismatch: compiler described one selector and {} roots, LLVM emitted {} locations",
                 raw_record.id,
                 descriptor.roots.len(),
                 raw_record.locations.len()
             ));
         }
 
+        let selector_location = &raw_record.locations[0];
+        if selector_location.kind != RawStackMapLocationKind::Direct {
+            return Err(format!(
+                "stack-map ID {:#018x} selector used {:?}; a direct frame location is required",
+                raw_record.id, selector_location.kind
+            ));
+        }
+        if selector_location.size != u16::from(raw.pointer_bytes) {
+            return Err(format!(
+                "stack-map ID {:#018x} selector has size {}, expected {}",
+                raw_record.id, selector_location.size, raw.pointer_bytes
+            ));
+        }
+        if !architecture.supports_dwarf_base_register(selector_location.dwarf_register) {
+            return Err(format!(
+                "stack-map ID {:#018x} selector uses unsupported DWARF base register {} for {:?}",
+                raw_record.id, selector_location.dwarf_register, architecture
+            ));
+        }
+        let selector = PcSafepointSelector {
+            dwarf_register: selector_location.dwarf_register,
+            frame_offset: i32::try_from(selector_location.value).map_err(|_| {
+                format!(
+                    "stack-map ID {:#018x} selector frame offset {} exceeds the PC metadata ABI",
+                    raw_record.id, selector_location.value
+                )
+            })?,
+            value: descriptor.selector_value,
+        };
+
         let roots = raw_record
             .locations
             .iter()
+            .skip(1)
             .zip(&descriptor.roots)
             .map(|(location, operand)| {
                 if location.kind != RawStackMapLocationKind::Direct {
@@ -333,6 +383,7 @@ pub(crate) fn normalize_object(
         let record = PcRecord {
             pc_offset: raw_record.instruction_offset,
             kind: descriptor.kind,
+            selector,
             roots,
             logical_frames,
         };
@@ -372,9 +423,11 @@ pub(crate) fn normalize_object(
     }
 
     for function in functions.values_mut() {
-        function.records.sort_by_key(|record| record.pc_offset);
+        function
+            .records
+            .sort_by_key(|record| (record.pc_offset, record.selector.value));
         function.records.dedup();
-        merge_records_sharing_a_pc(function)?;
+        validate_record_selectors(function)?;
     }
 
     Ok(PcMetadata {
@@ -750,7 +803,10 @@ fn path_bytes(path: &Path) -> Result<Cow<'_, [u8]>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RawStackMapLocationKind, parse_object, strip_object};
+    use super::{
+        PcFunction, PcRecord, PcSafepointSelector, RawStackMapLocationKind, StackMapSiteKind,
+        parse_object, strip_object, validate_record_selectors,
+    };
     use inkwell::{
         OptimizationLevel,
         context::Context,
@@ -863,6 +919,95 @@ mod tests {
             RawStackMapLocationKind::Direct
         );
         assert_eq!(parsed.records[0].locations[0].size, 8);
+    }
+
+    #[test]
+    fn same_pc_records_remain_path_distinct() {
+        let record = |value| PcRecord {
+            pc_offset: 12,
+            kind: StackMapSiteKind::Call,
+            selector: PcSafepointSelector {
+                dwarf_register: 29,
+                frame_offset: -8,
+                value,
+            },
+            roots: Vec::new(),
+            logical_frames: Vec::new(),
+        };
+        let function = PcFunction {
+            symbol: "same_pc".into(),
+            stack_size: 32,
+            code_size: 64,
+            records: vec![record(1), record(2)],
+        };
+
+        validate_record_selectors(&function).expect("distinct selectors are path-safe");
+        assert_eq!(function.records.len(), 2);
+    }
+
+    #[test]
+    fn same_pc_records_reject_different_selector_slots() {
+        let mut function = PcFunction {
+            symbol: "bad_same_pc".into(),
+            stack_size: 32,
+            code_size: 64,
+            records: vec![
+                PcRecord {
+                    pc_offset: 12,
+                    kind: StackMapSiteKind::Call,
+                    selector: PcSafepointSelector {
+                        dwarf_register: 29,
+                        frame_offset: -8,
+                        value: 1,
+                    },
+                    roots: Vec::new(),
+                    logical_frames: Vec::new(),
+                },
+                PcRecord {
+                    pc_offset: 12,
+                    kind: StackMapSiteKind::Call,
+                    selector: PcSafepointSelector {
+                        dwarf_register: 29,
+                        frame_offset: -16,
+                        value: 2,
+                    },
+                    roots: Vec::new(),
+                    logical_frames: Vec::new(),
+                },
+            ],
+        };
+        function
+            .records
+            .sort_by_key(|record| (record.pc_offset, record.selector.value));
+
+        assert!(validate_record_selectors(&function).is_err());
+    }
+
+    #[test]
+    fn machine_duplicates_reject_changed_gc_semantics() {
+        let record = |pc_offset, kind| PcRecord {
+            pc_offset,
+            kind,
+            selector: PcSafepointSelector {
+                dwarf_register: 29,
+                frame_offset: -8,
+                value: 1,
+            },
+            roots: Vec::new(),
+            logical_frames: Vec::new(),
+        };
+        let function = PcFunction {
+            symbol: "bad_duplicate".into(),
+            stack_size: 32,
+            code_size: 64,
+            records: vec![
+                record(12, StackMapSiteKind::Call),
+                record(24, StackMapSiteKind::Poll),
+            ],
+        };
+
+        let error = validate_record_selectors(&function).unwrap_err();
+        assert!(error.contains("different GC semantics"));
     }
 
     #[test]

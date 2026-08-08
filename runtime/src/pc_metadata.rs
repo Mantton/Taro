@@ -13,7 +13,7 @@ use crate::gc_layout::{
 };
 use std::sync::{OnceLock, RwLock};
 
-pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 3;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 4;
 #[cfg(target_arch = "x86_64")]
 const ARCH_X86_64: u8 = 1;
 #[cfg(target_arch = "aarch64")]
@@ -56,11 +56,14 @@ struct AbiLogicalFrame {
 struct AbiRecord {
     roots_offset: i64,
     logical_frames_offset: i64,
+    selector_value: u64,
     pc_offset: u32,
     root_count: u32,
     logical_frame_count: u32,
+    selector_frame_offset: i32,
+    selector_dwarf_register: u16,
     kind: u8,
-    reserved: [u8; 3],
+    reserved: u8,
 }
 
 #[repr(C)]
@@ -91,6 +94,13 @@ pub(crate) struct RootLocation {
     pub(crate) nodes: Vec<GcLayoutNode>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SafepointSelector {
+    pub(crate) dwarf_register: u16,
+    pub(crate) frame_offset: i32,
+    pub(crate) value: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LogicalFrame {
     pub(crate) function: String,
@@ -103,6 +113,7 @@ pub(crate) struct LogicalFrame {
 pub(crate) struct PcRecord {
     pub(crate) pc_offset: u32,
     pub(crate) kind: u8,
+    pub(crate) selector: SafepointSelector,
     pub(crate) roots: Vec<RootLocation>,
     pub(crate) logical_frames: Vec<LogicalFrame>,
 }
@@ -330,10 +341,29 @@ unsafe fn index_module(module: &AbiMetadataModule) -> Result<Vec<PcFunction>, St
                     "PC metadata record {index} for function {entry:#x} lies outside its code range"
                 ));
             }
-            if index != 0 && records[index - 1].pc_offset >= record.pc_offset {
+            if record.selector_value == 0 {
                 return Err(format!(
-                    "PC metadata records for function {entry:#x} are not strictly sorted"
+                    "PC metadata record {index} for function {entry:#x} has a zero selector"
                 ));
+            }
+            if index != 0
+                && (records[0].selector_dwarf_register != record.selector_dwarf_register
+                    || records[0].selector_frame_offset != record.selector_frame_offset)
+            {
+                return Err(format!(
+                    "PC metadata records for function {entry:#x} use different selector locations"
+                ));
+            }
+            if index != 0 {
+                let previous = &records[index - 1];
+                if previous.pc_offset > record.pc_offset
+                    || (previous.pc_offset == record.pc_offset
+                        && previous.selector_value >= record.selector_value)
+                {
+                    return Err(format!(
+                        "PC metadata records for function {entry:#x} are not sorted by PC and selector"
+                    ));
+                }
             }
         }
         indexed.push(PcFunction {
@@ -378,6 +408,11 @@ unsafe fn copy_record(
     Ok(PcRecord {
         pc_offset: record.pc_offset,
         kind: record.kind,
+        selector: SafepointSelector {
+            dwarf_register: record.selector_dwarf_register,
+            frame_offset: record.selector_frame_offset,
+            value: record.selector_value,
+        },
         roots: if include_roots {
             unsafe {
                 copy_roots(
@@ -485,23 +520,38 @@ fn materialize_pending(registry: &mut Registry) {
     }
 }
 
+fn record_index_for_selector(records: &[AbiRecord], offset: u32, selector: u64) -> Option<usize> {
+    let end = records.partition_point(|record| record.pc_offset <= offset);
+    records[..end]
+        .iter()
+        .rposition(|record| record.selector_value == selector)
+}
+
 fn find_record<R>(
     registry: &Registry,
     pc: usize,
     include_roots: bool,
     include_frames: bool,
+    read_selector: &mut impl FnMut(&PcFunction, SafepointSelector) -> Option<u64>,
     use_record: impl FnOnce(&PcFunction, &PcRecord) -> R,
-) -> Option<R> {
+) -> Result<Option<R>, String> {
     let function_index = registry
         .functions
         .partition_point(|function| function.entry <= pc)
-        .checked_sub(1)?;
+        .checked_sub(1);
+    let Some(function_index) = function_index else {
+        return Ok(None);
+    };
     let function = &registry.functions[function_index];
-    let offset = pc.checked_sub(function.entry)?;
+    let Some(offset) = pc.checked_sub(function.entry) else {
+        return Ok(None);
+    };
     if offset >= function.code_size as usize {
-        return None;
+        return Ok(None);
     }
-    let offset = u32::try_from(offset).ok()?;
+    let Ok(offset) = u32::try_from(offset) else {
+        return Ok(None);
+    };
     let records: &[AbiRecord] = match unsafe {
         abi_slice(
             function.module_base,
@@ -513,36 +563,73 @@ fn find_record<R>(
         Ok(records) => records,
         Err(message) => registration_error(&message),
     };
-    // Every collecting call is preceded by its map. The native unwinder
-    // reports the architectural return PC, so select the closest preceding
-    // map in the same bounded machine function. Function bounds prevent a PC
-    // in an intervening native or rootless function from borrowing this map.
-    let index = records
-        .partition_point(|record| record.pc_offset <= offset)
-        .checked_sub(1)?;
-    let record =
-        match unsafe { copy_record(function, &records[index], include_roots, include_frames) } {
-            Ok(record) => record,
-            Err(message) => registration_error(&message),
-        };
-    Some(use_record(function, &record))
+    let Some(first) = records.first() else {
+        return Ok(None);
+    };
+    if first.pc_offset > offset {
+        return Ok(None);
+    }
+    let selector_location = SafepointSelector {
+        dwarf_register: first.selector_dwarf_register,
+        frame_offset: first.selector_frame_offset,
+        value: first.selector_value,
+    };
+    let observed = read_selector(function, selector_location).ok_or_else(|| {
+        format!(
+            "could not read the safepoint selector for frame PC {pc:#x} (register {}, offset {})",
+            selector_location.dwarf_register, selector_location.frame_offset
+        )
+    })?;
+    // Machine block layout is not temporal order: after a backedge, an
+    // unrelated record can lie numerically between the executed stack map and
+    // its return PC. The frame selector is authoritative; PC order only picks
+    // the appropriate machine duplicate of that source site.
+    let index = record_index_for_selector(records, offset, observed).ok_or_else(|| {
+        let symbol = unsafe { copy_string(function.module_base, function.symbol, "function symbol") }
+            .unwrap_or_else(|_| "<invalid>".into());
+        format!(
+            "frame PC {pc:#x} (function '{symbol}' + {offset:#x}) published safepoint selector {observed}, but no preceding record in the function matches it"
+        )
+    })?;
+    let record = unsafe { copy_record(function, &records[index], include_roots, include_frames) }
+        .unwrap_or_else(|message| registration_error(&message));
+    Ok(Some(use_record(function, &record)))
 }
 
 pub(crate) fn with_record_at_pc<R>(
     pc: usize,
     include_roots: bool,
     include_frames: bool,
+    mut read_selector: impl FnMut(&PcFunction, SafepointSelector) -> Option<u64>,
     use_record: impl FnOnce(&PcFunction, &PcRecord) -> R,
-) -> Option<R> {
+) -> Result<Option<R>, String> {
     let registry_lock = registry();
-    let registry = registry_lock.read().ok()?;
+    let registry = registry_lock
+        .read()
+        .map_err(|_| "PC metadata registry lock was poisoned".to_owned())?;
     if registry.pending_modules.is_empty() {
-        return find_record(&registry, pc, include_roots, include_frames, use_record);
+        return find_record(
+            &registry,
+            pc,
+            include_roots,
+            include_frames,
+            &mut read_selector,
+            use_record,
+        );
     }
     drop(registry);
-    let mut registry = registry_lock.write().ok()?;
+    let mut registry = registry_lock
+        .write()
+        .map_err(|_| "PC metadata registry lock was poisoned".to_owned())?;
     materialize_pending(&mut registry);
-    find_record(&registry, pc, include_roots, include_frames, use_record)
+    find_record(
+        &registry,
+        pc,
+        include_roots,
+        include_frames,
+        &mut read_selector,
+        use_record,
+    )
 }
 
 #[cfg(test)]
@@ -555,7 +642,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<AbiRootLocation>(), 24);
         assert_eq!(std::mem::size_of::<AbiString>(), 16);
         assert_eq!(std::mem::size_of::<AbiLogicalFrame>(), 40);
-        assert_eq!(std::mem::size_of::<AbiRecord>(), 32);
+        assert_eq!(std::mem::size_of::<AbiRecord>(), 48);
         assert_eq!(std::mem::size_of::<AbiFunction>(), 48);
         assert_eq!(std::mem::size_of::<AbiMetadataModule>(), 24);
     }
@@ -565,11 +652,14 @@ mod tests {
         let records = [AbiRecord {
             roots_offset: 0,
             logical_frames_offset: 0,
+            selector_value: 1,
             pc_offset: 0x20,
             root_count: 0,
             logical_frame_count: 0,
+            selector_frame_offset: -8,
+            selector_dwarf_register: 29,
             kind: 2,
-            reserved: [0; 3],
+            reserved: 0,
         }];
         let anchor = 0_u8;
         let module_base = (&anchor as *const u8) as usize;
@@ -589,14 +679,85 @@ mod tests {
             },
         };
         registry().write().unwrap().functions.push(function);
-        assert!(with_record_at_pc(0x1020, false, false, |_, _| ()).is_some());
-        assert!(with_record_at_pc(0x1024, false, false, |_, _| ()).is_some());
-        assert!(with_record_at_pc(0x101f, false, false, |_, _| ()).is_none());
-        assert!(with_record_at_pc(0x1040, false, false, |_, _| ()).is_none());
+        let lookup = |pc| {
+            with_record_at_pc(
+                pc,
+                false,
+                false,
+                |_, selector| Some(selector.value),
+                |_, _| (),
+            )
+            .unwrap()
+        };
+        assert!(lookup(0x1020).is_some());
+        assert!(lookup(0x1024).is_some());
+        assert!(lookup(0x101f).is_none());
+        assert!(lookup(0x1040).is_none());
         registry()
             .write()
             .unwrap()
             .functions
             .retain(|function| function.entry != 0x1000);
+    }
+
+    #[test]
+    fn rootless_selector_hides_an_earlier_rooted_record() {
+        let record = |pc_offset, selector_value, root_count| AbiRecord {
+            roots_offset: 0,
+            logical_frames_offset: 0,
+            selector_value,
+            pc_offset,
+            root_count,
+            logical_frame_count: 0,
+            selector_frame_offset: -8,
+            selector_dwarf_register: 29,
+            kind: 1,
+            reserved: 0,
+        };
+        let records = [record(0x10, 1, 1), record(0x20, 2, 0)];
+
+        assert_eq!(record_index_for_selector(&records, 0x24, 2), Some(1));
+        assert_eq!(records[1].root_count, 0);
+    }
+
+    #[test]
+    fn same_pc_alternatives_are_selected_individually() {
+        let record = |selector_value| AbiRecord {
+            roots_offset: 0,
+            logical_frames_offset: 0,
+            selector_value,
+            pc_offset: 0x20,
+            root_count: 0,
+            logical_frame_count: 0,
+            selector_frame_offset: -8,
+            selector_dwarf_register: 29,
+            kind: 2,
+            reserved: 0,
+        };
+        let records = [record(1), record(2)];
+
+        assert_eq!(record_index_for_selector(&records, 0x24, 1), Some(0));
+        assert_eq!(record_index_for_selector(&records, 0x24, 2), Some(1));
+    }
+
+    #[test]
+    fn selector_beats_unrelated_pc_order_after_a_backedge() {
+        let record = |pc_offset, selector_value| AbiRecord {
+            roots_offset: 0,
+            logical_frames_offset: 0,
+            selector_value,
+            pc_offset,
+            root_count: 0,
+            logical_frame_count: 0,
+            selector_frame_offset: -8,
+            selector_dwarf_register: 29,
+            kind: 2,
+            reserved: 0,
+        };
+        // Site 2 executed last, but site 1 happens to be closer to the return
+        // PC in machine-address order.
+        let records = [record(0x10, 2), record(0x20, 1)];
+
+        assert_eq!(record_index_for_selector(&records, 0x24, 2), Some(0));
     }
 }

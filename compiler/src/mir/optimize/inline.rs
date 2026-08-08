@@ -21,6 +21,14 @@ use rustc_hash::FxHashSet;
 /// Maximum depth of recursive inlining to prevent infinite expansion.
 const MAX_INLINE_DEPTH: u32 = 8;
 const FORCED_INLINE_GROWTH_LIMIT: usize = 2_000;
+const O1_O2_INLINE_THRESHOLD: usize = 40;
+const O3_INLINE_THRESHOLD: usize = 80;
+const SIZE_INLINE_THRESHOLD: usize = 20;
+const LOOP_CALLSITE_BONUS: usize = 20;
+const MAX_CONSTANT_CALLSITE_BONUS: usize = 15;
+const CONSTANT_ARGUMENT_BONUS: usize = 5;
+const MAX_HEURISTIC_INLINE_COST: usize =
+    O3_INLINE_THRESHOLD + LOOP_CALLSITE_BONUS + MAX_CONSTANT_CALLSITE_BONUS;
 
 /// MIR pass that inlines function calls.
 pub struct Inline {
@@ -217,7 +225,7 @@ impl Inline {
         let policy =
             inline_profitability_policy(gcx.config.profile, gcx.config.codegen.optimization);
         let loop_bonus = if block_is_cyclic(caller, caller_block) {
-            20
+            LOOP_CALLSITE_BONUS
         } else {
             0
         };
@@ -225,8 +233,8 @@ impl Inline {
             .iter()
             .filter(|argument| matches!(argument, Operand::Constant(_)))
             .count()
-            .saturating_mul(5)
-            .min(15);
+            .saturating_mul(CONSTANT_ARGUMENT_BONUS)
+            .min(MAX_CONSTANT_CALLSITE_BONUS);
         let normal_eligible = match policy {
             InlineProfitability::ExplicitOnly => false,
             InlineProfitability::SizeNeutral => growth == 0,
@@ -431,13 +439,19 @@ fn inline_profitability_policy(
 ) -> InlineProfitability {
     match optimization {
         OptimizationMode::Level(OptLevel::O0) => InlineProfitability::ExplicitOnly,
-        OptimizationMode::Level(OptLevel::O1 | OptLevel::O2) => InlineProfitability::Threshold(40),
-        OptimizationMode::Level(OptLevel::O3) => InlineProfitability::Threshold(80),
-        OptimizationMode::Level(OptLevel::Os) => InlineProfitability::Threshold(20),
+        OptimizationMode::Level(OptLevel::O1 | OptLevel::O2) => {
+            InlineProfitability::Threshold(O1_O2_INLINE_THRESHOLD)
+        }
+        OptimizationMode::Level(OptLevel::O3) => {
+            InlineProfitability::Threshold(O3_INLINE_THRESHOLD)
+        }
+        OptimizationMode::Level(OptLevel::Os) => {
+            InlineProfitability::Threshold(SIZE_INLINE_THRESHOLD)
+        }
         OptimizationMode::Level(OptLevel::Oz) => InlineProfitability::SizeNeutral,
         OptimizationMode::Baseline => match profile {
             BuildProfile::Debug => InlineProfitability::ExplicitOnly,
-            BuildProfile::Release => InlineProfitability::Threshold(40),
+            BuildProfile::Release => InlineProfitability::Threshold(O1_O2_INLINE_THRESHOLD),
         },
     }
 }
@@ -585,9 +599,11 @@ fn resolve_callee_body<'ctx>(gcx: Gcx<'ctx>, callee_id: DefinitionID) -> Option<
     package.functions.get(&callee_id).cloned()
 }
 
-/// Check if a function body is small enough to inline heuristically.
-pub(crate) fn is_body_small(gcx: Gcx<'_>, body: &Body<'_>) -> bool {
-    body_inline_cost(gcx, body) <= 40
+/// Whether any supported profitability profile and callsite bonus can select
+/// this ordinary body. Dependency metadata uses the same upper bound as the
+/// inliner so a cold body never disappears only because its package was cached.
+pub(crate) fn is_heuristic_inline_candidate(gcx: Gcx<'_>, body: &Body<'_>) -> bool {
+    body_inline_cost(gcx, body) <= MAX_HEURISTIC_INLINE_COST
 }
 
 fn body_inline_cost(gcx: Gcx<'_>, body: &Body<'_>) -> usize {
@@ -1108,8 +1124,9 @@ fn instantiate_mono_ty<'ctx>(
 #[cfg(test)]
 mod tests {
     use super::{
-        CallSite, FORCED_INLINE_GROWTH_LIMIT, Inline, InlineProfitability, call_graph_reaches,
-        call_site_priority, inline_profitability_policy, prepare_inline_return,
+        CallSite, FORCED_INLINE_GROWTH_LIMIT, Inline, InlineProfitability,
+        MAX_HEURISTIC_INLINE_COST, body_inline_cost, call_graph_reaches, call_site_priority,
+        inline_profitability_policy, is_heuristic_inline_candidate, prepare_inline_return,
         remap_source_scopes, remap_statement, remap_terminator,
     };
     use crate::PackageIndex;
@@ -1172,6 +1189,35 @@ mod tests {
             inline_profitability_policy(BuildProfile::Release, OptimizationMode::Baseline),
             InlineProfitability::Threshold(40)
         );
+    }
+
+    #[test]
+    fn metadata_candidate_bound_covers_the_largest_legal_callsite_threshold() {
+        assert_eq!(MAX_HEURISTIC_INLINE_COST, 115);
+        test_support::with_test_gcx(|gcx| {
+            let mut body = test_support::minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            while body_inline_cost(gcx, &body) <= 40 {
+                body.basic_blocks[body.start_block]
+                    .statements
+                    .push(Statement {
+                        kind: StatementKind::Nop,
+                        span,
+                    });
+            }
+            assert!(body_inline_cost(gcx, &body) <= MAX_HEURISTIC_INLINE_COST);
+            assert!(is_heuristic_inline_candidate(gcx, &body));
+
+            while body_inline_cost(gcx, &body) <= MAX_HEURISTIC_INLINE_COST {
+                body.basic_blocks[body.start_block]
+                    .statements
+                    .push(Statement {
+                        kind: StatementKind::Nop,
+                        span,
+                    });
+            }
+            assert!(!is_heuristic_inline_candidate(gcx, &body));
+        });
     }
 
     #[test]

@@ -30,10 +30,12 @@ constructors, poll thunks, and drop thunks:
 - **final codegen MIR** has completed global optimization, explicit allocation
   lowering, liveness-driven safepoints, and inlining.
 
-Both forms are serialized in metadata format 26. Dependency loading hydrates
+Both forms are serialized in metadata format 27. Dependency loading hydrates
 them into separate stores, and the MIR inliner reads only canonical bodies.
 Consequently, an inline decision does not depend on whether a callee came from
-source in the current build or from attached/cached metadata.
+source in the current build or from attached/cached metadata. Metadata retains
+ordinary bodies through cost 115, the largest O3 threshold after loop and
+constant-argument bonuses, as well as all explicit-inline and generic bodies.
 
 MIR performs the only inlining that may cross a collecting site. It rejects
 recursive-SCC edges, preserves `@noinline`, understands cleanup continuations,
@@ -98,8 +100,7 @@ recipes, typed-layout nodes, root-location arrays, strings, and logical-frame
 arrays are deduplicated within the sidecar. Nodes are copied into the PC object,
 so that object never relocates against an internal node-table symbol from
 another object. Runtime registration is constant-size; the first stack walk
-indexes exact function address ranges, and a return PC resolves to the closest
-preceding record within that range.
+indexes exact function address ranges.
 
 Root storage is keyed by MIR `LocalId`. At each collecting operation the
 compiler intersects temporal liveness with definite initialization and emits
@@ -109,22 +110,33 @@ GC-bearing arguments; allocations use values live after the allocation; polls
 use values live at the poll. `std.runtime.keepAlive(value)` becomes a
 compiler-only liveness use and emits neither a call nor another poll.
 
-Poll sites with no live GC roots omit the machine record because they cannot
-throw and publish no roots. They still count as collecting sites and therefore
-keep the physical LLVM function `noinline` with tail-call elimination disabled
-and synchronous unwind metadata. The unwind entry lets the stop-the-world stack
-walker cross the rootless frame to mapped callers.
-Managed calls, allocations, blocking transitions, and panic-capable sites
-retain PC records even when their root set is empty. Records that optimize to
-one machine PC are merged by taking the union of their roots.
+Every collecting site emits a machine record, including a rootless entry or loop
+poll. Each collecting physical frame owns a selector slot. Immediately before a
+site, generated code volatile-stores that site's nonzero selector and records
+the slot as the first stack-map operand. The runtime reads the selector from the
+parked frame and chooses the matching record; PC order is used only to choose
+between machine duplicates of that same source site. This remains correct when
+block layout puts an unrelated record closer to the return PC.
 
-PC metadata schema 3 and pending-descriptor schema 2 encode one indexed,
-tag-aware layout graph shared with heap, static, and buffer scanning. Its node
-kinds are `Pointer`, `Reference`, `Aggregate`, `Repeat`, and `Tagged`; a tagged
-node reads a 1-, 2-, 4-, or 8-byte discriminator and visits only the active
-variant. Niche-pointer optionals use their native null/payload form. Static
-roots register as `(address, descriptor)` rather than an untyped byte range.
-Runtime ABI revision 14 is the matching consumer contract.
+Records that optimize to the same machine PC remain distinct. In particular,
+the compiler never unions typed roots from mutually exclusive control-flow
+paths: doing so could interpret inactive enum or reference storage using the
+wrong descriptor. Metadata validation requires one selector location per
+function, distinct selector values for same-PC alternatives, and identical GC
+semantics for machine duplicates of one selector. A missing or invalid selector
+fails closed with the function and offset in the diagnostic.
+
+Rootless sites still keep the physical LLVM function `noinline` with tail-call
+elimination disabled and synchronous unwind metadata. The unwind entry lets the
+stop-the-world stack walker cross that frame to mapped callers.
+
+PC metadata schema 4 and pending-descriptor schema 3 encode the selector and one
+indexed, tag-aware layout graph shared with heap, static, and buffer scanning.
+Its node kinds are `Pointer`, `Reference`, `Aggregate`, `Repeat`, and `Tagged`;
+a tagged node reads a 1-, 2-, 4-, or 8-byte discriminator and visits only the
+active variant. Niche-pointer optionals use their native null/payload form.
+Static roots register as `(address, descriptor)` rather than an untyped byte
+range. Runtime ABI revision 15 is the matching consumer contract.
 
 ## Incremental Compilation
 

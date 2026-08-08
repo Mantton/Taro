@@ -22,7 +22,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 26;
+const META_FORMAT_VERSION: u32 = 27;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -1131,7 +1131,9 @@ fn should_retain_mir_root_for_metadata<'ctx>(
         return true;
     }
 
-    // Keep concretely-small callees that the inliner can pick up heuristically.
+    // Keep every concrete callee that any supported optimization profile and
+    // callsite bonus can pick up heuristically. This predicate is owned by the
+    // inliner so source and hydrated dependencies cannot drift apart.
     // ABI-restricted callees are never inlined and don't need MIR in metadata.
     let signature = gcx.get_signature(def_id);
     if matches!(
@@ -1141,7 +1143,7 @@ fn should_retain_mir_root_for_metadata<'ctx>(
         return false;
     }
 
-    crate::mir::optimize::inline::is_body_small(gcx, body)
+    crate::mir::optimize::inline::is_heuristic_inline_candidate(gcx, body)
 }
 
 fn write_envelope(out: &mut dyn Write, header: &MetadataHeader, payload: &[u8]) -> io::Result<()> {

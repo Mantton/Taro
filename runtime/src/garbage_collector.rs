@@ -1076,6 +1076,39 @@ const SEGMENT_PAGES: usize = SEGMENT_SIZE / PAGE_SIZE;
 const GC_MIN_TRIGGER: usize = SEGMENT_SIZE;
 const SPAN_NONE: usize = usize::MAX;
 
+#[cfg(unix)]
+fn os_page_size() -> usize {
+    static OS_PAGE_SIZE: OnceLock<usize> = OnceLock::new();
+    *OS_PAGE_SIZE.get_or_init(|| {
+        let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let size = usize::try_from(size)
+            .ok()
+            .filter(|size| size.is_power_of_two())
+            .unwrap_or_else(|| panic!("failed to query a power-of-two OS page size"));
+        assert!(size != 0, "OS page size must be non-zero");
+        size
+    })
+}
+
+#[cfg(not(unix))]
+const fn os_page_size() -> usize {
+    PAGE_SIZE
+}
+
+fn fully_free_os_page_range(
+    data_base: usize,
+    logical_start: usize,
+    logical_pages: usize,
+    native_page_size: usize,
+) -> Option<std::ops::Range<usize>> {
+    debug_assert!(native_page_size.is_power_of_two());
+    let free_start = data_base.checked_add(logical_start.checked_mul(PAGE_SIZE)?)?;
+    let free_end = free_start.checked_add(logical_pages.checked_mul(PAGE_SIZE)?)?;
+    let start = align_up(free_start, native_page_size);
+    let end = free_end & !(native_page_size - 1);
+    (start < end).then_some(start..end)
+}
+
 // Contiguous run of free pages inside a segment.
 struct PageRun {
     start: usize,
@@ -1098,9 +1131,11 @@ struct Segment {
     next_page: usize,
     // Free page runs (when spans are returned).
     free_runs: Vec<PageRun>,
-    // Pages successfully returned with MADV_DONTNEED. Allocation clears the
-    // bit; explicit zeroing remains the reuse correctness guarantee.
-    scavenged_pages: Vec<bool>,
+    // Native VM pages successfully advised with MADV_DONTNEED. One VM page may
+    // cover several allocator pages (notably 16 KiB Darwin over 8 KiB spans),
+    // so accounting and reuse invalidation must use this granularity.
+    scavenged_os_pages: Vec<bool>,
+    os_page_size: usize,
 }
 
 impl Segment {
@@ -1116,6 +1151,7 @@ impl Segment {
             .unwrap_or_else(|error| panic!("failed to map GC segment: {error}"));
         let raw = mapping.as_mut_ptr() as usize;
         let data = align_up(raw, PAGE_SIZE) as *mut u8;
+        let os_page_size = os_page_size();
         Self {
             mapping: Some(mapping),
             data,
@@ -1123,7 +1159,8 @@ impl Segment {
             page_map: vec![SPAN_NONE; pages],
             next_page: 0,
             free_runs: Vec::new(),
-            scavenged_pages: vec![false; pages],
+            scavenged_os_pages: vec![false; mapping_len.div_ceil(os_page_size)],
+            os_page_size,
         }
     }
 
@@ -1136,7 +1173,8 @@ impl Segment {
             page_map: vec![SPAN_NONE; pages_for_size(len).max(1)],
             next_page: 0,
             free_runs: Vec::new(),
-            scavenged_pages: vec![false; pages_for_size(len).max(1)],
+            scavenged_os_pages: Vec::new(),
+            os_page_size: os_page_size(),
         }
     }
 
@@ -1184,10 +1222,22 @@ impl Segment {
     }
 
     fn clear_scavenged(&mut self, start: usize, pages: usize) {
-        for page in start..start.saturating_add(pages) {
-            if let Some(scavenged) = self.scavenged_pages.get_mut(page) {
-                *scavenged = false;
-            }
+        let Some(mapping) = self.mapping.as_ref() else {
+            return;
+        };
+        if pages == 0 {
+            return;
+        }
+        let mapping_base = mapping.as_ptr() as usize;
+        let allocation_start = self.base().saturating_add(start.saturating_mul(PAGE_SIZE));
+        let allocation_end = allocation_start.saturating_add(pages.saturating_mul(PAGE_SIZE));
+        let first = allocation_start.saturating_sub(mapping_base) / self.os_page_size;
+        let end = allocation_end
+            .saturating_sub(mapping_base)
+            .div_ceil(self.os_page_size)
+            .min(self.scavenged_os_pages.len());
+        for scavenged in &mut self.scavenged_os_pages[first.min(end)..end] {
+            *scavenged = false;
         }
     }
 
@@ -1199,24 +1249,29 @@ impl Segment {
             return 0;
         };
         let mapping_base = mapping.as_ptr() as usize;
-        let data_offset = self.base().saturating_sub(mapping_base);
         let mut released = 0usize;
         for run in &self.free_runs {
-            let mut page = run.start;
-            let end = run.start.saturating_add(run.len);
+            let Some(range) =
+                fully_free_os_page_range(self.base(), run.start, run.len, self.os_page_size)
+            else {
+                continue;
+            };
+            let first = range.start.saturating_sub(mapping_base) / self.os_page_size;
+            let end = range.end.saturating_sub(mapping_base) / self.os_page_size;
+            let mut page = first;
             while page < end {
-                while page < end && self.scavenged_pages[page] {
+                while page < end && self.scavenged_os_pages[page] {
                     page += 1;
                 }
                 let start = page;
-                while page < end && !self.scavenged_pages[page] {
+                while page < end && !self.scavenged_os_pages[page] {
                     page += 1;
                 }
                 if start == page {
                     continue;
                 }
-                let len = (page - start).saturating_mul(PAGE_SIZE);
-                let offset = data_offset.saturating_add(start.saturating_mul(PAGE_SIZE));
+                let offset = start.saturating_mul(self.os_page_size);
+                let len = (page - start).saturating_mul(self.os_page_size);
                 // SAFETY: collection is stop-the-world, this run has no span
                 // owner in the page map, and no allocation can hold a Rust
                 // borrow into these free pages. DontNeed may replace their
@@ -1225,7 +1280,7 @@ impl Segment {
                 if unsafe { mapping.unchecked_advise_range(UncheckedAdvice::DontNeed, offset, len) }
                     .is_ok()
                 {
-                    for scavenged in &mut self.scavenged_pages[start..page] {
+                    for scavenged in &mut self.scavenged_os_pages[start..page] {
                         *scavenged = true;
                     }
                     released = released.saturating_add(len);
@@ -2826,7 +2881,21 @@ fn next_heap_goal(live_bytes: usize, config: GcConfig) -> usize {
         .saturating_div(100)
         .min(usize::MAX as u128) as usize;
     let goal = GC_MIN_TRIGGER.max(live_bytes.saturating_add(growth));
-    config.memory_limit.map_or(goal, |limit| goal.min(limit))
+    config.memory_limit.map_or(goal, |limit| {
+        if live_bytes <= limit {
+            // Equality must not republish an already-due goal before any new
+            // allocation occurs. Exceed the limit by the smallest possible
+            // amount; the next allocation then creates genuine pressure.
+            goal.min(limit).max(live_bytes.saturating_add(1))
+        } else {
+            // A soft limit cannot be a useful percentage trigger once the
+            // surviving heap has reached it. Back off above current live data
+            // so the next allocation does not immediately request another
+            // collection; future segment growth still performs its one
+            // collect-and-scavenge pressure attempt.
+            goal.max(live_bytes.saturating_add(GC_MIN_TRIGGER))
+        }
+    })
 }
 
 // Register all arena indices that a segment spans in the arena map.
@@ -2861,8 +2930,9 @@ mod tests {
         CURRENT_THREAD_STATE, CleanupRegistration, GC_MIN_TRIGGER, GC_NEEDED_FLAG, GC_POLL_FLAGS,
         GC_REQUESTED_FLAG, Gc, GcConfig, GcDesc, GcStats, MAX_GC_PAUSE_SAMPLES, PAGE_SIZE,
         SEGMENT_SIZE, Segment, THREAD_REGISTRY, allocation_requires_slow_path, atomic_bitset_get,
-        current_thread_gc_mutex_acquisitions, ensure_thread_registered, next_heap_goal,
-        parse_gc_memory_limit, parse_gc_percent, register_segment_arenas,
+        current_thread_gc_mutex_acquisitions, ensure_thread_registered, fully_free_os_page_range,
+        next_heap_goal, os_page_size, parse_gc_memory_limit, parse_gc_percent,
+        register_segment_arenas,
     };
     use crate::gc_layout::{GC_LAYOUT_POINTER, GcLayoutNode};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2966,6 +3036,36 @@ mod tests {
                 },
             ),
             usize::MAX
+        );
+        assert_eq!(
+            next_heap_goal(
+                12 << 20,
+                GcConfig {
+                    percent: Some(100),
+                    memory_limit: Some(9 << 20),
+                },
+            ),
+            24 << 20
+        );
+        assert_eq!(
+            next_heap_goal(
+                12 << 20,
+                GcConfig {
+                    percent: Some(0),
+                    memory_limit: Some(9 << 20),
+                },
+            ),
+            13 << 20
+        );
+        assert_eq!(
+            next_heap_goal(
+                9 << 20,
+                GcConfig {
+                    percent: Some(100),
+                    memory_limit: Some(9 << 20),
+                },
+            ),
+            (9 << 20) + 1
         );
     }
 
@@ -3085,24 +3185,43 @@ mod tests {
     fn partial_scavenging_is_accounted_once_and_cleared_on_reuse() {
         let mut gc = Gc::new_with_config(GcConfig::default());
         let desc = bytes_desc(PAGE_SIZE);
-        let first = gc.alloc(PAGE_SIZE, &desc, false);
+        let pages_to_release = os_page_size().max(PAGE_SIZE) / PAGE_SIZE;
+        let stale: Vec<_> = (0..pages_to_release)
+            .map(|_| gc.alloc(PAGE_SIZE, &desc, false))
+            .collect();
         let keeper = gc.alloc(PAGE_SIZE, &desc, false);
-        unsafe { std::ptr::write_bytes(first, 0xa5, PAGE_SIZE) };
+        unsafe { std::ptr::write_bytes(stale[0], 0xa5, PAGE_SIZE) };
         gc.add_root(keeper);
 
         assert!(gc.collect(&[]).is_empty());
-        assert_eq!(gc.stats.scavenged_bytes, PAGE_SIZE);
+        let expected = os_page_size().max(PAGE_SIZE);
+        assert_eq!(gc.stats.scavenged_bytes, expected);
         gc.add_root(keeper);
         assert!(gc.collect(&[]).is_empty());
-        assert_eq!(gc.stats.scavenged_bytes, PAGE_SIZE);
+        assert_eq!(gc.stats.scavenged_bytes, expected);
 
         let reused = gc.alloc(PAGE_SIZE, &desc, false);
-        assert_eq!(reused, first);
+        assert!(stale.contains(&reused));
         let (segment, _) = gc.find_object(reused).expect("reused allocation");
         let span = gc.spans[segment].as_ref().expect("reused span");
-        assert!(!gc.segments[span.segment].scavenged_pages[span.start_page]);
+        let segment = &gc.segments[span.segment];
+        let mapping_base = segment.mapping.as_ref().unwrap().as_ptr() as usize;
+        let os_page = (reused as usize - mapping_base) / segment.os_page_size;
+        assert!(!segment.scavenged_os_pages[os_page]);
         let bytes = unsafe { std::slice::from_raw_parts(reused, PAGE_SIZE) };
         assert!(bytes.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn scavenging_uses_only_fully_free_native_pages() {
+        let base = 0x1_0000;
+        let native_page = 16 * 1024;
+
+        assert_eq!(fully_free_os_page_range(base, 1, 1, native_page), None);
+        assert_eq!(
+            fully_free_os_page_range(base, 1, 3, native_page),
+            Some(0x1_4000..0x1_8000)
+        );
     }
 
     #[test]

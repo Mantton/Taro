@@ -220,6 +220,11 @@ property of calls:
   required because managed callers transfer responsibility for GC-bearing call
   arguments to the callee's entry map, and the collector must walk across a
   rootless callee to reach mapped callers.
+- Every collecting site, including a rootless poll, publishes a nonzero
+  frame-local selector and an exact PC record. The runtime reads that selector
+  from the parked frame instead of treating the nearest machine record as the
+  executed source site. Same-PC alternatives remain separate, so descriptors
+  from inactive control-flow paths are never unioned.
 
 - Worker and I/O threads attach to the GC before they are exposed to the
   scheduler.
@@ -233,9 +238,10 @@ property of calls:
   destroys their compiler frames before removing those roots.
 - A foreign declaration using `extern "blocking"` is wrapped with
   `__rt__gc_enter_blocking`/`__rt__gc_exit_blocking`. Its compiler stack-map
-  roots are published before the native call parks, but collection does not
-  wait for that call to return. Blocking functions must not call back into Taro
-  before the annotated call returns.
+  selector and roots are published before `__rt__gc_enter_blocking` parks and
+  walks the frame; collection does not wait for the foreign call to return.
+  Blocking functions must not call back into Taro before the annotated call
+  returns.
 
 Each mutator checks out at most one small-object span for every size class and
 scan/no-scan lane. Removing a free slot from a warm checked-out span is
@@ -266,7 +272,10 @@ terminate immediately with `runtime configuration error: ...`.
   before segment growth would cross it, the runtime performs one collection
   and scavenging attempt. If live data still requires growth, allocation
   continues above the limit and records a soft-limit exceedance instead of
-  repeatedly collecting or reporting an artificial OOM.
+  repeatedly collecting or reporting an artificial OOM. When surviving live
+  bytes already exceed the limit, the normal percentage trigger is set at
+  least 1 MiB above live bytes; later segment growth still gets its one pressure
+  attempt.
 - Mutators publish allocation debt in 64 KiB quanta and flush any remainder at
   refill, safepoint, detach, and collection. Percentage-trigger overshoot is
   therefore bounded by 64 KiB times the number of active mutators.
@@ -275,11 +284,13 @@ terminate immediately with `runtime configuration error: ...`.
   bytes, soft-limit exceedances, and cumulative allocation totals.
 
 After sweep, the runtime releases wholly empty segments while retaining one
-minimum segment and rebuilds its page map. On Unix it also applies `DontNeed`
-to wholly free, page-aligned subranges and remembers which pages were already
-advised so accounting is not duplicated. Other platforms retain whole-segment
-release and treat partial-page advice as a no-op. Reuse clears the scavenged
-state; explicit zeroing remains mandatory.
+minimum segment and rebuilds its page map. On Unix it queries the native VM page
+size and applies `DontNeed` only to wholly free, native-page-aligned subranges.
+It tracks advice at that same granularity, so a 16 KiB Darwin page is never
+partially advised or double-counted when allocator pages are 8 KiB. Other
+platforms retain whole-segment release and treat partial-page advice as a no-op.
+Reuse clears every overlapping native-page scavenged bit; explicit zeroing
+remains mandatory.
 
 The collector is intentionally still stop-the-world, non-moving, and
 non-generational. Concurrent collection, compaction, pinning, write barriers,
