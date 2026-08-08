@@ -21,7 +21,7 @@ Every ordinary or synthesized async function has two stored representations:
 2. **Final codegen MIR** has completed global passes and is the body lowered to
    LLVM.
 
-Metadata format 27 serializes both forms into separate stores. The inliner
+Metadata format 28 serializes both forms into separate stores. The inliner
 always reads canonical bodies, including for cached dependencies, so a source
 callee and the same attached callee produce the same decision. Retention is
 computed from canonical inline candidates while final bodies still needed for
@@ -41,6 +41,15 @@ Hidden existential boxes become explicit `Alloc`, payload store, and
 non-allocating pack operations after inlining and before escape analysis. This
 makes allocation and collection behavior visible to both optimizers and root
 analysis.
+
+`LowerAggregates` evaluates field expressions first, emits one contiguous
+safepoint-free field-store sequence, and then publishes a completed tuple,
+struct, or closure with `SetInitialized(LocalId)`. That marker is serialized in
+final MIR and participates only in definite-initialization analysis; LLVM emits
+no instruction for it. Enum payload stores remain published by the final
+`SetDiscriminant`. A whole-local descriptor is therefore never evaluated while
+its storage is partial, but the completed aggregate becomes eligible for every
+later site map.
 
 ## Deterministic inlining policy
 
@@ -114,11 +123,14 @@ Every collecting site emits a record, including rootless polls. A collecting
 physical frame has one selector slot, and each site volatile-stores a distinct
 nonzero value before its stack-map anchor. The runtime reads that value from the
 parked frame. Records that resolve to one machine PC therefore remain distinct
-instead of unioning typed roots from mutually exclusive paths; PC order selects
-only among machine duplicates of the observed selector. The stack-map intrinsic
-is `nounwind`, so an enclosing unwind edge never converts it to an invalid LLVM
-`invoke`. Blocking-call codegen publishes its selector and map before calling
-`__rt__gc_enter_blocking`, because that transition parks and walks the frame.
+instead of unioning typed roots from mutually exclusive paths. Normalization
+validates and collapses identical machine duplicates into one entry per
+selector, ordered for binary lookup. The return PC identifies only the physical
+function; machine-address order does not identify the executed site. The
+stack-map intrinsic is `nounwind`, so an enclosing unwind edge never converts
+it to an invalid LLVM `invoke`. Blocking-call codegen publishes its selector and
+map before calling `__rt__gc_enter_blocking`, because that transition parks and
+walks the frame.
 
 The precise-liveness language regression uses the test-only runtime pair
 `__rt__test_gc_probe_create` and `__rt__test_gc_collect_probe_is_live`. The
@@ -133,7 +145,7 @@ actually distinguishes tagged traversal from a flat offset union.
 
 ## Typed layout and PC metadata contract
 
-PC schema 4, pending-descriptor schema 3, and runtime ABI 16 share one indexed
+PC schema 5, pending-descriptor schema 3, and runtime ABI 17 share one indexed
 `GcLayoutNode` graph for stack, heap, static, and buffer traversal. The graph
 supports pointer, reference, aggregate, fixed-repeat, and tagged nodes. Tagged
 nodes visit only the variant selected by a 1-, 2-, 4-, or 8-byte discriminator;
@@ -148,11 +160,11 @@ address plus its exact descriptor rather than an untyped range.
 
 The PC sidecar remains a separate linked object. Normalization records exact
 machine-function bounds, attributes moved/duplicated records to their final
-function, and preserves selector-disambiguated same-PC records. It rejects
+function, preserves selector-disambiguated same-PC sites, rejects
 selector-location disagreement and machine duplicates whose GC semantics have
-changed. Layout nodes and recipes are copied and deduplicated inside the
-sidecar, so it never relocates against an internal layout symbol in another
-object file.
+changed, and collapses valid duplicates into a strictly selector-ordered table.
+Layout nodes and recipes are copied and deduplicated inside the sidecar, so it
+never relocates against an internal layout symbol in another object file.
 
 ## Runtime consequences
 

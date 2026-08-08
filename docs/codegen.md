@@ -30,7 +30,7 @@ constructors, poll thunks, and drop thunks:
 - **final codegen MIR** has completed global optimization, explicit allocation
   lowering, liveness-driven safepoints, and inlining.
 
-Both forms are serialized in metadata format 27. Dependency loading hydrates
+Both forms are serialized in metadata format 28. Dependency loading hydrates
 them into separate stores, and the MIR inliner reads only canonical bodies.
 Consequently, an inline decision does not depend on whether a callee came from
 source in the current build or from attached/cached metadata. Metadata retains
@@ -110,33 +110,44 @@ GC-bearing arguments; allocations use values live after the allocation; polls
 use values live at the poll. `std.runtime.keepAlive(value)` becomes a
 compiler-only liveness use and emits neither a call nor another poll.
 
+Aggregate lowering evaluates every field-producing expression before it writes
+the destination. Tuple, struct, and closure fields are then stored contiguously
+without a safepoint, followed by the compiler-only `SetInitialized(LocalId)`
+publication marker. Definite-initialization analysis makes the whole local
+scannable only after that marker; code generation emits no instruction for it.
+Enums use their discriminator store as the equivalent publication event, with
+the payload written first. This avoids both scanning partial aggregate storage
+and dropping a completed aggregate from later root maps.
+
 Every collecting site emits a machine record, including a rootless entry or loop
 poll. Each collecting physical frame owns a selector slot. Immediately before a
 site, generated code volatile-stores that site's nonzero selector and records
 the slot as the first stack-map operand. The runtime reads the selector from the
-parked frame and chooses the matching record; PC order is used only to choose
-between machine duplicates of that same source site. This remains correct when
-block layout puts an unrelated record closer to the return PC.
+parked frame and chooses the matching selector-table entry. The return PC only
+identifies and bounds the physical function; machine-address order is not used
+to identify a site. This remains correct when block layout places the executed
+stack-map anchor after the return PC.
 
 Records that optimize to the same machine PC remain distinct. In particular,
 the compiler never unions typed roots from mutually exclusive control-flow
 paths: doing so could interpret inactive enum or reference storage using the
 wrong descriptor. Metadata validation requires one selector location per
-function, distinct selector values for same-PC alternatives, and identical GC
-semantics for machine duplicates of one selector. A missing or invalid selector
-fails closed with the function and offset in the diagnostic.
+function and identical GC semantics for machine duplicates of one selector.
+Normalization collapses identical machine duplicates, then stores one strictly
+selector-ordered entry per source site for binary runtime lookup. A missing or
+invalid selector fails closed with the function and offset in the diagnostic.
 
 Rootless sites still keep the physical LLVM function `noinline` with tail-call
 elimination disabled and synchronous unwind metadata. The unwind entry lets the
 stop-the-world stack walker cross that frame to mapped callers.
 
-PC metadata schema 4 and pending-descriptor schema 3 encode the selector and one
+PC metadata schema 5 and pending-descriptor schema 3 encode the selector and one
 indexed, tag-aware layout graph shared with heap, static, and buffer scanning.
 Its node kinds are `Pointer`, `Reference`, `Aggregate`, `Repeat`, and `Tagged`;
 a tagged node reads a 1-, 2-, 4-, or 8-byte discriminator and visits only the
 active variant. Niche-pointer optionals use their native null/payload form.
 Static roots register as `(address, descriptor)` rather than an untyped byte
-range. Runtime ABI revision 15 is the matching consumer contract.
+range. Runtime ABI revision 17 is the matching consumer contract.
 
 ## Incremental Compilation
 

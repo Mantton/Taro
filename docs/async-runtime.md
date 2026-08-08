@@ -211,6 +211,11 @@ property of calls:
   analysis is intentionally not field-sensitive. Typed root descriptors do,
   however, visit only the active enum variant and handle niche-pointer
   optionals without inventing a tag.
+- Lowered tuple, struct, and closure construction publishes whole-local
+  initialization only after its contiguous field stores complete; the
+  compiler-only marker emits no code. Enum construction instead publishes with
+  its final discriminator store after the payload. No safepoint may split
+  either publication sequence.
 - `std.runtime.keepAlive(value)` is a compiler-only liveness use. It extends the
   lifetime of `value` through that point but emits no native call or safepoint.
 - A physical function containing any collecting site remains `noinline`, with
@@ -221,10 +226,11 @@ property of calls:
   arguments to the callee's entry map, and the collector must walk across a
   rootless callee to reach mapped callers.
 - Every collecting site, including a rootless poll, publishes a nonzero
-  frame-local selector and an exact PC record. The runtime reads that selector
-  from the parked frame instead of treating the nearest machine record as the
-  executed source site. Same-PC alternatives remain separate, so descriptors
-  from inactive control-flow paths are never unioned.
+  frame-local selector and an exact selector-table entry. The return PC
+  identifies the physical function, and the runtime reads its selector from the
+  parked frame instead of treating machine-address order as execution order.
+  Same-PC alternatives remain separate, so descriptors from inactive
+  control-flow paths are never unioned.
 
 - Worker and I/O threads attach to the GC before they are exposed to the
   scheduler.
