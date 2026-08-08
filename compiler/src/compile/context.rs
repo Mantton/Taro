@@ -968,6 +968,44 @@ impl<'arena> GlobalContext<'arena> {
         *package.functions.get(&id).expect("mir body")
     }
 
+    /// Return the target/profile-local MIR for one concrete codegen instance.
+    ///
+    /// Serialized MIR intentionally stops before escape placement and
+    /// safepoint insertion. Those decisions mutate locals and the CFG, so a
+    /// generic definition cannot safely share them between instantiations.
+    pub fn get_instance_mir_body(
+        self,
+        instance: Instance<'arena>,
+    ) -> CompileResult<&'arena mir::Body<'arena>> {
+        if let Some(body) = self
+            .context
+            .store
+            .instance_mir_bodies
+            .borrow()
+            .get(&instance)
+            .copied()
+        {
+            return Ok(body);
+        }
+
+        let mut body = self.get_mir_body(instance.def_id()).clone();
+        mir::optimize::run_instance_passes(self, &mut body)?;
+        let body = self.context.store.arenas.mir_bodies.alloc(body);
+        self.context
+            .store
+            .instance_mir_bodies
+            .borrow_mut()
+            .insert(instance, body);
+
+        if self.config.debug.dump_mir {
+            let name = crate::codegen::mangle::mangle_instance(self, instance);
+            eprintln!("\n=== Final instance MIR: {name} ===");
+            eprintln!("{}", mir::pretty::PrettyPrintMir { body, gcx: self });
+        }
+
+        Ok(body)
+    }
+
     /// Returns the canonical, locally-cleaned MIR used for interprocedural
     /// inlining. This representation is deliberately separate from final MIR:
     /// an inliner must not see a body that has already been inlined and had
@@ -1801,8 +1839,13 @@ pub struct CompilerStore<'arena> {
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
     /// Canonical MIR after local passes and before interprocedural transforms.
     pub inline_mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
-    /// Fully optimized MIR consumed by specialization and code generation.
+    /// Shared globally optimized MIR before instance-local placement and
+    /// safepoint insertion. Specialization traverses this representation;
+    /// codegen consumes `instance_mir_bodies` instead.
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
+    /// Target/profile-local MIR after concrete-instance placement and
+    /// safepoint insertion. These bodies are deliberately never serialized.
+    pub instance_mir_bodies: RefCell<FxHashMap<Instance<'arena>, &'arena Body<'arena>>>,
     pub queued_mir_bodies: RefCell<FxHashMap<DefinitionID, Body<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
     pub module_artifacts: RefCell<FxHashMap<PackageIndex, ModuleArtifact>>,
@@ -1856,6 +1899,7 @@ impl<'arena> CompilerStore<'arena> {
             type_databases: Default::default(),
             inline_mir_packages: Default::default(),
             mir_packages: Default::default(),
+            instance_mir_bodies: Default::default(),
             queued_mir_bodies: Default::default(),
             llvm_modules: Default::default(),
             module_artifacts: Default::default(),

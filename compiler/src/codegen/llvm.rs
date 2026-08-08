@@ -1264,7 +1264,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 continue;
             }
 
-            let body = self.gcx.get_mir_body(def_id);
+            let body = self.gcx.get_instance_mir_body(instance)?;
             self.lower_body(instance, body)?;
 
             // Mark as compiled so other packages don't duplicate work

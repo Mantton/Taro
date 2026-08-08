@@ -85,9 +85,12 @@ pub fn lower_async_for_canonical_mir<'ctx>(
     run_local_passes(gcx, body)
 }
 
-/// Global passes: run after all MIR bodies are built.
-/// These passes may require access to other function bodies (e.g., inlining).
-/// Includes: inlining, lower aggregates, escape analysis, safepoints.
+/// Shared global passes: run once per definition after all MIR bodies are built.
+///
+/// These passes may require access to other function bodies (e.g., inlining),
+/// but must not make decisions that can differ between monomorphized instances.
+/// Escape placement and safepoint insertion therefore run later on an
+/// instance-local clone via [`run_instance_passes`].
 ///
 /// Note: escape::compute_escape_summaries must be called before these passes
 /// to enable interprocedural escape analysis.
@@ -106,6 +109,19 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(propagate::CopyPropagation),
         Box::new(coalesce::TempCoalescing),
         Box::new(coalesce::RepeatFieldForwarding),
+    ];
+    run_passes(gcx, body, &mut passes)?;
+    Ok(())
+}
+
+/// Finalize one concrete codegen instance.
+///
+/// The input is a clone of shared, globally optimized MIR. Keeping every
+/// placement and safepoint mutation on this clone lets later analyses consult
+/// concrete generic arguments without contaminating another instantiation of
+/// the same source definition.
+pub fn run_instance_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+    let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(alloc_escape::AllocEscapeAnalysis),
         Box::new(alloc_escape::StackPromoteAllocations),
         Box::new(dse::DeadStoreElimination),
