@@ -126,26 +126,30 @@ def main() -> int:
 
             gc_stress_env = env.copy()
             gc_stress_env["TARO_GC_STRESS"] = "1"
-            gc_stress_command = [
-                str(taro),
-                "run",
-                str(
-                    repo_root
-                    / "language_tests"
-                    / "source_files"
-                    / "valid"
-                    / "gc_stack_map_stress.tr"
-                ),
-                "--std-path",
-                str(std_path),
-            ]
-            if args.release:
-                gc_stress_command.append("--release")
-            run_command(
-                gc_stress_command,
-                cwd=repo_root,
-                env=gc_stress_env,
-            )
+            for regression in [
+                "gc_stack_map_stress.tr",
+                "gc_precise_liveness_regression.tr",
+            ]:
+                gc_stress_command = [
+                    str(taro),
+                    "run",
+                    str(
+                        repo_root
+                        / "language_tests"
+                        / "source_files"
+                        / "valid"
+                        / regression
+                    ),
+                    "--std-path",
+                    str(std_path),
+                ]
+                if args.release:
+                    gc_stress_command.append("--release")
+                run_command(
+                    gc_stress_command,
+                    cwd=repo_root,
+                    env=gc_stress_env,
+                )
     except subprocess.CalledProcessError as error:
         return error.returncode or 1
     finally:

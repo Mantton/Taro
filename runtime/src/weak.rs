@@ -64,3 +64,38 @@ pub extern "C" fn __rt__weak_value(cell: *mut u8) -> *mut u8 {
     crate::garbage_collector::ensure_thread_registered();
     load_cell(cell)
 }
+
+/// Create an opaque weak-cell probe for deterministic GC liveness tests.
+///
+/// The probe is GC-managed, just like `std.weak.Weak`, but its raw handle is
+/// consumed directly by the test ABI below. Keeping the probe separate from
+/// the production `Weak` API prevents tests from depending on a generally
+/// available no-safepoint weak observation operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__test_gc_probe_create(target: *const u8) -> *mut u8 {
+    __rt__weak_create(target)
+}
+
+/// Collect and report whether `probe`'s target survived that same collection.
+///
+/// This must remain a single native runtime call: returning to generated Taro
+/// code before loading the cell would permit an entry poll or stress-mode
+/// collection to change the observation. The caller's map at this call is the
+/// precise root set under test.
+#[unsafe(no_mangle)]
+pub extern "C" fn __rt__test_gc_collect_probe_is_live(probe: *mut u8) -> bool {
+    // Keep the probe cell itself stable independently of the caller map. Its
+    // descriptor has no target edge, so this does not affect the reachability
+    // result the probe observes. RuntimeSafepoint argument rooting is still
+    // emitted and checked structurally, but a compiler bug there cannot turn
+    // this diagnostic helper's final load into a use-after-free.
+    if !probe.is_null() {
+        crate::garbage_collector::with_gc(|gc| gc.add_persistent_root(probe.cast_const()));
+    }
+    crate::garbage_collector::__gc__collect();
+    let target_is_live = !load_cell(probe).is_null();
+    if !probe.is_null() {
+        crate::garbage_collector::with_gc(|gc| gc.remove_persistent_root(probe.cast_const()));
+    }
+    target_is_live
+}

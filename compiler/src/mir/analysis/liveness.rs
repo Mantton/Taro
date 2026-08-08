@@ -730,6 +730,60 @@ mod tests {
     }
 
     #[test]
+    fn future_keep_alive_distinguishes_live_across_call_from_dead_local() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let function = push_temp(&mut body, gcx.types.uint);
+            let probe = push_temp(&mut body, gcx.types.uint);
+            let live_owner = push_temp(&mut body, gcx.types.uint);
+            let dead_owner = push_temp(&mut body, gcx.types.uint);
+            let destination = push_temp(&mut body, gcx.types.bool);
+            for local in [function, probe, live_owner, dead_owner] {
+                body.locals[local].kind = LocalKind::Param;
+            }
+            let continuation = body.basic_blocks.push(BasicBlockData {
+                note: Some("continuation".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(live_owner))),
+                    span,
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Unreachable,
+                    span,
+                }),
+            });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: Operand::Copy(Place::from_local(function)),
+                    args: vec![Operand::Copy(Place::from_local(probe))],
+                    devirt_hint: None,
+                    destination: Place::from_local(destination),
+                    target: continuation,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+
+            let result = compute_liveness(&body);
+            let before = result.live_before_terminator(body.start_block);
+            let after = result.live_after_terminator(body.start_block);
+
+            // A RuntimeSafepoint call adds the argument-only `probe` root in
+            // codegen. Temporal liveness supplies only `live_owner` to the
+            // live-across set; `dead_owner` must remain absent.
+            assert!(before.contains(&function));
+            assert!(before.contains(&probe));
+            assert!(!after.contains(&probe));
+            assert!(before.contains(&live_owner));
+            assert!(after.contains(&live_owner));
+            assert!(!before.contains(&dead_owner));
+            assert!(!after.contains(&dead_owner));
+            assert!(!before.contains(&destination));
+        });
+    }
+
+    #[test]
     fn projected_call_destination_keeps_its_base_local_live() {
         with_test_gcx(|gcx| {
             let mut body = minimal_body(gcx);

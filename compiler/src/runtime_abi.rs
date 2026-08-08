@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 15;
+pub const RUNTIME_ABI_REVISION: u32 = 16;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -555,6 +555,8 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__sync_rwlock_unlock_read", "(*mut u8)->i32"),
     additional("__rt__sync_rwlock_unlock_write", "(*mut u8)->i32"),
     additional_safepoint("__rt__test_call_fn", "(fn()->void)->bool"),
+    additional_safepoint("__rt__test_gc_collect_probe_is_live", "(*mut u8)->bool"),
+    additional_safepoint("__rt__test_gc_probe_create", "(*const u8)->*mut u8"),
     additional("__rt__test_panic_finish", "(bool,*const u8,usize)->void"),
     additional("__rt__test_panic_status", "(bool,*const u8,usize)->u8"),
     additional_safepoint("__rt__weak_create", "(*const u8)->*mut u8"),
@@ -697,6 +699,14 @@ mod tests {
         assert_eq!(
             gc_effect_for_symbol("__rt__hash_seed0"),
             Some(RuntimeGcEffect::NoGc)
+        );
+        assert_eq!(
+            gc_effect_for_symbol("__rt__test_gc_probe_create"),
+            Some(RuntimeGcEffect::RuntimeSafepoint)
+        );
+        assert_eq!(
+            gc_effect_for_symbol("__rt__test_gc_collect_probe_is_live"),
+            Some(RuntimeGcEffect::RuntimeSafepoint)
         );
         assert_eq!(
             gc_effect_for_symbol("__rt__open2"),

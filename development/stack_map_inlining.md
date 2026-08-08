@@ -120,9 +120,20 @@ is `nounwind`, so an enclosing unwind edge never converts it to an invalid LLVM
 `invoke`. Blocking-call codegen publishes its selector and map before calling
 `__rt__gc_enter_blocking`, because that transition parks and walks the frame.
 
+The precise-liveness language regression uses the test-only runtime pair
+`__rt__test_gc_probe_create` and `__rt__test_gc_collect_probe_is_live`. The
+second entry collects and reads its weak probe before returning to generated
+code, so a later entry poll cannot erase evidence of over-retention. It returns
+only a boolean and is declared directly through `extern "taro_rt"`; inserting a
+managed wrapper would add another collecting frame and invalidate the oracle.
+The raw-pointer declarations are unsafe and remain confined to `std.testing`.
+The inactive-variant case forces a non-NPO enum and deliberately seeds its
+inactive payload bytes while preserving the `.empty` tag, ensuring the test
+actually distinguishes tagged traversal from a flat offset union.
+
 ## Typed layout and PC metadata contract
 
-PC schema 4, pending-descriptor schema 3, and runtime ABI 15 share one indexed
+PC schema 4, pending-descriptor schema 3, and runtime ABI 16 share one indexed
 `GcLayoutNode` graph for stack, heap, static, and buffer traversal. The graph
 supports pointer, reference, aggregate, fixed-repeat, and tagged nodes. Tagged
 nodes visit only the variant selected by a 1-, 2-, 4-, or 8-byte discriminator;

@@ -6,6 +6,19 @@ extern "blocking" {
     func __rt__cleanup_wait()
 }
 
+extern "taro_rt" {
+    /// Create an opaque weak probe while `target` is known to be reachable.
+    /// This is a GC regression-test hook; production code must not depend on
+    /// collection timing.
+    public unsafe func __rt__test_gc_probe_create(_ target: *const uint8) -> *mut uint8
+
+    /// Perform a collection and atomically observe whether `probe`'s target
+    /// survived it. This declaration intentionally has no managed wrapper:
+    /// another safepoint between collection and observation would make
+    /// temporal liveness tests nondeterministic.
+    public unsafe func __rt__test_gc_collect_probe_is_live(_ probe: *mut uint8) -> bool
+}
+
 /// Assert that two values are equal (using `!=`), panicking with a message if not.
 public func assertEqual[T: std.ops.PartialEq](_ actual: T, _ expected: T, _ message: string) {
     if actual != expected {
