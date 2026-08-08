@@ -104,11 +104,27 @@ public func builtinNamed(_ name: string) -> Optional[Builtin] {
 /// Kept beside the builtins rather than inside either engine, because both the
 /// tree-walking evaluator and the bytecode machine call the same
 /// implementations and so have to report the same failures.
-public enum BuiltinError {
-    case wrongArgumentCount(function: string, expected: usize, found: usize)
-    case wrongArgumentType(function: string, expected: ObjectKind, found: ObjectKind)
+/// Every payload is bounded by what the instruction set can express — a
+/// builtin is named by its own enum rather than by a string, and an argument
+/// count cannot exceed what `OpCall`'s operand holds. That keeps the whole
+/// value small enough to travel in registers, which matters because it is
+/// returned from the machine's innermost loop.
+public enum BuiltinError: std.marker.Copy {
+    case wrongArgumentCount(function: Builtin, expected: uint16, found: uint16)
+    case wrongArgumentType(function: Builtin, expected: ObjectKind, found: ObjectKind)
     /// A builtin that accepts several kinds was given none of them.
-    case unsupportedArgument(function: string, found: ObjectKind)
+    case unsupportedArgument(function: Builtin, found: ObjectKind)
+}
+
+/// Narrows a count for reporting.
+///
+/// A call cannot carry more arguments than the instruction set can name, so
+/// this only ever clamps input no real program produces.
+public func reportCount(_ value: usize) -> uint16 {
+    if value > (65535 as usize) {
+        return 65535
+    }
+    return value as uint16
 }
 
 impl BuiltinError {
@@ -117,7 +133,7 @@ impl BuiltinError {
             case .wrongArgumentCount(function, expected, found) => {
                 return std.sprintf(
                     "wrong number of arguments to `%s`: want %v, got %v",
-                    *function,
+                    function.name(),
                     *expected,
                     *found,
                 )
@@ -125,7 +141,7 @@ impl BuiltinError {
             case .wrongArgumentType(function, expected, found) => {
                 return std.sprintf(
                     "argument to `%s` must be %s, got %s",
-                    *function,
+                    function.name(),
                     expected.describe(),
                     found.describe(),
                 )
@@ -133,7 +149,7 @@ impl BuiltinError {
             case .unsupportedArgument(function, found) => {
                 return std.sprintf(
                     "argument to `%s` not supported, got %s",
-                    *function,
+                    function.name(),
                     found.describe(),
                 )
             }
@@ -151,9 +167,9 @@ public func callBuiltin(
 ) -> Result[Object, BuiltinError] {
     if !builtin.isVariadic() && arguments.len() != builtin.arity() {
         return .err(.wrongArgumentCount(
-            function: builtin.name(),
-            expected: builtin.arity(),
-            found: arguments.len(),
+            function: builtin,
+            expected: reportCount(builtin.arity()),
+            found: reportCount(arguments.len()),
         ))
     }
 
@@ -167,7 +183,7 @@ public func callBuiltin(
                 // expected kind would misdescribe it.
                 case _ => {
                     return .err(.unsupportedArgument(
-                        function: "len",
+                        function: .len,
                         found: argument.kind(),
                     ))
                 }
@@ -175,7 +191,7 @@ public func callBuiltin(
         }
 
         case .first => {
-            let elements = arrayArgument("first", &arguments)!
+            let elements = arrayArgument(.first, &arguments)!
             match elements.get(0 as usize) {
                 case .some(found) => return .ok(found.clone())
                 case .none => return .ok(.null)
@@ -183,7 +199,7 @@ public func callBuiltin(
         }
 
         case .last => {
-            let elements = arrayArgument("last", &arguments)!
+            let elements = arrayArgument(.last, &arguments)!
             if elements.isEmpty() {
                 return .ok(.null)
             }
@@ -191,7 +207,7 @@ public func callBuiltin(
         }
 
         case .rest => {
-            let elements = arrayArgument("rest", &arguments)!
+            let elements = arrayArgument(.rest, &arguments)!
             if elements.isEmpty() {
                 return .ok(.null)
             }
@@ -205,7 +221,7 @@ public func callBuiltin(
         }
 
         case .push => {
-            let elements = arrayArgument("push", &arguments)!
+            let elements = arrayArgument(.push, &arguments)!
             var extended = List[Object]()
             for element in elements {
                 extended.append(element.clone())
@@ -225,7 +241,7 @@ public func callBuiltin(
 
 /// The first argument as an array, or a typed failure naming the builtin.
 func arrayArgument(
-    _ name: string,
+    _ name: Builtin,
     _ arguments: &List[Object],
 ) -> Result[&List[Object], BuiltinError] {
     let argument = arguments.at(0 as usize)

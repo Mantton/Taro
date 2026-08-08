@@ -61,9 +61,13 @@ public enum Instruction: std.marker.Copy {
 }
 
 /// Why a byte stream could not be read as an instruction.
-public enum DecodeError {
-    case unknownOpcode(byte: uint8, offset: usize)
-    case truncatedOperand(opcode: Opcode, offset: usize)
+///
+/// An offset is a `uint16` because a jump operand is: a stream the compiler
+/// will emit cannot be longer than one can address. Keeping the payloads small
+/// is what lets the machine return this from its innermost loop in registers.
+public enum DecodeError: std.marker.Copy {
+    case unknownOpcode(byte: uint8, offset: uint16)
+    case truncatedOperand(opcode: Opcode, offset: uint16)
 }
 
 impl DecodeError {
@@ -169,7 +173,12 @@ func appendUint16(_ value: uint16, into bytes: &mut List[uint8]) {
 }
 
 /// Reads a big-endian `uint16`, which the caller has already bounds-checked.
-func readUint16(_ bytes: &List[uint8], at offset: usize) -> uint16 {
+///
+/// Public because the machine reads its own operands straight out of the
+/// instruction stream, the way the reference implementation's `ReadUint16`
+/// does, rather than paying to rebuild a typed instruction for every step.
+@inline
+public func readUint16(_ bytes: &List[uint8], at offset: usize) -> uint16 {
     let high = (*bytes.at(offset)) as uint16
     let low = (*bytes.at(offset + (1 as usize))) as uint16
     return (high << (8 as uint16)) | low
@@ -220,21 +229,32 @@ public func encoded(_ instruction: Instruction) -> List[uint8] {
 /// both come through here, which is what keeps them from disagreeing about how
 /// long an instruction is — in the reference implementation they are separate
 /// code paths that read the operands independently.
+/// Narrows an offset for reporting.
+///
+/// The compiler refuses to emit a stream longer than a jump can address, so
+/// this only clamps input it did not produce.
+func reportOffset(_ value: usize) -> uint16 {
+    if value > (65535 as usize) {
+        return 65535
+    }
+    return value as uint16
+}
+
 public func decode(_ bytes: &List[uint8], at offset: usize) -> Result[Decoded, DecodeError] {
     if offset >= bytes.len() {
-        return .err(.unknownOpcode(byte: 0, offset: offset))
+        return .err(.unknownOpcode(byte: 0, offset: reportOffset(offset)))
     }
 
     let byte = *bytes.at(offset)
     var opcode = Opcode.constant
     match Opcode.fromByte(byte) {
         case .some(found) => opcode = found
-        case .none => return .err(.unknownOpcode(byte: byte, offset: offset))
+        case .none => return .err(.unknownOpcode(byte: byte, offset: reportOffset(offset)))
     }
 
     let operands = offset + (1 as usize)
     if operands + opcode.operandWidth() > bytes.len() {
-        return .err(.truncatedOperand(opcode: opcode, offset: offset))
+        return .err(.truncatedOperand(opcode: opcode, offset: reportOffset(offset)))
     }
 
     let width = (1 as usize) + opcode.operandWidth()

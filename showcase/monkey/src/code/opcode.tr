@@ -83,6 +83,7 @@ impl Opcode {
     /// This is the only place a byte becomes an opcode, so an unrecognised one is
     /// rejected once, here, rather than falling through to a default branch in
     /// the machine that runs it.
+    @inline
     public func fromByte(_ byte: uint8) -> Optional[Opcode] {
         match byte {
             case 0 => .some(.constant)

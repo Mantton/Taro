@@ -207,6 +207,7 @@ public func boxClosure(_ closure: Closure) -> &Closure {
 
 impl std.marker.Clone for Object {
     /// Copies the value, sharing rather than duplicating aggregates.
+    @inline
     public func clone(&self) -> Self {
         match self {
             case .null => .null

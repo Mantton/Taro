@@ -23,6 +23,7 @@ impl Instructions {
         return self.bytes.isEmpty()
     }
 
+    @inline
     public func raw(&self) -> &List[uint8] {
         return &self.bytes
     }
