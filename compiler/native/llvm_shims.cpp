@@ -9,6 +9,7 @@
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/StackMapParser.h"
+#include "llvm/Object/SymbolSize.h"
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
@@ -53,6 +54,7 @@ struct TaroStackMapRecord {
 struct TaroStackMapFunction {
   std::string Symbol;
   std::uint64_t StackSize = 0;
+  std::uint64_t CodeSize = 0;
   std::size_t RecordStart = 0;
   std::size_t RecordCount = 0;
 };
@@ -232,6 +234,25 @@ bool parse_stack_map_records(const llvm::ArrayRef<std::uint8_t> Bytes,
     return false;
 
   Parser StackMap(Bytes);
+  std::unordered_map<std::string, std::uint64_t> FunctionSizes;
+  for (const auto &[Symbol, Size] : llvm::object::computeSymbolSizes(Object)) {
+    auto Name = Symbol.getName();
+    if (!Name) {
+      llvm::consumeError(Name.takeError());
+      continue;
+    }
+    llvm::StringRef Normalized = *Name;
+    if (Object.isMachO() && Normalized.starts_with("_"))
+      Normalized = Normalized.drop_front();
+    if (Normalized.empty())
+      continue;
+    auto [Entry, Inserted] = FunctionSizes.emplace(Normalized.str(), Size);
+    if (!Inserted && Entry->second != Size) {
+      Result.Error = "object contains conflicting sizes for symbol '" +
+                     Normalized.str() + "'";
+      return false;
+    }
+  }
   std::unordered_map<std::uint64_t, std::string> FunctionSymbols;
   auto CollectRelocations = [&](const llvm::object::SectionRef &RelocationSection) {
     for (const llvm::object::RelocationRef &Relocation :
@@ -288,9 +309,15 @@ bool parse_stack_map_records(const llvm::ArrayRef<std::uint8_t> Bytes,
       Result.Error = "stack map function record range overflows";
       return false;
     }
+    auto Size = FunctionSizes.find(Symbol->second);
+    if (Size == FunctionSizes.end() || Size->second == 0) {
+      Result.Error = "stack map function '" + Symbol->second +
+                     "' has no non-zero object symbol size";
+      return false;
+    }
     Result.Functions.push_back(TaroStackMapFunction{
-        std::move(Symbol->second), Function.getStackSize(), RecordStart,
-        static_cast<std::size_t>(Count)});
+        std::move(Symbol->second), Function.getStackSize(), Size->second,
+        RecordStart, static_cast<std::size_t>(Count)});
     RecordStart += static_cast<std::size_t>(Count);
   }
 
@@ -586,6 +613,14 @@ taro_stack_map_function_stack_size(const TaroParsedStackMap *stack_map,
   if (stack_map == nullptr || index >= stack_map->Functions.size())
     return 0;
   return stack_map->Functions[index].StackSize;
+}
+
+std::uint64_t
+taro_stack_map_function_code_size(const TaroParsedStackMap *stack_map,
+                                  std::size_t index) {
+  if (stack_map == nullptr || index >= stack_map->Functions.size())
+    return 0;
+  return stack_map->Functions[index].CodeSize;
 }
 
 std::size_t

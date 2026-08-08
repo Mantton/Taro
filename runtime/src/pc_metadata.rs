@@ -7,9 +7,13 @@
 //! Short-lived programs therefore do not pay to copy standard-library metadata
 //! they never inspect.
 
+use crate::gc_layout::{
+    GC_LAYOUT_AGGREGATE, GC_LAYOUT_POINTER, GC_LAYOUT_REFERENCE, GC_LAYOUT_REPEAT,
+    GC_LAYOUT_TAGGED, GcLayoutNode,
+};
 use std::sync::{OnceLock, RwLock};
 
-pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 2;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 3;
 #[cfg(target_arch = "x86_64")]
 const ARCH_X86_64: u8 = 1;
 #[cfg(target_arch = "aarch64")]
@@ -17,23 +21,16 @@ const ARCH_AARCH64: u8 = 2;
 const MAX_FUNCTIONS_PER_MODULE: usize = 1 << 20;
 const MAX_RECORDS_PER_FUNCTION: usize = 1 << 20;
 const MAX_ROOTS_PER_RECORD: usize = 1 << 16;
-const MAX_RECIPES_PER_ROOT: usize = 1 << 16;
+const MAX_NODES_PER_ROOT: usize = 1 << 16;
 const MAX_FRAMES_PER_RECORD: usize = 1 << 12;
 const MAX_STRING_BYTES: usize = 1 << 20;
 const MAX_DEREF_DEPTH: u8 = 32;
 
 #[repr(C)]
-struct AbiRootRecipe {
-    offset: u64,
-    deref_depth: u8,
-    reserved: [u8; 7],
-}
-
-#[repr(C)]
 struct AbiRootLocation {
-    recipes_offset: i64,
+    nodes_offset: i64,
     frame_offset: i32,
-    recipe_count: u32,
+    node_count: u32,
     dwarf_register: u16,
     storage_deref_depth: u8,
     reserved: u8,
@@ -73,7 +70,7 @@ struct AbiFunction {
     symbol: AbiString,
     stack_size: u64,
     record_count: u32,
-    reserved: u32,
+    code_size: u32,
 }
 
 #[repr(C)]
@@ -87,17 +84,11 @@ pub struct AbiMetadataModule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RootRecipe {
-    pub(crate) offset: u64,
-    pub(crate) deref_depth: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RootLocation {
     pub(crate) dwarf_register: u16,
     pub(crate) frame_offset: i32,
     pub(crate) storage_deref_depth: u8,
-    pub(crate) recipes: Vec<RootRecipe>,
+    pub(crate) nodes: Vec<GcLayoutNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +111,7 @@ pub(crate) struct PcRecord {
 pub(crate) struct PcFunction {
     pub(crate) entry: usize,
     pub(crate) stack_size: u64,
+    pub(crate) code_size: u32,
     module_base: usize,
     records_offset: i64,
     record_count: usize,
@@ -190,26 +182,60 @@ unsafe fn copy_string(base: usize, value: AbiString, what: &str) -> Result<Strin
     String::from_utf8(bytes.to_vec()).map_err(|_| format!("PC metadata {what} is not UTF-8"))
 }
 
-unsafe fn copy_recipes(
+unsafe fn copy_nodes(
     base: usize,
     offset: i64,
     count: usize,
     function_entry: usize,
-) -> Result<Vec<RootRecipe>, String> {
-    let source: &[AbiRootRecipe] = unsafe { abi_slice(base, offset, count, "root recipes")? };
-    let mut copied = Vec::with_capacity(count);
-    for recipe in source {
-        if recipe.deref_depth > MAX_DEREF_DEPTH {
+) -> Result<Vec<GcLayoutNode>, String> {
+    let source: &[GcLayoutNode] = unsafe { abi_slice(base, offset, count, "root layout nodes")? };
+    for (index, node) in source.iter().enumerate() {
+        if !matches!(
+            node.kind,
+            GC_LAYOUT_POINTER
+                | GC_LAYOUT_REFERENCE
+                | GC_LAYOUT_AGGREGATE
+                | GC_LAYOUT_REPEAT
+                | GC_LAYOUT_TAGGED
+        ) {
             return Err(format!(
-                "PC metadata root dereference depth for function {function_entry:#x} is too large"
+                "PC metadata root node {index} for function {function_entry:#x} has an invalid kind"
             ));
         }
-        copied.push(RootRecipe {
-            offset: recipe.offset,
-            deref_depth: recipe.deref_depth,
-        });
+        match node.kind {
+            GC_LAYOUT_AGGREGATE | GC_LAYOUT_TAGGED => {
+                let end = node.first_child as usize + node.child_count as usize;
+                if end > count {
+                    return Err(format!(
+                        "PC metadata root node {index} for function {function_entry:#x} has an invalid child range"
+                    ));
+                }
+            }
+            GC_LAYOUT_REFERENCE => {
+                if node.child_count > 1
+                    || (node.child_count == 1 && node.first_child as usize >= count)
+                {
+                    return Err(format!(
+                        "PC metadata reference node {index} for function {function_entry:#x} has an invalid child"
+                    ));
+                }
+            }
+            GC_LAYOUT_REPEAT => {
+                if node.child_count != 0 && node.first_child as usize >= count {
+                    return Err(format!(
+                        "PC metadata repeat node {index} for function {function_entry:#x} has an invalid child"
+                    ));
+                }
+            }
+            _ => {}
+        }
+        if node.kind == GC_LAYOUT_TAGGED && !matches!(node.width, 1 | 2 | 4 | 8) {
+            return Err(format!(
+                "PC metadata tagged node {index} for function {function_entry:#x} has an invalid width"
+            ));
+        }
     }
-    Ok(copied)
+    Ok(source.to_vec())
 }
 
 unsafe fn copy_roots(
@@ -226,19 +252,17 @@ unsafe fn copy_roots(
                 "PC metadata storage dereference depth for function {function_entry:#x} is too large"
             ));
         }
-        let recipe_count = root.recipe_count as usize;
-        if recipe_count > MAX_RECIPES_PER_ROOT {
+        let node_count = root.node_count as usize;
+        if node_count > MAX_NODES_PER_ROOT {
             return Err(format!(
-                "PC metadata recipes for function {function_entry:#x} exceed the limit"
+                "PC metadata layout nodes for function {function_entry:#x} exceed the limit"
             ));
         }
         copied.push(RootLocation {
             dwarf_register: root.dwarf_register,
             frame_offset: root.frame_offset,
             storage_deref_depth: root.storage_deref_depth,
-            recipes: unsafe {
-                copy_recipes(base, root.recipes_offset, recipe_count, function_entry)?
-            },
+            nodes: unsafe { copy_nodes(base, root.nodes_offset, node_count, function_entry)? },
         });
     }
     Ok(copied)
@@ -274,6 +298,14 @@ unsafe fn index_module(module: &AbiMetadataModule) -> Result<Vec<PcFunction>, St
     let mut indexed = Vec::with_capacity(function_count);
     for function in functions {
         let entry = relative_address(base, function.entry_offset, "function entry")?;
+        if function.code_size == 0 {
+            return Err(format!(
+                "PC metadata function at {entry:#x} has a zero code size"
+            ));
+        }
+        entry
+            .checked_add(function.code_size as usize)
+            .ok_or_else(|| format!("PC metadata function at {entry:#x} end overflows"))?;
         if function.symbol.len == 0 {
             return Err("PC metadata function symbol is empty".into());
         }
@@ -290,11 +322,24 @@ unsafe fn index_module(module: &AbiMetadataModule) -> Result<Vec<PcFunction>, St
             ));
         }
         // Validate the relative range without reading or copying every record.
-        let _: &[AbiRecord] =
+        let records: &[AbiRecord] =
             unsafe { abi_slice(base, function.records_offset, record_count, "record table")? };
+        for (index, record) in records.iter().enumerate() {
+            if record.pc_offset >= function.code_size {
+                return Err(format!(
+                    "PC metadata record {index} for function {entry:#x} lies outside its code range"
+                ));
+            }
+            if index != 0 && records[index - 1].pc_offset >= record.pc_offset {
+                return Err(format!(
+                    "PC metadata records for function {entry:#x} are not strictly sorted"
+                ));
+            }
+        }
         indexed.push(PcFunction {
             entry,
             stack_size: function.stack_size,
+            code_size: function.code_size,
             module_base: base,
             records_offset: function.records_offset,
             record_count,
@@ -453,6 +498,9 @@ fn find_record<R>(
         .checked_sub(1)?;
     let function = &registry.functions[function_index];
     let offset = pc.checked_sub(function.entry)?;
+    if offset >= function.code_size as usize {
+        return None;
+    }
     let offset = u32::try_from(offset).ok()?;
     let records: &[AbiRecord] = match unsafe {
         abi_slice(
@@ -465,22 +513,13 @@ fn find_record<R>(
         Ok(records) => records,
         Err(message) => registration_error(&message),
     };
-    for pair in records.windows(2) {
-        if pair[0].pc_offset >= pair[1].pc_offset {
-            registration_error(&format!(
-                "PC metadata records for function {:#x} are not strictly sorted",
-                function.entry
-            ));
-        }
-    }
-    // Stack-map intrinsics are emitted immediately after calls. The native
-    // unwinder reports the architectural return PC, while LLVM records the
-    // intrinsic after any call-sequence cleanup instructions. Resolve that
-    // return PC forward to the adjacent map rather than requiring equality.
-    let index = records.partition_point(|record| record.pc_offset < offset);
-    if index == records.len() {
-        return None;
-    }
+    // Every collecting call is preceded by its map. The native unwinder
+    // reports the architectural return PC, so select the closest preceding
+    // map in the same bounded machine function. Function bounds prevent a PC
+    // in an intervening native or rootless function from borrowing this map.
+    let index = records
+        .partition_point(|record| record.pc_offset <= offset)
+        .checked_sub(1)?;
     let record =
         match unsafe { copy_record(function, &records[index], include_roots, include_frames) } {
             Ok(record) => record,
@@ -512,7 +551,7 @@ mod tests {
 
     #[test]
     fn compiler_abi_layout_matches_64_bit_contract() {
-        assert_eq!(std::mem::size_of::<AbiRootRecipe>(), 16);
+        assert_eq!(std::mem::size_of::<GcLayoutNode>(), 32);
         assert_eq!(std::mem::size_of::<AbiRootLocation>(), 24);
         assert_eq!(std::mem::size_of::<AbiString>(), 16);
         assert_eq!(std::mem::size_of::<AbiLogicalFrame>(), 40);
@@ -522,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn return_pc_lookup_resolves_forward_to_the_post_call_map() {
+    fn return_pc_lookup_resolves_backward_to_the_pre_call_map_within_function_bounds() {
         let records = [AbiRecord {
             roots_offset: 0,
             logical_frames_offset: 0,
@@ -539,6 +578,7 @@ mod tests {
         let function = PcFunction {
             entry: 0x1000,
             stack_size: 32,
+            code_size: 0x40,
             module_base,
             records_offset,
             record_count: records.len(),
@@ -550,8 +590,9 @@ mod tests {
         };
         registry().write().unwrap().functions.push(function);
         assert!(with_record_at_pc(0x1020, false, false, |_, _| ()).is_some());
-        assert!(with_record_at_pc(0x101c, false, false, |_, _| ()).is_some());
-        assert!(with_record_at_pc(0x1021, false, false, |_, _| ()).is_none());
+        assert!(with_record_at_pc(0x1024, false, false, |_, _| ()).is_some());
+        assert!(with_record_at_pc(0x101f, false, false, |_, _| ()).is_none());
+        assert!(with_record_at_pc(0x1040, false, false, |_, _| ()).is_none());
         registry()
             .write()
             .unwrap()

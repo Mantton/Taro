@@ -205,9 +205,12 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
                             use_counts[place.local.index()] += 1;
                         }
                     }
+                    StatementKind::KeepAlive(operand) => {
+                        record_operand_use_count(operand, &mut use_counts);
+                    }
                     StatementKind::SourceScope(_)
                     | StatementKind::StorageLive(_)
-                    | StatementKind::GcSafepoint
+                    | StatementKind::GcSafepoint(_)
                     | StatementKind::Nop => {}
                 }
             }
@@ -351,9 +354,12 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                             use_counts[place.local.index()] += 1;
                         }
                     }
+                    StatementKind::KeepAlive(operand) => {
+                        record_operand_use_count(operand, &mut use_counts);
+                    }
                     StatementKind::SourceScope(_)
                     | StatementKind::StorageLive(_)
-                    | StatementKind::GcSafepoint
+                    | StatementKind::GcSafepoint(_)
                     | StatementKind::Nop => {}
                 }
             }
@@ -490,7 +496,8 @@ fn gap_is_safe_source(
             }
             StatementKind::SourceScope(_)
             | StatementKind::StorageLive(_)
-            | StatementKind::GcSafepoint
+            | StatementKind::GcSafepoint(_)
+            | StatementKind::KeepAlive(_)
             | StatementKind::SetDiscriminant { .. }
             | StatementKind::Nop => {
                 return false;
@@ -728,7 +735,8 @@ fn replace_stmt_operands<'ctx>(
         StatementKind::SourceScope(_) | StatementKind::StorageLive(_) => {}
         StatementKind::Assign(_, rv) => replace_rvalue_operands(rv, replace_map),
         StatementKind::SetDiscriminant { .. } => {}
-        StatementKind::GcSafepoint | StatementKind::Nop => {}
+        StatementKind::KeepAlive(operand) => replace_operand(operand, replace_map),
+        StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
     }
 }
 

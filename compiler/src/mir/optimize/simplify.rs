@@ -403,9 +403,10 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                         mark_place_used(place, &mut used);
                     }
                 }
+                StatementKind::KeepAlive(operand) => mark_operand_used(operand, &mut used),
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
-                | StatementKind::GcSafepoint
+                | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
             }
         }
@@ -580,7 +581,10 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                         StatementKind::Nop
                     }
                 }
-                StatementKind::GcSafepoint => StatementKind::GcSafepoint,
+                StatementKind::KeepAlive(operand) => {
+                    StatementKind::KeepAlive(remap_operand(operand, &remap))
+                }
+                StatementKind::GcSafepoint(kind) => StatementKind::GcSafepoint(*kind),
                 StatementKind::Nop => StatementKind::Nop,
             };
         }
@@ -651,7 +655,7 @@ pub fn merge_consecutive_safepoints(body: &mut Body<'_>) {
         let mut prev_was_safepoint = false;
 
         for stmt in block.statements.drain(..) {
-            let is_safepoint = matches!(stmt.kind, StatementKind::GcSafepoint);
+            let is_safepoint = matches!(stmt.kind, StatementKind::GcSafepoint(_));
 
             if is_safepoint && prev_was_safepoint {
                 // Skip consecutive safepoint

@@ -4,9 +4,9 @@ use crate::{
         artifact::ModuleArtifact,
         mangle::{mangle, mangle_instance},
         stack_maps::{
-            PendingLogicalFrame, PendingRootOperand, PendingRootRecipe, PendingStackMapModule,
-            PendingStackMapRecord, StackMapSiteKind, deterministic_map_id, normalize_object,
-            strip_object, write_pending_module,
+            GcLayoutKind, GcLayoutNode, PendingLogicalFrame, PendingRootOperand,
+            PendingStackMapModule, PendingStackMapRecord, StackMapSiteKind, deterministic_map_id,
+            normalize_object, strip_object, write_pending_module,
         },
     },
     compile::{
@@ -196,6 +196,32 @@ fn add_llvm_enum_function_attribute(
     function.add_attribute(
         AttributeLoc::Function,
         context.create_enum_attribute(kind_id, 0),
+    );
+}
+
+fn add_llvm_enum_function_attribute_with_value(
+    context: &Context,
+    function: FunctionValue<'_>,
+    attribute_name: &str,
+    value: u64,
+) {
+    let kind_id = Attribute::get_named_enum_kind_id(attribute_name);
+    debug_assert_ne!(kind_id, 0, "LLVM must recognize `{attribute_name}`");
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_enum_attribute(kind_id, value),
+    );
+}
+
+fn add_llvm_string_function_attribute(
+    context: &Context,
+    function: FunctionValue<'_>,
+    key: &str,
+    value: &str,
+) {
+    function.add_attribute(
+        AttributeLoc::Function,
+        context.create_string_attribute(key, value),
     );
 }
 
@@ -517,7 +543,7 @@ struct Emitter<'llvm, 'gcx> {
     functions: FxHashMap<Instance<'gcx>, FunctionValue<'llvm>>,
     fn_abis: FxHashMap<Instance<'gcx>, abi::FnAbi<'gcx>>,
     globals: FxHashMap<hir::DefinitionID, PointerValue<'llvm>>,
-    static_gc_roots: Vec<(PointerValue<'llvm>, u64)>,
+    static_gc_roots: Vec<(PointerValue<'llvm>, PointerValue<'llvm>)>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
     target_machine: TargetMachine,
     target_data: inkwell::targets::TargetData,
@@ -537,6 +563,7 @@ struct Emitter<'llvm, 'gcx> {
     witness_thunks:
         FxHashMap<(TypeHead, InterfaceReference<'gcx>, hir::DefinitionID), PointerValue<'llvm>>,
     gc_desc_ty: inkwell::types::StructType<'llvm>,
+    gc_layout_node_ty: inkwell::types::StructType<'llvm>,
     rt_conformance_entry_ty: inkwell::types::StructType<'llvm>,
     rt_type_metadata_ty: inkwell::types::StructType<'llvm>,
     usize_ty: inkwell::types::IntType<'llvm>,
@@ -544,6 +571,8 @@ struct Emitter<'llvm, 'gcx> {
     pending_stack_maps: Vec<PendingStackMapRecord>,
     current_stack_map_ordinal: u64,
     current_body: Option<&'gcx mir::Body<'gcx>>,
+    current_liveness: Option<mir::analysis::liveness::LivenessResult>,
+    current_mir_location: Option<mir::analysis::liveness::MirLocation>,
     eh_personality: Option<FunctionValue<'llvm>>,
     eh_slot: Option<PointerValue<'llvm>>,
     current_fn: Option<FunctionValue<'llvm>>,
@@ -577,6 +606,7 @@ enum StdPanicCallKind {
 
 #[derive(Clone)]
 struct StackMapRoot<'llvm> {
+    local: mir::LocalId,
     location: PointerValue<'llvm>,
     descriptor: PendingRootOperand,
 }
@@ -617,6 +647,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             ],
             false,
         );
+        let gc_layout_node_ty = context.struct_type(
+            &[
+                context.i64_type().into(),
+                context.i64_type().into(),
+                context.i32_type().into(),
+                context.i32_type().into(),
+                context.i8_type().into(),
+                context.i8_type().into(),
+                context.i8_type().array_type(6).into(),
+            ],
+            false,
+        );
         let rt_conformance_entry_ty =
             context.struct_type(&[opaque_ptr.into(), opaque_ptr.into()], false);
         let rt_type_metadata_ty = context.struct_type(&[opaque_ptr.into(), usize_ty.into()], false);
@@ -653,6 +695,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             type_metadata: FxHashMap::default(),
             witness_thunks: FxHashMap::default(),
             gc_desc_ty,
+            gc_layout_node_ty,
             rt_conformance_entry_ty,
             rt_type_metadata_ty,
             usize_ty,
@@ -660,6 +703,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             pending_stack_maps: Vec::new(),
             current_stack_map_ordinal: 0,
             current_body: None,
+            current_liveness: None,
+            current_mir_location: None,
             eh_personality: None,
             eh_slot: None,
             current_fn: None,
@@ -974,7 +1019,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             2
         });
         fields.push(
-            self.usize_ty
+            layout
+                .discr_ty
                 .const_int(variant_index as u64, false)
                 .as_basic_value_enum(),
         );
@@ -1082,8 +1128,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ptr = global.as_pointer_value();
         self.globals.insert(def_id, ptr);
         if self.static_storage_needs_gc_root(ty, llvm_ty) {
-            let byte_len = self.target_data.get_store_size(&llvm_ty);
-            self.static_gc_roots.push((ptr, byte_len));
+            let descriptor = self.gc_desc_for(ty);
+            self.static_gc_roots.push((ptr, descriptor));
         }
         ptr
     }
@@ -1105,7 +1151,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let fn_ty = self
             .context
             .void_type()
-            .fn_type(&[ptr_ty.into(), self.usize_ty.into()], false);
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         self.module
             .add_function("__gc__register_static", fn_ty, Some(Linkage::External))
     }
@@ -1128,16 +1174,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         builder.position_at_end(entry);
 
         let register_static = self.declare_gc_register_static_fn();
-        for (ptr, byte_len) in &self.static_gc_roots {
+        for (ptr, descriptor) in &self.static_gc_roots {
             builder
-                .build_call(
-                    register_static,
-                    &[
-                        (*ptr).into(),
-                        self.usize_ty.const_int(*byte_len, false).into(),
-                    ],
-                    "",
-                )
+                .build_call(register_static, &[(*ptr).into(), (*descriptor).into()], "")
                 .unwrap();
         }
         builder.build_return(None).unwrap();
@@ -2696,6 +2735,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         lowered_args.push(self.usize_ty.const_int(line, false).as_basic_value_enum());
         lowered_args.push(self.usize_ty.const_int(column, false).as_basic_value_enum());
 
+        self.emit_stack_map(span, StackMapSiteKind::Panic);
         let call_site = self.emit_direct_call_maybe_unwind(
             self.get_panic_unwind_at_fn(),
             &lowered_args,
@@ -2703,7 +2743,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             unwind_target,
             "panic_unwind_at",
         )?;
-        self.emit_stack_map(span, StackMapSiteKind::Panic);
         if let Some(ret) = call_site.try_as_basic_value().basic() {
             self.store_place(destination, body, locals, ret)?;
         }
@@ -2866,8 +2905,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.current_fn = Some(function);
         self.current_fn_abi = Some(fn_abi.clone());
         self.current_body = Some(body);
+        self.current_liveness = Some(mir::analysis::liveness::compute_liveness(body));
+        self.current_mir_location = None;
         self.current_stack_map_ordinal = 0;
-        let first_stack_map = self.pending_stack_maps.len();
         if let Some(debug) = &mut self.debug {
             debug.begin_function(function, body, self.gcx);
         }
@@ -2903,13 +2943,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             self.builder.position_at_end(llvm_bb);
             self.current_source_scope = mir::SourceScopeId::from_raw(0);
 
-            for stmt in &bb.statements {
+            for (statement_index, stmt) in bb.statements.iter().enumerate() {
+                self.current_mir_location = Some(mir::analysis::liveness::MirLocation::Statement {
+                    block: bb_id,
+                    index: statement_index,
+                });
                 self.current_span = Some(stmt.span);
                 self.set_debug_location(stmt.span);
                 self.lower_statement(body, &mut locals, stmt)?;
             }
 
             if let Some(term) = &bb.terminator {
+                self.current_mir_location =
+                    Some(mir::analysis::liveness::MirLocation::Terminator { block: bb_id });
                 self.current_span = Some(term.span);
                 self.set_debug_location(term.span);
                 self.lower_terminator(body, &mut locals, term, &llvm_blocks)?;
@@ -2922,11 +2968,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some(debug) = &mut self.debug {
             debug.end_function(&self.builder);
         }
-        if self.pending_stack_maps.len() != first_stack_map {
+        if self.body_has_collecting_site(body)? {
             // Explicit map operands are complete only before LLVM inlining.
-            // MIR is Taro's map-aware inliner; mapped LLVM functions must keep
-            // their physical frame so caller roots cannot be lost.
-            self.prevent_post_map_inlining(function);
+            // MIR is Taro's map-aware inliner; collecting LLVM functions must
+            // keep their physical frame against both inlining and tail-call
+            // elimination, and remain unwindable through rootless sites, so
+            // caller roots cannot be lost.
+            //
+            // Lifting this needs more than deleting the line: see
+            // development/stack_map_inlining.md for the four things that break
+            // and which two are already handled.
+            self.preserve_collecting_frame(function);
         }
         self.stack_map_roots.clear();
         self.eh_slot = None;
@@ -2934,6 +2986,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         self.current_fn_abi = None;
         self.current_sret_ptr = None;
         self.current_body = None;
+        self.current_liveness = None;
+        self.current_mir_location = None;
         self.current_span = None;
         Ok(())
     }
@@ -2967,6 +3021,41 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 _ => false,
             })
         })
+    }
+
+    fn call_gc_effect(
+        &self,
+        func: &mir::Operand<'gcx>,
+    ) -> crate::error::CompileResult<mir::CallGcEffect> {
+        mir::analysis::effects::classify_call_gc_effect(self.gcx, func).map_err(|message| {
+            self.gcx.dcx().emit_error(message, self.current_span);
+            crate::error::ReportedError
+        })
+    }
+
+    fn body_has_collecting_site(
+        &self,
+        body: &mir::Body<'gcx>,
+    ) -> crate::error::CompileResult<bool> {
+        for block in &body.basic_blocks {
+            if block.statements.iter().any(|statement| {
+                matches!(statement.kind, mir::StatementKind::GcSafepoint(_))
+                    || matches!(
+                        statement.kind,
+                        mir::StatementKind::Assign(_, mir::Rvalue::Alloc { .. })
+                    )
+            }) {
+                return Ok(true);
+            }
+            if let Some(mir::TerminatorKind::Call { func, .. }) =
+                block.terminator.as_ref().map(|terminator| &terminator.kind)
+            {
+                if self.call_gc_effect(func)? != mir::CallGcEffect::NoGc {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn eh_personality_fn(&mut self) -> FunctionValue<'llvm> {
@@ -3524,15 +3613,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ptr_ty = self.context.ptr_type(AddressSpace::default());
 
         for (local, decl) in body.locals.iter_enumerated() {
-            let recipes: Vec<_> = self
-                .stack_map_root_recipes_for_ty(decl.ty)
-                .into_iter()
-                .map(|(offset, deref_depth)| PendingRootRecipe {
-                    offset,
-                    deref_depth,
-                })
-                .collect();
-            if recipes.is_empty() {
+            let nodes = self.gc_layout_nodes_for_ty(decl.ty);
+            if nodes.is_empty() {
                 continue;
             }
             let Some(base) = bases[local.index()] else {
@@ -3546,17 +3628,18 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 return Err(crate::error::ReportedError);
             };
 
-            // Maps intentionally retain every root-bearing local rather than
-            // depending on an optimistic liveness result. Make not-yet-live
-            // pointer fields benign before the first possible safepoint.
+            // Locals are registered by identity once and each site selects an
+            // exact temporal subset. Defensive initialization still makes a
+            // not-yet-live field benign if machine-PC merging unions roots
+            // from mutually exclusive paths.
             if !matches!(decl.kind, mir::LocalKind::Param) {
                 let LocalStorage::Stack(storage) = locals[local.index()] else {
                     unreachable!("addressable GC local must use stack storage");
                 };
-                let mut initialized_offsets: Vec<u64> = recipes
+                let mut initialized_offsets: Vec<u64> = self
+                    .gc_root_offsets_for_ty(decl.ty)
                     .iter()
-                    .filter(|recipe| recipe.deref_depth == 0)
-                    .map(|recipe| recipe.offset)
+                    .copied()
                     .collect();
                 initialized_offsets.sort_unstable();
                 initialized_offsets.dedup();
@@ -3576,10 +3659,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
 
             self.stack_map_roots.push(StackMapRoot {
+                local,
                 location: base.location,
                 descriptor: PendingRootOperand {
                     storage_deref_depth: base.storage_deref_depth,
-                    recipes,
+                    nodes,
                 },
             });
         }
@@ -3631,14 +3715,105 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         frames
     }
 
-    /// Anchor the caller's root map at the current machine return PC.
+    fn default_live_roots_for_site(&self, kind: StackMapSiteKind) -> FxHashSet<mir::LocalId> {
+        let Some(liveness) = &self.current_liveness else {
+            return self.stack_map_roots.iter().map(|root| root.local).collect();
+        };
+        let Some(location) = self.current_mir_location else {
+            return self.stack_map_roots.iter().map(|root| root.local).collect();
+        };
+        let mut roots = match kind {
+            StackMapSiteKind::Poll | StackMapSiteKind::Blocking | StackMapSiteKind::Panic => {
+                liveness.live_before(location).clone()
+            }
+            StackMapSiteKind::Call | StackMapSiteKind::Allocation => {
+                liveness.live_after(location).clone()
+            }
+        };
+        // A live local is not necessarily safe to scan: conventional backward
+        // liveness can reach through future partial aggregate writes, and an
+        // allocation destination is live after the allocating statement but
+        // does not exist until the call returns. Only values fully initialized
+        // before the collecting operation may become roots.
+        let initialized = liveness.initialized_before(location);
+        roots.retain(|local| initialized.contains(local));
+        roots
+    }
+
+    fn live_across_current_site(&self) -> FxHashSet<mir::LocalId> {
+        let Some((liveness, location)) = self
+            .current_liveness
+            .as_ref()
+            .zip(self.current_mir_location)
+        else {
+            return self.stack_map_roots.iter().map(|root| root.local).collect();
+        };
+        let initialized = liveness.initialized_before(location);
+        liveness
+            .live_before(location)
+            .intersection(liveness.live_after(location))
+            .filter(|local| initialized.contains(local))
+            .copied()
+            .collect()
+    }
+
+    fn live_roots_for_call(
+        &self,
+        effect: mir::CallGcEffect,
+        args: &[mir::Operand<'gcx>],
+    ) -> FxHashSet<mir::LocalId> {
+        let mut roots = self.live_across_current_site();
+        if matches!(
+            effect,
+            mir::CallGcEffect::RuntimeSafepoint | mir::CallGcEffect::BlockingSafepoint
+        ) {
+            // Runtime and blocking ABIs do not install a managed callee frame,
+            // so GC-bearing arguments must remain in the caller map even when
+            // they are dead on every continuation edge.
+            for arg in args {
+                if let mir::Operand::Copy(place)
+                | mir::Operand::Move(place)
+                | mir::Operand::CopyWith(place, _) = arg
+                {
+                    let initialized = self
+                        .current_liveness
+                        .as_ref()
+                        .zip(self.current_mir_location)
+                        .is_none_or(|(liveness, location)| {
+                            liveness.initialized_before(location).contains(&place.local)
+                        });
+                    if initialized {
+                        roots.insert(place.local);
+                    }
+                }
+            }
+        }
+        roots
+    }
+
+    /// Anchor the caller's root map immediately before the collecting operation.
+    /// Runtime stack walking resolves the operation's return PC backward to
+    /// this record within the physical function's explicit code bounds.
     fn emit_stack_map(&mut self, span: crate::span::Span, kind: StackMapSiteKind) {
-        // A poll cannot throw and an empty poll map publishes no roots. Keeping
-        // such a record would nevertheless force an otherwise-pure leaf to
-        // remain uninlined, so omit it without weakening either GC or panic
-        // metadata. Other site kinds remain useful logical callsites even when
-        // their root set is empty.
-        if kind == StackMapSiteKind::Poll && self.stack_map_roots.is_empty() {
+        let roots = self.default_live_roots_for_site(kind);
+        self.emit_stack_map_with_roots(span, kind, &roots);
+    }
+
+    fn emit_stack_map_with_roots(
+        &mut self,
+        span: crate::span::Span,
+        kind: StackMapSiteKind,
+        live_roots: &FxHashSet<mir::LocalId>,
+    ) {
+        let selected_roots: Vec<_> = self
+            .stack_map_roots
+            .iter()
+            .filter(|root| live_roots.contains(&root.local))
+            .collect();
+        // A poll cannot throw and an empty poll map publishes no roots, so it
+        // needs no PC record. Collecting-site presence independently applies
+        // the physical `noinline` barrier even for this rootless poll.
+        if kind == StackMapSiteKind::Poll && selected_roots.is_empty() {
             return;
         }
         let body = self
@@ -3661,24 +3836,35 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .get_declaration(&self.module, &[])
             .expect("declare LLVM stack-map intrinsic");
         let mut operands: Vec<BasicMetadataValueEnum<'llvm>> =
-            Vec::with_capacity(self.stack_map_roots.len().saturating_add(2));
+            Vec::with_capacity(selected_roots.len().saturating_add(2));
         operands.push(self.context.i64_type().const_int(id, false).into());
         operands.push(self.context.i32_type().const_zero().into());
         operands.extend(
-            self.stack_map_roots
+            selected_roots
                 .iter()
                 .map(|root| BasicMetadataValueEnum::from(root.location)),
         );
-        self.builder
+        let call = self
+            .builder
             .build_call(declaration, &operands, "")
             .expect("emit LLVM stack map");
+        // The intrinsic records where roots live; it cannot itself unwind.
+        // Saying so matters: when LLVM inlines a function into a site that can
+        // unwind, it rewrites the calls inside it as invokes — and a stack map
+        // is not among the intrinsics that may be invoked, so the module stops
+        // verifying. Marked `nounwind`, the call is left alone and the function
+        // holding it stays inlinable.
+        call.add_attribute(
+            AttributeLoc::Function,
+            self.context
+                .create_enum_attribute(Attribute::get_named_enum_kind_id("nounwind"), 0),
+        );
 
         self.pending_stack_maps.push(PendingStackMapRecord {
             id,
             emitted_function: symbol,
             kind,
-            roots: self
-                .stack_map_roots
+            roots: selected_roots
                 .iter()
                 .map(|root| root.descriptor.clone())
                 .collect(),
@@ -3686,31 +3872,23 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         });
     }
 
-    fn prevent_post_map_inlining(&self, function: FunctionValue<'llvm>) {
+    fn preserve_collecting_frame(&self, function: FunctionValue<'llvm>) {
         let inline_hint = Attribute::get_named_enum_kind_id("inlinehint");
         if inline_hint != 0 {
             function.remove_enum_attribute(AttributeLoc::Function, inline_hint);
         }
         add_llvm_enum_function_attribute(self.context, function, "noinline");
-    }
-
-    fn stack_map_root_recipes_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<(u64, u8)> {
-        let mut roots = Vec::new();
-        let mut deref_depth = 0u8;
-        let mut current = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
-        while let TyKind::Reference(inner, _) = current.kind() {
-            roots.push((0, deref_depth));
-            deref_depth = deref_depth.saturating_add(1);
-            current = crate::sema::tycheck::utils::normalize_aliases(self.gcx, inner);
-        }
-        roots.extend(
-            self.gc_root_offsets_for_ty(current)
-                .into_iter()
-                .map(|offset| (offset, deref_depth)),
-        );
-        roots.sort_unstable();
-        roots.dedup();
-        roots
+        // Caller maps may omit managed-call arguments because the callee's
+        // entry map protects them. Tail-call elimination would erase that
+        // physical callee frame just as surely as inlining does. This matters
+        // even for a rootless poll: the managed caller may still depend on the
+        // frame boundary to transfer root ownership.
+        add_llvm_string_function_attribute(self.context, function, "disable-tail-calls", "true");
+        // Rootless functions have no stack-map intrinsic to incidentally make
+        // LLVM emit unwind metadata. The runtime still has to walk through
+        // them to mapped callers, so request synchronous unwind tables for
+        // every collecting frame. Value 1 is LLVM's UWTableKind::Sync.
+        add_llvm_enum_function_attribute_with_value(self.context, function, "uwtable", 1);
     }
 
     fn lower_statement(
@@ -3737,7 +3915,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     self.store_place(place, body, locals, value)?;
                 }
             }
-            mir::StatementKind::GcSafepoint => {
+            mir::StatementKind::KeepAlive(_) => {}
+            mir::StatementKind::GcSafepoint(_) => {
                 self.emit_gc_poll(stmt.span);
             }
             mir::StatementKind::SetDiscriminant {
@@ -3771,7 +3950,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .builder
                         .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
                         .unwrap();
-                    let discr_val = self.usize_ty.const_int(variant_index.index() as u64, false);
+                    let discr_val = layout
+                        .discr_ty
+                        .const_int(variant_index.index() as u64, false);
                     let _ = self.builder.build_store(discr_ptr, discr_val).unwrap();
                 }
             }
@@ -3891,6 +4072,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         let value = self.lower_boxed_existential(from_ty, *ty, val)?;
                         return Ok(Some(value));
                     }
+                    mir::CastKind::ExistentialPack { concrete } => {
+                        let value =
+                            self.lower_existential_pack(*concrete, *ty, val.into_pointer_value())?;
+                        return Ok(Some(value));
+                    }
                     mir::CastKind::ExistentialUpcast => {
                         let value = self.lower_existential_upcast(from_ty, *ty, val)?;
                         return Ok(Some(value));
@@ -3994,9 +4180,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .builder
                         .build_struct_gep(enum_struct, ptr, 0, "enum_discr_ptr")
                         .unwrap();
+                    // The tag is stored at its own narrow width; MIR compares
+                    // discriminants as `usize`, so widen on the way out.
+                    let raw = self
+                        .builder
+                        .build_load(layout.discr_ty, discr_ptr, "enum_discr")
+                        .unwrap()
+                        .into_int_value();
                     let discr_val = self
                         .builder
-                        .build_load(self.usize_ty, discr_ptr, "enum_discr")
+                        .build_int_z_extend_or_bit_cast(raw, self.usize_ty, "enum_discr_usize")
                         .unwrap();
                     Some(discr_val.as_basic_value_enum())
                 }
@@ -4057,6 +4250,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let size_const = self.usize_ty.const_int(size, false);
                 let desc_ptr = self.gc_desc_for(*alloc_ty);
                 let callee = self.get_gc_alloc();
+                self.emit_stack_map(
+                    self.current_span.expect("allocation outside MIR lowering"),
+                    StackMapSiteKind::Allocation,
+                );
                 let call = self
                     .builder
                     .build_call(
@@ -4068,10 +4265,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         "gc_alloc",
                     )
                     .unwrap();
-                self.emit_stack_map(
-                    self.current_span.expect("allocation outside MIR lowering"),
-                    StackMapSiteKind::Allocation,
-                );
                 let ptr_val = call
                     .try_as_basic_value()
                     .basic()
@@ -4808,6 +5001,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .get_insert_block()
             .expect("builder must be positioned in the panic block");
         let panic_fn = self.get_panic_unwind_at_fn();
+        self.emit_stack_map(span, StackMapSiteKind::Panic);
         let _ = self.emit_direct_call_maybe_unwind(
             panic_fn,
             &[msg, file_val, line.into(), column.into()],
@@ -4815,7 +5009,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             unwind_bb,
             "arith_panic",
         )?;
-        self.emit_stack_map(span, StackMapSiteKind::Panic);
         let _ = self.builder.build_unreachable().unwrap();
         Ok(())
     }
@@ -5081,6 +5274,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let size_const = self.usize_ty.const_int(size, false);
         let desc_ptr = self.gc_desc_for(ty);
         let callee = self.get_gc_alloc();
+        self.emit_stack_map(
+            self.current_span.expect("boxing outside MIR lowering"),
+            StackMapSiteKind::Allocation,
+        );
         let call = self
             .builder
             .build_call(
@@ -5092,10 +5289,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 "exist_alloc",
             )
             .unwrap();
-        self.emit_stack_map(
-            self.current_span.expect("boxing outside MIR lowering"),
-            StackMapSiteKind::Allocation,
-        );
         let raw_ptr = call
             .try_as_basic_value()
             .basic()
@@ -5242,6 +5435,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 target,
                 unwind,
             } => {
+                let gc_effect = self.call_gc_effect(func)?;
                 let normal_bb = blocks[target.index()];
                 let unwind_bb = match unwind {
                     mir::CallUnwindAction::Cleanup(bb) => Some(blocks[bb.index()]),
@@ -5278,6 +5472,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     return Ok(());
                 }
                 if let Some(hint) = devirt_hint {
+                    let roots = (gc_effect != mir::CallGcEffect::NoGc)
+                        .then(|| self.live_roots_for_call(gc_effect, args));
                     if self.try_lower_devirtualized_call(
                         body,
                         locals,
@@ -5286,8 +5482,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         destination,
                         normal_bb,
                         unwind_bb,
+                        roots.as_ref().map(|roots| (terminator.span, roots)),
                     )? {
-                        self.emit_stack_map(terminator.span, StackMapSiteKind::Call);
                         let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
                         return Ok(());
                     }
@@ -5300,7 +5496,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         "__rt__gc_enter_blocking",
                         "gc_blocking_enter",
                     );
-                    self.emit_stack_map(terminator.span, StackMapSiteKind::Blocking);
+                    let roots =
+                        self.live_roots_for_call(mir::CallGcEffect::BlockingSafepoint, args);
+                    self.emit_stack_map_with_roots(
+                        terminator.span,
+                        StackMapSiteKind::Blocking,
+                        &roots,
+                    );
                     let call_site = self.emit_direct_call_maybe_unwind(
                         callable,
                         &lowered_args,
@@ -5315,6 +5517,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 }
                 let virtual_instance = self.virtual_instance_for_call(func);
                 if let Some(instance) = virtual_instance.as_ref() {
+                    let roots = (gc_effect != mir::CallGcEffect::NoGc)
+                        .then(|| self.live_roots_for_call(gc_effect, args));
                     self.lower_virtual_call(
                         body,
                         locals,
@@ -5323,10 +5527,19 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         destination,
                         normal_bb,
                         unwind_bb,
+                        roots.as_ref().map(|roots| (terminator.span, roots)),
                     )?;
                 } else if let Some((closure_fn, fn_abi)) = self.closure_callable(body, func) {
                     let lowered_args =
                         self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
+                    if gc_effect != mir::CallGcEffect::NoGc {
+                        let roots = self.live_roots_for_call(gc_effect, args);
+                        self.emit_stack_map_with_roots(
+                            terminator.span,
+                            StackMapSiteKind::Call,
+                            &roots,
+                        );
+                    }
                     let call_site = self.emit_direct_call_maybe_unwind(
                         closure_fn,
                         &lowered_args,
@@ -5342,6 +5555,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         self.lower_fn_pointer_call_target(body, locals, func)?;
                     let lowered_args =
                         self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
+                    if gc_effect != mir::CallGcEffect::NoGc {
+                        let roots = self.live_roots_for_call(gc_effect, args);
+                        self.emit_stack_map_with_roots(
+                            terminator.span,
+                            StackMapSiteKind::Call,
+                            &roots,
+                        );
+                    }
                     let call_site = self.emit_indirect_call_maybe_unwind(
                         fn_ty,
                         fn_ptr,
@@ -5355,6 +5576,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     let (callable, fn_abi) = self.lower_callable_with_abi(func);
                     let lowered_args =
                         self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
+                    if gc_effect != mir::CallGcEffect::NoGc {
+                        let roots = self.live_roots_for_call(gc_effect, args);
+                        self.emit_stack_map_with_roots(
+                            terminator.span,
+                            StackMapSiteKind::Call,
+                            &roots,
+                        );
+                    }
                     let call_site = self.emit_direct_call_maybe_unwind(
                         callable,
                         &lowered_args,
@@ -5364,7 +5593,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     )?;
                     self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 }
-                self.emit_stack_map(terminator.span, StackMapSiteKind::Call);
                 let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
             mir::TerminatorKind::Yield { .. } => {
@@ -7270,10 +7498,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap();
 
         self.builder.position_at_end(slow);
+        self.emit_stack_map(span, StackMapSiteKind::Poll);
         self.builder
             .build_call(self.get_gc_poll(), &[], "gc_poll_slow")
             .unwrap();
-        self.emit_stack_map(span, StackMapSiteKind::Poll);
         self.builder.build_unconditional_branch(resume).unwrap();
         self.builder.position_at_end(resume);
     }
@@ -7303,24 +7531,46 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let llvm_ty = self.lower_ty(ty).expect("lower type");
         let size = self.target_data.get_store_size(&llvm_ty);
         let align = self.target_data.get_abi_alignment(&llvm_ty) as u64;
-        let offsets = self.gc_root_offsets_for_ty(ty);
+        let nodes = self.gc_layout_nodes_for_ty(ty);
 
-        let ptr_offsets_ptr = if offsets.is_empty() {
+        let nodes_ptr = if nodes.is_empty() {
             self.context
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .as_basic_value_enum()
         } else {
-            let arr_ty = self.usize_ty.array_type(offsets.len() as u32);
-            let consts: Vec<_> = offsets
+            let reserved = self.context.i8_type().array_type(6).const_zero();
+            let consts: Vec<_> = nodes
                 .iter()
-                .map(|o| self.usize_ty.const_int(*o, false))
+                .map(|node| {
+                    self.gc_layout_node_ty.const_named_struct(&[
+                        self.context.i64_type().const_int(node.offset, false).into(),
+                        self.context.i64_type().const_int(node.stride, false).into(),
+                        self.context
+                            .i32_type()
+                            .const_int(u64::from(node.first_child), false)
+                            .into(),
+                        self.context
+                            .i32_type()
+                            .const_int(u64::from(node.child_count), false)
+                            .into(),
+                        self.context
+                            .i8_type()
+                            .const_int(node.kind as u64, false)
+                            .into(),
+                        self.context
+                            .i8_type()
+                            .const_int(u64::from(node.width), false)
+                            .into(),
+                        reserved.into(),
+                    ])
+                })
                 .collect();
-            let arr_const = self.usize_ty.const_array(&consts);
+            let arr_const = self.gc_layout_node_ty.const_array(&consts);
             let global = self.module.add_global(
-                arr_ty,
+                arr_const.get_type(),
                 None,
-                &format!("__gc_offsets_{}", self.gc_descs.len()),
+                &format!("__gc_nodes_{}", self.gc_descs.len()),
             );
             global.set_initializer(&arr_const);
             global.set_constant(true);
@@ -7338,8 +7588,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let desc_const = self.gc_desc_ty.const_named_struct(&[
             self.usize_ty.const_int(size, false).into(),
             self.usize_ty.const_int(align, false).into(),
-            ptr_offsets_ptr,
-            self.usize_ty.const_int(offsets.len() as u64, false).into(),
+            nodes_ptr,
+            self.usize_ty.const_int(nodes.len() as u64, false).into(),
         ]);
         let gv = self.module.add_global(
             self.gc_desc_ty,
@@ -7361,6 +7611,331 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         offsets.sort_unstable();
         offsets.dedup();
         offsets
+    }
+
+    fn gc_layout_nodes_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<GcLayoutNode> {
+        let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, self.mono_ty(ty));
+        let mut nodes = vec![Self::empty_gc_layout_node()];
+        let mut canonical_nodes = FxHashMap::default();
+        canonical_nodes.insert(ty, 0);
+        if self.fill_gc_layout_node(0, ty, 0, &mut nodes, &mut canonical_nodes) {
+            nodes
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn empty_gc_layout_node() -> GcLayoutNode {
+        GcLayoutNode {
+            offset: 0,
+            stride: 0,
+            first_child: 0,
+            child_count: 0,
+            kind: GcLayoutKind::Aggregate,
+            width: 0,
+        }
+    }
+
+    fn reserve_gc_layout_nodes(nodes: &mut Vec<GcLayoutNode>, count: usize) -> usize {
+        let first = nodes.len();
+        nodes.extend((0..count).map(|_| Self::empty_gc_layout_node()));
+        first
+    }
+
+    fn canonical_gc_layout_node(
+        &mut self,
+        ty: Ty<'gcx>,
+        nodes: &mut Vec<GcLayoutNode>,
+        canonical_nodes: &mut FxHashMap<Ty<'gcx>, usize>,
+    ) -> (usize, bool) {
+        let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, self.mono_ty(ty));
+        if let Some(index) = canonical_nodes.get(&ty).copied() {
+            // Existing entries may still be under construction. Linking them
+            // is intentional: Reference edges are what make the layout an
+            // indexed graph rather than an infinitely expanded tree.
+            return (index, true);
+        }
+        let index = Self::reserve_gc_layout_nodes(nodes, 1);
+        canonical_nodes.insert(ty, index);
+        let scans = self.fill_gc_layout_node(index, ty, 0, nodes, canonical_nodes);
+        (index, scans)
+    }
+
+    fn fill_gc_layout_node(
+        &mut self,
+        index: usize,
+        ty: Ty<'gcx>,
+        offset: u64,
+        nodes: &mut Vec<GcLayoutNode>,
+        canonical_nodes: &mut FxHashMap<Ty<'gcx>, usize>,
+    ) -> bool {
+        let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, self.mono_ty(ty));
+        match ty.kind() {
+            TyKind::Pointer(..) | TyKind::String | TyKind::BoxedExistential { .. } => {
+                nodes[index] = GcLayoutNode {
+                    offset,
+                    stride: 0,
+                    first_child: 0,
+                    child_count: 0,
+                    kind: GcLayoutKind::Pointer,
+                    width: 0,
+                };
+                true
+            }
+            TyKind::Reference(inner, _) => {
+                let (child, child_scans) =
+                    self.canonical_gc_layout_node(inner, nodes, canonical_nodes);
+                nodes[index] = GcLayoutNode {
+                    offset,
+                    stride: 0,
+                    first_child: u32::try_from(child).expect("GC layout node index fits u32"),
+                    child_count: u32::from(child_scans),
+                    kind: GcLayoutKind::Reference,
+                    width: 0,
+                };
+                true
+            }
+            TyKind::Adt(def, adt_args) => match def.kind {
+                crate::sema::models::AdtKind::Struct => {
+                    let definition = self.gcx.get_struct_definition(def.id);
+                    let layout = struct_field_layout(
+                        self.context,
+                        self.gcx,
+                        &self.target_data,
+                        def.id,
+                        adt_args,
+                        self.current_subst,
+                        definition.repr,
+                    );
+                    let Some(lowered) = self.lower_ty(ty).map(|ty| ty.into_struct_type()) else {
+                        return false;
+                    };
+                    let first = Self::reserve_gc_layout_nodes(nodes, definition.fields.len());
+                    let mut scans = false;
+                    for (field_index, field) in definition.fields.iter().enumerate() {
+                        let Some(field_offset) = self
+                            .target_data
+                            .offset_of_element(&lowered, layout.logical_to_physical[field_index])
+                        else {
+                            continue;
+                        };
+                        let field_ty = instantiate_ty_with_args(self.gcx, field.ty, adt_args);
+                        scans |= self.fill_gc_layout_node(
+                            first + field_index,
+                            field_ty,
+                            field_offset,
+                            nodes,
+                            canonical_nodes,
+                        );
+                    }
+                    nodes[index] = GcLayoutNode {
+                        offset,
+                        stride: 0,
+                        first_child: u32::try_from(first).expect("GC layout node index fits u32"),
+                        child_count: u32::try_from(definition.fields.len())
+                            .expect("GC child count fits u32"),
+                        kind: GcLayoutKind::Aggregate,
+                        width: 0,
+                    };
+                    scans
+                }
+                crate::sema::models::AdtKind::Enum => {
+                    let definition = self.gcx.get_enum_definition(def.id);
+                    let layout = self.enum_layout_for(def.id, adt_args);
+                    if let Some(npo) = layout.npo {
+                        let variant = &definition.variants[npo.payload_variant];
+                        let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind
+                        else {
+                            return false;
+                        };
+                        let Some(field) = fields.first() else {
+                            return false;
+                        };
+                        let field_ty = instantiate_ty_with_args(self.gcx, field.ty, adt_args);
+                        return self.fill_gc_layout_node(
+                            index,
+                            field_ty,
+                            offset,
+                            nodes,
+                            canonical_nodes,
+                        );
+                    }
+
+                    let first = Self::reserve_gc_layout_nodes(nodes, definition.variants.len());
+                    let mut scans = false;
+                    for (variant_index, variant) in definition.variants.iter().enumerate() {
+                        let fields = match variant.kind {
+                            crate::sema::models::EnumVariantKind::Unit => &[][..],
+                            crate::sema::models::EnumVariantKind::Tuple(fields) => fields,
+                        };
+                        let variant_first = Self::reserve_gc_layout_nodes(nodes, fields.len());
+                        let variant_ty = enum_variant_struct_ty(
+                            self.context,
+                            self.gcx,
+                            &self.target_data,
+                            fields,
+                            adt_args,
+                            self.current_subst,
+                        );
+                        let mut variant_scans = false;
+                        for (field_index, field) in fields.iter().enumerate() {
+                            let Some(field_offset) = self
+                                .target_data
+                                .offset_of_element(&variant_ty, field_index as u32)
+                            else {
+                                continue;
+                            };
+                            let field_ty = instantiate_ty_with_args(self.gcx, field.ty, adt_args);
+                            variant_scans |= self.fill_gc_layout_node(
+                                variant_first + field_index,
+                                field_ty,
+                                field_offset,
+                                nodes,
+                                canonical_nodes,
+                            );
+                        }
+                        nodes[first + variant_index] = GcLayoutNode {
+                            offset: layout.payload_offset,
+                            stride: 0,
+                            first_child: u32::try_from(variant_first)
+                                .expect("GC layout node index fits u32"),
+                            child_count: u32::try_from(fields.len())
+                                .expect("GC child count fits u32"),
+                            kind: GcLayoutKind::Aggregate,
+                            width: 0,
+                        };
+                        scans |= variant_scans;
+                    }
+                    nodes[index] = GcLayoutNode {
+                        offset,
+                        stride: 0,
+                        first_child: u32::try_from(first).expect("GC layout node index fits u32"),
+                        child_count: u32::try_from(definition.variants.len())
+                            .expect("GC variant count fits u32"),
+                        kind: GcLayoutKind::Tagged,
+                        width: u8::try_from(layout.discr_size)
+                            .expect("enum discriminator width fits u8"),
+                    };
+                    scans
+                }
+            },
+            TyKind::Tuple(items) => {
+                let Some(lowered) = self.lower_ty(ty).map(|ty| ty.into_struct_type()) else {
+                    return false;
+                };
+                let first = Self::reserve_gc_layout_nodes(nodes, items.len());
+                let mut scans = false;
+                for (item_index, item) in items.iter().enumerate() {
+                    let Some(field_offset) = self
+                        .target_data
+                        .offset_of_element(&lowered, item_index as u32)
+                    else {
+                        continue;
+                    };
+                    scans |= self.fill_gc_layout_node(
+                        first + item_index,
+                        *item,
+                        field_offset,
+                        nodes,
+                        canonical_nodes,
+                    );
+                }
+                nodes[index] = GcLayoutNode {
+                    offset,
+                    stride: 0,
+                    first_child: u32::try_from(first).expect("GC layout node index fits u32"),
+                    child_count: u32::try_from(items.len()).expect("GC child count fits u32"),
+                    kind: GcLayoutKind::Aggregate,
+                    width: 0,
+                };
+                scans
+            }
+            TyKind::Array { element, len } => {
+                let count = concrete_array_len_for_gc_offsets(len.kind);
+                let first = Self::reserve_gc_layout_nodes(nodes, 1);
+                let scans = self.fill_gc_layout_node(first, element, 0, nodes, canonical_nodes);
+                let Some(element_ty) = self.lower_ty(element) else {
+                    return false;
+                };
+                nodes[index] = GcLayoutNode {
+                    offset,
+                    stride: self.target_data.get_store_size(&element_ty),
+                    first_child: u32::try_from(first).expect("GC layout node index fits u32"),
+                    child_count: u32::try_from(count).expect("array length fits u32"),
+                    kind: GcLayoutKind::Repeat,
+                    width: 0,
+                };
+                scans && count != 0
+            }
+            TyKind::Closure {
+                closure_def_id,
+                captured_generics,
+                ..
+            } => {
+                let Some(captures) = self.gcx.get_closure_captures(closure_def_id) else {
+                    return false;
+                };
+                let Some(lowered) = self.lower_ty(ty).map(|ty| ty.into_struct_type()) else {
+                    return false;
+                };
+                let first = Self::reserve_gc_layout_nodes(nodes, captures.captures.len());
+                let mut scans = false;
+                for (capture_index, capture) in captures.captures.iter().enumerate() {
+                    let base_ty = instantiate_ty_with_args(
+                        self.gcx,
+                        instantiate_ty_with_args(self.gcx, capture.ty, captured_generics),
+                        self.current_subst,
+                    );
+                    let capture_ty = if let crate::sema::models::CaptureKind::ByRef { mutable } =
+                        capture.capture_kind
+                    {
+                        Ty::new(
+                            TyKind::Reference(
+                                base_ty,
+                                if mutable {
+                                    hir::Mutability::Mutable
+                                } else {
+                                    hir::Mutability::Immutable
+                                },
+                            ),
+                            self.gcx,
+                        )
+                    } else {
+                        base_ty
+                    };
+                    let Some(field_offset) = self
+                        .target_data
+                        .offset_of_element(&lowered, capture_index as u32)
+                    else {
+                        continue;
+                    };
+                    scans |= self.fill_gc_layout_node(
+                        first + capture_index,
+                        capture_ty,
+                        field_offset,
+                        nodes,
+                        canonical_nodes,
+                    );
+                }
+                nodes[index] = GcLayoutNode {
+                    offset,
+                    stride: 0,
+                    first_child: u32::try_from(first).expect("GC layout node index fits u32"),
+                    child_count: u32::try_from(captures.captures.len())
+                        .expect("GC child count fits u32"),
+                    kind: GcLayoutKind::Aggregate,
+                    width: 0,
+                };
+                scans
+            }
+            TyKind::Parameter(_) | TyKind::Alias { .. } | TyKind::Infer(_) | TyKind::Error => {
+                panic!(
+                    "ICE: unresolved type while constructing GC layout: {}",
+                    ty.format(self.gcx)
+                )
+            }
+            _ => false,
+        }
     }
 
     fn append_gc_root_offsets(&mut self, ty: Ty<'gcx>, base: u64, offsets: &mut Vec<u64>) {
@@ -7568,11 +8143,56 @@ struct EnumLayout<'llvm> {
     discr_ty: IntType<'llvm>,
     discr_size: u64,
     payload_size: u64,
+    /// Alignment the widest variant needs. The payload is lowered as an array of
+    /// integers this wide so the enum's LLVM type carries the requirement — a
+    /// byte array would report alignment 1 and let a contained pointer land at
+    /// any address.
+    payload_align: u64,
     payload_offset: u64,
     payload_field_index: Option<u32>,
     /// When set, this enum uses null-pointer optimization: no discriminant tag,
     /// the null bit pattern represents the unit variant.
     npo: Option<NpoLayout>,
+}
+
+/// The narrowest integer type that can hold every variant index of an enum.
+///
+/// The tag is written and read only through `EnumLayout::discr_ty`, and the
+/// discriminant *value* stays `usize` in MIR, so reads widen back to it.
+fn discriminant_int_type<'llvm>(context: &'llvm Context, variant_count: usize) -> IntType<'llvm> {
+    // An empty enum has no variants to tell apart, but still needs a tag type.
+    let largest = variant_count.saturating_sub(1) as u64;
+    if largest <= u8::MAX as u64 {
+        context.i8_type()
+    } else if largest <= u16::MAX as u64 {
+        context.i16_type()
+    } else if largest <= u32::MAX as u64 {
+        context.i32_type()
+    } else {
+        context.i64_type()
+    }
+}
+
+/// The payload blob of an enum, as an array whose element width carries the
+/// alignment the widest variant needs.
+///
+/// Sized up to a whole number of elements; the excess is padding a correctly
+/// aligned struct would have anyway.
+fn enum_payload_field_ty<'llvm>(
+    context: &'llvm Context,
+    payload_size: u64,
+    payload_align: u64,
+) -> BasicTypeEnum<'llvm> {
+    let (element, width) = match payload_align {
+        a if a >= 8 => (context.i64_type(), 8u64),
+        4 => (context.i32_type(), 4u64),
+        2 => (context.i16_type(), 2u64),
+        _ => (context.i8_type(), 1u64),
+    };
+    let count = payload_size.div_ceil(width);
+    element
+        .array_type(u32::try_from(count).expect("enum payload fits u32"))
+        .into()
 }
 
 fn align_up(value: u64, align: u64) -> u64 {
@@ -7608,7 +8228,11 @@ fn enum_layout<'llvm, 'gcx>(
     subst: GenericArguments<'gcx>,
 ) -> EnumLayout<'llvm> {
     let def = gcx.get_enum_definition(def_id);
-    let discr_ty = context.ptr_sized_int_type(target_data, None);
+    // The tag only has to distinguish the variants, so it is sized to the
+    // smallest integer that can hold the largest index. A pointer-sized tag
+    // costs eight bytes on every enum, which for a payload-free one — the
+    // common `Kind`-style enum — is the whole value.
+    let discr_ty = discriminant_int_type(context, def.variants.len());
     let discr_size = target_data.get_store_size(&discr_ty);
     let mut payload_size = 0u64;
     let mut payload_align = 1u64;
@@ -7682,6 +8306,7 @@ fn enum_layout<'llvm, 'gcx>(
     EnumLayout {
         discr_ty,
         discr_size,
+        payload_align,
         payload_size,
         payload_offset,
         payload_field_index,
@@ -7880,6 +8505,7 @@ mod struct_layout_tests {
         AARCH64_INDIRECT_ARG_THRESHOLD_BYTES, AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES,
         LlvmOptimizationPipeline, NON_AARCH64_INDIRECT_ARG_THRESHOLD_BYTES,
         NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES, add_llvm_enum_function_attribute,
+        add_llvm_enum_function_attribute_with_value, add_llvm_string_function_attribute,
         build_byte_offset_ptr, concrete_array_len_for_gc_offsets, has_llvm_bitcode_magic,
         has_llvm_function_body, indirect_arg_threshold_for_triple,
         indirect_return_threshold_for_triple, llvm_inline_attribute_name,
@@ -8110,7 +8736,7 @@ mod struct_layout_tests {
     }
 
     #[test]
-    fn named_llvm_function_attributes_are_attached_to_functions() {
+    fn collecting_frame_attributes_are_attached_to_functions() {
         let context = Context::create();
         let module = context.create_module("function-attributes");
         let function = module.add_function(
@@ -8120,6 +8746,8 @@ mod struct_layout_tests {
         );
 
         add_llvm_enum_function_attribute(&context, function, "noinline");
+        add_llvm_string_function_attribute(&context, function, "disable-tail-calls", "true");
+        add_llvm_enum_function_attribute_with_value(&context, function, "uwtable", 1);
 
         let kind_id = inkwell::attributes::Attribute::get_named_enum_kind_id("noinline");
         assert!(
@@ -8127,7 +8755,10 @@ mod struct_layout_tests {
                 .get_enum_attribute(AttributeLoc::Function, kind_id)
                 .is_some()
         );
-        assert!(module.print_to_string().to_string().contains("noinline"));
+        let ir = module.print_to_string().to_string();
+        assert!(ir.contains("noinline"));
+        assert!(ir.contains("\"disable-tail-calls\"=\"true\""));
+        assert!(ir.contains("uwtable(sync)"));
     }
 
     #[test]
@@ -8354,9 +8985,11 @@ fn lower_type<'llvm, 'gcx>(
                     fields.push(context.i8_type().array_type(pad_len).into());
                 }
 
-                let payload_len =
-                    u32::try_from(layout.payload_size).expect("enum payload fits u32");
-                fields.push(context.i8_type().array_type(payload_len).into());
+                fields.push(enum_payload_field_ty(
+                    context,
+                    layout.payload_size,
+                    layout.payload_align,
+                ));
                 Some(context.struct_type(&fields, false).into())
             }
         },

@@ -68,6 +68,7 @@ public func addCleanup[
 
 /// Keep `value` reachable until this call. This is useful after closing or
 /// cancelling a resource whose native operation only stores its address.
+@inline
 public func keepAlive[T](_ value: &T) {
     __rt__keep_alive(unsafe { value as *const uint8 })
 }

@@ -47,9 +47,42 @@ pub fn build_package<'ctx>(
         bodies.insert(id, body);
     }
 
-    // Store the package early so inlining can find callee bodies
+    // Async lowering needs source-form escape summaries, but it must itself
+    // finish package-wide before canonical MIR is published. Otherwise an
+    // earlier caller could see a source-form async body while a later caller
+    // sees the constructor that codegen actually consumes.
+    let source_functions = bodies
+        .iter()
+        .map(|(&id, body)| {
+            let body = gcx.store.arenas.mir_bodies.alloc(body.clone());
+            (id, &*body)
+        })
+        .collect();
+    optimize::escape::compute_escape_summaries(gcx, &source_functions);
+
+    let mut pending: Vec<_> = bodies.into_iter().collect();
+    pending.sort_by_key(|(id, _)| *id);
+    let mut canonical_bodies = FxHashMap::default();
+    let mut cursor = 0usize;
+    while cursor < pending.len() {
+        let (id, mut body) = pending[cursor].clone();
+        cursor += 1;
+        optimize::lower_async_for_canonical_mir(gcx, &mut body)?;
+        canonical_bodies.insert(id, body);
+
+        let mut queued: Vec<_> = gcx.take_queued_mir_bodies().into_iter().collect();
+        queued.sort_by_key(|(queued_id, _)| *queued_id);
+        for (queued_id, mut queued_body) in queued {
+            optimize::run_local_passes(gcx, &mut queued_body)?;
+            pending.push((queued_id, queued_body));
+        }
+    }
+
+    // Publish canonical inline MIR before any interprocedural pass runs. Final
+    // MIR is stored separately below; this keeps source and metadata builds on
+    // exactly the same inlining representation.
     let mut functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
-    for (id, body) in bodies {
+    for (id, body) in canonical_bodies {
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         functions.insert(id, alloc);
     }
@@ -59,18 +92,18 @@ pub fn build_package<'ctx>(
     pkg.entry = package.entry;
     let pkg = gcx.store.alloc_mir_package(pkg);
     gcx.store
-        .mir_packages
+        .inline_mir_packages
         .borrow_mut()
         .insert(gcx.package_index(), pkg);
 
-    // Phase 1.5: Compute escape summaries for all functions
-    // This enables interprocedural escape analysis during global passes
+    // Recompute summaries from the same canonical constructor/poll/drop forms
+    // consumed by every global interprocedural pass.
     optimize::escape::compute_escape_summaries(gcx, &pkg.functions);
 
     // Phase 2: Run global passes (inlining, lowering, escape analysis, safepoints)
     // These passes need access to other function bodies
     let mut final_functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
-    let mut pending: Vec<(DefinitionID, Body<'ctx>)> = pkg
+    let pending: Vec<(DefinitionID, Body<'ctx>)> = pkg
         .functions
         .iter()
         .map(|(&def_id, body)| (def_id, (**body).clone()))
@@ -86,18 +119,19 @@ pub fn build_package<'ctx>(
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
         final_functions.insert(def_id, alloc);
 
-        let queued = gcx.take_queued_mir_bodies();
-        for (queued_id, mut queued_body) in queued {
-            optimize::run_local_passes(gcx, &mut queued_body)?;
-            pending.push((queued_id, queued_body));
-        }
+        debug_assert!(
+            gcx.take_queued_mir_bodies().is_empty(),
+            "async MIR was synthesized after canonical publication"
+        );
     }
 
     let final_entry = if let Some((entry_id, entry_output)) = async_entry {
         let mut wrapper = build_async_entry_wrapper(gcx, entry_id, entry_output)?;
         optimize::run_local_passes(gcx, &mut wrapper)?;
-        optimize::run_global_passes(gcx, &mut wrapper)?;
         let wrapper_id = wrapper.owner;
+        let canonical = gcx.store.arenas.mir_bodies.alloc(wrapper.clone());
+        publish_inline_body(gcx, wrapper_id, canonical, Some(wrapper_id));
+        optimize::run_global_passes(gcx, &mut wrapper)?;
         let alloc = gcx.store.arenas.mir_bodies.alloc(wrapper);
         final_functions.insert(wrapper_id, alloc);
         Some(wrapper_id)
@@ -129,6 +163,29 @@ pub fn build_package<'ctx>(
     }
 
     Ok(final_pkg)
+}
+
+fn publish_inline_body<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    def_id: DefinitionID,
+    body: &'ctx Body<'ctx>,
+    entry: Option<DefinitionID>,
+) {
+    let current = gcx
+        .store
+        .inline_mir_packages
+        .borrow()
+        .get(&gcx.package_index())
+        .copied();
+    let mut functions = current
+        .map(|package| package.functions.clone())
+        .unwrap_or_default();
+    functions.insert(def_id, body);
+    let package = gcx.store.alloc_mir_package(MirPackage { functions, entry });
+    gcx.store
+        .inline_mir_packages
+        .borrow_mut()
+        .insert(gcx.package_index(), package);
 }
 
 fn build_async_entry_wrapper<'ctx>(

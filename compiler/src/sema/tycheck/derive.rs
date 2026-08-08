@@ -194,10 +194,8 @@ fn try_synthesize_clone<'ctx>(
         SyntheticMethodKind::MemberwiseClone
     };
 
-    let mut syn_id = None;
-    if let Some(existing) = gcx.get_synthetic_method(type_head, method_id) {
-        syn_id = existing.syn_id;
-    }
+    let existing = gcx.find_synthetic_method(type_head, method_id);
+    let syn_id = existing.and_then(|info| info.syn_id);
 
     let info = SyntheticMethodInfo {
         kind,
@@ -209,7 +207,9 @@ fn try_synthesize_clone<'ctx>(
         method_name,
         syn_id,
     };
-    gcx.register_synthetic_method(type_head, method_id, method_name, info);
+    if existing.is_none() {
+        gcx.register_synthetic_method(type_head, method_id, method_name, info);
+    }
 
     Some(SynthesizedMethod {
         witness: MethodWitness {
@@ -234,10 +234,8 @@ fn try_synthesize_hash<'ctx>(
         return None;
     }
 
-    let mut syn_id = None;
-    if let Some(existing) = gcx.get_synthetic_method(type_head, method_id) {
-        syn_id = existing.syn_id;
-    }
+    let existing = gcx.find_synthetic_method(type_head, method_id);
+    let syn_id = existing.and_then(|info| info.syn_id);
 
     let info = SyntheticMethodInfo {
         kind: SyntheticMethodKind::MemberwiseHash,
@@ -249,7 +247,9 @@ fn try_synthesize_hash<'ctx>(
         method_name,
         syn_id,
     };
-    gcx.register_synthetic_method(type_head, method_id, method_name, info);
+    if existing.is_none() {
+        gcx.register_synthetic_method(type_head, method_id, method_name, info);
+    }
 
     Some(SynthesizedMethod {
         witness: MethodWitness {
@@ -281,10 +281,8 @@ fn try_synthesize_partial_eq<'ctx>(
         return None;
     }
 
-    let mut syn_id = None;
-    if let Some(existing) = gcx.get_synthetic_method(type_head, method_id) {
-        syn_id = existing.syn_id;
-    }
+    let existing = gcx.find_synthetic_method(type_head, method_id);
+    let syn_id = existing.and_then(|info| info.syn_id);
 
     let info = SyntheticMethodInfo {
         kind: SyntheticMethodKind::MemberwiseEquality,
@@ -296,7 +294,9 @@ fn try_synthesize_partial_eq<'ctx>(
         method_name,
         syn_id,
     };
-    gcx.register_synthetic_method(type_head, method_id, method_name, info);
+    if existing.is_none() {
+        gcx.register_synthetic_method(type_head, method_id, method_name, info);
+    }
 
     Some(SynthesizedMethod {
         witness: MethodWitness {

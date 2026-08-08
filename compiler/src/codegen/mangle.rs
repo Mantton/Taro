@@ -423,7 +423,7 @@ pub fn mangle(gcx: GlobalContext<'_>, id: hir::DefinitionID) -> String {
 
     // Add a stable hashed signature to disambiguate overloads.
     if matches!(
-        output.definition_to_kind.get(&id),
+        gcx.try_definition_kind(id),
         Some(DefinitionKind::Function | DefinitionKind::AssociatedFunction)
     ) {
         let sig = gcx.get_signature(id);

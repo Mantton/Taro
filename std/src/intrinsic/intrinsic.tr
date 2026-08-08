@@ -8,6 +8,8 @@ extern "taro_intrinsic" {
     func __intrinsic_ptr_byte_sub[T](_ ptr: *T, _ count: usize) -> *T
     func __intrinsic_ptr_read[T](_ ptr: *T) -> T
     func __intrinsic_ptr_write[T](_ ptr: *T, _ val: T)
+    func __intrinsic_list_read_unchecked[T](_ buffer: *mut uint8, _ index: usize) -> &T
+    func __intrinsic_list_read_mut_unchecked[T](_ buffer: *mut uint8, _ index: usize) -> &mut T
     func __intrinsic_memcpy[T](_ dst: *mut T, _ src: *T, _ count: usize)
     func __intrinsic_memmove[T](_ dst: *mut T, _ src: *T, _ count: usize)
     func __intrinsic_memset[T](_ dst: *T, _ val: uint8, _ count: usize)

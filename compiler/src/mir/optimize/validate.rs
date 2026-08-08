@@ -351,7 +351,8 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                 self.check_rvalue(rvalue, statement.span);
             }
             StatementKind::SetDiscriminant { place, .. } => self.check_place(place, statement.span),
-            StatementKind::GcSafepoint | StatementKind::Nop => {}
+            StatementKind::KeepAlive(operand) => self.check_operand(operand, statement.span),
+            StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
         }
     }
 
@@ -1315,9 +1316,13 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                     reinitialize_borrowed_content_if_needed(body, dest, &mut state);
                     collect_moves_from_rvalue(body, rvalue, &mut state);
                 }
+                StatementKind::KeepAlive(operand) => {
+                    check_operand(gcx, body, &state, operand, stmt.span)?;
+                    collect_move_from_operand(body, operand, &mut state);
+                }
                 StatementKind::SourceScope(_)
                 | StatementKind::SetDiscriminant { .. }
-                | StatementKind::GcSafepoint
+                | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
             }
         }
@@ -1745,9 +1750,18 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                         }
                     }
                 }
+                StatementKind::KeepAlive(operand) => {
+                    check_operand_move_borrowed(
+                        gcx,
+                        operand,
+                        &active_borrows,
+                        &live_before_statements[idx],
+                        stmt.span,
+                    )?;
+                }
                 StatementKind::SourceScope(_)
                 | StatementKind::SetDiscriminant { .. }
-                | StatementKind::GcSafepoint
+                | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
             }
         }
@@ -1960,7 +1974,8 @@ fn apply_statement_liveness<'ctx>(
                 live_use_place(place, live);
             }
         }
-        StatementKind::GcSafepoint | StatementKind::Nop => {}
+        StatementKind::KeepAlive(operand) => live_use_operand(operand, live),
+        StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
     }
 }
 

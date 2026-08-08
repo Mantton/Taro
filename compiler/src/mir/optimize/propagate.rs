@@ -79,6 +79,9 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                             record_place_use(place, bb, stmt_index, &mut use_sites);
                         }
                     }
+                    StatementKind::KeepAlive(operand) => {
+                        record_operand_use(operand, bb, stmt_index, &mut use_sites);
+                    }
                     _ => {}
                 }
             }
@@ -233,6 +236,9 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                         *rv = remap_rvalue(rv);
                     }
                     StatementKind::SetDiscriminant { .. } => {}
+                    StatementKind::KeepAlive(operand) => {
+                        *operand = remap_operand(operand);
+                    }
                     _ => {}
                 }
             }

@@ -14,7 +14,7 @@ use inkwell::{
     values::{BasicValue, GlobalValue, IntValue, PointerValue, StructValue},
 };
 
-use super::stack_maps::{PC_METADATA_SCHEMA_VERSION, StackMapSiteKind};
+use super::stack_maps::{GcLayoutNode, PC_METADATA_SCHEMA_VERSION, StackMapSiteKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -59,17 +59,11 @@ impl PcArchitecture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct PcRootRecipe {
-    pub offset: u64,
-    pub deref_depth: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct PcRootLocation {
     pub dwarf_register: u16,
     pub frame_offset: i32,
     pub storage_deref_depth: u8,
-    pub recipes: Vec<PcRootRecipe>,
+    pub nodes: Vec<GcLayoutNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,6 +86,7 @@ pub(crate) struct PcRecord {
 pub(crate) struct PcFunction {
     pub symbol: String,
     pub stack_size: u64,
+    pub code_size: u32,
     pub records: Vec<PcRecord>,
 }
 
@@ -105,7 +100,7 @@ pub(crate) struct PcMetadata {
 
 #[derive(Clone, Copy)]
 struct AbiTypes<'ctx> {
-    recipe: StructType<'ctx>,
+    node: StructType<'ctx>,
     root: StructType<'ctx>,
     string: StructType<'ctx>,
     frame: StructType<'ctx>,
@@ -120,7 +115,7 @@ struct ObjectBuilder<'ctx> {
     module_global: GlobalValue<'ctx>,
     types: AbiTypes<'ctx>,
     strings: BTreeMap<String, PointerValue<'ctx>>,
-    recipes: BTreeMap<Vec<PcRootRecipe>, PointerValue<'ctx>>,
+    nodes: BTreeMap<Vec<GcLayoutNode>, PointerValue<'ctx>>,
     roots: BTreeMap<Vec<PcRootLocation>, PointerValue<'ctx>>,
     frames: BTreeMap<Vec<PcLogicalFrame>, PointerValue<'ctx>>,
     next_global: usize,
@@ -132,7 +127,18 @@ impl<'ctx> ObjectBuilder<'ctx> {
         let i16 = context.i16_type();
         let i32 = context.i32_type();
         let i64 = context.i64_type();
-        let recipe = context.struct_type(&[i64.into(), i8.into(), i8.array_type(7).into()], false);
+        let node = context.struct_type(
+            &[
+                i64.into(),
+                i64.into(),
+                i32.into(),
+                i32.into(),
+                i8.into(),
+                i8.into(),
+                i8.array_type(6).into(),
+            ],
+            false,
+        );
         let root = context.struct_type(
             &[
                 i64.into(),
@@ -184,7 +190,7 @@ impl<'ctx> ObjectBuilder<'ctx> {
             false,
         );
         let types = AbiTypes {
-            recipe,
+            node,
             root,
             string,
             frame,
@@ -200,7 +206,7 @@ impl<'ctx> ObjectBuilder<'ctx> {
             module_global,
             types,
             strings: BTreeMap::new(),
-            recipes: BTreeMap::new(),
+            nodes: BTreeMap::new(),
             roots: BTreeMap::new(),
             frames: BTreeMap::new(),
             next_global: 0,
@@ -280,33 +286,42 @@ impl<'ctx> ObjectBuilder<'ctx> {
         self.private_global(constant.get_type(), &constant, kind)
     }
 
-    fn recipes(&mut self, recipes: &[PcRootRecipe]) -> PointerValue<'ctx> {
-        if recipes.is_empty() {
+    fn nodes(&mut self, nodes: &[GcLayoutNode]) -> PointerValue<'ctx> {
+        if nodes.is_empty() {
             return self.context.ptr_type(AddressSpace::default()).const_null();
         }
-        if let Some(pointer) = self.recipes.get(recipes) {
+        if let Some(pointer) = self.nodes.get(nodes) {
             return *pointer;
         }
-        let zero7 = self.context.i8_type().const_zero().get_type().array_type(7);
-        let reserved = zero7.const_zero();
-        let values: Vec<_> = recipes
+        let reserved = self.context.i8_type().array_type(6).const_zero();
+        let values: Vec<_> = nodes
             .iter()
-            .map(|recipe| {
-                self.types.recipe.const_named_struct(&[
+            .map(|node| {
+                self.types.node.const_named_struct(&[
+                    self.context.i64_type().const_int(node.offset, false).into(),
+                    self.context.i64_type().const_int(node.stride, false).into(),
                     self.context
-                        .i64_type()
-                        .const_int(recipe.offset, false)
+                        .i32_type()
+                        .const_int(u64::from(node.first_child), false)
+                        .into(),
+                    self.context
+                        .i32_type()
+                        .const_int(u64::from(node.child_count), false)
                         .into(),
                     self.context
                         .i8_type()
-                        .const_int(u64::from(recipe.deref_depth), false)
+                        .const_int(node.kind as u64, false)
+                        .into(),
+                    self.context
+                        .i8_type()
+                        .const_int(u64::from(node.width), false)
                         .into(),
                     reserved.into(),
                 ])
             })
             .collect();
-        let pointer = self.struct_array(self.types.recipe, &values, "recipes");
-        self.recipes.insert(recipes.to_vec(), pointer);
+        let pointer = self.struct_array(self.types.node, &values, "nodes");
+        self.nodes.insert(nodes.to_vec(), pointer);
         pointer
     }
 
@@ -320,16 +335,16 @@ impl<'ctx> ObjectBuilder<'ctx> {
         let values: Vec<_> = roots
             .iter()
             .map(|root| {
-                let recipes = self.recipes(&root.recipes);
+                let nodes = self.nodes(&root.nodes);
                 self.types.root.const_named_struct(&[
-                    self.relative(recipes).into(),
+                    self.relative(nodes).into(),
                     self.context
                         .i32_type()
                         .const_int(root.frame_offset as u32 as u64, false)
                         .into(),
                     self.context
                         .i32_type()
-                        .const_int(root.recipes.len() as u64, false)
+                        .const_int(root.nodes.len() as u64, false)
                         .into(),
                     self.context
                         .i16_type()
@@ -436,7 +451,10 @@ impl<'ctx> ObjectBuilder<'ctx> {
                         .i32_type()
                         .const_int(function.records.len() as u64, false)
                         .into(),
-                    self.context.i32_type().const_zero().into(),
+                    self.context
+                        .i32_type()
+                        .const_int(u64::from(function.code_size), false)
+                        .into(),
                 ])
             })
             .collect();
@@ -550,7 +568,7 @@ mod tests {
         let module = context.create_module("layout");
         let builder = super::ObjectBuilder::new(&context, module);
         let AbiTypes {
-            recipe,
+            node,
             root,
             string,
             frame,
@@ -559,7 +577,7 @@ mod tests {
             module,
         } = builder.types;
         let data = TargetData::create("e-p:64:64-i64:64-n8:16:32:64-S128");
-        assert_eq!(data.get_store_size(&recipe.as_any_type_enum()), 16);
+        assert_eq!(data.get_store_size(&node.as_any_type_enum()), 32);
         assert_eq!(data.get_store_size(&root.as_any_type_enum()), 24);
         assert_eq!(data.get_store_size(&string.as_any_type_enum()), 16);
         assert_eq!(data.get_store_size(&frame.as_any_type_enum()), 40);

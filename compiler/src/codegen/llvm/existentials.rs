@@ -11,6 +11,25 @@ use inkwell::{
 };
 
 impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
+    pub(super) fn lower_existential_pack(
+        &mut self,
+        concrete: Ty<'gcx>,
+        to_ty: Ty<'gcx>,
+        data_ptr: PointerValue<'llvm>,
+    ) -> CompileResult<BasicValueEnum<'llvm>> {
+        let concrete = self.mono_ty_if_resolved(concrete);
+        let to_ty = self.mono_ty_if_resolved(to_ty);
+        let TyKind::BoxedExistential { interfaces } = to_ty.kind() else {
+            return Ok(data_ptr.as_basic_value_enum());
+        };
+        let metadata_ptr = self.type_metadata_ptr(concrete);
+        let mut table_ptrs = Vec::with_capacity(interfaces.len());
+        for interface in interfaces.iter().cloned() {
+            table_ptrs.push(self.witness_table_ptr(concrete, interface));
+        }
+        Ok(self.build_existential_value(to_ty, data_ptr, metadata_ptr, &table_ptrs))
+    }
+
     pub(super) fn lower_boxed_existential(
         &mut self,
         from_ty: Ty<'gcx>,

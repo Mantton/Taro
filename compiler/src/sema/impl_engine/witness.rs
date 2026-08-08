@@ -680,7 +680,11 @@ fn find_method_witness<'ctx>(
                 type_witnesses,
             );
 
-            if let Some(info) = gcx.get_synthetic_method(type_head, candidate) {
+            // A witness may be reconstructed while compiling a downstream
+            // package from dependency metadata. Synthetic derivations live in
+            // the defining package's type database, not necessarily the
+            // current session database.
+            if let Some(info) = gcx.find_synthetic_method(type_head, candidate) {
                 return Some(MethodWitness {
                     implementation: MethodImplementation::Synthetic(info.kind, info.syn_id),
                     args_template,

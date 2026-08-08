@@ -13,26 +13,32 @@ import std.intrinsic.{
 import std.mem.sizeOf
 
 impl[T] *T {
+    @inline
     public func add(self, _ n: usize) -> *T {
         unsafe { __intrinsic_ptr_add(self, n) }
     }
 
+    @inline
     public func sub(self, _ n: usize) -> *T {
         unsafe { __intrinsic_ptr_sub(self, n) }
     }
 
+    @inline
     public func offset(self, _ n: isize) -> *T {
         unsafe { __intrinsic_ptr_offset(self, n) }
     }
 
+    @inline
     public func byteAdd(self, _ n: usize) -> *T {
         unsafe { __intrinsic_ptr_byte_add(self, n) }
     }
 
+    @inline
     public func byteSub(self, _ n: usize) -> *T {
         unsafe { __intrinsic_ptr_byte_sub(self, n) }
     }
 
+    @inline
     public func read(self) -> T {
         unsafe { __intrinsic_ptr_read(self) }
     }
@@ -56,30 +62,37 @@ impl[T] *T {
 
 
 impl[T] *mut T {
+    @inline
     public func add(self, _ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_add(self as *T, n) as *mut T }
     }
 
+    @inline
     public func sub(self, _ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_sub(self as *T, n) as *mut T }
     }
 
+    @inline
     public func offset(self, _ n: isize) -> *mut T {
         unsafe { __intrinsic_ptr_offset(self as *T, n) as *mut T }
     }
 
+    @inline
     public func byteAdd(self, _ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_byte_add(self as *T, n) as *mut T }
     }
 
+    @inline
     public func byteSub(self, _ n: usize) -> *mut T {
         unsafe { __intrinsic_ptr_byte_sub(self as *T, n) as *mut T }
     }
 
+    @inline
     public func read(self) -> T {
         unsafe { __intrinsic_ptr_read(self) }
     }
 
+    @inline
     public func write(self, _ val: T) {
         unsafe { __intrinsic_ptr_write(self, val) }
     }

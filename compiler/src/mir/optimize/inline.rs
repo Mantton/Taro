@@ -4,6 +4,7 @@
 //! It supports cross-package inlining by resolving callee bodies via `Gcx`.
 
 use super::MirPass;
+use crate::compile::config::{BuildProfile, OptLevel, OptimizationMode};
 use crate::compile::context::Gcx;
 use crate::hir::{Abi, DefinitionID, KnownAttribute};
 use crate::mir::{
@@ -15,23 +16,28 @@ use crate::sema::models::{GenericArguments, Ty};
 use crate::sema::tycheck::utils::instantiate::{
     instantiate_const_with_args, instantiate_ty_with_args,
 };
+use rustc_hash::FxHashSet;
 
-/// Maximum number of basic blocks in a callee to consider it "small" for inlining.
-const SMALL_BODY_BLOCK_LIMIT: usize = 10;
-/// Maximum number of statements in a callee to consider it "small" for inlining.
-const SMALL_BODY_STMT_LIMIT: usize = 30;
 /// Maximum depth of recursive inlining to prevent infinite expansion.
-const MAX_INLINE_DEPTH: u32 = 7;
+const MAX_INLINE_DEPTH: u32 = 8;
+const FORCED_INLINE_GROWTH_LIMIT: usize = 2_000;
 
 /// MIR pass that inlines function calls.
 pub struct Inline {
-    /// Current inlining depth (to prevent infinite recursion)
     depth: u32,
+    growth_used: usize,
+    growth_budget: usize,
+    forced_growth_used: usize,
 }
 
 impl Default for Inline {
     fn default() -> Self {
-        Inline { depth: 0 }
+        Inline {
+            depth: 0,
+            growth_used: 0,
+            growth_budget: 0,
+            forced_growth_used: 0,
+        }
     }
 }
 
@@ -45,6 +51,12 @@ impl<'ctx> MirPass<'ctx> for Inline {
         if !matches!(body.phase, MirPhase::Built | MirPhase::CfgClean) {
             return Ok(());
         }
+        let original_cost = body_inline_cost(gcx, body);
+        let growth_percent = match gcx.config.codegen.optimization {
+            OptimizationMode::Level(OptLevel::O3) => 100,
+            _ => 50,
+        };
+        self.growth_budget = 200usize.max(original_cost.saturating_mul(growth_percent) / 100);
         // Iterate until no more inlining opportunities
         let mut changed = true;
         while changed && self.depth < MAX_INLINE_DEPTH {
@@ -61,7 +73,7 @@ impl Inline {
         let mut inlined_any = false;
 
         // Collect call sites to inline (we can't mutate while iterating)
-        let call_sites: Vec<_> = body
+        let mut call_sites: Vec<_> = body
             .basic_blocks
             .iter_enumerated()
             .filter_map(|(bb_id, block)| {
@@ -75,24 +87,23 @@ impl Inline {
                     unwind,
                 } = &terminator.kind
                 {
+                    let source_scope = source_scope_at_block_end(block);
+                    let logical_caller = body.source_scopes[source_scope].definition;
                     let (callee_id, gen_args) = if let Some(hint) = devirt_hint {
                         (hint.impl_def_id, hint.impl_args)
                     } else {
                         extract_callee(func)?
                     };
 
-                    // Cleanup-edge inlining exercises unwind and destination
-                    // remapping that heuristic inlining did not previously use.
-                    // Keep that expanded surface tied to an explicit source
-                    // contract; ordinary small functions retain the established
-                    // terminate-edge heuristic.
-                    if matches!(unwind, CallUnwindAction::Cleanup(_))
-                        && !has_inline_attribute(gcx, callee_id)
-                    {
-                        return None;
-                    }
-
-                    if self.should_inline(gcx, callee_id, gen_args) {
+                    if let Some((growth, forced, normal_eligible)) = self.should_inline(
+                        gcx,
+                        body,
+                        bb_id,
+                        logical_caller,
+                        callee_id,
+                        gen_args,
+                        args,
+                    ) {
                         let callee = resolve_callee_body(gcx, callee_id)?;
                         // An unwindful callee must resume into the cleanup edge
                         // that originally belonged to the call site. A
@@ -111,7 +122,10 @@ impl Inline {
                             target: *target,
                             unwind: *unwind,
                             span: terminator.span,
-                            source_scope: source_scope_at_block_end(block),
+                            source_scope,
+                            growth,
+                            forced,
+                            normal_eligible,
                         });
                     }
                 }
@@ -119,8 +133,18 @@ impl Inline {
             })
             .collect();
 
+        // Source block order is deterministic, but it must not let incidental
+        // early ordinary calls consume the budget intended for a later
+        // explicit request. Keep source order within each class while
+        // considering profitable `@inline` calls, forced-only `@inline`
+        // calls, and ordinary candidates in that order.
+        call_sites.sort_by_key(call_site_priority);
+
         // Perform inlining for each call site
         for site in call_sites {
+            if !self.reserve_growth(&site) {
+                continue;
+            }
             if let Some(callee_body) = resolve_callee_body(gcx, site.callee_id) {
                 self.inline_call(gcx, body, &site, callee_body);
                 inlined_any = true;
@@ -134,28 +158,28 @@ impl Inline {
     fn should_inline<'ctx>(
         &self,
         gcx: Gcx<'ctx>,
+        caller: &Body<'ctx>,
+        caller_block: BasicBlockId,
+        logical_caller: DefinitionID,
         callee_id: DefinitionID,
         gen_args: GenericArguments<'ctx>,
-    ) -> bool {
+        args: &[Operand<'ctx>],
+    ) -> Option<(usize, bool, bool)> {
         // Don't exceed depth limit
         if self.depth >= MAX_INLINE_DEPTH {
-            return false;
+            return None;
         }
 
-        // The interprocedural package still contains source-form async bodies
-        // while global passes run. Inlining one at a call site would splice the
-        // source body (whose return place is the awaited value) where the
-        // lowered constructor handle is required. Async constructors can become
-        // candidates once MIR lowering is package-phased rather than per-body.
-        if gcx.definition_is_async(callee_id) {
-            return false;
+        // An edge within a recursive SCC is a hard stop, even for @inline.
+        if call_graph_reaches(gcx, callee_id, logical_caller) {
+            return None;
         }
 
         // Check function signature for ABI restrictions
         let sig = gcx.get_signature(callee_id);
         match sig.abi {
             Some(Abi::Intrinsic) | Some(Abi::C) | Some(Abi::Blocking) | Some(Abi::Runtime) => {
-                return false;
+                return None;
             }
             None => {}
         }
@@ -167,29 +191,89 @@ impl Inline {
             for local in callee_body.locals.iter() {
                 let substituted = instantiate_mono_ty(gcx, local.ty, gen_args);
                 if substituted.needs_instantiation() {
-                    return false;
+                    return None;
                 }
             }
         }
 
         // Check attributes
         let attrs = gcx.attributes_of(callee_id);
+        let mut forced = false;
         for attr in attrs.iter() {
             match attr.as_known(gcx) {
-                Some(KnownAttribute::Inline) => return true,
-                Some(KnownAttribute::NoInline) => return false,
+                Some(KnownAttribute::Inline) => forced = true,
+                Some(KnownAttribute::NoInline) => {
+                    return None;
+                }
                 Some(KnownAttribute::Cfg) => {} // Cfg doesn't affect inlining
                 Some(_) => {} // Test, Ignore, ShouldPanic etc. don't affect inlining
                 None => {}
             }
         }
 
-        // Heuristic: inline small functions (only if they passed the substitution check above)
-        if let Some(callee_body) = resolve_callee_body(gcx, callee_id) {
-            is_body_small(callee_body)
+        let callee = resolve_callee_body(gcx, callee_id)?;
+        let cost = body_inline_cost(gcx, callee);
+        let growth = cost.saturating_sub(5);
+        let policy =
+            inline_profitability_policy(gcx.config.profile, gcx.config.codegen.optimization);
+        let loop_bonus = if block_is_cyclic(caller, caller_block) {
+            20
         } else {
-            false
+            0
+        };
+        let constant_bonus = args
+            .iter()
+            .filter(|argument| matches!(argument, Operand::Constant(_)))
+            .count()
+            .saturating_mul(5)
+            .min(15);
+        let normal_eligible = match policy {
+            InlineProfitability::ExplicitOnly => false,
+            InlineProfitability::SizeNeutral => growth == 0,
+            InlineProfitability::Threshold(base_threshold) => {
+                cost <= base_threshold + loop_bonus + constant_bonus
+            }
+        };
+        if forced {
+            return (growth <= FORCED_INLINE_GROWTH_LIMIT).then_some((
+                growth,
+                true,
+                normal_eligible,
+            ));
         }
+
+        normal_eligible.then_some((growth, false, true))
+    }
+
+    /// Reserve this call site's contribution to caller growth.
+    ///
+    /// An explicit `@inline` call that is independently profitable uses the
+    /// ordinary caller budget while room remains. If that budget is exhausted,
+    /// or if the call needs the attribute to bypass profitability, it falls
+    /// back to the separate forced-inline budget. This keeps annotations from
+    /// needlessly consuming the hard override allowance without weakening the
+    /// guarantee that an explicit request may bypass normal profitability.
+    fn reserve_growth(&mut self, site: &CallSite<'_>) -> bool {
+        if site.forced {
+            if site.normal_eligible
+                && self.growth_used.saturating_add(site.growth) <= self.growth_budget
+            {
+                self.growth_used = self.growth_used.saturating_add(site.growth);
+                return true;
+            }
+
+            if self.forced_growth_used.saturating_add(site.growth) > FORCED_INLINE_GROWTH_LIMIT {
+                return false;
+            }
+            self.forced_growth_used = self.forced_growth_used.saturating_add(site.growth);
+            return true;
+        }
+
+        if self.growth_used.saturating_add(site.growth) > self.growth_budget {
+            return false;
+        }
+        self.growth_used = self.growth_used.saturating_add(site.growth);
+        true
     }
 
     /// Inline a call by splicing the callee's body into the caller.
@@ -334,6 +418,30 @@ impl Inline {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineProfitability {
+    ExplicitOnly,
+    SizeNeutral,
+    Threshold(usize),
+}
+
+fn inline_profitability_policy(
+    profile: BuildProfile,
+    optimization: OptimizationMode,
+) -> InlineProfitability {
+    match optimization {
+        OptimizationMode::Level(OptLevel::O0) => InlineProfitability::ExplicitOnly,
+        OptimizationMode::Level(OptLevel::O1 | OptLevel::O2) => InlineProfitability::Threshold(40),
+        OptimizationMode::Level(OptLevel::O3) => InlineProfitability::Threshold(80),
+        OptimizationMode::Level(OptLevel::Os) => InlineProfitability::Threshold(20),
+        OptimizationMode::Level(OptLevel::Oz) => InlineProfitability::SizeNeutral,
+        OptimizationMode::Baseline => match profile {
+            BuildProfile::Debug => InlineProfitability::ExplicitOnly,
+            BuildProfile::Release => InlineProfitability::Threshold(40),
+        },
+    }
+}
+
 /// Prepare the place used for an inlined callee's return local.
 ///
 /// A call may write through a projection such as `*frame.await_handle`. Mapping
@@ -388,12 +496,6 @@ fn prepare_inline_return<'ctx>(
     (return_local, return_target)
 }
 
-fn has_inline_attribute(gcx: Gcx<'_>, callee_id: DefinitionID) -> bool {
-    gcx.attributes_of(callee_id)
-        .iter()
-        .any(|attr| matches!(attr.as_known(gcx), Some(KnownAttribute::Inline)))
-}
-
 /// Information about a call site that may be inlined.
 struct CallSite<'ctx> {
     caller_block: BasicBlockId,
@@ -406,6 +508,17 @@ struct CallSite<'ctx> {
     unwind: CallUnwindAction,
     span: crate::span::Span,
     source_scope: SourceScopeId,
+    growth: usize,
+    forced: bool,
+    normal_eligible: bool,
+}
+
+fn call_site_priority(site: &CallSite<'_>) -> u8 {
+    match (site.forced, site.normal_eligible) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, _) => 2,
+    }
 }
 
 fn source_scope_at_block_end(block: &BasicBlockData<'_>) -> SourceScopeId {
@@ -467,33 +580,154 @@ fn extract_callee<'ctx>(func: &Operand<'ctx>) -> Option<(DefinitionID, GenericAr
 
 /// Resolve a callee's MIR body, potentially from another package.
 fn resolve_callee_body<'ctx>(gcx: Gcx<'ctx>, callee_id: DefinitionID) -> Option<&'ctx Body<'ctx>> {
-    let packages = gcx.store.mir_packages.borrow();
+    let packages = gcx.store.inline_mir_packages.borrow();
     let package = packages.get(&callee_id.package())?;
     package.functions.get(&callee_id).cloned()
 }
 
 /// Check if a function body is small enough to inline heuristically.
-pub(crate) fn is_body_small(body: &Body<'_>) -> bool {
-    if body_has_unwind(body) {
-        return false;
-    }
-    if body.basic_blocks.len() > SMALL_BODY_BLOCK_LIMIT {
-        return false;
-    }
+pub(crate) fn is_body_small(gcx: Gcx<'_>, body: &Body<'_>) -> bool {
+    body_inline_cost(gcx, body) <= 40
+}
 
-    let stmt_count = body
+fn body_inline_cost(gcx: Gcx<'_>, body: &Body<'_>) -> usize {
+    let mut cost = body.basic_blocks.len().saturating_mul(2);
+    for block in &body.basic_blocks {
+        for statement in &block.statements {
+            cost = cost.saturating_add(match statement.kind {
+                StatementKind::Assign(_, Rvalue::Alloc { .. }) => 10,
+                StatementKind::SourceScope(_)
+                | StatementKind::StorageLive(_)
+                | StatementKind::Assign(..)
+                | StatementKind::KeepAlive(_)
+                | StatementKind::GcSafepoint(_)
+                | StatementKind::Nop
+                | StatementKind::SetDiscriminant { .. } => 1,
+            });
+        }
+        if let Some(terminator) = &block.terminator {
+            cost = cost.saturating_add(match &terminator.kind {
+                TerminatorKind::SwitchInt { targets, .. } => 1 + targets.len(),
+                TerminatorKind::Call { func, .. } if call_is_panic(gcx, func) => 10,
+                TerminatorKind::Call { .. } => 5,
+                TerminatorKind::Return
+                | TerminatorKind::ResumeUnwind
+                | TerminatorKind::Unreachable => 1,
+                TerminatorKind::Goto { .. }
+                | TerminatorKind::Yield { .. }
+                | TerminatorKind::UnresolvedGoto => 0,
+            });
+        }
+    }
+    if body
         .basic_blocks
-        .iter()
-        .flat_map(|bb| &bb.statements)
-        .filter(|statement| {
-            !matches!(
-                statement.kind,
-                StatementKind::SourceScope(_) | StatementKind::StorageLive(_)
-            )
-        })
-        .count();
+        .indices()
+        .any(|block| block_is_cyclic(body, block))
+    {
+        cost = cost.saturating_add(20);
+    }
+    cost
+}
 
-    stmt_count <= SMALL_BODY_STMT_LIMIT
+fn call_is_panic(gcx: Gcx<'_>, func: &Operand<'_>) -> bool {
+    let Some((definition, _)) = extract_callee(func) else {
+        return false;
+    };
+    let symbol = gcx.definition_symbol_or_fallback(definition);
+    let name = gcx.symbol_text(symbol);
+    name == "panic" || name.starts_with("__rt__panic_")
+}
+
+fn block_is_cyclic(body: &Body<'_>, block: BasicBlockId) -> bool {
+    let mut pending = Vec::new();
+    if let Some(terminator) = &body.basic_blocks[block].terminator {
+        pending.extend(inline_successors(&terminator.kind));
+    }
+    let mut visited = FxHashSet::default();
+    while let Some(candidate) = pending.pop() {
+        if candidate == block {
+            return true;
+        }
+        if !visited.insert(candidate) {
+            continue;
+        }
+        if let Some(terminator) = &body.basic_blocks[candidate].terminator {
+            pending.extend(inline_successors(&terminator.kind));
+        }
+    }
+    false
+}
+
+fn inline_successors(kind: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
+    match kind {
+        TerminatorKind::Goto { target } => vec![*target],
+        TerminatorKind::SwitchInt {
+            targets, otherwise, ..
+        } => targets
+            .iter()
+            .map(|(_, target)| *target)
+            .chain(std::iter::once(*otherwise))
+            .collect(),
+        TerminatorKind::Call { target, unwind, .. } => {
+            let mut result = vec![*target];
+            if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                result.push(*cleanup);
+            }
+            result
+        }
+        TerminatorKind::Yield {
+            resume,
+            cancel,
+            unwind,
+            ..
+        } => {
+            let mut result = vec![*resume, *cancel];
+            if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                result.push(*cleanup);
+            }
+            result
+        }
+        TerminatorKind::Return
+        | TerminatorKind::ResumeUnwind
+        | TerminatorKind::Unreachable
+        | TerminatorKind::UnresolvedGoto => Vec::new(),
+    }
+}
+
+/// True when `from` can reach `target` through canonical direct calls. Testing
+/// this for a proposed caller->callee edge is equivalent to rejecting edges
+/// within one recursive SCC, without making pass order observable.
+fn call_graph_reaches(gcx: Gcx<'_>, from: DefinitionID, target: DefinitionID) -> bool {
+    let mut pending = vec![from];
+    let mut visited = FxHashSet::default();
+    while let Some(definition) = pending.pop() {
+        if definition == target {
+            return true;
+        }
+        if !visited.insert(definition) {
+            continue;
+        }
+        let Some(body) = resolve_callee_body(gcx, definition) else {
+            continue;
+        };
+        for block in &body.basic_blocks {
+            let Some(terminator) = &block.terminator else {
+                continue;
+            };
+            let TerminatorKind::Call {
+                func, devirt_hint, ..
+            } = &terminator.kind
+            else {
+                continue;
+            };
+            if let Some(hint) = devirt_hint {
+                pending.push(hint.impl_def_id);
+            } else if let Some((callee, _)) = extract_callee(func) {
+                pending.push(callee);
+            }
+        }
+    }
+    false
 }
 
 fn body_has_unwind(body: &Body<'_>) -> bool {
@@ -529,7 +763,10 @@ fn remap_statement<'ctx>(
                 remap_place(gcx, place, local_map, gen_args),
                 remap_rvalue(gcx, rvalue, local_map, gen_args),
             ),
-            StatementKind::GcSafepoint => StatementKind::GcSafepoint,
+            StatementKind::KeepAlive(operand) => {
+                StatementKind::KeepAlive(remap_operand(gcx, operand, local_map, gen_args))
+            }
+            StatementKind::GcSafepoint(kind) => StatementKind::GcSafepoint(*kind),
             StatementKind::Nop => StatementKind::Nop,
             StatementKind::SetDiscriminant {
                 place,
@@ -585,7 +822,7 @@ fn remap_terminator<'ctx>(
         TerminatorKind::Call {
             func,
             args,
-            devirt_hint: _,
+            devirt_hint,
             destination,
             target,
             unwind,
@@ -595,7 +832,11 @@ fn remap_terminator<'ctx>(
                 .iter()
                 .map(|a| remap_operand(gcx, a, local_map, gen_args))
                 .collect(),
-            devirt_hint: None,
+            devirt_hint: devirt_hint.as_ref().map(|hint| crate::mir::DevirtHint {
+                impl_def_id: hint.impl_def_id,
+                impl_args: substitute_gen_args(gcx, hint.impl_args, gen_args),
+                concrete_self_ty: instantiate_mono_ty(gcx, hint.concrete_self_ty, gen_args),
+            }),
             destination: remap_place(gcx, destination, local_map, gen_args),
             target: block_map[target.index()],
             unwind: match unwind {
@@ -867,16 +1108,209 @@ fn instantiate_mono_ty<'ctx>(
 #[cfg(test)]
 mod tests {
     use super::{
-        CallSite, prepare_inline_return, remap_source_scopes, remap_statement, remap_terminator,
+        CallSite, FORCED_INLINE_GROWTH_LIMIT, Inline, InlineProfitability, call_graph_reaches,
+        call_site_priority, inline_profitability_policy, prepare_inline_return,
+        remap_source_scopes, remap_statement, remap_terminator,
     };
     use crate::PackageIndex;
+    use crate::compile::config::{BuildProfile, OptLevel, OptimizationMode};
     use crate::hir::DefinitionID;
     use crate::mir::{
-        CallUnwindAction, LocalDecl, LocalKind, Operand, Place, PlaceElem, Rvalue, SourceScopeData,
-        SourceScopeId, Statement, StatementKind, Terminator, TerminatorKind, test_support,
+        BasicBlockData, CallUnwindAction, Constant, ConstantKind, LocalDecl, LocalKind, MirPackage,
+        Operand, Place, PlaceElem, Rvalue, SourceScopeData, SourceScopeId, Statement,
+        StatementKind, Terminator, TerminatorKind, test_support,
     };
     use crate::sema::models::GenericArguments;
     use crate::sema::resolve::models::DefinitionIndex;
+
+    #[test]
+    fn optimization_profiles_have_fixed_profitability_policies() {
+        assert_eq!(
+            inline_profitability_policy(BuildProfile::Debug, OptimizationMode::Level(OptLevel::O0),),
+            InlineProfitability::ExplicitOnly
+        );
+        assert_eq!(
+            inline_profitability_policy(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::O1),
+            ),
+            InlineProfitability::Threshold(40)
+        );
+        assert_eq!(
+            inline_profitability_policy(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::O2),
+            ),
+            InlineProfitability::Threshold(40)
+        );
+        assert_eq!(
+            inline_profitability_policy(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::O3),
+            ),
+            InlineProfitability::Threshold(80)
+        );
+        assert_eq!(
+            inline_profitability_policy(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::Os),
+            ),
+            InlineProfitability::Threshold(20)
+        );
+        assert_eq!(
+            inline_profitability_policy(
+                BuildProfile::Release,
+                OptimizationMode::Level(OptLevel::Oz),
+            ),
+            InlineProfitability::SizeNeutral
+        );
+        assert_eq!(
+            inline_profitability_policy(BuildProfile::Debug, OptimizationMode::Baseline),
+            InlineProfitability::ExplicitOnly
+        );
+        assert_eq!(
+            inline_profitability_policy(BuildProfile::Release, OptimizationMode::Baseline),
+            InlineProfitability::Threshold(40)
+        );
+    }
+
+    #[test]
+    fn forced_inline_uses_normal_budget_before_override_budget() {
+        let mut inliner = Inline {
+            growth_budget: 30,
+            ..Inline::default()
+        };
+        let mut site = budget_test_site(20, true, true);
+
+        assert!(inliner.reserve_growth(&site));
+        assert_eq!(inliner.growth_used, 20);
+        assert_eq!(inliner.forced_growth_used, 0);
+
+        // There is not enough ordinary room for a second profitable call, so
+        // the explicit request falls back to the forced-inline allowance.
+        assert!(inliner.reserve_growth(&site));
+        assert_eq!(inliner.growth_used, 20);
+        assert_eq!(inliner.forced_growth_used, 20);
+
+        // Calls that need the annotation never consume ordinary growth, and
+        // the hard forced-growth cap remains authoritative.
+        site.normal_eligible = false;
+        site.growth = FORCED_INLINE_GROWTH_LIMIT - 20;
+        assert!(inliner.reserve_growth(&site));
+        assert_eq!(inliner.forced_growth_used, FORCED_INLINE_GROWTH_LIMIT);
+        site.growth = 1;
+        assert!(!inliner.reserve_growth(&site));
+    }
+
+    #[test]
+    fn ordinary_inline_cannot_fall_back_to_forced_budget() {
+        let mut inliner = Inline {
+            growth_budget: 10,
+            ..Inline::default()
+        };
+        let site = budget_test_site(11, false, true);
+
+        assert!(!inliner.reserve_growth(&site));
+        assert_eq!(inliner.growth_used, 0);
+        assert_eq!(inliner.forced_growth_used, 0);
+    }
+
+    #[test]
+    fn worklist_prioritizes_explicit_requests_over_ordinary_calls() {
+        let mut sites = [
+            budget_test_site(1, false, true),
+            budget_test_site(1, true, false),
+            budget_test_site(1, true, true),
+        ];
+
+        sites.sort_by_key(call_site_priority);
+
+        assert!(sites[0].forced && sites[0].normal_eligible);
+        assert!(sites[1].forced && !sites[1].normal_eligible);
+        assert!(!sites[2].forced);
+    }
+
+    fn budget_test_site(growth: usize, forced: bool, normal_eligible: bool) -> CallSite<'static> {
+        CallSite {
+            caller_block: crate::mir::BasicBlockId::from_raw(0),
+            callee_id: DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(99)),
+            gen_args: GenericArguments::empty(),
+            args: Vec::new(),
+            destination: Place::from_local(crate::mir::LocalId::from_raw(0)),
+            target: crate::mir::BasicBlockId::from_raw(0),
+            unwind: CallUnwindAction::Terminate,
+            span: crate::span::Span::empty(crate::span::FileID::from_raw(0)),
+            source_scope: SourceScopeId::from_raw(0),
+            growth,
+            forced,
+            normal_eligible,
+        }
+    }
+
+    #[test]
+    fn direct_call_graph_detects_recursive_sccs() {
+        test_support::with_test_gcx(|gcx| {
+            let package = PackageIndex::new(1);
+            let a = DefinitionID::new(package, DefinitionIndex::from_raw(10));
+            let b = DefinitionID::new(package, DefinitionIndex::from_raw(11));
+            let outside = DefinitionID::new(package, DefinitionIndex::from_raw(12));
+
+            let make_body = |owner, callee: Option<DefinitionID>| {
+                let mut body = test_support::minimal_body(gcx);
+                body.owner = owner;
+                body.source_scopes[SourceScopeId::from_raw(0)].definition = owner;
+                if let Some(callee) = callee {
+                    let span = body.locals[body.return_local].span;
+                    let target = body.basic_blocks.push(BasicBlockData {
+                        note: Some("return".into()),
+                        statements: Vec::new(),
+                        terminator: Some(Terminator {
+                            kind: TerminatorKind::Return,
+                            span,
+                        }),
+                    });
+                    body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                        kind: TerminatorKind::Call {
+                            func: Operand::Constant(Constant {
+                                ty: gcx.types.uint,
+                                value: ConstantKind::Function(
+                                    callee,
+                                    GenericArguments::empty(),
+                                    gcx.types.uint,
+                                ),
+                            }),
+                            args: Vec::new(),
+                            devirt_hint: None,
+                            destination: Place::from_local(body.return_local),
+                            target,
+                            unwind: CallUnwindAction::Terminate,
+                        },
+                        span,
+                    });
+                }
+                body
+            };
+
+            let a_body = gcx.store.arenas.mir_bodies.alloc(make_body(a, Some(b)));
+            let b_body = gcx.store.arenas.mir_bodies.alloc(make_body(b, Some(a)));
+            let outside_body = gcx.store.arenas.mir_bodies.alloc(make_body(outside, None));
+            let package_body = gcx.store.alloc_mir_package(MirPackage {
+                functions: [(a, &*a_body), (b, &*b_body), (outside, &*outside_body)]
+                    .into_iter()
+                    .collect(),
+                entry: None,
+            });
+            gcx.store
+                .inline_mir_packages
+                .borrow_mut()
+                .insert(package, package_body);
+
+            assert!(call_graph_reaches(gcx, a, b));
+            assert!(call_graph_reaches(gcx, b, a));
+            assert!(!call_graph_reaches(gcx, a, outside));
+            assert!(!call_graph_reaches(gcx, outside, a));
+        });
+    }
 
     #[test]
     fn inlined_resume_targets_the_callers_cleanup_edge() {
@@ -984,6 +1418,9 @@ mod tests {
                 unwind: CallUnwindAction::Terminate,
                 span,
                 source_scope: caller_inline_scope,
+                growth: 0,
+                forced: false,
+                normal_eligible: true,
             };
             let scope_map = remap_source_scopes(&mut caller, &callee, &site);
 

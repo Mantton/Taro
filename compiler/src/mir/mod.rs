@@ -128,6 +128,15 @@ pub struct Statement<'ctx> {
     pub span: Span,
 }
 
+/// Why a compiler-inserted GC poll exists at this MIR location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GcSafepointKind {
+    /// Establishes a managed frame and bounds straight-line call chains.
+    Entry,
+    /// Guarantees that every cyclic CFG path eventually cooperates with GC.
+    Loop,
+}
+
 #[derive(Debug, Clone)]
 pub enum StatementKind<'ctx> {
     /// Switches the logical source scope for subsequent operations in this
@@ -140,7 +149,10 @@ pub enum StatementKind<'ctx> {
     /// local to stable storage use it to distinguish rebinding from mutation.
     StorageLive(LocalId),
     Assign(Place<'ctx>, Rvalue<'ctx>),
-    GcSafepoint,
+    /// A compiler-only use that extends an operand's lifetime without
+    /// generating machine code.
+    KeepAlive(Operand<'ctx>),
+    GcSafepoint(GcSafepointKind),
     Nop,
     SetDiscriminant {
         place: Place<'ctx>,
@@ -158,6 +170,15 @@ pub struct Terminator<'ctx> {
 pub enum CallUnwindAction {
     Cleanup(BasicBlockId),
     Terminate,
+}
+
+/// Whether and how a call participates in GC coordination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallGcEffect {
+    NoGc,
+    ManagedSafepoint,
+    RuntimeSafepoint,
+    BlockingSafepoint,
 }
 
 #[derive(Debug, Clone)]
@@ -361,9 +382,12 @@ pub fn for_each_function_constant_in_body<'ctx>(
                 StatementKind::Assign(_, rvalue) => {
                     for_each_function_constant_in_rvalue(rvalue, &mut visit);
                 }
+                StatementKind::KeepAlive(operand) => {
+                    for_each_function_constant_in_operand(operand, &mut visit);
+                }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
-                | StatementKind::GcSafepoint
+                | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop
                 | StatementKind::SetDiscriminant { .. } => {}
             }
@@ -430,6 +454,11 @@ fn for_each_function_constant_in_operand<'ctx>(
 pub enum CastKind<'ctx> {
     Numeric,
     BoxExistential,
+    /// Packs an already-allocated concrete payload pointer into an
+    /// existential. Introduced by MIR lowering so allocation is explicit.
+    ExistentialPack {
+        concrete: Ty<'ctx>,
+    },
     ExistentialUpcast,
     /// Runtime type test: `value is Target`.
     ExistentialTypeIs {

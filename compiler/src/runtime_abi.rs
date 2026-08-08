@@ -7,8 +7,25 @@
 
 use std::fmt::Write as _;
 
-pub const RUNTIME_ABI_REVISION: u32 = 13;
+pub const RUNTIME_ABI_REVISION: u32 = 14;
 pub const RUNTIME_MANIFEST_SCHEMA: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeGcEffect {
+    NoGc,
+    RuntimeSafepoint,
+    BlockingSafepoint,
+}
+
+impl RuntimeGcEffect {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::NoGc => "nogc",
+            Self::RuntimeSafepoint => "runtime-safepoint",
+            Self::BlockingSafepoint => "blocking-safepoint",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeAbiType {
@@ -265,6 +282,50 @@ impl RuntimeAbiFunction {
             }
         }
     }
+
+    pub const fn gc_effect(self) -> RuntimeGcEffect {
+        use RuntimeAbiFunction as F;
+        match self {
+            F::Poll
+            | F::Destroy
+            | F::CancelHandle
+            | F::RunRoot
+            | F::Blocking
+            | F::ReclaimSpawned
+            | F::DropTask
+            | F::TaskGroupDestroy
+            | F::TaskGroupDestroyAndRethrowPanic
+            | F::TakeTaskPanicPayload
+            | F::PanicPayloadRethrow => RuntimeGcEffect::RuntimeSafepoint,
+            F::Create
+            | F::Spawn
+            | F::FromSpawnedChecked
+            | F::SelectTasks
+            | F::TaskTimeout
+            | F::CleanupRegister
+            | F::TaskCompletionStatus
+            | F::CancelTask
+            | F::DetachTask
+            | F::WaitReadable
+            | F::WaitWritable
+            | F::ChannelWaitSend
+            | F::ChannelWaitRecv
+            | F::MutexLock
+            | F::RwLockRead
+            | F::RwLockWrite
+            | F::Sleep
+            | F::YieldNow
+            | F::IsTaskCancelled
+            | F::DumpTasks
+            | F::TaskGroupCreate
+            | F::TaskGroupSpawn
+            | F::TaskGroupClose
+            | F::TaskGroupCancelAll
+            | F::TaskGroupNextStatus
+            | F::GroupNext
+            | F::PanicPayloadMessage => RuntimeGcEffect::NoGc,
+        }
+    }
 }
 
 const fn spec(
@@ -284,6 +345,7 @@ pub struct AdditionalRuntimeSymbol {
     pub symbol: &'static str,
     pub signature: &'static str,
     pub availability: RuntimeSymbolAvailability,
+    pub gc_effect: RuntimeGcEffect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -324,27 +386,27 @@ impl RuntimeSymbolAvailability {
 /// library rather than synthesized through `RuntimeAbiFunction`.
 pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__bench_next_batch", "()->usize"),
-    additional(
+    additional_safepoint(
         "__rt__bench_run_case",
         "(fn()->void,*const u8,usize,*const u8,usize,bool,*const u8,usize)->u8",
     ),
     additional("__rt__bench_set_bytes", "(usize)->void"),
     additional("__rt__black_box", "(*mut u8,usize)->void"),
     additional("__rt__install_stack_guard", "()->void"),
-    additional("__gc__alloc", "(usize,*const gc_desc)->*mut u8"),
-    additional("__gc__collect", "()->void"),
-    additional(
+    additional_safepoint("__gc__alloc", "(usize,*const gc_desc)->*mut u8"),
+    additional_safepoint("__gc__collect", "()->void"),
+    additional_safepoint(
         "__gc__grow_buf",
         "(*mut u8,*const gc_desc,usize,usize)->*mut u8",
     ),
-    additional("__gc__makebuf", "(*const gc_desc,usize,usize)->*mut u8"),
-    additional("__gc__poll", "()->void"),
+    additional_safepoint("__gc__makebuf", "(*const gc_desc,usize,usize)->*mut u8"),
+    additional_safepoint("__gc__poll", "()->void"),
     additional("__gc__poll_flags", "atomic u8"),
-    additional("__gc__register_static", "(*const u8,usize)->void"),
+    additional("__gc__register_static", "(*const u8,*const gc_desc)->void"),
     additional("__gc__set_buf_len", "(*mut u8,*const gc_desc,usize)->void"),
-    additional("__gc__thread_enter_managed", "()->void"),
+    additional_safepoint("__gc__thread_enter_managed", "()->void"),
     additional("__rt__cleanup_cancel", "(usize)->bool"),
-    additional("__rt__cleanup_wait", "()->void"),
+    additional_blocking("__rt__cleanup_wait", "()->void"),
     additional("__rt__async_io_adopt_fd", "(i32)->usize"),
     additional("__rt__async_io_close_source", "(usize)->i32"),
     additional("__rt__async_io_dup", "(i32)->i32"),
@@ -354,46 +416,46 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
         "__rt__async_io_write_source",
         "(usize,*const u8,usize)->isize",
     ),
-    additional("__rt__executor_abort_rootless", "()->void"),
-    additional("__rt__executor_finish_rootless", "()->void"),
-    additional_unix("__rt__env_current_dir", "(*mut *mut u8,*mut usize)->i32"),
-    additional_unix(
+    additional_safepoint("__rt__executor_abort_rootless", "()->void"),
+    additional_safepoint("__rt__executor_finish_rootless", "()->void"),
+    additional_unix_blocking("__rt__env_current_dir", "(*mut *mut u8,*mut usize)->i32"),
+    additional_unix_blocking(
         "__rt__env_get",
         "(string,*mut *mut u8,*mut usize,*mut bool)->i32",
     ),
-    additional_unix("__rt__env_home_dir", "(*mut *mut u8,*mut usize)->i32"),
+    additional_unix_blocking("__rt__env_home_dir", "(*mut *mut u8,*mut usize)->i32"),
     additional_unix("__rt__env_owned_bytes_free", "(*mut u8)->void"),
-    additional_unix("__rt__env_remove", "(string)->i32"),
-    additional_unix("__rt__env_set", "(string,string)->i32"),
-    additional_unix("__rt__env_set_current_dir", "(string)->i32"),
+    additional_unix_blocking("__rt__env_remove", "(string)->i32"),
+    additional_unix_blocking("__rt__env_set", "(string,string)->i32"),
+    additional_unix_blocking("__rt__env_set_current_dir", "(string)->i32"),
     additional_unix(
         "__rt__env_snapshot_at",
         "(usize,usize,*mut *const u8,*mut usize,*mut *const u8,*mut usize)->i32",
     ),
     additional_unix("__rt__env_snapshot_close", "(usize)->void"),
-    additional_unix("__rt__env_snapshot_open", "(*mut usize)->usize"),
-    additional_unix("__rt__env_temp_dir", "(*mut *mut u8,*mut usize)->i32"),
-    additional_unix(
+    additional_unix_blocking("__rt__env_snapshot_open", "(*mut usize)->usize"),
+    additional_unix_blocking("__rt__env_temp_dir", "(*mut *mut u8,*mut usize)->i32"),
+    additional_unix_blocking(
         "__rt__fs_canonicalize",
         "(string,*mut *mut u8,*mut usize)->i32",
     ),
-    additional_unix("__rt__fs_copy", "(string,string,*mut u64)->i32"),
-    additional_unix(
+    additional_unix_blocking("__rt__fs_copy", "(string,string,*mut u64)->i32"),
+    additional_unix_blocking(
         "__rt__fs_create_temp_dir",
         "(string,string,*mut *mut u8,*mut usize)->i32",
     ),
-    additional_unix("__rt__fs_dir_close", "(usize)->i32"),
-    additional_unix("__rt__fs_dir_open", "(string,*mut i32)->usize"),
-    additional_unix(
+    additional_unix_blocking("__rt__fs_dir_close", "(usize)->i32"),
+    additional_unix_blocking("__rt__fs_dir_open", "(string,*mut i32)->usize"),
+    additional_unix_blocking(
         "__rt__fs_dir_read",
         "(usize,*mut *mut u8,*mut usize,*mut u8)->i32",
     ),
-    additional_unix(
+    additional_unix_blocking(
         "__rt__fs_metadata",
         "(string,bool,*mut u8,*mut u64,*mut i64,*mut u32,*mut i64,*mut u32)->i32",
     ),
     additional_unix("__rt__fs_owned_bytes_free", "(*mut u8)->void"),
-    additional_unix("__rt__fs_remove_dir_all", "(string)->i32"),
+    additional_unix_blocking("__rt__fs_remove_dir_all", "(string)->i32"),
     additional(
         "__rt__existential_lookup_conformance",
         "(*const u8,*const u8)->*const u8",
@@ -411,11 +473,11 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
         "__rt__net_ip_snapshot_at",
         "(usize,usize,*mut u8,*mut u8)->i32",
     ),
-    additional_unix(
+    additional_unix_blocking(
         "__rt__net_lookup_address",
         "(u8,*const u8,*mut usize,*mut u8,*mut i32,*mut i32)->usize",
     ),
-    additional_unix(
+    additional_unix_blocking(
         "__rt__net_lookup_host",
         "(string,*mut usize,*mut u8,*mut i32,*mut i32)->usize",
     ),
@@ -424,14 +486,14 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
         "(usize,usize,*mut *const u8,*mut usize)->i32",
     ),
     additional_unix("__rt__net_snapshot_close", "(usize)->void"),
-    additional_unix("__rt__open2", "(*const u8,i32)->i32"),
-    additional_unix("__rt__open3", "(*const u8,i32,i32)->i32"),
+    additional_unix_blocking("__rt__open2", "(*const u8,i32)->i32"),
+    additional_unix_blocking("__rt__open3", "(*const u8,i32,i32)->i32"),
     additional("__rt__parse_f32", "(string,*mut u32)->u8"),
     additional("__rt__parse_f64", "(string,*mut u64)->u8"),
-    additional("__rt__panic_abort", "(string)->never"),
-    additional("__rt__panic_abort_unwind", "(*mut u8)->never"),
-    additional("__rt__panic_unwind", "(string)->never"),
-    additional(
+    additional_safepoint("__rt__panic_abort", "(string)->never"),
+    additional_safepoint("__rt__panic_abort_unwind", "(*mut u8)->never"),
+    additional_safepoint("__rt__panic_unwind", "(string)->never"),
+    additional_safepoint(
         "__rt__panic_unwind_at",
         "(string,string,usize,usize)->never",
     ),
@@ -442,21 +504,21 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
         "__rt__process_child_try_wait",
         "(usize,*mut bool,*mut i32,*mut i32)->i32",
     ),
-    additional_unix("__rt__process_child_wait", "(usize,*mut i32,*mut i32)->i32"),
+    additional_unix_blocking("__rt__process_child_wait", "(usize,*mut i32,*mut i32)->i32"),
     additional_unix("__rt__process_command_arg", "(usize,string)->i32"),
     additional_unix("__rt__process_command_close", "(usize)->void"),
     additional_unix("__rt__process_command_current_dir", "(usize,string)->i32"),
     additional_unix("__rt__process_command_env", "(usize,string,string)->i32"),
     additional_unix("__rt__process_command_open", "(string,*mut i32)->usize"),
-    additional_unix(
+    additional_unix_blocking(
         "__rt__process_command_output",
         "(usize,bool,usize,*mut i32,*mut bool)->usize",
     ),
-    additional_unix(
+    additional_unix_blocking(
         "__rt__process_command_spawn",
         "(usize,*mut usize,*mut i32,*mut i32,*mut i32)->i32",
     ),
-    additional_unix(
+    additional_unix_blocking(
         "__rt__process_command_status",
         "(usize,*mut i32,*mut i32)->i32",
     ),
@@ -475,28 +537,28 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
         "(usize,*mut *const u8,*mut usize)->i32",
     ),
     additional("__rt__sync_channel_close", "(*mut u8)->i32"),
-    additional(
+    additional_safepoint(
         "__rt__sync_channel_create",
         "(usize,usize,u8,*const gc_desc)->*mut u8",
     ),
     additional("__rt__sync_channel_destroy", "(*mut u8)->i32"),
     additional("__rt__sync_channel_try_recv", "(*mut u8,*mut u8)->i32"),
     additional("__rt__sync_channel_try_send", "(*mut u8,*const u8)->i32"),
-    additional("__rt__sync_mutex_create", "()->*mut u8"),
+    additional_safepoint("__rt__sync_mutex_create", "()->*mut u8"),
     additional("__rt__sync_mutex_destroy", "(*mut u8)->i32"),
     additional("__rt__sync_mutex_try_lock", "(*mut u8)->i32"),
     additional("__rt__sync_mutex_unlock", "(*mut u8)->i32"),
-    additional("__rt__sync_rwlock_create", "()->*mut u8"),
+    additional_safepoint("__rt__sync_rwlock_create", "()->*mut u8"),
     additional("__rt__sync_rwlock_destroy", "(*mut u8)->i32"),
     additional("__rt__sync_rwlock_try_read", "(*mut u8)->i32"),
     additional("__rt__sync_rwlock_try_write", "(*mut u8)->i32"),
     additional("__rt__sync_rwlock_unlock_read", "(*mut u8)->i32"),
     additional("__rt__sync_rwlock_unlock_write", "(*mut u8)->i32"),
-    additional("__rt__test_call_fn", "(fn()->void)->bool"),
+    additional_safepoint("__rt__test_call_fn", "(fn()->void)->bool"),
     additional("__rt__test_panic_finish", "(bool,*const u8,usize)->void"),
     additional("__rt__test_panic_status", "(bool,*const u8,usize)->u8"),
-    additional("__rt__weak_create", "(*const u8)->*mut u8"),
-    additional("__rt__weak_value", "(*mut u8)->*mut u8"),
+    additional_safepoint("__rt__weak_create", "(*const u8)->*mut u8"),
+    additional_safepoint("__rt__weak_value", "(*mut u8)->*mut u8"),
 ];
 
 const fn additional(symbol: &'static str, signature: &'static str) -> AdditionalRuntimeSymbol {
@@ -504,6 +566,31 @@ const fn additional(symbol: &'static str, signature: &'static str) -> Additional
         symbol,
         signature,
         availability: RuntimeSymbolAvailability::AllTargets,
+        gc_effect: RuntimeGcEffect::NoGc,
+    }
+}
+
+const fn additional_safepoint(
+    symbol: &'static str,
+    signature: &'static str,
+) -> AdditionalRuntimeSymbol {
+    AdditionalRuntimeSymbol {
+        symbol,
+        signature,
+        availability: RuntimeSymbolAvailability::AllTargets,
+        gc_effect: RuntimeGcEffect::RuntimeSafepoint,
+    }
+}
+
+const fn additional_blocking(
+    symbol: &'static str,
+    signature: &'static str,
+) -> AdditionalRuntimeSymbol {
+    AdditionalRuntimeSymbol {
+        symbol,
+        signature,
+        availability: RuntimeSymbolAvailability::AllTargets,
+        gc_effect: RuntimeGcEffect::BlockingSafepoint,
     }
 }
 
@@ -512,6 +599,19 @@ const fn additional_unix(symbol: &'static str, signature: &'static str) -> Addit
         symbol,
         signature,
         availability: RuntimeSymbolAvailability::Unix,
+        gc_effect: RuntimeGcEffect::NoGc,
+    }
+}
+
+const fn additional_unix_blocking(
+    symbol: &'static str,
+    signature: &'static str,
+) -> AdditionalRuntimeSymbol {
+    AdditionalRuntimeSymbol {
+        symbol,
+        signature,
+        availability: RuntimeSymbolAvailability::Unix,
+        gc_effect: RuntimeGcEffect::BlockingSafepoint,
     }
 }
 
@@ -534,18 +634,36 @@ pub fn required_symbols_for_target(target: &str) -> impl Iterator<Item = &'stati
         )
 }
 
+pub fn gc_effect_for_symbol(symbol: &str) -> Option<RuntimeGcEffect> {
+    RuntimeAbiFunction::ALL
+        .iter()
+        .find_map(|function| (function.spec().symbol == symbol).then(|| function.gc_effect()))
+        .or_else(|| {
+            ADDITIONAL_RUNTIME_SYMBOLS
+                .iter()
+                .find_map(|entry| (entry.symbol == symbol).then_some(entry.gc_effect))
+        })
+}
+
 pub fn fingerprint() -> String {
     let mut canonical = format!("runtime-abi-revision={RUNTIME_ABI_REVISION}\n");
     for function in RuntimeAbiFunction::ALL {
         let spec = function.spec();
-        let _ = writeln!(canonical, "{} {}", spec.symbol, spec.signature());
+        let _ = writeln!(
+            canonical,
+            "{} [{}] {}",
+            spec.symbol,
+            function.gc_effect().name(),
+            spec.signature()
+        );
     }
     for entry in ADDITIONAL_RUNTIME_SYMBOLS {
         let _ = writeln!(
             canonical,
-            "{} [{}] {}",
+            "{} [{}] [{}] {}",
             entry.symbol,
             entry.availability.name(),
+            entry.gc_effect.name(),
             entry.signature
         );
     }
@@ -562,6 +680,29 @@ mod tests {
         let symbols = required_symbols().collect::<Vec<_>>();
         let unique = symbols.iter().copied().collect::<HashSet<_>>();
         assert_eq!(symbols.len(), unique.len());
+    }
+
+    #[test]
+    fn every_runtime_symbol_has_an_explicit_gc_effect() {
+        for symbol in required_symbols() {
+            assert!(
+                gc_effect_for_symbol(symbol).is_some(),
+                "missing GC effect for {symbol}"
+            );
+        }
+        assert_eq!(
+            gc_effect_for_symbol("__gc__alloc"),
+            Some(RuntimeGcEffect::RuntimeSafepoint)
+        );
+        assert_eq!(
+            gc_effect_for_symbol("__rt__hash_seed0"),
+            Some(RuntimeGcEffect::NoGc)
+        );
+        assert_eq!(
+            gc_effect_for_symbol("__rt__open2"),
+            Some(RuntimeGcEffect::BlockingSafepoint)
+        );
+        assert_eq!(gc_effect_for_symbol("__rt__missing"), None);
     }
 
     #[test]

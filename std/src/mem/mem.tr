@@ -259,8 +259,8 @@ impl[Element] Iterable for MutableSpan[Element] {
 public struct GcDesc {
     size: usize
     align: usize
-    ptrOffsets: *const usize
-    ptrCount: usize
+    nodes: *const uint8
+    nodeCount: usize
 }
 
 extern "taro_rt" {

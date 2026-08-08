@@ -4,8 +4,9 @@ use crate::{
     hir::DefinitionID,
     mir::{
         BasicBlockData, BasicBlockId, Body, CallUnwindAction, Constant, ConstantKind,
-        CopyModifiers, LocalDecl, LocalId, LocalKind, Operand, Place, PlaceElem, Rvalue, Statement,
-        StatementKind, Terminator, TerminatorKind, analysis::liveness::compute_liveness,
+        CopyModifiers, LocalDecl, LocalId, LocalKind, Operand, Place, PlaceElem, Rvalue,
+        SourceScopeId, Statement, StatementKind, Terminator, TerminatorKind,
+        analysis::liveness::compute_liveness,
     },
     sema::{
         models::{
@@ -83,6 +84,11 @@ impl<'ctx> MirPass<'ctx> for AsyncTransform {
         let poll_id = register_async_poll_definition(gcx, body.owner, span);
         let mut poll_body = body.clone();
         poll_body.owner = poll_id;
+        // Source scope zero describes the physical function whose frame is
+        // being emitted. The remaining scopes deliberately keep the original
+        // async function as their logical owner for diagnostics and debug
+        // inlining information.
+        poll_body.source_scopes[SourceScopeId::from_raw(0)].definition = poll_id;
         let frame = lower_async_poll_body(gcx, &mut poll_body)?;
 
         let (drop_id, drop_body) = build_async_drop_body(gcx, body.owner, &frame, &poll_body);
@@ -346,7 +352,8 @@ fn rewrite_resident_local_places<'ctx>(
                 StatementKind::SetDiscriminant { place, .. } => {
                     remap_resident_place(place, &remaps);
                 }
-                StatementKind::GcSafepoint | StatementKind::Nop => {}
+                StatementKind::KeepAlive(operand) => remap_resident_operand(operand, &remaps),
+                StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
             }
         }
         let Some(terminator) = &mut block.terminator else {

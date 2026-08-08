@@ -7,6 +7,7 @@ pub mod existentials;
 #[cfg(unix)]
 mod fs;
 pub mod garbage_collector;
+mod gc_layout;
 pub mod hash_seed;
 mod io_poller;
 #[cfg(unix)]

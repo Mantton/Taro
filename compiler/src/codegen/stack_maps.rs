@@ -15,11 +15,11 @@ use std::{
 };
 
 use super::pc_metadata::{
-    PcArchitecture, PcFunction, PcLogicalFrame, PcMetadata, PcRecord, PcRootLocation, PcRootRecipe,
+    PcArchitecture, PcFunction, PcLogicalFrame, PcMetadata, PcRecord, PcRootLocation,
 };
 
-pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
-pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 2;
+pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 2;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 3;
 
 /// Kind of machine site represented by a PC record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,20 +32,35 @@ pub(crate) enum StackMapSiteKind {
     Panic = 5,
 }
 
-/// One pointer field reachable from a stack-map operand's storage base.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PendingRootRecipe {
-    pub offset: u64,
-    pub deref_depth: u8,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[repr(u8)]
+pub(crate) enum GcLayoutKind {
+    Pointer = 1,
+    Reference = 2,
+    Aggregate = 3,
+    Repeat = 4,
+    Tagged = 5,
 }
 
-/// Root recipes associated with one LLVM stack-map operand.
+/// One node in the shared stack/heap/static GC layout graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[repr(C)]
+pub(crate) struct GcLayoutNode {
+    pub offset: u64,
+    pub stride: u64,
+    pub first_child: u32,
+    pub child_count: u32,
+    pub kind: GcLayoutKind,
+    pub width: u8,
+}
+
+/// Typed layout associated with one LLVM stack-map operand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PendingRootOperand {
     /// Number of pointer loads needed to turn the direct machine location into
     /// the MIR local's storage address. Indirect ABI storage uses one.
     pub storage_deref_depth: u8,
-    pub recipes: Vec<PendingRootRecipe>,
+    pub nodes: Vec<GcLayoutNode>,
 }
 
 /// A logical Taro frame to render for a PC, innermost first.
@@ -89,7 +104,7 @@ impl PendingStackMapModule {
 /// Stable map ID for one site in a pre-optimization LLVM function.
 ///
 /// LLVM may duplicate the intrinsic while inlining. Duplicate machine records
-/// intentionally retain the same ID and therefore the same root recipes.
+/// intentionally retain the same ID and therefore the same root layouts.
 pub(crate) fn deterministic_map_id(
     package_identifier: &str,
     function_symbol: &str,
@@ -168,6 +183,44 @@ pub(crate) fn read_pending_modules(
     Ok(records)
 }
 
+/// Collapse records that ended up at the same instruction into one.
+///
+/// Optimization can bring two sites to a single machine offset — most often by
+/// merging blocks that end in the same call — and the paths reaching it need not
+/// agree on which slots hold roots. The collector gets one answer per address,
+/// so the answer has to cover every path: the roots are unioned.
+///
+/// Scanning a slot that is live on one path and stale on another is safe. The
+/// collector resolves each candidate against its spans before marking, so a
+/// value that is not a live object is ignored and one that is merely stale
+/// retains an object a little longer. Scanning too few would instead free
+/// something still reachable, so where the two cannot be reconciled this errs
+/// towards keeping.
+fn merge_records_sharing_a_pc(function: &mut PcFunction) -> Result<(), String> {
+    let mut merged: Vec<PcRecord> = Vec::with_capacity(function.records.len());
+    for record in function.records.drain(..) {
+        let Some(previous) = merged.last_mut() else {
+            merged.push(record);
+            continue;
+        };
+        if previous.pc_offset != record.pc_offset {
+            merged.push(record);
+            continue;
+        }
+        // Two kinds can meet here too — a call that may panic merging with the
+        // panic site itself, say. The kind describes what a site is for a
+        // reader; the runtime range-checks it and never consults it when
+        // scanning, so the first is kept and the roots below are what matter.
+        for root in record.roots {
+            if !previous.roots.contains(&root) {
+                previous.roots.push(root);
+            }
+        }
+    }
+    function.records = merged;
+    Ok(())
+}
+
 /// Join LLVM's target-specific records to compiler descriptors and reject any
 /// machine location the runtime could not evaluate precisely.
 pub(crate) fn normalize_object(
@@ -214,13 +267,13 @@ pub(crate) fn normalize_object(
                 raw_record.id
             )
         })?;
+        // The record is attributed to whichever function LLVM finally placed it
+        // in, which is not always the one it was emitted into: inlining moves a
+        // site into its caller, and duplicates it once per call site. The
+        // descriptor supplies what the site *means* — its kind, its root
+        // layout, the Taro frames it stands for — and that travels with the ID
+        // wherever the code goes, so only the placement has to come from LLVM.
         let raw_function = &raw.functions[raw_record.function_index];
-        if descriptor.emitted_function != raw_function.symbol {
-            return Err(format!(
-                "LLVM moved stack-map ID {:#018x} from '{}' into '{}'; functions containing collection sites must remain uninlined after MIR lowering",
-                raw_record.id, descriptor.emitted_function, raw_function.symbol
-            ));
-        }
         if raw_record.locations.len() != descriptor.roots.len() {
             return Err(format!(
                 "stack-map ID {:#018x} root count mismatch: compiler described {}, LLVM emitted {}",
@@ -263,14 +316,7 @@ pub(crate) fn normalize_object(
                     dwarf_register: location.dwarf_register,
                     frame_offset,
                     storage_deref_depth: operand.storage_deref_depth,
-                    recipes: operand
-                        .recipes
-                        .iter()
-                        .map(|recipe| PcRootRecipe {
-                            offset: recipe.offset,
-                            deref_depth: recipe.deref_depth,
-                        })
-                        .collect(),
+                    nodes: operand.nodes.clone(),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -290,16 +336,35 @@ pub(crate) fn normalize_object(
             roots,
             logical_frames,
         };
+        let code_size = u32::try_from(raw_function.code_size).map_err(|_| {
+            format!(
+                "LLVM function '{}' is {} bytes, exceeding the PC metadata ABI",
+                raw_function.symbol, raw_function.code_size
+            )
+        })?;
+        if code_size == 0 {
+            return Err(format!(
+                "LLVM reported a zero code size for '{}'",
+                raw_function.symbol
+            ));
+        }
+        if raw_record.instruction_offset >= code_size {
+            return Err(format!(
+                "stack-map ID {:#018x} lies outside function '{}' (offset {}, size {})",
+                raw_record.id, raw_function.symbol, raw_record.instruction_offset, code_size
+            ));
+        }
         let function = functions
             .entry(raw_function.symbol.clone())
             .or_insert_with(|| PcFunction {
                 symbol: raw_function.symbol.clone(),
                 stack_size: raw_function.stack_size,
+                code_size,
                 records: Vec::new(),
             });
-        if function.stack_size != raw_function.stack_size {
+        if function.stack_size != raw_function.stack_size || function.code_size != code_size {
             return Err(format!(
-                "LLVM reported conflicting stack sizes for '{}'",
+                "LLVM reported conflicting machine bounds for '{}'",
                 raw_function.symbol
             ));
         }
@@ -308,15 +373,8 @@ pub(crate) fn normalize_object(
 
     for function in functions.values_mut() {
         function.records.sort_by_key(|record| record.pc_offset);
-        for pair in function.records.windows(2) {
-            if pair[0].pc_offset == pair[1].pc_offset && pair[0] != pair[1] {
-                return Err(format!(
-                    "function '{}' has conflicting PC records at offset {:#x}",
-                    function.symbol, pair[0].pc_offset
-                ));
-            }
-        }
         function.records.dedup();
+        merge_records_sharing_a_pc(function)?;
     }
 
     Ok(PcMetadata {
@@ -360,6 +418,10 @@ unsafe extern "C" {
         length: *mut usize,
     ) -> *const u8;
     fn taro_stack_map_function_stack_size(
+        stack_map: *const NativeParsedStackMap,
+        index: usize,
+    ) -> u64;
+    fn taro_stack_map_function_code_size(
         stack_map: *const NativeParsedStackMap,
         index: usize,
     ) -> u64;
@@ -478,6 +540,7 @@ impl Drop for NativeRewrite {
 pub(crate) struct RawStackMapFunction {
     pub symbol: String,
     pub stack_size: u64,
+    pub code_size: u64,
     pub record_start: usize,
     pub record_count: usize,
 }
@@ -566,6 +629,7 @@ pub(crate) fn parse_object(path: &Path) -> Result<RawStackMap, String> {
         functions.push(RawStackMapFunction {
             symbol,
             stack_size: unsafe { taro_stack_map_function_stack_size(pointer, index) },
+            code_size: unsafe { taro_stack_map_function_code_size(pointer, index) },
             record_start: unsafe { taro_stack_map_function_record_start(pointer, index) },
             record_count: unsafe { taro_stack_map_function_record_count(pointer, index) },
         });
@@ -787,6 +851,7 @@ mod tests {
         assert_eq!(parsed.pointer_bytes, 8);
         assert_eq!(parsed.functions.len(), 1);
         assert_eq!(parsed.functions[0].symbol, "probe_stackmap");
+        assert!(parsed.functions[0].code_size > 0);
         assert_eq!(parsed.functions[0].record_start, 0);
         assert_eq!(parsed.functions[0].record_count, 1);
         assert_eq!(parsed.records.len(), 1);

@@ -214,13 +214,18 @@ fn analyze_function_for_summary<'ctx>(
             } = &term.kind
             {
                 // Try to get callee info
-                if let Some((callee_id, _)) = extract_callee(func) {
-                    let callee_summary = current_summaries.get(&callee_id).cloned().or_else(|| {
-                        gcx.get_signature(callee_id)
-                            .abi
-                            .is_some()
-                            .then(|| get_external_summary(gcx, callee_id))
-                    });
+                if let Some((callee_id, callee_args)) = extract_callee(func) {
+                    let callee_id = summary_target(gcx, callee_id, callee_args);
+                    let callee_summary = current_summaries
+                        .get(&callee_id)
+                        .cloned()
+                        .or_else(|| gcx.get_escape_summary(callee_id))
+                        .or_else(|| {
+                            gcx.get_signature(callee_id)
+                                .abi
+                                .is_some()
+                                .then(|| get_external_summary(gcx, callee_id))
+                        });
 
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(local) = ref_local_operand(body, arg) {
@@ -288,6 +293,24 @@ fn analyze_function_for_summary<'ctx>(
         }
     }
 
+    if body.is_async {
+        // Calling an async function returns before its source body executes.
+        // Every reference parameter needed by the initial poll is therefore
+        // captured by the returned future, even when the source body never
+        // returns or explicitly stores that reference. Marking both the heap
+        // capture and its ownership flow through the result lets callers
+        // heapify address-taken locals before async frame layout; discovering
+        // the escape only in the lowered constructor would leave the heap-cell
+        // pointer outside the coroutine frame.
+        let liveness = crate::mir::analysis::liveness::compute_liveness(body);
+        for (local, param_idx) in &local_to_param {
+            if liveness.live_in[body.start_block].contains(local) {
+                param_escapes[*param_idx].leaks_to_heap = true;
+                param_escapes[*param_idx].flows_to_return = true;
+            }
+        }
+    }
+
     EscapeSummary {
         params: param_escapes,
     }
@@ -321,6 +344,28 @@ fn extract_callee<'ctx>(func: &Operand<'ctx>) -> Option<(DefinitionID, GenericAr
             }
         }
         _ => None,
+    }
+}
+
+/// The definition whose summary describes what a call actually does.
+///
+/// A call to an interface method names the requirement, not the implementation
+/// — `a == b` is a call to `PartialEq.eq`, which has no body and so no summary.
+/// Left there, every such call falls back to "the arguments escape", and the
+/// operands of every `==`, `hash` or derived `clone` are promoted to the heap.
+/// When `Self` is concrete the implementation is known here, so resolving to it
+/// first is what lets the summary that was computed for it be found.
+fn summary_target<'ctx>(
+    gcx: Gcx<'ctx>,
+    def_id: DefinitionID,
+    args: GenericArguments<'ctx>,
+) -> DefinitionID {
+    match crate::specialize::resolve::resolve_instance(gcx, def_id, args).kind {
+        crate::specialize::InstanceKind::Item(resolved) => resolved,
+        // Dispatched through a witness table, so the implementation is not
+        // known until run time and nothing better can be said than the
+        // conservative default.
+        crate::specialize::InstanceKind::Virtual(..) => def_id,
     }
 }
 
@@ -453,18 +498,20 @@ impl<'ctx> MirPass<'ctx> for EscapeAnalysis {
                 } = &term.kind
                 {
                     // Try to get the callee's escape summary
-                    let callee_summary = extract_callee(func).and_then(|(callee_id, _)| {
-                        // First check if we have a computed summary
-                        if let Some(summary) = gcx.get_escape_summary(callee_id) {
-                            return Some(summary);
-                        }
-                        // For external functions, use conservative default
-                        let sig = gcx.get_signature(callee_id);
-                        if sig.abi.is_some() {
-                            return Some(get_external_summary(gcx, callee_id));
-                        }
-                        None
-                    });
+                    let callee_summary =
+                        extract_callee(func).and_then(|(callee_id, callee_args)| {
+                            let callee_id = summary_target(gcx, callee_id, callee_args);
+                            // First check if we have a computed summary
+                            if let Some(summary) = gcx.get_escape_summary(callee_id) {
+                                return Some(summary);
+                            }
+                            // For external functions, use conservative default
+                            let sig = gcx.get_signature(callee_id);
+                            if sig.abi.is_some() {
+                                return Some(get_external_summary(gcx, callee_id));
+                            }
+                            None
+                        });
 
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(local) = ref_local_operand(body, arg) {
@@ -1017,7 +1064,10 @@ fn rewrite_statement<'ctx>(
             // write must target the pointee just like an ordinary assignment.
             rewrite_place(place, heapified, param_replacements);
         }
-        StatementKind::GcSafepoint | StatementKind::Nop => {}
+        StatementKind::KeepAlive(operand) => {
+            rewrite_operand(operand, heapified, param_replacements)
+        }
+        StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
     }
 }
 
@@ -1404,6 +1454,37 @@ mod tests {
             let summary = analyze_function_for_summary(gcx, &body, &FxHashMap::default());
             assert_eq!(summary.params.len(), 1);
             assert!(summary.params[0].flows_to_return);
+        });
+    }
+
+    #[test]
+    fn live_async_reference_parameter_flows_through_returned_future() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            body.is_async = true;
+            let span = body.locals[body.return_local].span;
+            let reference_ty = Ty::new(
+                TyKind::Reference(gcx.types.uint8, Mutability::Immutable),
+                gcx,
+            );
+            let parameter = push_parameter(&mut body, reference_ty);
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(parameter))),
+                    span,
+                });
+
+            let summary = analyze_function_for_summary(gcx, &body, &FxHashMap::default());
+            assert_eq!(summary.params.len(), 1);
+            assert!(
+                summary.params[0].flows_to_return,
+                "the future must retain a live reference until its first poll"
+            );
+            assert!(
+                summary.params[0].leaks_to_heap,
+                "the constructor stores a live reference in its heap frame"
+            );
         });
     }
 

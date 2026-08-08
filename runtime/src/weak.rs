@@ -17,8 +17,8 @@ struct WeakCell {
 static WEAK_CELL_DESC: GcDesc = GcDesc {
     size: std::mem::size_of::<WeakCell>(),
     align: std::mem::align_of::<WeakCell>(),
-    ptr_offsets: std::ptr::null(),
-    ptr_count: 0,
+    nodes: std::ptr::null(),
+    node_count: 0,
 };
 
 pub(crate) fn cell_desc() -> &'static GcDesc {

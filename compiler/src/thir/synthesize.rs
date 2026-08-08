@@ -32,16 +32,18 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
     // We collect them first to avoid borrow conflicts
     let methods: Vec<_> = synthetic_methods.into_iter().collect();
 
-    for ((type_head, method_id), info) in methods {
+    for ((type_head, method_id), mut info) in methods {
         // Allocate a stable synthetic ID for this synthesized method.
         let syn_id = info
             .syn_id
             .unwrap_or_else(|| gcx.allocate_synthetic_id(gcx.package_index()));
+        info.syn_id = Some(syn_id);
 
-        // Update the info in the database with the allocated ID
+        // Publish the assigned ID before building the body so recursive
+        // witness resolution observes the same synthetic definition.
         gcx.with_session_type_database(|db| {
             if let Some(entry) = db.synthetic_methods.get_mut(&(type_head, method_id)) {
-                entry.syn_id = Some(syn_id);
+                *entry = info;
             }
         });
 
@@ -52,6 +54,13 @@ pub fn synthesize_all<'ctx>(gcx: GlobalContext<'ctx>) -> Vec<ThirFunction<'ctx>>
         if let Some(func) = synthesize_method(gcx, type_head, method_id, info, syn_id) {
             functions.push(func);
         }
+
+        // Synthesis may resolve nested conformances which revisit and update
+        // this method entry. Re-publish the authoritative assigned ID so
+        // dependency metadata can reconstruct the synthetic witness later.
+        gcx.with_session_type_database(|db| {
+            db.synthetic_methods.insert((type_head, method_id), info);
+        });
     }
 
     functions

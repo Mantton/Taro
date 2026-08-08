@@ -66,6 +66,7 @@ pub struct MetadataPayloadWire {
     pub file_table: Vec<FileMappingWire>,
     pub semantic_payload: Option<Vec<u8>>,
     pub mir_payload: Option<Vec<u8>>,
+    pub inline_mir_payload: Option<Vec<u8>>,
     pub std_items: Option<StdItemRegistryWire>,
     pub synthetic_definitions: Vec<SyntheticDefinitionWire>,
     pub emitted_instances: Vec<InstanceWire>,
@@ -1060,12 +1061,19 @@ pub enum StatementKindWire {
     SourceScope(u32),
     StorageLive(u32),
     Assign(PlaceWire, RvalueWire),
-    GcSafepoint,
+    KeepAlive(OperandWire),
+    GcSafepoint(GcSafepointKindWire),
     Nop,
     SetDiscriminant {
         place: PlaceWire,
         variant_index: u32,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum GcSafepointKindWire {
+    Entry,
+    Loop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1207,6 +1215,7 @@ pub enum RvalueWire {
 pub enum CastKindWire {
     Numeric,
     BoxExistential,
+    ExistentialPack { concrete: TyWire },
     ExistentialUpcast,
     ExistentialTypeIs { target: TyWire },
     ExistentialTryCast { target: TyWire },
@@ -3728,6 +3737,9 @@ pub fn cast_kind_to_wire(v: &mir::CastKind<'_>) -> CastKindWire {
     match v {
         mir::CastKind::Numeric => CastKindWire::Numeric,
         mir::CastKind::BoxExistential => CastKindWire::BoxExistential,
+        mir::CastKind::ExistentialPack { concrete } => CastKindWire::ExistentialPack {
+            concrete: ty_to_wire(*concrete),
+        },
         mir::CastKind::ExistentialUpcast => CastKindWire::ExistentialUpcast,
         mir::CastKind::ExistentialTypeIs { target } => CastKindWire::ExistentialTypeIs {
             target: ty_to_wire(*target),
@@ -3744,6 +3756,9 @@ pub fn cast_kind_from_wire<'a>(gcx: GlobalContext<'a>, v: &CastKindWire) -> mir:
     match v {
         CastKindWire::Numeric => mir::CastKind::Numeric,
         CastKindWire::BoxExistential => mir::CastKind::BoxExistential,
+        CastKindWire::ExistentialPack { concrete } => mir::CastKind::ExistentialPack {
+            concrete: ty_from_wire(gcx, concrete),
+        },
         CastKindWire::ExistentialUpcast => mir::CastKind::ExistentialUpcast,
         CastKindWire::ExistentialTypeIs { target } => mir::CastKind::ExistentialTypeIs {
             target: ty_from_wire(gcx, target),
@@ -3935,7 +3950,13 @@ pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
             mir::StatementKind::Assign(place, rvalue) => {
                 StatementKindWire::Assign(place_to_wire(place), rvalue_to_wire(rvalue))
             }
-            mir::StatementKind::GcSafepoint => StatementKindWire::GcSafepoint,
+            mir::StatementKind::KeepAlive(operand) => {
+                StatementKindWire::KeepAlive(operand_to_wire(operand))
+            }
+            mir::StatementKind::GcSafepoint(kind) => StatementKindWire::GcSafepoint(match kind {
+                mir::GcSafepointKind::Entry => GcSafepointKindWire::Entry,
+                mir::GcSafepointKind::Loop => GcSafepointKindWire::Loop,
+            }),
             mir::StatementKind::Nop => StatementKindWire::Nop,
             mir::StatementKind::SetDiscriminant {
                 place,
@@ -3966,7 +3987,13 @@ pub fn statement_from_wire<'a>(
                 place_from_wire(gcx, place),
                 rvalue_from_wire(gcx, rvalue),
             ),
-            StatementKindWire::GcSafepoint => mir::StatementKind::GcSafepoint,
+            StatementKindWire::KeepAlive(operand) => {
+                mir::StatementKind::KeepAlive(operand_from_wire(gcx, operand))
+            }
+            StatementKindWire::GcSafepoint(kind) => mir::StatementKind::GcSafepoint(match kind {
+                GcSafepointKindWire::Entry => mir::GcSafepointKind::Entry,
+                GcSafepointKindWire::Loop => mir::GcSafepointKind::Loop,
+            }),
             StatementKindWire::Nop => mir::StatementKind::Nop,
             StatementKindWire::SetDiscriminant {
                 place,

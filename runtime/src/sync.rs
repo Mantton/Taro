@@ -1,4 +1,5 @@
-use crate::garbage_collector::{__gc__alloc, GcDesc, with_gc};
+use crate::garbage_collector::{__gc__alloc, GcDesc, trace_desc_or_abort, with_gc};
+use crate::gc_layout::TraceMode;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem::{align_of, size_of};
 use std::sync::{Mutex, OnceLock};
@@ -77,8 +78,8 @@ struct SyncHandle {
 static SYNC_HANDLE_DESC: GcDesc = GcDesc {
     size: size_of::<SyncHandle>(),
     align: align_of::<SyncHandle>(),
-    ptr_offsets: std::ptr::null(),
-    ptr_count: 0,
+    nodes: std::ptr::null(),
+    node_count: 0,
 };
 
 fn handle_id(handle: *const u8, expected: SyncHandleKind) -> Result<usize, i32> {
@@ -141,16 +142,9 @@ fn queued_value(
 
     let mut roots = Vec::new();
     if let Some(desc) = unsafe { elem_desc.as_ref() } {
-        for index in 0..desc.ptr_count {
-            let offset = unsafe { *desc.ptr_offsets.add(index) };
-            if offset.saturating_add(size_of::<usize>()) <= elem_size {
-                let field = unsafe { value_ptr.add(offset) as *const *const u8 };
-                let root = unsafe { std::ptr::read_unaligned(field) };
-                if !root.is_null() {
-                    roots.push(root as usize);
-                }
-            }
-        }
+        trace_desc_or_abort(desc, value_ptr, elem_size, TraceMode::Heap, |root| {
+            roots.push(root as usize)
+        });
     }
     roots.sort_unstable();
     roots.dedup();
@@ -1244,8 +1238,8 @@ mod tests {
     static U32_DESC: GcDesc = GcDesc {
         size: size_of::<u32>(),
         align: align_of::<u32>(),
-        ptr_offsets: std::ptr::null(),
-        ptr_count: 0,
+        nodes: std::ptr::null(),
+        node_count: 0,
     };
 
     fn create_u32_channel(state: &mut SyncState, capacity: usize) -> usize {

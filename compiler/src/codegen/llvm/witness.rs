@@ -1,4 +1,4 @@
-use super::{Emitter, LocalStorage};
+use super::{Emitter, LocalStorage, StackMapSiteKind};
 use crate::{
     codegen::{
         abi,
@@ -761,6 +761,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         destination: &Place<'gcx>,
         normal_bb: BasicBlock<'llvm>,
         unwind_target: Option<BasicBlock<'llvm>>,
+        stack_map: Option<(crate::span::Span, &FxHashSet<mir::LocalId>)>,
     ) -> CompileResult<bool> {
         macro_rules! fallback {
             () => {{
@@ -860,6 +861,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
         *slot = self_value;
 
+        if let Some((span, roots)) = stack_map {
+            self.emit_stack_map_with_roots(span, StackMapSiteKind::Call, roots);
+        }
         let call_site = self.emit_direct_call_maybe_unwind(
             callable,
             &lowered_args,
@@ -881,6 +885,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         destination: &Place<'gcx>,
         normal_bb: BasicBlock<'llvm>,
         unwind_target: Option<BasicBlock<'llvm>>,
+        stack_map: Option<(crate::span::Span, &FxHashSet<mir::LocalId>)>,
     ) -> CompileResult<()> {
         let receiver = args.first().expect("virtual call missing receiver");
         let receiver_ty = self.operand_ty(body, receiver);
@@ -1053,6 +1058,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             )
             .unwrap()
             .into_pointer_value();
+        if let Some((span, roots)) = stack_map {
+            self.emit_stack_map_with_roots(span, StackMapSiteKind::Call, roots);
+        }
         let call_site = self.emit_indirect_call_maybe_unwind(
             fn_ty,
             fn_ptr_cast,

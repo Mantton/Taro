@@ -122,6 +122,7 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
                             use_place(place, &mut live);
                         }
                     }
+                    StatementKind::KeepAlive(operand) => use_operand(operand, &mut live),
                     _ => {}
                 }
             }
@@ -187,5 +188,49 @@ fn rvalue_has_side_effects(rv: &Rvalue) -> bool {
         | Rvalue::Repeat { .. }
         | Rvalue::Alloc { .. } => false,
         Rvalue::Aggregate { .. } => false, // Initializing aggregate has no side effects (unless allocation?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeadStoreElimination;
+    use crate::mir::{
+        Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
+        optimize::MirPass,
+        test_support::{minimal_body, push_temp, with_test_gcx},
+    };
+
+    #[test]
+    fn keep_alive_use_preserves_its_same_block_definition() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let source = push_temp(&mut body, gcx.types.uint);
+            let value = push_temp(&mut body, gcx.types.uint);
+            body.basic_blocks[body.start_block].statements = vec![
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(value),
+                        Rvalue::Use(Operand::Copy(Place::from_local(source))),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(value))),
+                    span,
+                },
+            ];
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Unreachable,
+                span,
+            });
+
+            assert!(DeadStoreElimination.run(gcx, &mut body).is_ok());
+
+            assert!(matches!(
+                body.basic_blocks[body.start_block].statements[0].kind,
+                StatementKind::Assign(ref destination, _) if destination.local == value
+            ));
+        });
     }
 }

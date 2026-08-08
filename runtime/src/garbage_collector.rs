@@ -21,7 +21,7 @@
 //!
 //! 2) Root collection
 //!    - Manual roots (gc_add_root) for embeddings/tests.
-//!    - Static/global ranges (gc_register_static).
+//!    - Typed static/global roots (gc_register_static).
 //!    - Compiler-produced stack maps, resolved and published by each mutator.
 //!
 //! 3) Mark
@@ -44,10 +44,12 @@
 
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, VecDeque};
-use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use crate::gc_layout::{GcLayoutNode, TraceMode, trace_layout};
+use memmap2::MmapMut;
 
 // === Public GC surface ===
 
@@ -55,8 +57,8 @@ use std::time::{Duration, Instant};
 ///
 /// - size: size in bytes for a single element of this type.
 /// - align: ABI alignment for a single element of this type.
-/// - ptr_offsets: array of byte offsets for pointer fields within one element.
-/// - ptr_count: number of pointer offsets in ptr_offsets.
+/// - nodes: indexed, tag-aware pointer-layout graph.
+/// - node_count: number of nodes in the graph; zero means noscan.
 ///
 /// For arrays/slices, the allocator provides the element desc and total size.
 /// The GC will repeat the pointer offsets across the payload when needed.
@@ -65,8 +67,8 @@ use std::time::{Duration, Instant};
 pub struct GcDesc {
     pub size: usize,
     pub align: usize,
-    pub ptr_offsets: *const usize,
-    pub ptr_count: usize,
+    pub nodes: *const GcLayoutNode,
+    pub node_count: usize,
 }
 
 // GcDesc values are immutable and safe to share across threads.
@@ -96,6 +98,12 @@ pub(crate) enum CleanupRegistration {
     OwnerRetained,
 }
 
+#[derive(Clone, Copy)]
+struct StaticRoot {
+    start: *const u8,
+    desc: *const GcDesc,
+}
+
 #[derive(Default)]
 struct CollectionWork {
     reclaimers: Vec<GcReclaimer>,
@@ -115,6 +123,9 @@ pub(crate) struct ThreadState {
     /// `at_safepoint` release/acquire handshake.
     published_roots: UnsafeCell<Vec<*const u8>>,
     pub at_safepoint: AtomicBool,
+    /// Number of spans currently checked out to this mutator. A collector may
+    /// begin heap root traversal only after parked threads publish zero here.
+    owned_spans: AtomicUsize,
 }
 unsafe impl Send for ThreadState {}
 unsafe impl Sync for ThreadState {}
@@ -124,6 +135,13 @@ static THREAD_REGISTRY_EPOCH: AtomicUsize = AtomicUsize::new(0);
 static THREAD_ATTACHING: AtomicUsize = AtomicUsize::new(0);
 const GC_REQUESTED_FLAG: u8 = 1 << 0;
 const GC_NEEDED_FLAG: u8 = 1 << 1;
+const ALLOCATION_DEBT_QUANTUM: usize = 64 * 1024;
+const MUTATOR_CACHE_SIZE_CLASSES: usize = 11;
+const MUTATOR_CACHE_SLOTS: usize = MUTATOR_CACHE_SIZE_CLASSES * 2;
+
+static PACING_HEAP_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PACING_HEAP_GOAL: AtomicUsize = AtomicUsize::new(GC_MIN_TRIGGER);
+static PACING_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Compiler-polled process state. A zero byte is the complete mutator fast path.
 ///
@@ -133,6 +151,84 @@ const GC_NEEDED_FLAG: u8 = 1 << 1;
 /// concurrent update to the other bit.
 #[unsafe(export_name = "__gc__poll_flags")]
 pub static GC_POLL_FLAGS: AtomicU8 = AtomicU8::new(0);
+
+#[derive(Clone, Copy)]
+struct CachedSpan {
+    span_id: usize,
+    span: *const Span,
+}
+
+#[derive(Default)]
+struct MutatorCache {
+    spans: Vec<Option<CachedSpan>>,
+    unpublished_debt: usize,
+    pending_allocations: usize,
+    pending_bytes: usize,
+}
+
+impl MutatorCache {
+    fn new() -> Self {
+        Self {
+            spans: vec![None; MUTATOR_CACHE_SLOTS],
+            ..Self::default()
+        }
+    }
+
+    fn record_allocation(&mut self, bytes: usize) {
+        self.pending_allocations = self.pending_allocations.saturating_add(1);
+        self.pending_bytes = self.pending_bytes.saturating_add(bytes);
+        self.unpublished_debt = self.unpublished_debt.saturating_add(bytes);
+        if self.unpublished_debt >= ALLOCATION_DEBT_QUANTUM {
+            let quanta = self.unpublished_debt / ALLOCATION_DEBT_QUANTUM;
+            let published = quanta.saturating_mul(ALLOCATION_DEBT_QUANTUM);
+            self.unpublished_debt -= published;
+            publish_allocation_debt(published);
+        }
+    }
+
+    fn take_accounting(&mut self) -> MutatorAccounting {
+        publish_allocation_debt(std::mem::take(&mut self.unpublished_debt));
+        MutatorAccounting {
+            allocations: std::mem::take(&mut self.pending_allocations),
+            bytes: std::mem::take(&mut self.pending_bytes),
+        }
+    }
+
+    fn take_all(&mut self) -> MutatorCacheFlush {
+        let spans = self.spans.iter_mut().filter_map(Option::take).collect();
+        MutatorCacheFlush {
+            spans,
+            accounting: self.take_accounting(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct MutatorAccounting {
+    allocations: usize,
+    bytes: usize,
+}
+
+struct MutatorCacheFlush {
+    spans: Vec<CachedSpan>,
+    accounting: MutatorAccounting,
+}
+
+fn publish_allocation_debt(bytes: usize) {
+    if bytes == 0 {
+        return;
+    }
+    let previous = PACING_HEAP_BYTES
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            Some(current.saturating_add(bytes))
+        })
+        .unwrap_or_else(|current| current);
+    let current = previous.saturating_add(bytes);
+    if PACING_ENABLED.load(Ordering::Relaxed) && current >= PACING_HEAP_GOAL.load(Ordering::Relaxed)
+    {
+        set_gc_needed(true);
+    }
+}
 
 /// Whether allocation has passed the threshold at which a collection is due.
 ///
@@ -147,6 +243,113 @@ pub static GC_POLL_FLAGS: AtomicU8 = AtomicU8::new(0);
 static GC_RESUME_COND: Condvar = Condvar::new();
 static GC_RESUME_LOCK: Mutex<()> = Mutex::new(());
 static GC_STRESS: OnceLock<bool> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GcConfig {
+    /// `None` is `TARO_GC_PERCENT=off`.
+    percent: Option<u32>,
+    /// `None` is an unlimited soft memory limit.
+    memory_limit: Option<usize>,
+}
+
+impl Default for GcConfig {
+    fn default() -> Self {
+        Self {
+            percent: Some(100),
+            memory_limit: None,
+        }
+    }
+}
+
+impl GcConfig {
+    fn from_env() -> Result<Self, String> {
+        let percent = match std::env::var_os("TARO_GC_PERCENT") {
+            None => Some(100),
+            Some(raw) => {
+                let raw = raw
+                    .into_string()
+                    .map_err(|_| "TARO_GC_PERCENT must contain valid Unicode".to_string())?;
+                parse_gc_percent(&raw)?
+            }
+        };
+        let memory_limit = match std::env::var_os("TARO_GC_MEMORY_LIMIT") {
+            None => None,
+            Some(raw) => {
+                let raw = raw
+                    .into_string()
+                    .map_err(|_| "TARO_GC_MEMORY_LIMIT must contain valid Unicode".to_string())?;
+                parse_gc_memory_limit(&raw)?
+            }
+        };
+        Ok(Self {
+            percent,
+            memory_limit,
+        })
+    }
+}
+
+fn parse_gc_percent(raw: &str) -> Result<Option<u32>, String> {
+    let value = raw.trim();
+    if value.eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|percent| *percent <= 10_000)
+        .map(Some)
+        .ok_or_else(|| {
+            format!("TARO_GC_PERCENT must be `off` or an integer from 0 to 10000; got `{raw}`")
+        })
+}
+
+fn parse_gc_memory_limit(raw: &str) -> Result<Option<usize>, String> {
+    let value = raw.trim();
+    if value.eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    let (digits, multiplier) = [
+        ("KiB", 1_u128 << 10),
+        ("MiB", 1_u128 << 20),
+        ("GiB", 1_u128 << 30),
+        ("TiB", 1_u128 << 40),
+        ("B", 1_u128),
+    ]
+    .into_iter()
+    .find_map(|(suffix, multiplier)| {
+        value
+            .strip_suffix(suffix)
+            .map(|digits| (digits, multiplier))
+    })
+    .ok_or_else(|| {
+        format!(
+            "TARO_GC_MEMORY_LIMIT must be `off` or decimal bytes with B, KiB, MiB, GiB, or TiB; got `{raw}`"
+        )
+    })?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "TARO_GC_MEMORY_LIMIT has an invalid decimal value; got `{raw}`"
+        ));
+    }
+    let bytes = digits
+        .parse::<u128>()
+        .ok()
+        .and_then(|count| count.checked_mul(multiplier))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| format!("TARO_GC_MEMORY_LIMIT exceeds the platform limit; got `{raw}`"))?;
+    Ok(Some(bytes))
+}
+
+fn gc_config() -> &'static GcConfig {
+    static CONFIG: OnceLock<Result<GcConfig, String>> = OnceLock::new();
+    match CONFIG.get_or_init(GcConfig::from_env) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("runtime configuration error: {error}");
+            std::process::exit(2);
+        }
+    }
+}
 
 fn gc_stress_enabled() -> bool {
     *GC_STRESS.get_or_init(|| {
@@ -174,13 +377,20 @@ fn set_gc_needed(needed: bool) {
     }
 }
 
+#[inline]
+fn allocation_requires_slow_path(flags: u8, stress: bool) -> bool {
+    flags & GC_REQUESTED_FLAG != 0 || (flags & GC_NEEDED_FLAG != 0 && !stress)
+}
+
 struct CurrentThreadState {
     state: Arc<ThreadState>,
     attached: bool,
+    cache: MutatorCache,
 }
 
 impl Drop for CurrentThreadState {
     fn drop(&mut self) {
+        flush_mutator_cache_data(&self.state, self.cache.take_all());
         if self.attached {
             unregister_thread(&self.state);
         }
@@ -206,6 +416,7 @@ fn register_current_thread_state() -> Arc<ThreadState> {
         id: std::thread::current().id(),
         published_roots: UnsafeCell::new(Vec::new()),
         at_safepoint: AtomicBool::new(false),
+        owned_spans: AtomicUsize::new(0),
     }))
 }
 
@@ -233,6 +444,13 @@ fn unregister_thread(state: &ThreadState) {
 
 std::thread_local! {
     static CURRENT_THREAD_STATE: RefCell<Option<CurrentThreadState>> = const { RefCell::new(None) };
+    #[cfg(test)]
+    static GC_MUTEX_ACQUISITIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn current_thread_gc_mutex_acquisitions() -> usize {
+    GC_MUTEX_ACQUISITIONS.with(std::cell::Cell::get)
 }
 
 fn ensure_current_thread_state() -> Arc<ThreadState> {
@@ -261,6 +479,7 @@ fn ensure_current_thread_state() -> Arc<ThreadState> {
                 *slot = Some(CurrentThreadState {
                     state: state.clone(),
                     attached: true,
+                    cache: MutatorCache::new(),
                 });
                 state
             }
@@ -271,6 +490,34 @@ fn ensure_current_thread_state() -> Arc<ThreadState> {
 fn with_current_thread_state<R>(f: impl FnOnce(&ThreadState) -> R) -> R {
     let state = ensure_current_thread_state();
     f(&state)
+}
+
+fn flush_mutator_cache_data(state: &ThreadState, flush: MutatorCacheFlush) {
+    if flush.spans.is_empty() && flush.accounting.allocations == 0 && flush.accounting.bytes == 0 {
+        return;
+    }
+    let returned = flush.spans.len();
+    with_gc(|gc| {
+        for cached in flush.spans {
+            gc.return_checked_out_span(cached.span_id);
+        }
+        gc.record_cached_allocations(flush.accounting);
+    });
+    if returned != 0 {
+        let previous = state.owned_spans.fetch_sub(returned, Ordering::Release);
+        assert!(previous >= returned, "mutator span ownership underflow");
+    }
+}
+
+fn flush_current_mutator_cache() {
+    let flush = CURRENT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let current = slot.as_mut()?;
+        Some((current.state.clone(), current.cache.take_all()))
+    });
+    if let Some((state, flush)) = flush {
+        flush_mutator_cache_data(&state, flush);
+    }
 }
 
 fn set_current_thread_safepoint(at_safepoint: bool) {
@@ -358,6 +605,7 @@ pub extern "C" fn __gc__thread_enter_managed() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__thread_detach() {
+    flush_current_mutator_cache();
     CURRENT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
         if let Some(current) = slot.as_mut() {
@@ -375,6 +623,7 @@ pub(crate) fn enter_safepoint() {
     if already_parked {
         return;
     }
+    flush_current_mutator_cache();
     publish_current_thread_roots();
     set_current_thread_safepoint(true);
 }
@@ -432,6 +681,11 @@ fn wait_for_registered_threads(snapshot: &[Arc<ThreadState>], current_id: std::t
             std::hint::spin_loop();
             std::thread::yield_now();
         }
+        assert_eq!(
+            thread.owned_spans.load(Ordering::Acquire),
+            0,
+            "parked mutator still owns allocation spans"
+        );
     }
 }
 
@@ -454,6 +708,7 @@ fn threads_for_collection(current_id: std::thread::ThreadId) -> Vec<Arc<ThreadSt
 }
 
 fn initiate_collection() {
+    flush_current_mutator_cache();
     // Ensure only one thread acts as the collector
     if GC_POLL_FLAGS.fetch_or(GC_REQUESTED_FLAG, Ordering::AcqRel) & GC_REQUESTED_FLAG != 0 {
         park_at_safepoint();
@@ -500,6 +755,169 @@ fn initiate_collection() {
     crate::cleanup::enqueue(work.cleanup_handles);
 }
 
+/// Cooperate with an active collection and honor percentage pacing before an
+/// allocation. Soft-limit checks live in the locked refill/growth operations
+/// below so their capacity observation cannot race the actual heap mutation.
+fn prepare_for_allocation() -> bool {
+    let mut collected = false;
+    if gc_requested(Ordering::Acquire) {
+        park_at_safepoint();
+        collected = true;
+    }
+    // Stress mode deliberately leaves GC_NEEDED set so every *generated poll*
+    // collects. Runtime allocation must still make progress between polls;
+    // otherwise a cache refill retries forever without allocating a slot.
+    if gc_needed(Ordering::Relaxed) && !gc_stress_enabled() {
+        initiate_collection();
+        collected = true;
+    }
+    collected
+}
+
+fn small_class(alloc_size: usize) -> (usize, usize) {
+    let class_size = alloc_size
+        .max(std::mem::size_of::<usize>())
+        .next_power_of_two()
+        .min(PAGE_SIZE);
+    let class_index = class_size.trailing_zeros() as usize - 3;
+    debug_assert!(class_index < MUTATOR_CACHE_SIZE_CLASSES);
+    (class_index, class_size)
+}
+
+fn try_cached_small_allocation(
+    cache_slot: usize,
+    class_size: usize,
+    payload_size: usize,
+    scan_size: usize,
+    desc: *const GcDesc,
+    is_array: bool,
+) -> Option<*mut u8> {
+    if allocation_requires_slow_path(GC_POLL_FLAGS.load(Ordering::Relaxed), gc_stress_enabled()) {
+        return None;
+    }
+    CURRENT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let current = slot.as_mut()?;
+        if !current.attached {
+            return None;
+        }
+        let cached = current.cache.spans.get(cache_slot)?.as_ref()?;
+        // SAFETY: boxed span records are stable, `cached` proves this mutator
+        // exclusively owns the span, and collection cannot start until this
+        // thread flushes the cache and publishes its safepoint state.
+        let span = unsafe { &*cached.span };
+        let ptr = span.alloc_small(payload_size, scan_size, desc, is_array)?;
+        current.cache.record_allocation(class_size);
+        Some(ptr)
+    })
+}
+
+fn refill_cached_span(
+    cache_slot: usize,
+    class_index: usize,
+    lane: usize,
+    mut attempted_soft_limit_collection: bool,
+) {
+    let (state, previous, accounting) = CURRENT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let current = slot
+            .as_mut()
+            .expect("registered mutator has thread-local state");
+        let previous = current.cache.spans[cache_slot].take();
+        let accounting = current.cache.take_accounting();
+        (current.state.clone(), previous, accounting)
+    });
+
+    with_gc(|gc| {
+        if let Some(previous) = previous {
+            gc.return_checked_out_span(previous.span_id);
+        }
+        gc.record_cached_allocations(accounting);
+    });
+    if previous.is_some() {
+        let owned = state.owned_spans.fetch_sub(1, Ordering::Release);
+        assert!(owned >= 1, "mutator span ownership underflow on refill");
+    }
+
+    let cached = loop {
+        let result = with_gc(|gc| {
+            if !attempted_soft_limit_collection
+                && gc.checkout_would_cross_soft_limit(class_index, lane)
+            {
+                None
+            } else {
+                Some(gc.checkout_span_for_class(class_index, lane))
+            }
+        });
+        if let Some(cached) = result {
+            break cached;
+        }
+        // One collection includes sweep and scavenging. If live data still
+        // forces growth, the next locked attempt is allowed to exceed the soft
+        // limit and `alloc_pages` records that event instead of looping.
+        initiate_collection();
+        attempted_soft_limit_collection = true;
+    };
+
+    state.owned_spans.fetch_add(1, Ordering::Release);
+    CURRENT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let current = slot
+            .as_mut()
+            .expect("registered mutator disappeared during refill");
+        assert!(current.cache.spans[cache_slot].is_none());
+        current.cache.spans[cache_slot] = Some(cached);
+    });
+}
+
+fn runtime_alloc_with_scan_size(
+    size: usize,
+    scan_size: usize,
+    desc: *const GcDesc,
+    is_array: bool,
+) -> *mut u8 {
+    let align = desc_alignment(desc).max(std::mem::size_of::<usize>());
+    let alloc_size = align_up(size, align);
+    if alloc_size > PAGE_SIZE {
+        let mut attempted_soft_limit_collection = prepare_for_allocation();
+        let pages = pages_for_size(alloc_size);
+        loop {
+            let allocation = with_gc(|gc| {
+                if !attempted_soft_limit_collection
+                    && gc.segment_growth_would_cross_soft_limit(pages)
+                {
+                    None
+                } else {
+                    Some(gc.alloc_with_scan_size(size, scan_size, desc, is_array))
+                }
+            });
+            if let Some(allocation) = allocation {
+                return allocation;
+            }
+            initiate_collection();
+            attempted_soft_limit_collection = true;
+        }
+    }
+
+    let (class_index, class_size) = small_class(alloc_size);
+    let lane = span_lane(desc_has_pointers(desc));
+    let cache_slot = class_index * 2 + lane;
+    loop {
+        if let Some(ptr) =
+            try_cached_small_allocation(cache_slot, class_size, size, scan_size, desc, is_array)
+        {
+            return ptr;
+        }
+        let attempted_soft_limit_collection = prepare_for_allocation();
+        refill_cached_span(
+            cache_slot,
+            class_index,
+            lane,
+            attempted_soft_limit_collection,
+        );
+    }
+}
+
 /// Allocate a GC-managed object with a payload of `size` bytes.
 ///
 /// The descriptor controls pointer tracing and determines scan/noscan lane.
@@ -510,11 +928,7 @@ pub extern "C" fn __gc__alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
     if size == 0 || desc.is_null() {
         return std::ptr::null_mut();
     }
-    let needs_gc = gc_needed(Ordering::Relaxed);
-    if needs_gc {
-        initiate_collection();
-    }
-    with_gc(|gc| gc.alloc(size, desc, false))
+    runtime_alloc_with_scan_size(size, size, desc, false)
 }
 
 /// Allocate a GC-managed buffer for dynamic arrays/strings.
@@ -541,11 +955,14 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
     if total == 0 {
         return std::ptr::null_mut();
     }
-    let needs_gc = gc_needed(Ordering::Relaxed);
-    if needs_gc {
-        initiate_collection();
-    }
-    with_gc(|gc| gc.alloc_with_scan_size(total, scan_size, desc, true))
+    // Scan the whole buffer rather than the initialised prefix. The prefix
+    // would otherwise have to be republished on every push and pop, and doing
+    // that means resolving the pointer to a span under the global GC lock —
+    // a lock round-trip on the hottest operation a collection type has.
+    // Unwritten slots are zero and vacated ones are cleared by the owner, so
+    // scanning the whole allocation finds exactly the same pointers.
+    let _ = scan_size;
+    runtime_alloc_with_scan_size(total, total, desc, true)
 }
 
 #[unsafe(no_mangle)]
@@ -575,32 +992,27 @@ pub extern "C" fn __gc__add_root(ptr: *const u8) {
     with_gc(|gc| gc.add_root(ptr));
 }
 
-/// Register a global/static memory range to be conservatively scanned.
+/// Register an exact typed global/static root.
 #[unsafe(no_mangle)]
-pub extern "C" fn __gc__register_static(start: *const u8, byte_len: usize) {
-    if start.is_null() || byte_len == 0 {
+pub extern "C" fn __gc__register_static(start: *const u8, desc: *const GcDesc) {
+    if start.is_null() || desc.is_null() {
         return;
     }
-    with_gc(|gc| gc.register_static_root(start, byte_len));
+    with_gc(|gc| gc.register_static_root(start, desc));
 }
 
 /// Update the initialized length of a GC-managed pointer-bearing buffer.
 #[unsafe(no_mangle)]
-pub extern "C" fn __gc__set_buf_len(ptr: *mut u8, desc: *const GcDesc, len: usize) {
-    if ptr.is_null() || desc.is_null() || !desc_has_pointers(desc) {
-        return;
-    }
-
-    let elem_size = unsafe { desc.as_ref() }.map(|d| d.size).unwrap_or(0);
-    if elem_size == 0 {
-        return;
-    }
-    let Some(scan_size) = elem_size.checked_mul(len) else {
-        return;
-    };
-
-    with_gc(|gc| gc.set_buffer_scan_size(ptr, scan_size));
-}
+/// Publish how much of a managed buffer holds live elements.
+///
+/// Retained for the runtime ABI, but now a no-op: buffers are scanned to their
+/// full capacity, so the collector never needs the live length. It used to take
+/// the global GC lock to resolve `ptr` to a span, which put a lock round-trip on
+/// every push and pop of any collection whose elements contain pointers.
+///
+/// The owner is responsible for clearing a slot it vacates, which is what keeps
+/// scanning the whole allocation from retaining values that have been removed.
+pub extern "C" fn __gc__set_buf_len(_ptr: *mut u8, _desc: *const GcDesc, _len: usize) {}
 
 /// Grow a GC-managed buffer to a new capacity.
 ///
@@ -633,13 +1045,11 @@ pub extern "C" fn __gc__grow_buf(
         None => return std::ptr::null_mut(),
     };
 
-    let needs_gc = gc_needed(Ordering::Relaxed);
-    if needs_gc {
-        initiate_collection();
-    }
-
     // Allocate new buffer
-    let new_ptr = with_gc(|gc| gc.alloc_with_scan_size(new_total, scan_size, desc, true));
+    // As in `__gc__makebuf`: the whole allocation is scanned, so the live
+    // length never has to be published back to the collector.
+    let _ = scan_size;
+    let new_ptr = runtime_alloc_with_scan_size(new_total, new_total, desc, true);
     if new_ptr.is_null() {
         return std::ptr::null_mut();
     }
@@ -676,49 +1086,57 @@ struct PageRun {
 // Spans are carved out of segments; the page_map lets us find the owning span
 // for any interior pointer during marking.
 struct Segment {
-    // Backing storage for the segment (bytes are owned here).
+    // Anonymous mapping that owns the segment bytes. Test-only synthetic
+    // segments have no mapping and are never dereferenced.
+    mapping: Option<MmapMut>,
+    // PAGE_SIZE-aligned usable start inside `mapping`.
     data: *mut u8,
     len: usize,
-    #[cfg(test)]
-    owns_memory: bool,
     // Page index -> span id for that page; SPAN_NONE means free/unassigned.
     page_map: Vec<usize>,
     // Bump pointer in pages for fresh allocation.
     next_page: usize,
     // Free page runs (when spans are returned).
     free_runs: Vec<PageRun>,
+    // Pages successfully returned with MADV_DONTNEED. Allocation clears the
+    // bit; explicit zeroing remains the reuse correctness guarantee.
+    scavenged_pages: Vec<bool>,
 }
 
 impl Segment {
     fn new(pages: usize) -> Self {
-        // Allocate a page-aligned arena for the segment. Spans will carve pages
-        // out of this arena; the segment owns the raw memory.
+        // Over-map by one logical page so the usable subrange can retain the
+        // allocator's stronger PAGE_SIZE alignment on platforms whose native
+        // mapping alignment is smaller.
         let bytes = pages.saturating_mul(PAGE_SIZE);
-        let layout = std::alloc::Layout::from_size_align(bytes, PAGE_SIZE).expect("segment layout");
-        let data = unsafe { std::alloc::alloc_zeroed(layout) };
-        if data.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
+        let mapping_len = bytes
+            .checked_add(PAGE_SIZE)
+            .expect("segment mapping size overflow");
+        let mut mapping = MmapMut::map_anon(mapping_len)
+            .unwrap_or_else(|error| panic!("failed to map GC segment: {error}"));
+        let raw = mapping.as_mut_ptr() as usize;
+        let data = align_up(raw, PAGE_SIZE) as *mut u8;
         Self {
+            mapping: Some(mapping),
             data,
             len: bytes,
-            #[cfg(test)]
-            owns_memory: true,
             page_map: vec![SPAN_NONE; pages],
             next_page: 0,
             free_runs: Vec::new(),
+            scavenged_pages: vec![false; pages],
         }
     }
 
     #[cfg(test)]
     fn test_fake(base: usize, len: usize) -> Self {
         Self {
+            mapping: None,
             data: base as *mut u8,
             len,
-            owns_memory: false,
             page_map: vec![SPAN_NONE; pages_for_size(len).max(1)],
             next_page: 0,
             free_runs: Vec::new(),
+            scavenged_pages: vec![false; pages_for_size(len).max(1)],
         }
     }
 
@@ -746,6 +1164,7 @@ impl Segment {
                 if self.free_runs[i].len == 0 {
                     self.free_runs.swap_remove(i);
                 }
+                self.clear_scavenged(start, pages);
                 return Some(start);
             }
         }
@@ -756,6 +1175,69 @@ impl Segment {
             return Some(start);
         }
         None
+    }
+
+    fn can_alloc_pages(&self, pages: usize) -> bool {
+        pages != 0
+            && (self.free_runs.iter().any(|run| run.len >= pages)
+                || self.next_page.saturating_add(pages) <= self.page_count())
+    }
+
+    fn clear_scavenged(&mut self, start: usize, pages: usize) {
+        for page in start..start.saturating_add(pages) {
+            if let Some(scavenged) = self.scavenged_pages.get_mut(page) {
+                *scavenged = false;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn scavenge_free_runs(&mut self) -> usize {
+        use memmap2::UncheckedAdvice;
+
+        let Some(mapping) = self.mapping.as_ref() else {
+            return 0;
+        };
+        let mapping_base = mapping.as_ptr() as usize;
+        let data_offset = self.base().saturating_sub(mapping_base);
+        let mut released = 0usize;
+        for run in &self.free_runs {
+            let mut page = run.start;
+            let end = run.start.saturating_add(run.len);
+            while page < end {
+                while page < end && self.scavenged_pages[page] {
+                    page += 1;
+                }
+                let start = page;
+                while page < end && !self.scavenged_pages[page] {
+                    page += 1;
+                }
+                if start == page {
+                    continue;
+                }
+                let len = (page - start).saturating_mul(PAGE_SIZE);
+                let offset = data_offset.saturating_add(start.saturating_mul(PAGE_SIZE));
+                // SAFETY: collection is stop-the-world, this run has no span
+                // owner in the page map, and no allocation can hold a Rust
+                // borrow into these free pages. DontNeed may replace their
+                // contents with zero-fill pages, which is why memmap2 models
+                // the operation as a conceptual write.
+                if unsafe { mapping.unchecked_advise_range(UncheckedAdvice::DontNeed, offset, len) }
+                    .is_ok()
+                {
+                    for scavenged in &mut self.scavenged_pages[start..page] {
+                        *scavenged = true;
+                    }
+                    released = released.saturating_add(len);
+                }
+            }
+        }
+        released
+    }
+
+    #[cfg(not(unix))]
+    fn scavenge_free_runs(&mut self) -> usize {
+        0
     }
 
     // Return pages to the segment and coalesce adjacent free runs.
@@ -827,24 +1309,6 @@ impl Segment {
     }
 }
 
-impl Drop for Segment {
-    fn drop(&mut self) {
-        // Segments own their raw memory; free it on drop.
-        #[cfg(test)]
-        if !self.owns_memory {
-            return;
-        }
-        if self.data.is_null() || self.len == 0 {
-            return;
-        }
-        let layout =
-            std::alloc::Layout::from_size_align(self.len, PAGE_SIZE).expect("segment layout");
-        unsafe { std::alloc::dealloc(self.data, layout) };
-        self.data = std::ptr::null_mut();
-        self.len = 0;
-    }
-}
-
 // A span is a contiguous range of pages reserved for either a single large
 // object or a fixed-size class of small objects. Spans are marked scan/noscan
 // so pointer-free allocations never get traced.
@@ -866,27 +1330,35 @@ struct Span {
     // Number of slots in this span.
     object_count: usize,
 
-    // Slot allocation and marking state. Stored as bitsets to reduce overhead.
-    alloc_map: Vec<u64>,
+    // Slot allocation and marking state. Allocation bits are release-published
+    // and acquire-read; mark bits are collector-only during stop-the-world.
+    alloc_map: Vec<AtomicU64>,
     mark_map: Vec<u64>,
     // Bitset recording whether each slot should be treated as an array.
-    array_map: Vec<u64>,
+    array_map: Vec<AtomicU64>,
 
     // Per-slot metadata (only populated for scan spans).
-    descs: Vec<*const GcDesc>,
+    descs: Vec<AtomicPtr<GcDesc>>,
     // Requested payload bytes for each slot.
-    sizes: Vec<usize>,
+    sizes: Vec<AtomicUsize>,
     // Bytes the marker should trace. Array buffers may allocate more capacity
     // than their initialized length.
-    scan_sizes: Vec<usize>,
+    scan_sizes: Vec<AtomicUsize>,
 
-    // Free list for small-object spans (indexes into slots).
-    free_list: Vec<usize>,
-    allocated: usize,
+    // A checked-out mutator exclusively owns this free list. The collector may
+    // access it only after every cache is flushed by the safepoint handshake.
+    free_list: UnsafeCell<Vec<usize>>,
+    allocated: AtomicUsize,
 
     // Indicates whether the span is currently in a class free-list.
     in_class_list: bool,
+    // Protected by the global GC mutex. A checked-out span is absent from its
+    // class list and has exactly one mutator owner.
+    checked_out: bool,
 }
+
+unsafe impl Send for Span {}
+unsafe impl Sync for Span {}
 
 impl Span {
     // Allocate a span for a size class and prefill the free list.
@@ -917,31 +1389,34 @@ impl Span {
             has_pointers,
             object_size: class_size,
             object_count,
-            alloc_map: vec![0; bit_len],
+            alloc_map: atomic_bitset(bit_len),
             mark_map: vec![0; bit_len],
             array_map: if has_pointers {
-                vec![0; bit_len]
+                atomic_bitset(bit_len)
             } else {
                 Vec::new()
             },
             descs: if has_pointers {
-                vec![std::ptr::null(); object_count]
+                (0..object_count)
+                    .map(|_| AtomicPtr::new(std::ptr::null_mut()))
+                    .collect()
             } else {
                 Vec::new()
             },
             sizes: if has_pointers {
-                vec![0; object_count]
+                (0..object_count).map(|_| AtomicUsize::new(0)).collect()
             } else {
                 Vec::new()
             },
             scan_sizes: if has_pointers {
-                vec![0; object_count]
+                (0..object_count).map(|_| AtomicUsize::new(0)).collect()
             } else {
                 Vec::new()
             },
-            free_list,
-            allocated: 0,
+            free_list: UnsafeCell::new(free_list),
+            allocated: AtomicUsize::new(0),
             in_class_list: false,
+            checked_out: false,
         }
     }
 
@@ -960,17 +1435,32 @@ impl Span {
         // A large span holds exactly one object and uses whole pages.
         let span_bytes = page_count.saturating_mul(PAGE_SIZE);
         let bit_len = bitset_len(1);
-        let mut alloc_map = vec![0; bit_len];
+        let alloc_map = atomic_bitset(bit_len);
         let mark_map = vec![0; bit_len];
-        bitset_set(&mut alloc_map, 0, true);
-        let mut array_map = if has_pointers {
-            vec![0; bit_len]
+        let array_map = if has_pointers {
+            atomic_bitset(bit_len)
         } else {
             Vec::new()
         };
         if has_pointers && is_array {
-            bitset_set(&mut array_map, 0, true);
+            atomic_bitset_set(&array_map, 0, true, Ordering::Relaxed);
         }
+        let descs = if has_pointers {
+            vec![AtomicPtr::new(desc.cast_mut())]
+        } else {
+            Vec::new()
+        };
+        let sizes = if has_pointers {
+            vec![AtomicUsize::new(payload_size)]
+        } else {
+            Vec::new()
+        };
+        let scan_sizes = if has_pointers {
+            vec![AtomicUsize::new(scan_size.min(payload_size))]
+        } else {
+            Vec::new()
+        };
+        atomic_bitset_set(&alloc_map, 0, true, Ordering::Release);
         Self {
             base,
             segment,
@@ -983,67 +1473,67 @@ impl Span {
             alloc_map,
             mark_map,
             array_map,
-            descs: if has_pointers { vec![desc] } else { Vec::new() },
-            sizes: if has_pointers {
-                vec![payload_size]
-            } else {
-                Vec::new()
-            },
-            scan_sizes: if has_pointers {
-                vec![scan_size.min(payload_size)]
-            } else {
-                Vec::new()
-            },
-            free_list: Vec::new(),
-            allocated: 1,
+            descs,
+            sizes,
+            scan_sizes,
+            free_list: UnsafeCell::new(Vec::new()),
+            allocated: AtomicUsize::new(1),
             in_class_list: false,
+            checked_out: false,
         }
     }
 
     fn has_free(&self) -> bool {
         // Indicates whether there is at least one free slot.
-        self.allocated < self.object_count
+        self.allocated.load(Ordering::Relaxed) < self.object_count
     }
 
     // Allocate one slot in a small-object span.
     fn alloc_small(
-        &mut self,
+        &self,
         payload_size: usize,
         scan_size: usize,
         desc: *const GcDesc,
         is_array: bool,
     ) -> Option<*mut u8> {
-        // Allocate from the free list and record per-slot metadata.
+        // Zero the entire reusable slot before publishing its allocation bit
+        // so a scanner can never observe stale pointer-shaped bytes.
         debug_assert!(
             payload_size <= self.object_size,
             "payload {} exceeds span object size {}",
             payload_size,
             self.object_size
         );
-        let index = self.free_list.pop()?;
-        bitset_set(&mut self.alloc_map, index, true);
-        bitset_set(&mut self.mark_map, index, false);
+        // SAFETY: either the global allocator or the sole checked-out mutator
+        // owns the span when this method is called.
+        let index = unsafe { &mut *self.free_list.get() }.pop()?;
+        let ptr = unsafe { self.base.add(index * self.object_size) };
+        unsafe { std::ptr::write_bytes(ptr, 0, self.object_size) };
         if self.has_pointers {
-            self.descs[index] = desc;
-            self.sizes[index] = payload_size;
-            self.scan_sizes[index] = scan_size.min(payload_size);
-            bitset_set(&mut self.array_map, index, is_array);
+            self.descs[index].store(desc.cast_mut(), Ordering::Relaxed);
+            self.sizes[index].store(payload_size, Ordering::Relaxed);
+            self.scan_sizes[index].store(scan_size.min(payload_size), Ordering::Relaxed);
+            atomic_bitset_set(&self.array_map, index, is_array, Ordering::Relaxed);
         }
-        self.allocated += 1;
-        Some(unsafe { self.base.add(index * self.object_size) })
+        atomic_bitset_set(&self.alloc_map, index, true, Ordering::Release);
+        self.allocated.fetch_add(1, Ordering::Relaxed);
+        Some(ptr)
     }
 
     fn free_small(&mut self, index: usize) {
         // Clear metadata for the slot and push it back to the free list.
-        bitset_set(&mut self.alloc_map, index, false);
+        atomic_bitset_set(&self.alloc_map, index, false, Ordering::Release);
         if self.has_pointers {
-            self.descs[index] = std::ptr::null();
-            self.sizes[index] = 0;
-            self.scan_sizes[index] = 0;
-            bitset_set(&mut self.array_map, index, false);
+            self.descs[index].store(std::ptr::null_mut(), Ordering::Relaxed);
+            self.sizes[index].store(0, Ordering::Relaxed);
+            self.scan_sizes[index].store(0, Ordering::Relaxed);
+            atomic_bitset_set(&self.array_map, index, false, Ordering::Relaxed);
         }
-        self.free_list.push(index);
-        self.allocated = self.allocated.saturating_sub(1);
+        // SAFETY: sweep runs stop-the-world after checked-out spans return.
+        unsafe { &mut *self.free_list.get() }.push(index);
+        let allocated = self.allocated.load(Ordering::Relaxed);
+        self.allocated
+            .store(allocated.saturating_sub(1), Ordering::Relaxed);
     }
 }
 
@@ -1060,6 +1550,12 @@ pub(crate) struct GcStatsSnapshot {
     pub live_bytes: usize,
     pub free_bytes: usize,
     pub segment_bytes: usize,
+    pub heap_goal: usize,
+    pub configured_memory_limit: Option<usize>,
+    pub cached_span_refills: usize,
+    pub released_bytes: usize,
+    pub scavenged_bytes: usize,
+    pub soft_limit_exceedances: usize,
     pause_samples: Vec<(usize, u64)>,
 }
 
@@ -1089,15 +1585,25 @@ struct GcStats {
     last_freed_bytes: usize,
     last_segment_count: usize,
     last_segment_bytes: usize,
+    heap_goal: usize,
+    configured_memory_limit: Option<usize>,
+    cached_span_refills: usize,
+    released_bytes: usize,
+    scavenged_bytes: usize,
+    soft_limit_exceedances: usize,
     pause_samples: VecDeque<(usize, u64)>,
 }
 
 impl GcStats {
     fn record_alloc(&mut self, size: usize) {
-        self.total_allocations += 1;
-        self.total_allocated_bytes = self.total_allocated_bytes.saturating_add(size);
-        self.live_objects += 1;
-        self.live_bytes = self.live_bytes.saturating_add(size);
+        self.record_allocations(1, size);
+    }
+
+    fn record_allocations(&mut self, count: usize, bytes: usize) {
+        self.total_allocations = self.total_allocations.saturating_add(count);
+        self.total_allocated_bytes = self.total_allocated_bytes.saturating_add(bytes);
+        self.live_objects = self.live_objects.saturating_add(count);
+        self.live_bytes = self.live_bytes.saturating_add(bytes);
     }
 
     fn record_free(&mut self, size: usize) {
@@ -1144,6 +1650,12 @@ impl GcStats {
             live_bytes: self.live_bytes,
             free_bytes: self.free_bytes,
             segment_bytes: self.last_segment_bytes,
+            heap_goal: self.heap_goal,
+            configured_memory_limit: self.configured_memory_limit,
+            cached_span_refills: self.cached_span_refills,
+            released_bytes: self.released_bytes,
+            scavenged_bytes: self.scavenged_bytes,
+            soft_limit_exceedances: self.soft_limit_exceedances,
             pause_samples: self.pause_samples.iter().copied().collect(),
         }
     }
@@ -1151,16 +1663,23 @@ impl GcStats {
     fn log(&self) {
         if std::env::var("TARO_GC_STATS").map_or(false, |val| val == "1") {
             eprintln!(
-                "gc: collections={} live_objects={} live_bytes={} last_freed_objects={} last_freed_bytes={} free_runs={} free_bytes={} segments={} segment_bytes={} total_allocs={} total_frees={} total_alloc_bytes={} total_freed_bytes={}",
+                "gc: collections={} live_objects={} live_bytes={} heap_goal={} memory_limit={} last_freed_objects={} last_freed_bytes={} free_runs={} free_bytes={} segments={} segment_bytes={} cached_span_refills={} released_bytes={} scavenged_bytes={} soft_limit_exceedances={} total_allocs={} total_frees={} total_alloc_bytes={} total_freed_bytes={}",
                 self.collections,
                 self.live_objects,
                 self.live_bytes,
+                self.heap_goal,
+                self.configured_memory_limit
+                    .map_or_else(|| "off".to_string(), |value| value.to_string()),
                 self.last_freed_objects,
                 self.last_freed_bytes,
                 self.free_runs,
                 self.free_bytes,
                 self.last_segment_count,
                 self.last_segment_bytes,
+                self.cached_span_refills,
+                self.released_bytes,
+                self.scavenged_bytes,
+                self.soft_limit_exceedances,
                 self.total_allocations,
                 self.total_frees,
                 self.total_allocated_bytes,
@@ -1184,13 +1703,15 @@ pub(crate) struct Gc {
     // Segments are page-aligned, not SEGMENT_SIZE-aligned, so multiple segments
     // can share an arena bucket and large segments can span multiple buckets.
     arena_map: HashMap<usize, Vec<usize>>,
-    spans: Vec<Option<Span>>,
+    // Boxed records keep checked-out span addresses stable across vector
+    // growth while the heap mutex is not held.
+    spans: Vec<Option<Box<Span>>>,
     // Free list of span IDs for reuse (prevents unbounded growth of spans vec).
     free_span_ids: Vec<usize>,
     size_classes: Vec<usize>,
     // Per size class: [scan spans, noscan spans].
     class_spans: Vec<[Vec<usize>; 2]>,
-    static_roots: Vec<Range<*const u8>>,
+    static_roots: Vec<StaticRoot>,
     manual_roots: Vec<*const u8>,
     persistent_roots: HashMap<*const u8, usize>,
     reclaimers: HashMap<*const u8, GcReclaimer>,
@@ -1201,10 +1722,10 @@ pub(crate) struct Gc {
     weak_cells_by_owner: HashMap<*const u8, Vec<usize>>,
     next_cleanup_token: usize,
     stats: GcStats,
-    // Bytes allocated since the last collection (used to trigger GC).
-    alloc_since_gc: usize,
-    // Next allocation threshold that triggers a collection.
-    gc_threshold_bytes: usize,
+    config: GcConfig,
+    // Absolute live-heap goal at which percentage pacing requests collection.
+    heap_goal: usize,
+    publishes_global_pacing: bool,
 }
 
 // GC is only accessed under a Mutex; raw pointers are fine.
@@ -1213,6 +1734,17 @@ unsafe impl Sync for Gc {}
 
 impl Gc {
     fn new() -> Self {
+        Self::new_with_config(*gc_config())
+    }
+
+    fn new_runtime() -> Self {
+        let mut gc = Self::new();
+        gc.publishes_global_pacing = true;
+        gc.publish_global_pacing_state();
+        gc
+    }
+
+    fn new_with_config(config: GcConfig) -> Self {
         // Initialize size classes, span lists, and the first segment.
         debug_assert!(SEGMENT_SIZE % PAGE_SIZE == 0);
         let size_classes = build_size_classes();
@@ -1225,6 +1757,15 @@ impl Gc {
         // Register the first segment in the arena map.
         let mut arena_map = HashMap::new();
         register_segment_arenas(&mut arena_map, &segments[0], 0);
+
+        let heap_goal = next_heap_goal(0, config);
+        let mut stats = GcStats {
+            heap_goal,
+            configured_memory_limit: config.memory_limit,
+            ..GcStats::default()
+        };
+        stats.last_segment_count = segments.len();
+        stats.last_segment_bytes = segments.iter().map(|segment| segment.len).sum();
 
         Self {
             segments,
@@ -1241,9 +1782,10 @@ impl Gc {
             cleanup_tokens_by_owner: HashMap::new(),
             weak_cells_by_owner: HashMap::new(),
             next_cleanup_token: 2,
-            stats: GcStats::default(),
-            alloc_since_gc: 0,
-            gc_threshold_bytes: GC_MIN_TRIGGER,
+            stats,
+            config,
+            heap_goal,
+            publishes_global_pacing: false,
         }
     }
 
@@ -1252,22 +1794,19 @@ impl Gc {
         self.manual_roots.push(ptr);
     }
 
-    fn register_static_root(&mut self, start: *const u8, byte_len: usize) {
-        let Some(end_addr) = (start as usize).checked_add(byte_len) else {
-            return;
-        };
-        let range = start..(end_addr as *const u8);
+    fn register_static_root(&mut self, start: *const u8, desc: *const GcDesc) {
         if !self
             .static_roots
             .iter()
-            .any(|existing| existing.start == range.start && existing.end == range.end)
+            .any(|existing| existing.start == start && existing.desc == desc)
         {
-            self.static_roots.push(range);
+            self.static_roots.push(StaticRoot { start, desc });
         }
     }
 
     // Route small allocations to size-class spans; large allocations get a span.
     // payload_size is the requested size, alloc_size is rounded up for alignment.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn alloc(&mut self, size: usize, desc: *const GcDesc, is_array: bool) -> *mut u8 {
         self.alloc_with_scan_size(size, size, desc, is_array)
     }
@@ -1350,6 +1889,11 @@ impl Gc {
         // Large allocations use whole pages and get a dedicated span.
         let pages = pages_for_size(alloc_size);
         let (segment, start_page, base) = self.alloc_pages(pages);
+        let total_bytes = pages.saturating_mul(PAGE_SIZE);
+        // Swept and scavenged pages may both be reused. Explicit zeroing is
+        // the correctness guarantee rather than an assumption about mapping
+        // or kernel state.
+        unsafe { std::ptr::write_bytes(base, 0, total_bytes) };
         let span_id = self.alloc_span_id();
         self.segments[segment].map_span(span_id, start_page, pages);
         let span = Span::new_large(
@@ -1363,8 +1907,7 @@ impl Gc {
             has_pointers,
             is_array,
         );
-        let total_bytes = pages.saturating_mul(PAGE_SIZE);
-        self.spans[span_id] = Some(span);
+        self.spans[span_id] = Some(Box::new(span));
         (base, total_bytes)
     }
 
@@ -1372,21 +1915,45 @@ impl Gc {
     fn after_alloc(&mut self, alloc_bytes: usize) {
         // Update stats and allow safepoints to decide when to collect.
         self.stats.record_alloc(alloc_bytes);
-        self.alloc_since_gc = self.alloc_since_gc.saturating_add(alloc_bytes);
+        if self.publishes_global_pacing {
+            publish_allocation_debt(alloc_bytes);
+        }
+        self.refresh_gc_needed();
+    }
+
+    fn record_cached_allocations(&mut self, accounting: MutatorAccounting) {
+        self.stats
+            .record_allocations(accounting.allocations, accounting.bytes);
         self.refresh_gc_needed();
     }
 
     /// Republishes whether a collection is due, for safepoints to read without
     /// taking the mutex this runs under.
     fn refresh_gc_needed(&self) {
-        set_gc_needed(self.alloc_since_gc >= self.gc_threshold_bytes);
+        if self.publishes_global_pacing {
+            let percentage_due = self.config.percent.is_some()
+                && PACING_HEAP_BYTES.load(Ordering::Acquire) >= self.heap_goal;
+            set_gc_needed(percentage_due);
+        }
     }
 
+    fn publish_global_pacing_state(&self) {
+        PACING_HEAP_BYTES.store(self.stats.live_bytes, Ordering::Release);
+        PACING_HEAP_GOAL.store(self.heap_goal, Ordering::Release);
+        PACING_ENABLED.store(self.config.percent.is_some(), Ordering::Release);
+        self.refresh_gc_needed();
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn alloc_weak_cell(&mut self, target: *const u8) -> *mut u8 {
         let desc = crate::weak::cell_desc();
         let cell = self.alloc(desc.size, desc, false);
         unsafe { crate::weak::initialize_cell(cell, target) };
+        self.register_weak_cell(cell, target);
+        cell
+    }
 
+    fn register_weak_cell(&mut self, cell: *mut u8, target: *const u8) {
         // Interior pointers share the lifetime of their containing object, so
         // index the cell by the canonical allocation base while preserving the
         // original target address in the cell.
@@ -1396,7 +1963,6 @@ impl Gc {
                 .or_default()
                 .push(cell as usize);
         }
-        cell
     }
 
     fn alloc_span_id(&mut self) -> usize {
@@ -1424,12 +1990,40 @@ impl Gc {
                 span.in_class_list = false;
                 let span_matches_class = span.class_index == Some(class_index);
                 let span_matches_lane = span_lane(span.has_pointers) == lane;
-                if span_matches_class && span_matches_lane && span.has_free() {
+                if span_matches_class && span_matches_lane && !span.checked_out && span.has_free() {
                     return span_id;
                 }
             }
         }
         self.new_small_span(class_index, lane)
+    }
+
+    fn checkout_span_for_class(&mut self, class_index: usize, lane: usize) -> CachedSpan {
+        let span_id = self.take_span_for_class(class_index, lane);
+        let span = self.spans[span_id]
+            .as_mut()
+            .expect("checked-out span exists");
+        assert!(!span.checked_out, "span checked out twice");
+        span.checked_out = true;
+        self.stats.cached_span_refills = self.stats.cached_span_refills.saturating_add(1);
+        CachedSpan {
+            span_id,
+            span: (&**span) as *const Span,
+        }
+    }
+
+    fn return_checked_out_span(&mut self, span_id: usize) {
+        let Some(span) = self.spans.get_mut(span_id).and_then(Option::as_mut) else {
+            panic!("checked-out span disappeared before return");
+        };
+        assert!(span.checked_out, "returning span that is not checked out");
+        span.checked_out = false;
+        if span.has_free() && !span.in_class_list {
+            let class_index = span.class_index.expect("cached span has a size class");
+            let lane = span_lane(span.has_pointers);
+            self.class_spans[class_index][lane].push(span_id);
+            span.in_class_list = true;
+        }
     }
 
     // Carve a new span from the segment for a size class.
@@ -1450,7 +2044,7 @@ impl Gc {
             class_size,
             has_pointers,
         );
-        self.spans[span_id] = Some(span);
+        self.spans[span_id] = Some(Box::new(span));
         span_id
     }
 
@@ -1464,6 +2058,14 @@ impl Gc {
             }
         }
         let new_pages = pages.max(SEGMENT_PAGES);
+        let added_bytes = new_pages.saturating_mul(PAGE_SIZE);
+        if self
+            .config
+            .memory_limit
+            .is_some_and(|limit| self.segment_bytes().saturating_add(added_bytes) > limit)
+        {
+            self.stats.soft_limit_exceedances = self.stats.soft_limit_exceedances.saturating_add(1);
+        }
         self.segments.push(Segment::new(new_pages));
         let index = self.segments.len() - 1;
         register_segment_arenas(&mut self.arena_map, &self.segments[index], index);
@@ -1471,6 +2073,39 @@ impl Gc {
         let start_page = segment.alloc_pages(pages).expect("new segment has space");
         let base = unsafe { segment.data.add(start_page * PAGE_SIZE) };
         (index, start_page, base)
+    }
+
+    fn segment_bytes(&self) -> usize {
+        self.segments.iter().map(|segment| segment.len).sum()
+    }
+
+    fn segment_growth_would_cross_soft_limit(&self, pages: usize) -> bool {
+        let Some(limit) = self.config.memory_limit else {
+            return false;
+        };
+        if self
+            .segments
+            .iter()
+            .any(|segment| segment.can_alloc_pages(pages))
+        {
+            return false;
+        }
+        let growth = pages.max(SEGMENT_PAGES).saturating_mul(PAGE_SIZE);
+        self.segment_bytes().saturating_add(growth) > limit
+    }
+
+    fn checkout_would_cross_soft_limit(&self, class_index: usize, lane: usize) -> bool {
+        // Checked-out spans are exclusively owned by other mutators and cannot
+        // satisfy this refill even when they still contain free slots.
+        if self.spans.iter().flatten().any(|span| {
+            span.class_index == Some(class_index)
+                && span_lane(span.has_pointers) == lane
+                && !span.checked_out
+                && span.has_free()
+        }) {
+            return false;
+        }
+        self.segment_growth_would_cross_soft_limit(1)
     }
 
     // Segment lookup via arena bucket candidates.
@@ -1613,48 +2248,34 @@ impl Gc {
         let Some(span) = self.spans.get(span_id).and_then(Option::as_ref) else {
             return false;
         };
-        if !span.has_pointers || !bitset_get(&span.alloc_map, object_index) {
+        if !span.has_pointers
+            || !atomic_bitset_get(&span.alloc_map, object_index, Ordering::Acquire)
+        {
             return false;
         }
-        let Some(desc) = (unsafe { span.descs[object_index].as_ref() }) else {
+        let desc = span.descs[object_index].load(Ordering::Relaxed);
+        let Some(desc) = (unsafe { desc.as_ref() }) else {
             return false;
         };
         let base = unsafe { span.base.add(object_index * span.object_size) };
-        let limit = span.scan_sizes[object_index].min(span.sizes[object_index]);
-        for index in 0..desc.ptr_count {
-            let offset = unsafe { *desc.ptr_offsets.add(index) };
-            if offset >= limit {
-                continue;
-            }
-            let candidate =
-                unsafe { std::ptr::read_unaligned(base.add(offset) as *const *const u8) };
+        let limit = span.scan_sizes[object_index]
+            .load(Ordering::Relaxed)
+            .min(span.sizes[object_index].load(Ordering::Relaxed));
+        let mut found = false;
+        trace_desc_or_abort(desc, base, limit, TraceMode::Heap, |candidate| {
             if self.object_base(candidate) == Some(target) {
-                return true;
+                found = true;
             }
-        }
-        false
-    }
-
-    fn set_buffer_scan_size(&mut self, ptr: *mut u8, scan_size: usize) {
-        let Some((span_id, object_index)) = self.find_object(ptr.cast_const()) else {
-            return;
-        };
-        let Some(span) = self.spans.get_mut(span_id).and_then(|s| s.as_mut()) else {
-            return;
-        };
-        if !span.has_pointers
-            || !bitset_get(&span.alloc_map, object_index)
-            || !bitset_get(&span.array_map, object_index)
-        {
-            return;
-        }
-        if scan_size <= span.sizes[object_index] {
-            span.scan_sizes[object_index] = scan_size;
-        }
+        });
+        found
     }
 
     fn collect(&mut self, threads: &[Arc<ThreadState>]) -> CollectionWork {
         // Stop-the-world collection: gather roots, mark, then sweep.
+        assert!(
+            self.spans.iter().flatten().all(|span| !span.checked_out),
+            "collection began while a mutator owned an allocation span"
+        );
         let mut manual_roots = std::mem::take(&mut self.manual_roots);
         let static_roots = std::mem::take(&mut self.static_roots);
         manual_roots.extend(self.persistent_roots.keys().copied());
@@ -1662,19 +2283,28 @@ impl Gc {
         self.static_roots = static_roots;
         self.process_weak_cells();
         let (freed, reclaimers, cleanup_handles) = self.sweep();
+        let released_bytes = self.release_empty_segments();
+        let scavenged_bytes = self.scavenge_free_pages();
+        self.stats.released_bytes = self.stats.released_bytes.saturating_add(released_bytes);
+        self.stats.scavenged_bytes = self.stats.scavenged_bytes.saturating_add(scavenged_bytes);
         let (free_runs, free_pages) = self.free_page_stats();
         let segment_count = self.segments.len();
+        let segment_bytes = self.segment_bytes();
         self.stats.record_collection(
             freed.objects,
             freed.bytes,
             free_runs,
             free_pages.saturating_mul(PAGE_SIZE),
             segment_count,
-            segment_count.saturating_mul(SEGMENT_SIZE),
+            segment_bytes,
         );
+        self.heap_goal = next_heap_goal(self.stats.live_bytes, self.config);
+        self.stats.heap_goal = self.heap_goal;
+        self.stats.configured_memory_limit = self.config.memory_limit;
+        if self.publishes_global_pacing {
+            self.publish_global_pacing_state();
+        }
         self.stats.log();
-        self.alloc_since_gc = 0;
-        self.gc_threshold_bytes = next_gc_threshold(self.stats.live_bytes);
         self.refresh_gc_needed();
         CollectionWork {
             reclaimers,
@@ -1689,7 +2319,7 @@ impl Gc {
     fn mark_roots<I>(
         &mut self,
         manual_roots: I,
-        static_roots: &[Range<*const u8>],
+        static_roots: &[StaticRoot],
         threads: &[Arc<ThreadState>],
     ) where
         I: IntoIterator<Item = *const u8>,
@@ -1700,16 +2330,13 @@ impl Gc {
         let mut stack: Vec<*const u8> = Vec::with_capacity(INITIAL_STACK_CAPACITY);
         stack.extend(manual_roots);
 
-        for range in static_roots {
-            // Conservative scan over the static range, word by word.
-            let mut p = range.start as usize;
-            let end = range.end as usize;
-            while p + std::mem::size_of::<usize>() <= end {
-                let word = p as *const usize;
-                let candidate = unsafe { std::ptr::read_unaligned(word) } as *const u8;
-                stack.push(candidate);
-                p += std::mem::size_of::<usize>();
-            }
+        for root in static_roots {
+            let Some(desc) = (unsafe { root.desc.as_ref() }) else {
+                continue;
+            };
+            trace_desc_or_abort(desc, root.start, desc.size, TraceMode::Heap, |candidate| {
+                stack.push(candidate)
+            });
         }
 
         self.push_published_roots(&mut stack, threads);
@@ -1761,7 +2388,7 @@ impl Gc {
         let Some(span) = self.spans.get_mut(span_id).and_then(|s| s.as_mut()) else {
             return;
         };
-        if !bitset_get(&span.alloc_map, object_index) {
+        if !atomic_bitset_get(&span.alloc_map, object_index, Ordering::Acquire) {
             return;
         }
         if bitset_get(&span.mark_map, object_index) {
@@ -1772,19 +2399,22 @@ impl Gc {
             // Noscan spans contain no pointers, so no further tracing.
             return;
         }
-        let desc = unsafe { span.descs[object_index].as_ref() };
+        let desc = span.descs[object_index].load(Ordering::Relaxed);
+        let desc = unsafe { desc.as_ref() };
         let Some(desc) = desc else {
             return;
         };
-        if desc.ptr_count == 0 {
+        if desc.node_count == 0 {
             return;
         }
 
-        let payload_size = span.sizes[object_index];
-        let scan_size = span.scan_sizes[object_index].min(payload_size);
+        let payload_size = span.sizes[object_index].load(Ordering::Relaxed);
+        let scan_size = span.scan_sizes[object_index]
+            .load(Ordering::Relaxed)
+            .min(payload_size);
         let base = unsafe { span.base.add(object_index * span.object_size) };
         let elem_size = desc.size;
-        let is_array = bitset_get(&span.array_map, object_index);
+        let is_array = atomic_bitset_get(&span.array_map, object_index, Ordering::Relaxed);
 
         if is_array && elem_size != 0 {
             // Arrays/slices: apply field offsets for each element.
@@ -1806,15 +2436,9 @@ impl Gc {
         desc: &GcDesc,
         stack: &mut Vec<*const u8>,
     ) {
-        // Read each pointer field and push it onto the mark stack.
-        for i in 0..desc.ptr_count {
-            let off = unsafe { *desc.ptr_offsets.add(i) };
-            if off < limit {
-                let field_ptr = unsafe { base.add(off) };
-                let val = unsafe { std::ptr::read_unaligned(field_ptr as *const *const u8) };
-                stack.push(val);
-            }
-        }
+        trace_desc_or_abort(desc, base, limit, TraceMode::Heap, |candidate| {
+            stack.push(candidate)
+        });
     }
 
     fn push_published_roots(&self, stack: &mut Vec<*const u8>, threads: &[Arc<ThreadState>]) {
@@ -1840,19 +2464,21 @@ impl Gc {
             // Large span: single slot at index 0.
             if span.class_index.is_none() {
                 // If the lone object is unmarked, free the entire span.
-                if bitset_get(&span.alloc_map, 0) && !bitset_get(&span.mark_map, 0) {
+                if atomic_bitset_get(&span.alloc_map, 0, Ordering::Acquire)
+                    && !bitset_get(&span.mark_map, 0)
+                {
                     let total_bytes = span.page_count.saturating_mul(PAGE_SIZE);
                     if let Some(reclaimer) = self.reclaimers.remove(&(span.base as *const u8)) {
                         reclaimers.push(reclaimer);
                     }
                     self.take_cleanup_handles(span.base as *const u8, &mut cleanup_handles);
-                    bitset_set(&mut span.alloc_map, 0, false);
+                    atomic_bitset_set(&span.alloc_map, 0, false, Ordering::Release);
                     if span.has_pointers && !span.descs.is_empty() {
-                        span.descs[0] = std::ptr::null();
-                        span.sizes[0] = 0;
-                        span.scan_sizes[0] = 0;
+                        span.descs[0].store(std::ptr::null_mut(), Ordering::Relaxed);
+                        span.sizes[0].store(0, Ordering::Relaxed);
+                        span.scan_sizes[0].store(0, Ordering::Relaxed);
                     }
-                    span.allocated = 0;
+                    span.allocated.store(0, Ordering::Relaxed);
                     self.stats.record_free(total_bytes);
                     freed.objects += 1;
                     freed.bytes = freed.bytes.saturating_add(total_bytes);
@@ -1867,7 +2493,7 @@ impl Gc {
 
             // Small span: sweep each slot.
             for index in 0..span.object_count {
-                if !bitset_get(&span.alloc_map, index) {
+                if !atomic_bitset_get(&span.alloc_map, index, Ordering::Acquire) {
                     continue;
                 }
                 if bitset_get(&span.mark_map, index) {
@@ -1887,7 +2513,7 @@ impl Gc {
             }
 
             // If empty, return the span to the segment.
-            if span.allocated == 0 {
+            if span.allocated.load(Ordering::Relaxed) == 0 {
                 self.free_span_pages(&span);
                 self.free_span_id(span_id);
                 continue;
@@ -1945,7 +2571,7 @@ impl Gc {
     fn object_base(&self, ptr: *const u8) -> Option<*const u8> {
         let (span_id, object_index) = self.find_object(ptr)?;
         let span = self.spans.get(span_id)?.as_ref()?;
-        bitset_get(&span.alloc_map, object_index)
+        atomic_bitset_get(&span.alloc_map, object_index, Ordering::Acquire)
             .then(|| unsafe { span.base.add(object_index * span.object_size) as *const u8 })
     }
 
@@ -1956,7 +2582,51 @@ impl Gc {
         let Some(span) = self.spans.get(span_id).and_then(Option::as_ref) else {
             return false;
         };
-        bitset_get(&span.alloc_map, object_index) && bitset_get(&span.mark_map, object_index)
+        atomic_bitset_get(&span.alloc_map, object_index, Ordering::Acquire)
+            && bitset_get(&span.mark_map, object_index)
+    }
+
+    fn release_empty_segments(&mut self) -> usize {
+        if self.segments.len() <= 1 {
+            return 0;
+        }
+        let mut released = 0usize;
+        let mut index = self.segments.len();
+        while index != 0 && self.segments.len() > 1 {
+            index -= 1;
+            if self.segments[index]
+                .page_map
+                .iter()
+                .any(|span_id| *span_id != SPAN_NONE)
+            {
+                continue;
+            }
+            released = released.saturating_add(self.segments[index].len);
+            self.segments.remove(index);
+            for span in self.spans.iter_mut().flatten() {
+                if span.segment > index {
+                    span.segment -= 1;
+                }
+            }
+        }
+        if released != 0 {
+            self.rebuild_arena_map();
+        }
+        released
+    }
+
+    fn rebuild_arena_map(&mut self) {
+        self.arena_map.clear();
+        for (index, segment) in self.segments.iter().enumerate() {
+            register_segment_arenas(&mut self.arena_map, segment, index);
+        }
+    }
+
+    fn scavenge_free_pages(&mut self) -> usize {
+        self.segments
+            .iter_mut()
+            .map(Segment::scavenge_free_runs)
+            .fold(0usize, usize::saturating_add)
     }
 
     fn free_page_stats(&self) -> (usize, usize) {
@@ -1978,18 +2648,20 @@ impl Gc {
 pub(crate) fn with_gc<R>(f: impl FnOnce(&mut Gc) -> R) -> R {
     // Single global GC instance protected by a mutex.
     static INSTANCE: OnceLock<Mutex<Gc>> = OnceLock::new();
-    let gc = INSTANCE.get_or_init(|| Mutex::new(Gc::new()));
+    let gc = INSTANCE.get_or_init(|| Mutex::new(Gc::new_runtime()));
+    #[cfg(test)]
+    GC_MUTEX_ACQUISITIONS.with(|count| count.set(count.get().saturating_add(1)));
     let mut guard = gc.lock().expect("gc mutex");
     f(&mut guard)
 }
 
 pub(crate) fn create_weak_cell(target: *const u8) -> *mut u8 {
     ensure_thread_registered();
-    let needs_gc = gc_needed(Ordering::Relaxed);
-    if needs_gc {
-        initiate_collection();
-    }
-    with_gc(|gc| gc.alloc_weak_cell(target))
+    let desc = crate::weak::cell_desc();
+    let cell = runtime_alloc_with_scan_size(desc.size, desc.size, desc, false);
+    unsafe { crate::weak::initialize_cell(cell, target) };
+    with_gc(|gc| gc.register_weak_cell(cell, target));
+    cell
 }
 
 pub(crate) fn stats_snapshot() -> GcStatsSnapshot {
@@ -2043,7 +2715,34 @@ fn pages_for_size(size: usize) -> usize {
 
 fn desc_has_pointers(desc: *const GcDesc) -> bool {
     // Null desc means no pointers.
-    unsafe { desc.as_ref().map_or(false, |d| d.ptr_count > 0) }
+    unsafe { desc.as_ref().is_some_and(|d| d.node_count > 0) }
+}
+
+pub(crate) fn desc_nodes(desc: &GcDesc) -> &[GcLayoutNode] {
+    if desc.node_count == 0 {
+        return &[];
+    }
+    if desc.nodes.is_null() {
+        eprintln!("fatal: GC descriptor {:p} has a null node table", desc);
+        std::process::abort();
+    }
+    unsafe { std::slice::from_raw_parts(desc.nodes, desc.node_count) }
+}
+
+pub(crate) fn trace_desc_or_abort(
+    desc: &GcDesc,
+    base: *const u8,
+    limit: usize,
+    mode: TraceMode,
+    emit: impl FnMut(*const u8),
+) {
+    if let Err(error) = unsafe { trace_layout(base, desc_nodes(desc), limit, mode, emit) } {
+        eprintln!(
+            "fatal: invalid live GC value for descriptor {:p} at {:p}: {error}",
+            desc, base
+        );
+        std::process::abort();
+    }
 }
 
 // Alignment comes from the type descriptor; default to 1 for unknown types.
@@ -2062,6 +2761,31 @@ fn span_lane(has_pointers: bool) -> usize {
 fn bitset_len(count: usize) -> usize {
     // 64 bits per word.
     (count + 63) / 64
+}
+
+fn atomic_bitset(len: usize) -> Vec<AtomicU64> {
+    (0..len).map(|_| AtomicU64::new(0)).collect()
+}
+
+fn atomic_bitset_get(bits: &[AtomicU64], index: usize, ordering: Ordering) -> bool {
+    let word = index / 64;
+    let bit = index % 64;
+    bits.get(word)
+        .is_some_and(|value| value.load(ordering) & (1_u64 << bit) != 0)
+}
+
+fn atomic_bitset_set(bits: &[AtomicU64], index: usize, value: bool, ordering: Ordering) {
+    let word = index / 64;
+    let bit = index % 64;
+    let Some(slot) = bits.get(word) else {
+        return;
+    };
+    let mask = 1_u64 << bit;
+    if value {
+        slot.fetch_or(mask, ordering);
+    } else {
+        slot.fetch_and(!mask, ordering);
+    }
 }
 
 // Read a bit from a u64-backed bitset.
@@ -2093,16 +2817,16 @@ fn align_up(n: usize, align: usize) -> usize {
     (n + (align - 1)) & !(align - 1)
 }
 
-// Simple policy: grow the next trigger based on current live bytes,
-// but never below a minimum threshold.
-fn next_gc_threshold(live_bytes: usize) -> usize {
-    // Use a simple growth policy to avoid collecting too frequently.
-    let doubled = live_bytes.saturating_mul(2);
-    if doubled < GC_MIN_TRIGGER {
-        GC_MIN_TRIGGER
-    } else {
-        doubled
-    }
+fn next_heap_goal(live_bytes: usize, config: GcConfig) -> usize {
+    let Some(percent) = config.percent else {
+        return usize::MAX;
+    };
+    let growth = (live_bytes as u128)
+        .saturating_mul(u128::from(percent))
+        .saturating_div(100)
+        .min(usize::MAX as u128) as usize;
+    let goal = GC_MIN_TRIGGER.max(live_bytes.saturating_add(growth));
+    config.memory_limit.map_or(goal, |limit| goal.min(limit))
 }
 
 // Register all arena indices that a segment spans in the arena map.
@@ -2132,24 +2856,42 @@ fn register_segment_arenas(
 #[cfg(test)]
 mod tests {
     use super::{
-        __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach,
+        __gc__alloc, __gc__collect, __gc__grow_buf, __gc__thread_attach, __gc__thread_detach,
         __gc__thread_enter_managed, __rt__gc_enter_blocking, __rt__gc_exit_blocking,
-        CURRENT_THREAD_STATE, CleanupRegistration, Gc, GcDesc, GcStats, MAX_GC_PAUSE_SAMPLES,
-        PAGE_SIZE, SEGMENT_SIZE, Segment, THREAD_REGISTRY, ensure_thread_registered,
-        register_segment_arenas,
+        CURRENT_THREAD_STATE, CleanupRegistration, GC_MIN_TRIGGER, GC_NEEDED_FLAG, GC_POLL_FLAGS,
+        GC_REQUESTED_FLAG, Gc, GcConfig, GcDesc, GcStats, MAX_GC_PAUSE_SAMPLES, PAGE_SIZE,
+        SEGMENT_SIZE, Segment, THREAD_REGISTRY, allocation_requires_slow_path, atomic_bitset_get,
+        current_thread_gc_mutex_acquisitions, ensure_thread_registered, next_heap_goal,
+        parse_gc_memory_limit, parse_gc_percent, register_segment_arenas,
     };
+    use crate::gc_layout::{GC_LAYOUT_POINTER, GcLayoutNode};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
 
-    static POINTER_OFFSETS: [usize; 1] = [0];
+    static POINTER_NODES: [GcLayoutNode; 1] = [GcLayoutNode {
+        offset: 0,
+        stride: 0,
+        first_child: 0,
+        child_count: 0,
+        kind: GC_LAYOUT_POINTER,
+        width: 0,
+        reserved: [0; 6],
+    }];
+
+    static BYTE_DESC: GcDesc = GcDesc {
+        size: 16,
+        align: 8,
+        nodes: std::ptr::null(),
+        node_count: 0,
+    };
 
     fn bytes_desc(size: usize) -> GcDesc {
         GcDesc {
             size,
             align: 1,
-            ptr_offsets: std::ptr::null(),
-            ptr_count: 0,
+            nodes: std::ptr::null(),
+            node_count: 0,
         }
     }
 
@@ -2157,14 +2899,210 @@ mod tests {
         GcDesc {
             size: std::mem::size_of::<*mut u8>(),
             align: std::mem::align_of::<*mut u8>(),
-            ptr_offsets: POINTER_OFFSETS.as_ptr(),
-            ptr_count: POINTER_OFFSETS.len(),
+            nodes: POINTER_NODES.as_ptr(),
+            node_count: POINTER_NODES.len(),
         }
     }
 
     fn count_finalization(data: usize) {
         let count = unsafe { &*(data as *const AtomicUsize) };
         count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[test]
+    fn gc_configuration_parses_documented_values() {
+        assert_eq!(parse_gc_percent("off"), Ok(None));
+        assert_eq!(parse_gc_percent("0"), Ok(Some(0)));
+        assert_eq!(parse_gc_percent("10000"), Ok(Some(10_000)));
+        assert!(parse_gc_percent("10001").is_err());
+        assert!(parse_gc_percent("").is_err());
+
+        assert_eq!(parse_gc_memory_limit("off"), Ok(None));
+        assert_eq!(parse_gc_memory_limit("1B"), Ok(Some(1)));
+        assert_eq!(parse_gc_memory_limit("2KiB"), Ok(Some(2 << 10)));
+        assert_eq!(parse_gc_memory_limit("3MiB"), Ok(Some(3 << 20)));
+        assert_eq!(parse_gc_memory_limit("4GiB"), Ok(Some(4 << 30)));
+        if usize::BITS >= 64 {
+            assert_eq!(parse_gc_memory_limit("5TiB"), Ok(Some(5 << 40)));
+        }
+        assert!(parse_gc_memory_limit("32").is_err());
+        assert!(parse_gc_memory_limit("1MB").is_err());
+        assert!(parse_gc_memory_limit("-1B").is_err());
+    }
+
+    #[test]
+    fn stress_flag_slows_generated_polls_without_blocking_allocation() {
+        assert!(!allocation_requires_slow_path(0, false));
+        assert!(allocation_requires_slow_path(GC_NEEDED_FLAG, false));
+        assert!(!allocation_requires_slow_path(GC_NEEDED_FLAG, true));
+        assert!(allocation_requires_slow_path(GC_REQUESTED_FLAG, false));
+        assert!(allocation_requires_slow_path(GC_REQUESTED_FLAG, true));
+        assert!(allocation_requires_slow_path(
+            GC_REQUESTED_FLAG | GC_NEEDED_FLAG,
+            true
+        ));
+    }
+
+    #[test]
+    fn heap_goal_respects_percent_off_minimum_and_soft_limit() {
+        assert_eq!(next_heap_goal(0, GcConfig::default()), GC_MIN_TRIGGER);
+        assert_eq!(next_heap_goal(8 << 20, GcConfig::default()), 16 << 20);
+        assert_eq!(
+            next_heap_goal(
+                8 << 20,
+                GcConfig {
+                    percent: Some(25),
+                    memory_limit: Some(9 << 20),
+                },
+            ),
+            9 << 20
+        );
+        assert_eq!(
+            next_heap_goal(
+                8 << 20,
+                GcConfig {
+                    percent: None,
+                    memory_limit: Some(1),
+                },
+            ),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn warm_small_allocations_do_not_acquire_the_global_gc_mutex() {
+        __gc__thread_enter_managed();
+        let mut observed_uninterrupted_fast_path = false;
+        // Runtime tests share the process-wide collector and run in parallel.
+        // A collection requested by another test may legitimately flush this
+        // thread's cache, so retry until the measured window contains no such
+        // rendezvous; the assertion is specifically about an uninterrupted
+        // warm path.
+        for _ in 0..64 {
+            __gc__collect();
+            let first = __gc__alloc(BYTE_DESC.size, &BYTE_DESC);
+            assert!(!first.is_null());
+            let before = current_thread_gc_mutex_acquisitions();
+            let mut uninterrupted = GC_POLL_FLAGS.load(Ordering::Acquire) == 0;
+            for _ in 0..32 {
+                uninterrupted &= GC_POLL_FLAGS.load(Ordering::Acquire) == 0;
+                let allocation = __gc__alloc(BYTE_DESC.size, &BYTE_DESC);
+                assert!(!allocation.is_null());
+            }
+            uninterrupted &= GC_POLL_FLAGS.load(Ordering::Acquire) == 0;
+            if uninterrupted && current_thread_gc_mutex_acquisitions() == before {
+                observed_uninterrupted_fast_path = true;
+                break;
+            }
+        }
+        assert!(observed_uninterrupted_fast_path);
+
+        __rt__gc_enter_blocking();
+        CURRENT_THREAD_STATE.with(|slot| {
+            let slot = slot.borrow();
+            let current = slot.as_ref().expect("registered mutator");
+            assert!(current.cache.spans.iter().all(Option::is_none));
+            assert_eq!(current.state.owned_spans.load(Ordering::Acquire), 0);
+        });
+        __rt__gc_exit_blocking();
+        __gc__collect();
+        __gc__thread_detach();
+    }
+
+    #[test]
+    fn concurrent_cached_allocations_rendezvous_with_forced_gc() {
+        const THREADS: usize = 4;
+        const ALLOCATIONS: usize = 256;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        std::thread::scope(|scope| {
+            for thread_index in 0..THREADS {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    __gc__thread_enter_managed();
+                    barrier.wait();
+                    for index in 0..ALLOCATIONS {
+                        let allocation = __gc__alloc(BYTE_DESC.size, &BYTE_DESC);
+                        assert!(!allocation.is_null());
+                        unsafe {
+                            allocation.write((thread_index ^ index) as u8);
+                        }
+                        if thread_index == 0 && index % 64 == 0 {
+                            __gc__collect();
+                        }
+                    }
+                    __gc__thread_detach();
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn reused_small_slots_are_zero_before_publication() {
+        let mut gc = Gc::new_with_config(GcConfig::default());
+        let desc = bytes_desc(16);
+        let stale = gc.alloc(16, &desc, false);
+        let keeper = gc.alloc(16, &desc, false);
+        unsafe { std::ptr::write_bytes(stale, 0xa5, 16) };
+        gc.add_root(keeper);
+        assert!(gc.collect(&[]).is_empty());
+
+        let reused = gc.alloc(16, &desc, false);
+        assert_eq!(reused, stale);
+        let bytes = unsafe { std::slice::from_raw_parts(reused, 16) };
+        assert!(bytes.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn reused_large_pages_are_zero_before_publication() {
+        let mut gc = Gc::new_with_config(GcConfig::default());
+        let size = PAGE_SIZE + 1;
+        let desc = bytes_desc(size);
+        let stale = gc.alloc(size, &desc, false);
+        unsafe { std::ptr::write_bytes(stale, 0xa5, size) };
+        assert!(gc.collect(&[]).is_empty());
+
+        let reused = gc.alloc(size, &desc, false);
+        assert_eq!(reused, stale);
+        let bytes = unsafe { std::slice::from_raw_parts(reused, size) };
+        assert!(bytes.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn sweep_releases_empty_segments_but_retains_one() {
+        let mut gc = Gc::new_with_config(GcConfig::default());
+        let size = SEGMENT_SIZE + PAGE_SIZE;
+        let desc = bytes_desc(size);
+        let _ = gc.alloc(size, &desc, false);
+        assert!(gc.segments.len() >= 2);
+
+        assert!(gc.collect(&[]).is_empty());
+        assert_eq!(gc.segments.len(), 1);
+        assert!(gc.stats.released_bytes >= size);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_scavenging_is_accounted_once_and_cleared_on_reuse() {
+        let mut gc = Gc::new_with_config(GcConfig::default());
+        let desc = bytes_desc(PAGE_SIZE);
+        let first = gc.alloc(PAGE_SIZE, &desc, false);
+        let keeper = gc.alloc(PAGE_SIZE, &desc, false);
+        unsafe { std::ptr::write_bytes(first, 0xa5, PAGE_SIZE) };
+        gc.add_root(keeper);
+
+        assert!(gc.collect(&[]).is_empty());
+        assert_eq!(gc.stats.scavenged_bytes, PAGE_SIZE);
+        gc.add_root(keeper);
+        assert!(gc.collect(&[]).is_empty());
+        assert_eq!(gc.stats.scavenged_bytes, PAGE_SIZE);
+
+        let reused = gc.alloc(PAGE_SIZE, &desc, false);
+        assert_eq!(reused, first);
+        let (segment, _) = gc.find_object(reused).expect("reused allocation");
+        let span = gc.spans[segment].as_ref().expect("reused span");
+        assert!(!gc.segments[span.segment].scavenged_pages[span.start_page]);
+        let bytes = unsafe { std::slice::from_raw_parts(reused, PAGE_SIZE) };
+        assert!(bytes.iter().all(|byte| *byte == 0));
     }
 
     #[test]
@@ -2417,37 +3355,88 @@ mod tests {
         let leaf_desc = bytes_desc(8);
         let child = gc.alloc(8, &leaf_desc, false);
         let global_slot = child;
+        let root_desc = pointer_desc();
 
-        gc.register_static_root(
-            (&global_slot as *const *mut u8).cast::<u8>(),
-            std::mem::size_of::<*mut u8>(),
-        );
+        gc.register_static_root((&global_slot as *const *mut u8).cast::<u8>(), &root_desc);
         gc.collect(&[]);
 
         assert!(gc.find_object(child).is_some());
     }
 
+    /// Whether `ptr` still names an allocated object.
+    ///
+    /// `find_object` only resolves an address to a span slot, and a swept slot
+    /// keeps resolving while anything else in its span is alive — so liveness
+    /// has to be read from the allocation bitmap.
+    fn is_live(gc: &Gc, ptr: *const u8) -> bool {
+        match gc.find_object(ptr) {
+            Some((span_id, index)) => gc
+                .spans
+                .get(span_id)
+                .and_then(|span| span.as_ref())
+                .map(|span| atomic_bitset_get(&span.alloc_map, index, Ordering::Acquire))
+                .unwrap_or(false),
+            None => false,
+        }
+    }
+
     #[test]
     fn buffer_scan_size_limits_traced_elements() {
+        // A buffer allocated with a scan size shorter than its payload traces
+        // only that prefix. Nothing sets a scan size after the fact any more,
+        // but the allocation-time limit is still how large objects are handled.
+        let mut gc = Gc::new();
+        let leaf_desc = bytes_desc(8);
+        let pointer_desc = pointer_desc();
+        let elem_size = std::mem::size_of::<*mut u8>();
+        let inside = gc.alloc(8, &leaf_desc, false);
+        let outside = gc.alloc(8, &leaf_desc, false);
+        let buffer = gc.alloc_with_scan_size(elem_size * 2, elem_size, &pointer_desc, true);
+
+        unsafe {
+            (buffer as *mut *mut u8).write(inside);
+            (buffer as *mut *mut u8).add(1).write(outside);
+        }
+
+        // Collected twice: an object allocated since the last cycle survives
+        // its first one, so the second is what shows the scan limit.
+        gc.add_root(buffer);
+        gc.collect(&[]);
+        gc.add_root(buffer);
+        gc.collect(&[]);
+        assert!(is_live(&gc, inside));
+        assert!(!is_live(&gc, outside));
+    }
+
+    #[test]
+    fn cleared_slot_stops_retaining_its_element() {
+        // Managed buffers are scanned to their full capacity, so the owner
+        // clears a slot it vacates. This is the invariant `List` relies on
+        // instead of republishing its length to the collector on every pop.
         let mut gc = Gc::new();
         let leaf_desc = bytes_desc(8);
         let pointer_desc = pointer_desc();
         let elem_size = std::mem::size_of::<*mut u8>();
         let child = gc.alloc(8, &leaf_desc, false);
-        let buffer = gc.alloc_with_scan_size(elem_size * 2, elem_size, &pointer_desc, true);
+        let capacity = elem_size * 4;
+        let buffer = gc.alloc_with_scan_size(capacity, capacity, &pointer_desc, true);
+
+        // Written past the first slot, to show the whole capacity is traced.
+        unsafe {
+            (buffer as *mut *mut u8).add(2).write(child);
+        }
+        gc.add_root(buffer);
+        gc.collect(&[]);
+        gc.add_root(buffer);
+        gc.collect(&[]);
+        assert!(is_live(&gc, child));
 
         unsafe {
-            (buffer as *mut *mut u8).write(child);
+            (buffer as *mut *mut u8).add(2).write(std::ptr::null_mut());
         }
-
         gc.add_root(buffer);
         gc.collect(&[]);
-        assert!(gc.find_object(child).is_some());
-
-        gc.set_buffer_scan_size(buffer, 0);
-        gc.add_root(buffer);
-        gc.collect(&[]);
-        assert!(gc.find_object(child).is_none());
+        assert!(!is_live(&gc, child));
     }
 
     #[test]

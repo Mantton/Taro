@@ -4,7 +4,7 @@ use super::simplify::{
     merge_linear_blocks, prune_unreachable_blocks,
 };
 use crate::compile::context::Gcx;
-use crate::error::CompileResult;
+use crate::error::{CompileResult, ReportedError};
 use crate::hir::DefinitionKind;
 use crate::mir::{
     BasicBlockData, BasicBlockId, Body, CallUnwindAction, LocalDecl, LocalId, LocalKind, MirPhase,
@@ -18,6 +18,8 @@ use rustc_hash::FxHashSet;
 pub struct SimplifyCfg;
 pub struct PruneUnreachable;
 pub struct LowerAggregates;
+pub struct LowerKeepAlive;
+pub struct LowerExistentialBoxes;
 pub struct InsertSafepoints;
 pub struct DeadLocalElimination;
 pub struct MergeSafepoints;
@@ -228,15 +230,6 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                         let variant_data =
                                             gcx.enum_variant_by_index(def_id, variant_index);
 
-                                        // Set Discriminant
-                                        lowered.push(Statement {
-                                            kind: StatementKind::SetDiscriminant {
-                                                place: dest.clone(),
-                                                variant_index,
-                                            },
-                                            span,
-                                        });
-
                                         for ((temp_local, idx), (_, _, ty)) in
                                             temps.into_iter().zip(ops_with_tys.iter())
                                         {
@@ -263,16 +256,43 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                                 span,
                                             });
                                         }
+
+                                        // Publish the discriminator only after
+                                        // the selected payload is completely
+                                        // initialized. A tag-aware collector
+                                        // must never observe a live tag paired
+                                        // with stale payload storage.
+                                        lowered.push(Statement {
+                                            kind: StatementKind::SetDiscriminant {
+                                                place: dest.clone(),
+                                                variant_index,
+                                            },
+                                            span,
+                                        });
                                     }
                                     _ => unreachable!(),
                                 }
                             }
-                            crate::mir::AggregateKind::Closure { def_id, .. } => {
+                            crate::mir::AggregateKind::Closure {
+                                def_id,
+                                captured_generics,
+                            } => {
                                 // Lower closure aggregate - each capture becomes a field assignment
                                 let captures_info = gcx.get_closure_captures(def_id);
                                 let capture_tys: Vec<Ty<'ctx>> = captures_info
                                     .as_ref()
-                                    .map(|c| c.captures.iter().map(|cap| cap.ty).collect())
+                                    .map(|c| {
+                                        c.captures
+                                            .iter()
+                                            .map(|capture| {
+                                                instantiate_ty_with_args(
+                                                    gcx,
+                                                    capture.ty,
+                                                    captured_generics,
+                                                )
+                                            })
+                                            .collect()
+                                    })
                                     .unwrap_or_default();
 
                                 for ((temp_local, idx), field_ty) in
@@ -318,6 +338,148 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
     }
 }
 
+impl<'ctx> MirPass<'ctx> for LowerKeepAlive {
+    fn name(&self) -> &'static str {
+        "LowerKeepAlive"
+    }
+
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+        for block in body.basic_blocks.iter_mut() {
+            let Some(terminator) = block.terminator.as_ref() else {
+                continue;
+            };
+            let TerminatorKind::Call {
+                func, args, target, ..
+            } = &terminator.kind
+            else {
+                continue;
+            };
+            let Operand::Constant(constant) = func else {
+                continue;
+            };
+            let crate::mir::ConstantKind::Function(def_id, _, _) = constant.value else {
+                continue;
+            };
+            if gcx
+                .symbol_text(gcx.definition_ident(def_id).symbol)
+                .as_str()
+                != "__rt__keep_alive"
+            {
+                continue;
+            }
+            let Some(value) = args.first().cloned() else {
+                continue;
+            };
+            let span = terminator.span;
+            let target = *target;
+            block.statements.push(Statement {
+                kind: StatementKind::KeepAlive(value),
+                span,
+            });
+            block.terminator = Some(crate::mir::Terminator {
+                kind: TerminatorKind::Goto { target },
+                span,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl<'ctx> MirPass<'ctx> for LowerExistentialBoxes {
+    fn name(&self) -> &'static str {
+        "LowerExistentialBoxes"
+    }
+
+    fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+        let original = body.basic_blocks.clone();
+        for block in body.basic_blocks.indices() {
+            let mut lowered = Vec::with_capacity(original[block].statements.len());
+            for statement in original[block].statements.iter().cloned() {
+                let StatementKind::Assign(
+                    destination,
+                    Rvalue::Cast {
+                        operand,
+                        ty: target,
+                        kind,
+                    },
+                ) = statement.kind
+                else {
+                    lowered.push(statement);
+                    continue;
+                };
+                let concrete = operand_ty(body, gcx, &operand);
+                let allocates = matches!(target.kind(), TyKind::BoxedExistential { .. })
+                    && !matches!(concrete.kind(), TyKind::BoxedExistential { .. })
+                    && matches!(
+                        kind,
+                        crate::mir::CastKind::BoxExistential | crate::mir::CastKind::Numeric
+                    );
+                if !allocates {
+                    lowered.push(Statement {
+                        kind: StatementKind::Assign(
+                            destination,
+                            Rvalue::Cast {
+                                operand,
+                                ty: target,
+                                kind,
+                            },
+                        ),
+                        span: statement.span,
+                    });
+                    continue;
+                }
+
+                let pointer_ty = gcx
+                    .store
+                    .interners
+                    .intern_ty(TyKind::Pointer(concrete, crate::hir::Mutability::Mutable));
+                let pointer = body.locals.push(LocalDecl {
+                    ty: pointer_ty,
+                    kind: LocalKind::Temp,
+                    mutable: true,
+                    name: None,
+                    span: statement.span,
+                });
+                body.escape_locals.push(false);
+                lowered.push(Statement {
+                    kind: StatementKind::StorageLive(pointer),
+                    span: statement.span,
+                });
+                lowered.push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(pointer),
+                        Rvalue::Alloc { ty: concrete },
+                    ),
+                    span: statement.span,
+                });
+                lowered.push(Statement {
+                    kind: StatementKind::Assign(
+                        Place {
+                            local: pointer,
+                            projection: vec![PlaceElem::Deref],
+                        },
+                        Rvalue::Use(operand),
+                    ),
+                    span: statement.span,
+                });
+                lowered.push(Statement {
+                    kind: StatementKind::Assign(
+                        destination,
+                        Rvalue::Cast {
+                            operand: Operand::Copy(Place::from_local(pointer)),
+                            ty: target,
+                            kind: crate::mir::CastKind::ExistentialPack { concrete },
+                        },
+                    ),
+                    span: statement.span,
+                });
+            }
+            body.basic_blocks[block].statements = lowered;
+        }
+        Ok(())
+    }
+}
+
 impl<'ctx> MirPass<'ctx> for InsertSafepoints {
     fn name(&self) -> &'static str {
         "InsertSafepoints"
@@ -327,13 +489,16 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
         let mut targets: FxHashSet<BasicBlockId> = FxHashSet::default();
         targets.insert(body.start_block);
 
-        for (bb_id, bb) in body.basic_blocks.iter_enumerated() {
-            let Some(term) = &bb.terminator else { continue };
-            for succ in terminator_successors(term) {
-                if succ.index() <= bb_id.index() {
-                    targets.insert(succ);
-                }
-            }
+        // Select a deterministic feedback vertex set. Repeatedly remove one
+        // block from a discovered cycle until the remaining CFG is acyclic;
+        // consequently every original cycle crosses at least one poll. This
+        // covers irreducible control flow as well as natural loops.
+        while let Some(cycle) = find_unpolled_cycle(body, &targets) {
+            let selected = cycle
+                .into_iter()
+                .min_by_key(|block| block.index())
+                .expect("reported cycle must contain a block");
+            targets.insert(selected);
         }
 
         let span = body.locals[body.return_local].span;
@@ -348,65 +513,108 @@ impl<'ctx> MirPass<'ctx> for InsertSafepoints {
                 .count();
             let needs = statements
                 .get(insertion_index)
-                .map(|stmt| !matches!(stmt.kind, StatementKind::GcSafepoint))
+                .map(|stmt| !matches!(stmt.kind, StatementKind::GcSafepoint(_)))
                 .unwrap_or(true);
             if needs {
+                let kind = if bb == body.start_block {
+                    crate::mir::GcSafepointKind::Entry
+                } else {
+                    crate::mir::GcSafepointKind::Loop
+                };
                 statements.insert(
                     insertion_index,
                     Statement {
-                        kind: StatementKind::GcSafepoint,
+                        kind: StatementKind::GcSafepoint(kind),
                         span,
                     },
                 );
             }
         }
 
-        for bb in body.basic_blocks.iter_mut() {
-            let Some(term) = &bb.terminator else { continue };
-            let TerminatorKind::Call { func, .. } = &term.kind else {
-                continue;
-            };
-            // Checked arithmetic intrinsics lower to a few inline
-            // instructions, not a real call; a poll per arithmetic op
-            // would dominate debug builds.
-            if is_checked_arith_callee(gcx, func) {
-                continue;
-            }
-            let needs = bb
-                .statements
-                .last()
-                .map(|stmt| !matches!(stmt.kind, StatementKind::GcSafepoint))
-                .unwrap_or(true);
-            if needs {
-                bb.statements.push(Statement {
-                    kind: StatementKind::GcSafepoint,
-                    span,
-                });
-            }
+        if let Err(cycle) = verify_safepoint_cycle_coverage(body) {
+            gcx.dcx().emit_error(
+                format!(
+                    "internal compiler error: GC safepoint placement left an unpolled CFG cycle through {cycle:?}"
+                ),
+                Some(span),
+            );
+            return Err(ReportedError);
         }
         Ok(())
     }
 }
 
-/// Whether a call operand targets one of the `__intrinsic_checked_*`
-/// arithmetic intrinsics emitted for overflow checking.
-fn is_checked_arith_callee<'ctx>(gcx: Gcx<'ctx>, func: &Operand<'ctx>) -> bool {
-    let Operand::Constant(c) = func else {
-        return false;
-    };
-    let crate::mir::ConstantKind::Function(def_id, _, _) = c.value else {
-        return false;
-    };
-    if !matches!(
-        gcx.get_signature(def_id).abi,
-        Some(crate::hir::Abi::Intrinsic)
-    ) {
-        return false;
+/// Verify that removing blocks containing an actual MIR safepoint leaves an
+/// acyclic CFG. This deliberately inspects the body instead of the placement
+/// pass's candidate set so callers can run it after subsequent CFG rewrites.
+pub(crate) fn verify_safepoint_cycle_coverage(body: &Body<'_>) -> Result<(), Vec<BasicBlockId>> {
+    let polled = body
+        .basic_blocks
+        .iter_enumerated()
+        .filter_map(|(block, data)| {
+            data.statements
+                .iter()
+                .any(|statement| matches!(statement.kind, StatementKind::GcSafepoint(_)))
+                .then_some(block)
+        })
+        .collect();
+    match find_unpolled_cycle(body, &polled) {
+        Some(cycle) => Err(cycle),
+        None => Ok(()),
     }
-    let ident = gcx.definition_ident(def_id);
-    gcx.symbol_text(ident.symbol)
-        .as_str()
-        .starts_with("__intrinsic_checked_")
+}
+
+fn find_unpolled_cycle(
+    body: &Body<'_>,
+    polled: &FxHashSet<BasicBlockId>,
+) -> Option<Vec<BasicBlockId>> {
+    fn visit(
+        body: &Body<'_>,
+        node: BasicBlockId,
+        polled: &FxHashSet<BasicBlockId>,
+        colors: &mut [u8],
+        stack: &mut Vec<BasicBlockId>,
+    ) -> Option<Vec<BasicBlockId>> {
+        colors[node.index()] = 1;
+        stack.push(node);
+        if let Some(term) = &body.basic_blocks[node].terminator {
+            for successor in terminator_successors(term) {
+                if polled.contains(&successor) {
+                    continue;
+                }
+                match colors[successor.index()] {
+                    0 => {
+                        if let Some(cycle) = visit(body, successor, polled, colors, stack) {
+                            return Some(cycle);
+                        }
+                    }
+                    1 => {
+                        let start = stack
+                            .iter()
+                            .position(|candidate| *candidate == successor)
+                            .expect("active DFS node must be on stack");
+                        return Some(stack[start..].to_vec());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        stack.pop();
+        colors[node.index()] = 2;
+        None
+    }
+
+    let mut colors = vec![0u8; body.basic_blocks.len()];
+    let mut stack = Vec::new();
+    for block in body.basic_blocks.indices() {
+        if polled.contains(&block) || colors[block.index()] != 0 {
+            continue;
+        }
+        if let Some(cycle) = visit(body, block, polled, &mut colors, &mut stack) {
+            return Some(cycle);
+        }
+    }
+    None
 }
 
 fn aggregate_field_operand<'ctx>(
@@ -514,5 +722,164 @@ fn terminator_successors(term: &crate::mir::Terminator<'_>) -> Vec<BasicBlockId>
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable
         | TerminatorKind::UnresolvedGoto => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InsertSafepoints, LowerAggregates, verify_safepoint_cycle_coverage};
+    use crate::{
+        PackageIndex,
+        hir::{DefinitionID, NodeID},
+        mir::{
+            AggregateKind, BasicBlockData, GcSafepointKind, Operand, Place, PlaceElem, Rvalue,
+            Statement, StatementKind, Terminator, TerminatorKind,
+            optimize::MirPass,
+            test_support::{minimal_body, push_temp, with_test_gcx},
+        },
+        sema::{
+            models::{
+                CaptureAccessKind, CaptureKind, CapturedVar, ClosureCaptures, ClosureKind,
+                GenericArgument, GenericParameter, Ty, TyKind,
+            },
+            resolve::models::DefinitionIndex,
+        },
+        span::{FileID, Span},
+        thir::FieldIndex,
+    };
+
+    #[test]
+    fn closure_aggregate_fields_use_captured_generic_arguments() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = Span::empty(FileID::new(0));
+            let closure_id = DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(10));
+            let parameter = Ty::new(
+                TyKind::Parameter(GenericParameter {
+                    index: 0,
+                    name: gcx.intern_symbol("T"),
+                }),
+                gcx,
+            );
+            gcx.cache_closure_captures(
+                closure_id,
+                ClosureCaptures {
+                    captures: vec![CapturedVar {
+                        source_id: NodeID::from_raw(0),
+                        name: gcx.intern_symbol("value"),
+                        ty: parameter,
+                        capture_kind: CaptureKind::ByMove,
+                        access_kind: CaptureAccessKind::Move,
+                        field_index: FieldIndex::from_raw(0),
+                    }],
+                    kind: ClosureKind::FnOnce,
+                },
+            );
+
+            let captured_generics = gcx
+                .store
+                .interners
+                .intern_generic_args(vec![GenericArgument::Type(gcx.types.int32)]);
+            let closure_ty = Ty::new(
+                TyKind::Closure {
+                    closure_def_id: closure_id,
+                    kind: ClosureKind::FnOnce,
+                    captured_generics,
+                    inputs: gcx.store.interners.intern_ty_list(Vec::new()),
+                    output: gcx.types.void,
+                },
+                gcx,
+            );
+            let destination = push_temp(&mut body, closure_ty);
+            let value = push_temp(&mut body, gcx.types.int32);
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(destination),
+                        Rvalue::Aggregate {
+                            kind: AggregateKind::Closure {
+                                def_id: closure_id,
+                                captured_generics,
+                            },
+                            fields: vec![Operand::move_(Place::from_local(value))]
+                                .into_iter()
+                                .collect(),
+                        },
+                    ),
+                    span,
+                });
+
+            assert!(LowerAggregates.run(gcx, &mut body).is_ok());
+
+            let field_ty = body.basic_blocks[body.start_block]
+                .statements
+                .iter()
+                .find_map(|statement| match &statement.kind {
+                    StatementKind::Assign(place, _)
+                        if place.local == destination && !place.projection.is_empty() =>
+                    {
+                        match place.projection.last() {
+                            Some(PlaceElem::Field(_, ty)) => Some(*ty),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .expect("lowered closure field assignment");
+            assert_eq!(field_ty, gcx.types.int32);
+        });
+    }
+
+    #[test]
+    fn safepoint_placement_covers_entry_and_every_cfg_cycle() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let loop_block = body.basic_blocks.push(BasicBlockData {
+                note: Some("loop".into()),
+                statements: Vec::new(),
+                terminator: None,
+            });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: loop_block },
+                span,
+            });
+            body.basic_blocks[loop_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: loop_block },
+                span,
+            });
+
+            assert!(InsertSafepoints.run(gcx, &mut body).is_ok());
+
+            assert!(matches!(
+                body.basic_blocks[body.start_block].statements[0].kind,
+                StatementKind::GcSafepoint(GcSafepointKind::Entry)
+            ));
+            assert!(matches!(
+                body.basic_blocks[loop_block].statements[0].kind,
+                StatementKind::GcSafepoint(GcSafepointKind::Loop)
+            ));
+            assert!(verify_safepoint_cycle_coverage(&body).is_ok());
+        });
+    }
+
+    #[test]
+    fn safepoint_verifier_rejects_an_unpolled_cycle() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto {
+                    target: body.start_block,
+                },
+                span,
+            });
+
+            assert_eq!(
+                verify_safepoint_cycle_coverage(&body),
+                Err(vec![body.start_block])
+            );
+        });
     }
 }

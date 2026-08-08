@@ -1,9 +1,10 @@
-import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity, setBufferLen, sizeOf}
+import std.mem.{MaybeUninit, MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity, sizeOf}
 import std.optional.Optional
 import std.iter.{Iterator, Iterable, FromIterator}
 import std.panic.panic
 import std.cmp.{Ord, Ordering}
 import std.marker.Clone
+import std.intrinsic.{__intrinsic_list_read_unchecked, __intrinsic_list_read_mut_unchecked}
 
 const LIST_INITIAL_CAPACITY: usize = 4
 
@@ -62,8 +63,40 @@ public struct List[Element] {
 // is safe; the blocking runtime moves the buffer's GC root with the value.
 impl[Element] std.marker.Sendable for List[Element] where Element: std.marker.Sendable {}
 
+
+/// Clears the storage a removed element occupied.
+///
+/// A managed buffer is scanned to its capacity, so a slot left holding an old
+/// pointer would keep that value alive after it had been taken out. Zeroing is
+/// cheaper than telling the collector how much of the buffer is live, which
+/// used to mean taking its global lock on every removal.
+func clearSlot[Element](_ buffer: *mut uint8, _ index: usize) {
+    let elemSize = sizeOf[Element]()
+    unsafe {
+        let start = buffer.byteAdd(index * elemSize)
+        // An element that can hold a pointer is word-aligned and a whole number
+        // of words in size, so word writes reach every pointer it contains and
+        // land on aligned addresses. Anything else cannot hold a pointer, and
+        // is cleared a byte at a time rather than risk a misaligned store.
+        let wordSize = sizeOf[usize]()
+        if elemSize % wordSize == 0 {
+            let words = elemSize / wordSize
+            var word = 0 as usize
+            while word < words {
+                (start as *mut usize).add(word).write(0 as usize)
+                word += 1 as usize
+            }
+        } else {
+            var offset = 0 as usize
+            while offset < elemSize {
+                start.byteAdd(offset).write(0 as uint8)
+                offset += 1 as usize
+            }
+        }
+    }
+}
+
 public func __list_from_raw_parts[Element](_ buffer: *mut uint8, _ len: usize, _ cap: usize) -> List[Element] {
-    setBufferLen[Element](buffer, len)
     List[Element] {
         buffer,
         len,
@@ -141,7 +174,6 @@ impl[Element] List[Element] {
         }
 
         self.len = nextLen
-        setBufferLen[Element](self.buffer, self.len)
     }
 
     func grow(&mut self) {
@@ -163,12 +195,13 @@ impl[Element] List[Element] {
         return .some(elem)
     }
 
+    @inline
     public func at(&self, _ index: usize) -> &Element {
         if index >= self.len {
             panic("list index out of range")
         }
 
-        return unsafe { (self.buffer as *const Element).add(index) as &Element }
+        return unsafe { __intrinsic_list_read_unchecked[Element](self.buffer, index) }
     }
 
     public func get(&mut self, _ index: usize) -> Optional[&mut Element] {
@@ -180,12 +213,13 @@ impl[Element] List[Element] {
         return .some(elem)
     }
 
+    @inline
     public func at(&mut self, _ index: usize) -> &mut Element {
         if index >= self.len {
             panic("list index out of range")
         }
 
-        return unsafe { (self.buffer as *mut Element).add(index) as &mut Element }
+        return unsafe { __intrinsic_list_read_mut_unchecked[Element](self.buffer, index) }
     }
 }
 
@@ -208,7 +242,6 @@ impl[Element] List[Element] {
         }
 
         self.len -= 1
-        setBufferLen[Element](self.buffer, self.len)
         let elemSize = sizeOf[Element]()
         let offset = self.len * elemSize
         var elem = MaybeUninit[Element].uninit()
@@ -216,12 +249,17 @@ impl[Element] List[Element] {
             let dst = elem.asMutPtr() as *mut uint8
             self.buffer.byteAdd(offset).readBytes(dst, elemSize)
         }
+        clearSlot[Element](self.buffer, self.len)
         return .some(unsafe { elem.assumeInit() })
     }
 
     public func clear(&mut self) {
+        var index = 0 as usize
+        while index < self.len {
+            clearSlot[Element](self.buffer, index)
+            index += 1 as usize
+        }
         self.len = 0
-        setBufferLen[Element](self.buffer, self.len)
     }
 }
 
@@ -264,7 +302,6 @@ impl[Element] List[Element] {
         }
 
         self.len = nextLen
-        setBufferLen[Element](self.buffer, self.len)
         return true
     }
 
@@ -292,7 +329,7 @@ impl[Element] List[Element] {
         }
 
         self.len -= 1
-        setBufferLen[Element](self.buffer, self.len)
+        clearSlot[Element](self.buffer, self.len)
         return .some(unsafe { elem.assumeInit() })
     }
 }

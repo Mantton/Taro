@@ -2,7 +2,7 @@
 ///
 /// These are exported via the prelude and available in all test files.
 
-extern "taro_rt" {
+extern "blocking" {
     func __rt__cleanup_wait()
 }
 

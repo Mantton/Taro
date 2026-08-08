@@ -2,6 +2,7 @@
 
 use std::ffi::c_void;
 
+use crate::gc_layout::{TraceMode, trace_layout};
 use crate::pc_metadata::{self, LogicalFrame, PcFunction, PcRecord, RootLocation};
 
 const MAX_WALKED_FRAMES: usize = 4096;
@@ -118,38 +119,22 @@ unsafe fn evaluate_root_location(
         storage = next;
     }
 
-    for recipe in location.recipes.iter() {
-        if output.len() >= MAX_CAPTURED_ROOTS {
-            return;
-        }
-        let mut base = storage;
-        let mut reachable = true;
-        for _ in 0..recipe.deref_depth {
-            let Some(next) = (unsafe { load_pointer(base) }) else {
-                reachable = false;
-                break;
-            };
-            if next == 0 {
-                reachable = false;
-                break;
-            }
-            base = next;
-        }
-        if !reachable {
-            continue;
-        }
-        let Some(field) = usize::try_from(recipe.offset)
-            .ok()
-            .and_then(|offset| base.checked_add(offset))
-        else {
-            continue;
-        };
-        let Some(value) = (unsafe { load_pointer(field) }) else {
-            continue;
-        };
-        if value != 0 {
-            output.push(value as *const u8);
-        }
+    let result = unsafe {
+        trace_layout(
+            storage as *const u8,
+            &location.nodes,
+            usize::MAX,
+            TraceMode::Stack,
+            |value| {
+                if output.len() < MAX_CAPTURED_ROOTS {
+                    output.push(value);
+                }
+            },
+        )
+    };
+    if let Err(error) = result {
+        eprintln!("fatal: invalid live stack GC value at {storage:#x}: {error}");
+        std::process::abort();
     }
 }
 
@@ -248,10 +233,10 @@ pub(crate) fn capture_logical_frames() -> Vec<CapturedLogicalFrame> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pc_metadata::RootRecipe;
+    use crate::gc_layout::{GC_LAYOUT_POINTER, GC_LAYOUT_REFERENCE, GcLayoutNode};
 
     #[test]
-    fn root_recipe_follows_storage_and_reference_indirection() {
+    fn root_layout_follows_storage_and_reference_indirection() {
         let managed = Box::new(17_u64);
         let managed_pointer = (&*managed as *const u64).cast::<u8>();
         let aggregate = Box::new(managed_pointer as usize);
@@ -261,33 +246,62 @@ mod tests {
             dwarf_register: FRAME_POINTER_DWARF_REGISTER,
             frame_offset: 0,
             storage_deref_depth: 1,
-            recipes: vec![RootRecipe {
-                offset: 0,
-                deref_depth: 1,
-            }],
+            nodes: vec![
+                GcLayoutNode {
+                    offset: 0,
+                    stride: 0,
+                    first_child: 1,
+                    child_count: 1,
+                    kind: GC_LAYOUT_REFERENCE,
+                    width: 0,
+                    reserved: [0; 6],
+                },
+                GcLayoutNode {
+                    offset: 0,
+                    stride: 0,
+                    first_child: 0,
+                    child_count: 0,
+                    kind: GC_LAYOUT_POINTER,
+                    width: 0,
+                    reserved: [0; 6],
+                },
+            ],
         };
         let mut roots = Vec::new();
         unsafe {
             evaluate_root_location((&*wrapper as *const usize) as usize, &location, &mut roots)
         };
-        assert_eq!(roots, vec![managed_pointer]);
+        assert_eq!(
+            roots,
+            vec![(&*aggregate as *const usize).cast::<u8>(), managed_pointer,]
+        );
     }
 
     #[test]
-    fn null_reference_stops_deeper_recipes() {
+    fn null_reference_stops_deeper_layout_traversal() {
         let storage = Box::new(0_usize);
         let location = RootLocation {
             dwarf_register: FRAME_POINTER_DWARF_REGISTER,
             frame_offset: 0,
             storage_deref_depth: 0,
-            recipes: vec![
-                RootRecipe {
+            nodes: vec![
+                GcLayoutNode {
                     offset: 0,
-                    deref_depth: 0,
+                    stride: 0,
+                    first_child: 1,
+                    child_count: 1,
+                    kind: GC_LAYOUT_REFERENCE,
+                    width: 0,
+                    reserved: [0; 6],
                 },
-                RootRecipe {
+                GcLayoutNode {
                     offset: 0,
-                    deref_depth: 1,
+                    stride: 0,
+                    first_child: 0,
+                    child_count: 0,
+                    kind: GC_LAYOUT_POINTER,
+                    width: 0,
+                    reserved: [0; 6],
                 },
             ],
         };

@@ -61,6 +61,30 @@ pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileR
     Ok(())
 }
 
+/// Lower one source-form async body into its canonical constructor and queue
+/// its synthesized poll/drop bodies. This package-wide phase must complete for
+/// every function before canonical MIR is published, otherwise callers would
+/// see a different callee representation depending on build order or whether
+/// the dependency came from metadata.
+pub fn lower_async_for_canonical_mir<'ctx>(
+    gcx: Gcx<'ctx>,
+    body: &mut Body<'ctx>,
+) -> CompileResult<()> {
+    if !body.is_async {
+        return Ok(());
+    }
+
+    let mut passes: Vec<Box<dyn MirPass>> = vec![
+        Box::new(escape::EscapeAnalysis),
+        Box::new(escape::ApplyEscapeAnalysis),
+        Box::new(async_transform::AsyncTransform),
+    ];
+    run_passes(gcx, body, &mut passes)?;
+    // AsyncTransform builds a fresh constructor CFG. Canonical MIR always has
+    // the same locally-cleaned boundary for ordinary and synthesized bodies.
+    run_local_passes(gcx, body)
+}
+
 /// Global passes: run after all MIR bodies are built.
 /// These passes may require access to other function bodies (e.g., inlining).
 /// Includes: inlining, lower aggregates, escape analysis, safepoints.
@@ -68,22 +92,11 @@ pub fn run_local_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileR
 /// Note: escape::compute_escape_summaries must be called before these passes
 /// to enable interprocedural escape analysis.
 pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-    // Escaping source bindings must be heapified before async lowering moves
-    // Copy locals into the coroutine frame. Otherwise a loop declaration would
-    // reuse one frame field on every poll, losing its StorageLive boundary
-    // before the regular post-lowering escape pass can act on it.
-    if body.is_async {
-        let mut pre_async_passes: Vec<Box<dyn MirPass>> = vec![
-            Box::new(escape::EscapeAnalysis),
-            Box::new(escape::ApplyEscapeAnalysis),
-        ];
-        run_passes(gcx, body, &mut pre_async_passes)?;
-    }
-
     let mut passes: Vec<Box<dyn MirPass>> = vec![
-        Box::new(async_transform::AsyncTransform),
         Box::new(devirtualize::DevirtualizeStaticCalls),
         Box::new(inline::Inline::default()),
+        Box::new(passes::LowerKeepAlive),
+        Box::new(passes::LowerExistentialBoxes),
         Box::new(const_prop::ConstantPropagation),
         Box::new(passes::SimplifyCfg), // Clean up after inlining (merges blocks, removes unreachable)
         Box::new(passes::LowerAggregates),

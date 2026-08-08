@@ -56,7 +56,12 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, " = ")?;
                 self.write_rvalue(rvalue, f)
             }
-            StatementKind::GcSafepoint => write!(f, "gc_safepoint"),
+            StatementKind::KeepAlive(operand) => {
+                write!(f, "keep_alive(")?;
+                self.write_operand(operand, f)?;
+                write!(f, ")")
+            }
+            StatementKind::GcSafepoint(kind) => write!(f, "gc_safepoint({kind:?})"),
             StatementKind::Nop => write!(f, "nop"),
             StatementKind::SetDiscriminant {
                 place,

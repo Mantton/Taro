@@ -33,8 +33,8 @@ const MAX_TASK_TRACE_FRAMES: usize = 32;
 static PANIC_PAYLOAD_BYTE_DESC: GcDesc = GcDesc {
     size: 1,
     align: 1,
-    ptr_offsets: std::ptr::null(),
-    ptr_count: 0,
+    nodes: std::ptr::null(),
+    node_count: 0,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3005,7 +3005,7 @@ fn format_diagnostics_report(
         );
         let _ = writeln!(
             output,
-            "  gc collections={} allocations={} frees={} allocated_bytes={} freed_bytes={} live_objects={} heap_live_bytes={} heap_reserved_bytes={} heap_free_page_bytes={}",
+            "  gc collections={} allocations={} frees={} allocated_bytes={} freed_bytes={} live_objects={} heap_live_bytes={} heap_goal={} memory_limit={} heap_reserved_bytes={} heap_free_page_bytes={} cached_span_refills={} released_bytes={} scavenged_bytes={} soft_limit_exceedances={}",
             gc.collections.saturating_sub(gc_baseline.collections),
             gc.total_allocations
                 .saturating_sub(gc_baseline.total_allocations),
@@ -3016,8 +3016,18 @@ fn format_diagnostics_report(
                 .saturating_sub(gc_baseline.total_freed_bytes),
             gc.live_objects,
             gc.live_bytes,
+            gc.heap_goal,
+            gc.configured_memory_limit
+                .map_or_else(|| "off".to_string(), |value| value.to_string()),
             gc.segment_bytes,
             gc.free_bytes,
+            gc.cached_span_refills
+                .saturating_sub(gc_baseline.cached_span_refills),
+            gc.released_bytes.saturating_sub(gc_baseline.released_bytes),
+            gc.scavenged_bytes
+                .saturating_sub(gc_baseline.scavenged_bytes),
+            gc.soft_limit_exceedances
+                .saturating_sub(gc_baseline.soft_limit_exceedances),
         );
         let _ = writeln!(
             output,

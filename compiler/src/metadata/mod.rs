@@ -22,7 +22,7 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 25;
+const META_FORMAT_VERSION: u32 = 26;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {
@@ -162,6 +162,9 @@ fn validate_payload_capabilities(
     }
     if payload.mir_payload.is_some() != header.has_mir_payload {
         return Err("metadata MIR capability mismatch".into());
+    }
+    if payload.inline_mir_payload.is_some() != header.has_mir_payload {
+        return Err("metadata canonical inline MIR capability mismatch".into());
     }
     Ok(())
 }
@@ -381,7 +384,7 @@ pub fn write_package_metadata<'ctx>(
     let checksum = blake3::hash(&payload_bytes).to_hex().to_string();
 
     let has_semantic_payload = payload.semantic_payload.is_some();
-    let has_mir_payload = payload.mir_payload.is_some();
+    let has_mir_payload = payload.mir_payload.is_some() && payload.inline_mir_payload.is_some();
     let has_artifact_ref = artifact_relpath.is_some();
     let frontend_reusable = match mode {
         ReuseMode::CodegenDependency => has_semantic_payload && has_mir_payload && has_artifact_ref,
@@ -780,15 +783,29 @@ pub fn hydrate_loaded_metadata<'ctx>(
             |e| HydrationError::new(format!("failed to decode resolution payload: {e}")),
         )?;
     let type_db = wire::type_database_from_wire(gcx, &semantic.type_db, remap, symbol_table);
-    let decoded_mir = if matches!(mode, ReuseMode::CodegenDependency) {
+    let (decoded_mir, decoded_inline_mir) = if matches!(mode, ReuseMode::CodegenDependency) {
         let Some(mir_payload) = loaded.payload.mir_payload.as_deref() else {
             return Err(HydrationError::new("metadata missing MIR payload"));
         };
+        let Some(inline_mir_payload) = loaded.payload.inline_mir_payload.as_deref() else {
+            return Err(HydrationError::new(
+                "metadata missing canonical inline MIR payload",
+            ));
+        };
         let mir_payload: wire::MirPackageWire = bincode::deserialize(mir_payload)
             .map_err(|e| HydrationError::new(format!("failed to decode MIR payload: {e}")))?;
-        Some(wire::mir_package_from_wire(gcx, &mir_payload, remap))
+        let inline_mir_payload: wire::MirPackageWire = bincode::deserialize(inline_mir_payload)
+            .map_err(|e| {
+                HydrationError::new(format!(
+                    "failed to decode canonical inline MIR payload: {e}"
+                ))
+            })?;
+        (
+            Some(wire::mir_package_from_wire(gcx, &mir_payload, remap)),
+            Some(wire::mir_package_from_wire(gcx, &inline_mir_payload, remap)),
+        )
     } else {
-        None
+        (None, None)
     };
 
     if let Some(symbol_id) = invalid_symbol_id.get() {
@@ -838,6 +855,13 @@ pub fn hydrate_loaded_metadata<'ctx>(
         let mir = gcx.store.alloc_mir_package(mir);
         gcx.store
             .mir_packages
+            .borrow_mut()
+            .insert(gcx.package_index(), mir);
+    }
+    if let Some(mir) = decoded_inline_mir {
+        let mir = gcx.store.alloc_mir_package(mir);
+        gcx.store
+            .inline_mir_packages
             .borrow_mut()
             .insert(gcx.package_index(), mir);
     }
@@ -898,24 +922,56 @@ fn build_payload_wire<'ctx>(
             None => None,
         };
 
-    let mir = match mode {
+    let (mir, inline_mir) = match mode {
         ReuseMode::CodegenDependency => {
             let mir_packages = gcx.store.mir_packages.borrow();
-            mir_packages.get(&pkg).copied().map(|package| {
-                let retained = retained_mir_defs_for_metadata(gcx, package);
-                wire::mir_package_to_wire_filtered(package, |def_id, _body| {
-                    retained.contains(&def_id)
-                })
-            })
+            let inline_packages = gcx.store.inline_mir_packages.borrow();
+            let package = mir_packages.get(&pkg).copied();
+            let inline_package = inline_packages.get(&pkg).copied();
+            match (package, inline_package) {
+                (Some(package), Some(inline_package)) => {
+                    let inline_retained = retained_mir_defs_for_metadata(gcx, inline_package);
+                    // Canonical retention is authoritative for which bodies are
+                    // available to the inliner. Final MIR needs an additional,
+                    // independent seed: global optimization and late method
+                    // resolution can expose downstream codegen dependencies
+                    // that were not direct canonical callees (for example a
+                    // synthesized enum equality body used by an async poll).
+                    // Keeping these only in the final store preserves
+                    // source/metadata inlining parity while making every body
+                    // needed for downstream monomorphization available.
+                    let mut final_roots = retained_mir_defs_for_metadata(gcx, package);
+                    final_roots.extend(inline_retained.iter().copied());
+                    let final_retained = extend_final_mir_retention(package, &final_roots);
+                    (
+                        Some(wire::mir_package_to_wire_filtered(
+                            package,
+                            |def_id, _body| final_retained.contains(&def_id),
+                        )),
+                        Some(wire::mir_package_to_wire_filtered(
+                            inline_package,
+                            |def_id, _body| inline_retained.contains(&def_id),
+                        )),
+                    )
+                }
+                _ => (None, None),
+            }
         }
-        ReuseMode::CodegenRoot => None,
-        ReuseMode::SemanticDependency => None,
+        ReuseMode::CodegenRoot | ReuseMode::SemanticDependency => (None, None),
     };
     let mir_payload = match mir {
         Some(mir) => Some(
             bincode::serialize(&mir)
                 .map_err(|e| io::Error::other(format!("failed to serialize MIR payload: {e}")))?,
         ),
+        None => None,
+    };
+    let inline_mir_payload = match inline_mir {
+        Some(mir) => Some(bincode::serialize(&mir).map_err(|e| {
+            io::Error::other(format!(
+                "failed to serialize canonical inline MIR payload: {e}"
+            ))
+        })?),
         None => None,
     };
 
@@ -948,6 +1004,7 @@ fn build_payload_wire<'ctx>(
         file_table: wire::file_table_from_dcx(gcx),
         semantic_payload,
         mir_payload,
+        inline_mir_payload,
         std_items,
         synthetic_definitions,
         emitted_instances,
@@ -981,6 +1038,43 @@ fn retained_mir_defs_for_metadata<'ctx>(
             continue;
         };
 
+        local_callees.clear();
+        crate::mir::for_each_function_constant_in_body(body, |callee, _args| {
+            local_callees.push(callee);
+        });
+        for callee in local_callees.iter().copied() {
+            if package.functions.contains_key(&callee) && !retained.contains(&callee) {
+                worklist.push(callee);
+            }
+        }
+    }
+
+    retained
+}
+
+/// Final MIR may introduce references absent from canonical MIR, most notably
+/// an async constructor's synthesized poll and drop functions. Start from the
+/// canonical candidate set (which controls source/cached inline parity) and
+/// retain the transitive final bodies required to codegen those candidates.
+fn extend_final_mir_retention<'ctx>(
+    package: &crate::mir::MirPackage<'ctx>,
+    roots: &FxHashSet<DefinitionID>,
+) -> FxHashSet<DefinitionID> {
+    let mut retained = FxHashSet::default();
+    let mut worklist: Vec<_> = roots
+        .iter()
+        .copied()
+        .filter(|definition| package.functions.contains_key(definition))
+        .collect();
+    let mut local_callees = Vec::new();
+
+    while let Some(definition) = worklist.pop() {
+        if !retained.insert(definition) {
+            continue;
+        }
+        let Some(body) = package.functions.get(&definition).copied() else {
+            continue;
+        };
         local_callees.clear();
         crate::mir::for_each_function_constant_in_body(body, |callee, _args| {
             local_callees.push(callee);
@@ -1047,7 +1141,7 @@ fn should_retain_mir_root_for_metadata<'ctx>(
         return false;
     }
 
-    crate::mir::optimize::inline::is_body_small(body)
+    crate::mir::optimize::inline::is_body_small(gcx, body)
 }
 
 fn write_envelope(out: &mut dyn Write, header: &MetadataHeader, payload: &[u8]) -> io::Result<()> {
@@ -1318,6 +1412,7 @@ mod tests {
             file_table: vec![],
             semantic_payload: Some(vec![1, 2, 3]),
             mir_payload: Some(vec![4, 5, 6]),
+            inline_mir_payload: Some(vec![7, 8, 9]),
             std_items: None,
             synthetic_definitions: vec![],
             emitted_instances: vec![],

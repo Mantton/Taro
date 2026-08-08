@@ -144,9 +144,12 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                     invalid[place.local.index()] = true;
                     record_place_use(place, block_id, statement_index, &mut uses, &mut invalid);
                 }
+                StatementKind::KeepAlive(operand) => {
+                    record_operand_use(operand, block_id, statement_index, &mut uses, &mut invalid);
+                }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
-                | StatementKind::GcSafepoint
+                | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
             }
         }

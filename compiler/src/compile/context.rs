@@ -968,6 +968,17 @@ impl<'arena> GlobalContext<'arena> {
         *package.functions.get(&id).expect("mir body")
     }
 
+    /// Returns the canonical, locally-cleaned MIR used for interprocedural
+    /// inlining. This representation is deliberately separate from final MIR:
+    /// an inliner must not see a body that has already been inlined and had
+    /// safepoints inserted merely because it came from metadata rather than the
+    /// current compilation session.
+    pub fn get_inline_mir_body(self, id: DefinitionID) -> &'arena mir::Body<'arena> {
+        let packages = self.context.store.inline_mir_packages.borrow();
+        let package = packages.get(&id.package()).expect("inline MIR package");
+        *package.functions.get(&id).expect("inline MIR body")
+    }
+
     pub fn resolution_output(self, pkg: PackageIndex) -> &'arena ResolutionOutput<'arena> {
         let outputs = self.context.store.resolution_outputs.borrow();
         *outputs.get(&pkg).expect("resolution output")
@@ -1788,6 +1799,9 @@ pub struct CompilerStore<'arena> {
     pub package_mapping: RefCell<FxHashMap<EcoString, PackageIndex>>,
     pub package_idents: RefCell<FxHashMap<PackageIndex, EcoString>>,
     pub type_databases: RefCell<FxHashMap<PackageIndex, TypeDatabase<'arena>>>,
+    /// Canonical MIR after local passes and before interprocedural transforms.
+    pub inline_mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
+    /// Fully optimized MIR consumed by specialization and code generation.
     pub mir_packages: RefCell<FxHashMap<PackageIndex, &'arena mir::MirPackage<'arena>>>,
     pub queued_mir_bodies: RefCell<FxHashMap<DefinitionID, Body<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
@@ -1840,6 +1854,7 @@ impl<'arena> CompilerStore<'arena> {
             package_idents: Default::default(),
             resolution_outputs: Default::default(),
             type_databases: Default::default(),
+            inline_mir_packages: Default::default(),
             mir_packages: Default::default(),
             queued_mir_bodies: Default::default(),
             llvm_modules: Default::default(),
@@ -2230,9 +2245,19 @@ impl<'arena> GlobalContext<'arena> {
         type_head: TypeHead,
         method_id: DefinitionID,
         name: Symbol,
-        info: crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>,
+        mut info: crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>,
     ) {
         self.with_session_type_database(|db| {
+            // Once THIR synthesis assigns a definition ID, later recursive
+            // conformance discovery must not replace it with an older
+            // pre-synthesis record. The ID is the durable link serialized in
+            // dependency metadata and used to reconstruct synthetic witnesses.
+            if info.syn_id.is_none() {
+                info.syn_id = db
+                    .synthetic_methods
+                    .get(&(type_head, method_id))
+                    .and_then(|existing| existing.syn_id);
+            }
             db.synthetic_methods.insert((type_head, method_id), info);
 
             // Also register as a member so lookup finds it
