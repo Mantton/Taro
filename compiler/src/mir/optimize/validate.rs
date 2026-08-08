@@ -346,6 +346,7 @@ impl<'ctx> StructureValidator<'ctx, '_> {
         match &statement.kind {
             StatementKind::SourceScope(scope) => self.check_source_scope(*scope, statement.span),
             StatementKind::StorageLive(local) => self.check_local(*local, statement.span),
+            StatementKind::SetInitialized(local) => self.check_local(*local, statement.span),
             StatementKind::Assign(place, rvalue) => {
                 self.check_place(place, statement.span);
                 self.check_rvalue(rvalue, statement.span);
@@ -1310,6 +1311,9 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                 StatementKind::StorageLive(local) => {
                     state.reinitialize(*local);
                 }
+                StatementKind::SetInitialized(local) => {
+                    state.reinitialize(*local);
+                }
                 StatementKind::Assign(dest, rvalue) => {
                     check_rvalue_uses(gcx, body, &state, rvalue, stmt.span)?;
                     state.reinitialize(dest.local);
@@ -1760,6 +1764,7 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                     )?;
                 }
                 StatementKind::SourceScope(_)
+                | StatementKind::SetInitialized(_)
                 | StatementKind::SetDiscriminant { .. }
                 | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
@@ -1961,6 +1966,7 @@ fn apply_statement_liveness<'ctx>(
         StatementKind::StorageLive(local) => {
             live.remove(local);
         }
+        StatementKind::SetInitialized(_) => {}
         StatementKind::Assign(dest, rvalue) => {
             if dest.projection.is_empty() {
                 live.remove(&dest.local);

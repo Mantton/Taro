@@ -344,7 +344,9 @@ fn rewrite_resident_local_places<'ctx>(
     for block in body.basic_blocks.iter_mut() {
         for statement in &mut block.statements {
             match &mut statement.kind {
-                StatementKind::SourceScope(_) | StatementKind::StorageLive(_) => {}
+                StatementKind::SourceScope(_)
+                | StatementKind::StorageLive(_)
+                | StatementKind::SetInitialized(_) => {}
                 StatementKind::Assign(destination, rvalue) => {
                     remap_resident_place(destination, &remaps);
                     remap_resident_rvalue(rvalue, &remaps);

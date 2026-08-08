@@ -148,6 +148,13 @@ pub enum StatementKind<'ctx> {
     /// a declaration (for example, on each loop iteration). Passes that move a
     /// local to stable storage use it to distinguish rebinding from mutation.
     StorageLive(LocalId),
+    /// Publishes that a compiler-lowered, safepoint-free aggregate store
+    /// sequence has fully initialized `local`.
+    ///
+    /// This is an initialization-analysis fact only and emits no machine code.
+    /// It lets GC scan the whole local after aggregate lowering without
+    /// treating earlier partial field stores as a complete value.
+    SetInitialized(LocalId),
     Assign(Place<'ctx>, Rvalue<'ctx>),
     /// A compiler-only use that extends an operand's lifetime without
     /// generating machine code.
@@ -387,6 +394,7 @@ pub fn for_each_function_constant_in_body<'ctx>(
                 }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::SetInitialized(_)
                 | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop
                 | StatementKind::SetDiscriminant { .. } => {}

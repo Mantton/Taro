@@ -614,6 +614,7 @@ fn body_inline_cost(gcx: Gcx<'_>, body: &Body<'_>) -> usize {
                 StatementKind::Assign(_, Rvalue::Alloc { .. }) => 10,
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::SetInitialized(_)
                 | StatementKind::Assign(..)
                 | StatementKind::KeepAlive(_)
                 | StatementKind::GcSafepoint(_)
@@ -774,6 +775,9 @@ fn remap_statement<'ctx>(
             }
             StatementKind::StorageLive(local) => {
                 StatementKind::StorageLive(local_map[local.index()])
+            }
+            StatementKind::SetInitialized(local) => {
+                StatementKind::SetInitialized(local_map[local.index()])
             }
             StatementKind::Assign(place, rvalue) => StatementKind::Assign(
                 remap_place(gcx, place, local_map, gen_args),

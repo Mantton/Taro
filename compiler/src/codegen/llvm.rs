@@ -3932,6 +3932,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.current_source_scope = *scope;
             }
             mir::StatementKind::StorageLive(_) => {}
+            mir::StatementKind::SetInitialized(_) => {}
             mir::StatementKind::Assign(place, rvalue) => {
                 if self.try_lower_large_place_move(body, locals, place, rvalue)? {
                     return Ok(());

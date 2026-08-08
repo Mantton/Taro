@@ -406,6 +406,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 StatementKind::KeepAlive(operand) => mark_operand_used(operand, &mut used),
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::SetInitialized(_)
                 | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
             }
@@ -551,6 +552,9 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 StatementKind::SourceScope(scope) => StatementKind::SourceScope(*scope),
                 StatementKind::StorageLive(local) => remap[*local]
                     .map(StatementKind::StorageLive)
+                    .unwrap_or(StatementKind::Nop),
+                StatementKind::SetInitialized(local) => remap[*local]
+                    .map(StatementKind::SetInitialized)
                     .unwrap_or(StatementKind::Nop),
                 StatementKind::Assign(dest, rv) => {
                     if let Some(new_local) = remap[dest.local] {

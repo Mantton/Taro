@@ -133,6 +133,11 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                             temps.push((temp_local, *idx));
                         }
 
+                        let publishes_with_discriminant = matches!(
+                            &kind,
+                            crate::mir::AggregateKind::Adt { def_id, .. }
+                                if gcx.definition_kind(*def_id) == DefinitionKind::Enum
+                        );
                         match kind {
                             crate::mir::AggregateKind::Tuple => {
                                 let dest_ty = place_ty(body, gcx, &dest);
@@ -318,6 +323,16 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
                                     });
                                 }
                             }
+                        }
+                        if dest.projection.is_empty() && !publishes_with_discriminant {
+                            // All field-producing calls ran before lowering.
+                            // The stores above are contiguous and cannot
+                            // safepoint, so this is the first location where a
+                            // whole-local GC descriptor is safe to evaluate.
+                            lowered.push(Statement {
+                                kind: StatementKind::SetInitialized(dest.local),
+                                span,
+                            });
                         }
                     }
                     _ => lowered.push(stmt),
@@ -812,6 +827,14 @@ mod tests {
 
             assert!(LowerAggregates.run(gcx, &mut body).is_ok());
 
+            assert!(matches!(
+                body.basic_blocks[body.start_block]
+                    .statements
+                    .last()
+                    .map(|statement| &statement.kind),
+                Some(StatementKind::SetInitialized(local)) if *local == destination
+            ));
+
             let field_ty = body.basic_blocks[body.start_block]
                 .statements
                 .iter()
@@ -828,6 +851,40 @@ mod tests {
                 })
                 .expect("lowered closure field assignment");
             assert_eq!(field_ty, gcx.types.int32);
+        });
+    }
+
+    #[test]
+    fn empty_aggregate_still_publishes_initialization() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let tuple_ty = Ty::new(
+                TyKind::Tuple(gcx.store.interners.intern_ty_list(Vec::new())),
+                gcx,
+            );
+            let destination = push_temp(&mut body, tuple_ty);
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(destination),
+                        Rvalue::Aggregate {
+                            kind: AggregateKind::Tuple,
+                            fields: Vec::new().into_iter().collect(),
+                        },
+                    ),
+                    span,
+                });
+
+            assert!(LowerAggregates.run(gcx, &mut body).is_ok());
+            assert!(matches!(
+                body.basic_blocks[body.start_block].statements.as_slice(),
+                [Statement {
+                    kind: StatementKind::SetInitialized(local),
+                    ..
+                }] if *local == destination
+            ));
         });
     }
 

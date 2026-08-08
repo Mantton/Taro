@@ -149,6 +149,7 @@ fn find_candidates(body: &Body<'_>) -> Vec<bool> {
                 }
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
+                | StatementKind::SetInitialized(_)
                 | StatementKind::GcSafepoint(_)
                 | StatementKind::Nop => {}
             }

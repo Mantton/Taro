@@ -226,6 +226,7 @@ fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHashSet<LocalI
         StatementKind::StorageLive(local) => {
             live.remove(local);
         }
+        StatementKind::SetInitialized(_) => {}
         StatementKind::Assign(dest, rvalue) => {
             if dest.projection.is_empty() {
                 live.remove(&dest.local);
@@ -292,10 +293,11 @@ fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
 /// Forward must-analysis for whole-local initialization.
 ///
 /// The analysis deliberately does not attempt field-sensitive state. Direct
-/// field stores leave an uninitialized aggregate uninitialized; publishing an
-/// enum tag (`SetDiscriminant`) or assigning a complete local initializes the
-/// whole value. At joins, a local is scannable only when every incoming edge
-/// carries an initialized value.
+/// field stores leave an uninitialized aggregate uninitialized. A complete
+/// assignment, `SetInitialized` after a lowered aggregate store sequence, or
+/// an enum tag publication (`SetDiscriminant`) initializes the whole value. At
+/// joins, a local is scannable only when every incoming edge carries an
+/// initialized value.
 fn compute_initialization(
     body: &Body<'_>,
 ) -> (
@@ -385,6 +387,9 @@ fn transfer_statement_initialization(
     match statement {
         StatementKind::StorageLive(local) => {
             initialized.remove(local);
+        }
+        StatementKind::SetInitialized(local) => {
+            initialized.insert(*local);
         }
         StatementKind::Assign(destination, rvalue) => {
             apply_rvalue_moves(rvalue, initialized);
@@ -871,6 +876,63 @@ mod tests {
             assert!(result.initialized_after(after_move).contains(&aggregate));
             assert!(result.live_before(poll).contains(&aggregate));
             assert!(result.initialized_before(poll).contains(&aggregate));
+        });
+    }
+
+    #[test]
+    fn aggregate_publication_marks_the_whole_local_initialized() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let aggregate = push_temp(&mut body, gcx.types.uint);
+            let field_value = push_temp(&mut body, gcx.types.uint);
+            body.locals[field_value].kind = LocalKind::Param;
+            body.basic_blocks[body.start_block].statements = vec![
+                Statement {
+                    kind: StatementKind::StorageLive(aggregate),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place {
+                            local: aggregate,
+                            projection: vec![PlaceElem::Field(
+                                FieldIndex::from_raw(0),
+                                gcx.types.uint,
+                            )],
+                        },
+                        Rvalue::Use(Operand::Copy(Place::from_local(field_value))),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::SetInitialized(aggregate),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::GcSafepoint(GcSafepointKind::Loop),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(aggregate))),
+                    span,
+                },
+            ];
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Unreachable,
+                span,
+            });
+
+            let result = compute_liveness(&body);
+            let location = |index| MirLocation::Statement {
+                block: body.start_block,
+                index,
+            };
+            assert!(!result.initialized_after(location(1)).contains(&aggregate));
+            assert!(!result.initialized_before(location(2)).contains(&aggregate));
+            assert!(result.initialized_after(location(2)).contains(&aggregate));
+            assert!(result.initialized_before(location(3)).contains(&aggregate));
+            assert!(result.live_before(location(3)).contains(&aggregate));
         });
     }
 

@@ -1053,7 +1053,9 @@ fn rewrite_statement<'ctx>(
     param_replacements: &[Option<LocalId>],
 ) {
     match &mut stmt.kind {
-        StatementKind::SourceScope(_) | StatementKind::StorageLive(_) => {}
+        StatementKind::SourceScope(_)
+        | StatementKind::StorageLive(_)
+        | StatementKind::SetInitialized(_) => {}
         StatementKind::Assign(place, rvalue) => {
             rewrite_place(place, heapified, param_replacements);
             rewrite_rvalue(rvalue, heapified, param_replacements);

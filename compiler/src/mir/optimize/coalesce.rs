@@ -210,6 +210,7 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
                     }
                     StatementKind::SourceScope(_)
                     | StatementKind::StorageLive(_)
+                    | StatementKind::SetInitialized(_)
                     | StatementKind::GcSafepoint(_)
                     | StatementKind::Nop => {}
                 }
@@ -359,6 +360,7 @@ impl<'ctx> MirPass<'ctx> for RepeatFieldForwarding {
                     }
                     StatementKind::SourceScope(_)
                     | StatementKind::StorageLive(_)
+                    | StatementKind::SetInitialized(_)
                     | StatementKind::GcSafepoint(_)
                     | StatementKind::Nop => {}
                 }
@@ -496,6 +498,7 @@ fn gap_is_safe_source(
             }
             StatementKind::SourceScope(_)
             | StatementKind::StorageLive(_)
+            | StatementKind::SetInitialized(_)
             | StatementKind::GcSafepoint(_)
             | StatementKind::KeepAlive(_)
             | StatementKind::SetDiscriminant { .. }
@@ -732,7 +735,9 @@ fn replace_stmt_operands<'ctx>(
     replace_map: &[Option<Replacement<'ctx>>],
 ) {
     match &mut stmt.kind {
-        StatementKind::SourceScope(_) | StatementKind::StorageLive(_) => {}
+        StatementKind::SourceScope(_)
+        | StatementKind::StorageLive(_)
+        | StatementKind::SetInitialized(_) => {}
         StatementKind::Assign(_, rv) => replace_rvalue_operands(rv, replace_map),
         StatementKind::SetDiscriminant { .. } => {}
         StatementKind::KeepAlive(operand) => replace_operand(operand, replace_map),

@@ -1060,6 +1060,7 @@ pub struct StatementWire {
 pub enum StatementKindWire {
     SourceScope(u32),
     StorageLive(u32),
+    SetInitialized(u32),
     Assign(PlaceWire, RvalueWire),
     KeepAlive(OperandWire),
     GcSafepoint(GcSafepointKindWire),
@@ -3947,6 +3948,9 @@ pub fn statement_to_wire(v: &mir::Statement<'_>) -> StatementWire {
             mir::StatementKind::StorageLive(local) => {
                 StatementKindWire::StorageLive(local.index() as u32)
             }
+            mir::StatementKind::SetInitialized(local) => {
+                StatementKindWire::SetInitialized(local.index() as u32)
+            }
             mir::StatementKind::Assign(place, rvalue) => {
                 StatementKindWire::Assign(place_to_wire(place), rvalue_to_wire(rvalue))
             }
@@ -3982,6 +3986,9 @@ pub fn statement_from_wire<'a>(
             }
             StatementKindWire::StorageLive(local) => {
                 mir::StatementKind::StorageLive(mir::LocalId::from_raw(*local))
+            }
+            StatementKindWire::SetInitialized(local) => {
+                mir::StatementKind::SetInitialized(mir::LocalId::from_raw(*local))
             }
             StatementKindWire::Assign(place, rvalue) => mir::StatementKind::Assign(
                 place_from_wire(gcx, place),
@@ -5618,7 +5625,7 @@ mod tests {
     }
 
     #[test]
-    fn mir_inline_source_scopes_roundtrip_through_wire() {
+    fn mir_inline_source_scopes_and_initialization_roundtrip_through_wire() {
         crate::mir::test_support::with_test_gcx(|gcx| {
             let mut body = crate::mir::test_support::minimal_body(gcx);
             let nested_definition = DefinitionID::new(
@@ -5635,6 +5642,12 @@ mod tests {
                 .statements
                 .push(mir::Statement {
                     kind: mir::StatementKind::SourceScope(nested_scope),
+                    span,
+                });
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(mir::Statement {
+                    kind: mir::StatementKind::SetInitialized(body.return_local),
                     span,
                 });
 
@@ -5660,6 +5673,10 @@ mod tests {
             assert!(matches!(
                 decoded.basic_blocks[decoded.start_block].statements[0].kind,
                 mir::StatementKind::SourceScope(scope) if scope == nested_scope
+            ));
+            assert!(matches!(
+                decoded.basic_blocks[decoded.start_block].statements[1].kind,
+                mir::StatementKind::SetInitialized(local) if local == decoded.return_local
             ));
         });
     }

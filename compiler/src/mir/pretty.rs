@@ -51,6 +51,9 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
             StatementKind::StorageLive(local) => {
                 write!(f, "storage_live(%{:?})", local)
             }
+            StatementKind::SetInitialized(local) => {
+                write!(f, "set_initialized(%{:?})", local)
+            }
             StatementKind::Assign(place, rvalue) => {
                 self.write_place(place, f)?;
                 write!(f, " = ")?;
