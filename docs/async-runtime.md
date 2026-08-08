@@ -194,7 +194,32 @@ Runtime sync primitives are task-token based rather than OS-thread based.
 
 ## GC Safepoints
 
-Executor threads participate in the stop-the-world collector.
+Executor threads participate in the non-moving, stop-the-world mark-sweep
+collector. Safepoints are explicit MIR effects rather than an accidental
+property of calls:
+
+- Every managed MIR body has an entry poll. The compiler also places a
+  deterministic set of loop polls that covers every CFG cycle, and a verifier
+  rejects a body if any cycle remains that does not cross a poll.
+- Calls are classified as `NoGc`, `ManagedSafepoint`, `RuntimeSafepoint`, or
+  `BlockingSafepoint`. Every runtime ABI entry has an authoritative
+  classification; an unclassified entry is a compiler error. Taro calls are
+  managed safepoints, ordinary C ABI calls and intrinsics do not collect, and
+  foreign work that may block must use `extern "blocking"`.
+- Stack roots are selected per site from whole-local temporal liveness and
+  definite initialization, including normal and cleanup continuations. The
+  analysis is intentionally not field-sensitive. Typed root descriptors do,
+  however, visit only the active enum variant and handle niche-pointer
+  optionals without inventing a tag.
+- `std.runtime.keepAlive(value)` is a compiler-only liveness use. It extends the
+  lifetime of `value` through that point but emits no native call or safepoint.
+- A physical function containing any collecting site remains `noinline`, with
+  LLVM tail-call elimination disabled and synchronous unwind metadata, even
+  when that site has no live roots. MIR inlining may inline across those sites
+  before the final root maps are computed. Preserving and exposing the frame is
+  required because managed callers transfer responsibility for GC-bearing call
+  arguments to the callee's entry map, and the collector must walk across a
+  rootless callee to reach mapped callers.
 
 - Worker and I/O threads attach to the GC before they are exposed to the
   scheduler.
@@ -211,6 +236,54 @@ Executor threads participate in the stop-the-world collector.
   roots are published before the native call parks, but collection does not
   wait for that call to return. Blocking functions must not call back into Taro
   before the annotated call returns.
+
+Each mutator checks out at most one small-object span for every size class and
+scan/no-scan lane. Removing a free slot from a warm checked-out span is
+owner-exclusive and takes no global GC mutex. Checkout/refill, large
+allocations, and collection still use the global collector lock. A mutator
+flushes all checked-out spans before it publishes `at_safepoint`, detaches,
+enters blocking work, or begins collection; root walking starts only after
+every parked mutator owns no span.
+
+Every allocation is explicitly zeroed, including reused slots and scavenged
+pages. The allocator writes slot metadata first and then release-stores the
+allocation bit. Scanners acquire-load that bit before reading the metadata.
+This publication order, rather than memory-map freshness, is the correctness
+contract. Managed buffers continue to scan their full capacity, so collection
+owners must clear every vacated element slot.
+
+### GC pacing and memory controls
+
+GC configuration is parsed once, before the collector is used. Invalid values
+terminate immediately with `runtime configuration error: ...`.
+
+- `TARO_GC_PERCENT` defaults to `100`, accepts an integer from `0` through
+  `10000`, and accepts `off` to disable percentage-triggered automatic
+  collection. The normal heap goal is
+  `max(1 MiB, live + live * percent / 100)`.
+- `TARO_GC_MEMORY_LIMIT` defaults to unlimited. It accepts `off`, or decimal
+  bytes suffixed by `B`, `KiB`, `MiB`, `GiB`, or `TiB`. This is a soft limit:
+  before segment growth would cross it, the runtime performs one collection
+  and scavenging attempt. If live data still requires growth, allocation
+  continues above the limit and records a soft-limit exceedance instead of
+  repeatedly collecting or reporting an artificial OOM.
+- Mutators publish allocation debt in 64 KiB quanta and flush any remainder at
+  refill, safepoint, detach, and collection. Percentage-trigger overshoot is
+  therefore bounded by 64 KiB times the number of active mutators.
+- `TARO_GC_STATS=1` prints collection count, live and freed bytes, the current
+  heap goal and configured limit, cached-span refills, released and scavenged
+  bytes, soft-limit exceedances, and cumulative allocation totals.
+
+After sweep, the runtime releases wholly empty segments while retaining one
+minimum segment and rebuilds its page map. On Unix it also applies `DontNeed`
+to wholly free, page-aligned subranges and remembers which pages were already
+advised so accounting is not duplicated. Other platforms retain whole-segment
+release and treat partial-page advice as a no-op. Reuse clears the scavenged
+state; explicit zeroing remains mandatory.
+
+The collector is intentionally still stop-the-world, non-moving, and
+non-generational. Concurrent collection, compaction, pinning, write barriers,
+and MMTk integration are outside this runtime contract.
 
 ## Blocking Work
 

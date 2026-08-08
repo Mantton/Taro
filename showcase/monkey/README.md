@@ -193,12 +193,22 @@ the one benchmark every Monkey implementation reports. `--bench 35` here runs
 the book's own benchmark source, so the numbers are comparable.
 
 First, the two that matter most, measured on one machine (Apple M2, both
-`--release`, both running the book's own benchmark source):
+`--release`, both running the book's own benchmark source). Taro's row is the
+median of three runs with `TARO_WORKERS=1`; the Go row is the same-machine
+measurement retained from the original comparison:
 
 | Implementation | Tree-walking | Bytecode VM | VM speedup |
 | --- | --- | --- | --- |
-| Go 1.26.2 | 10.2 s | 3.6 s | 2.9x |
-| **Taro — this implementation** | **217.1 s** | **144.3 s** | **1.5x** |
+| Go 1.26.2 | 11.0 s | 3.7 s | 3.0x |
+| **Taro — this implementation** | **99.7 s** | **4.34 s** | **23.0x** |
+
+And the same program written directly in each language, with no interpreter in
+the way, which is what says how much of any gap belongs to the host:
+
+| `fibonacci(35)`, written natively | Time |
+| --- | --- |
+| Go 1.26.2 | 39.1 ms |
+| Taro | **34 ms** |
 
 And published numbers for other hosts, each on its own machine, so read those as
 ratios rather than absolute times:
@@ -227,63 +237,95 @@ measured.
 
 ### Where Taro lands, and why
 
-Against Go on the same machine and the same source: **21x** on the evaluator,
-**40x** on the machine. Both engines answer 9227465, so this is a cost
-question, not a correctness one.
+Written natively, Taro edges Go out — 34 ms against 39.1 ms. The bytecode
+machine is now 1.17x slower than Go's on the same program, down from 4.9x. That
+remaining gap is interpreter overhead, and finding each part of it is the reason
+this exists.
 
-The revealing figure is not either time but the gap between them. Compiling
-Monkey buys **1.5x** here, against 2.9x for Go measured beside it. A bytecode VM
-does strictly less work per operation than a tree-walker — no environment
-rebuilt per call, no tree re-walked — so that win shrinking to 1.5x means
-something is being paid per operation that swamps the difference. Both engines
-pay it equally, which is why the ratio compresses.
+It started far worse. The machine took **653 s** when it was first written, 173x
+Go's. Getting from there to 4.34 s took changes in Monkey, the optimizer, and the
+runtime; most of the gains apply to ordinary Taro programs too.
 
-That cost is Taro's per-call and per-loop runtime bookkeeping, and it is
-measurable directly. A 10M-iteration loop of inline additions takes 76 ms; the
-same loop calling a one-line function takes 201 ms. That is **12.5 ns of
-overhead on a function call** that should cost a cycle or two, or nothing at all
-once inlined. It is not inlined: every function is emitted with a preamble of
-`__rt__logical_stack_push`, two `__gc__poll` calls and a matching
-`__rt__logical_stack_pop`, and those opaque calls keep LLVM from inlining
-anything they appear in. A safepoint poll is also emitted on every loop
-back-edge.
+**The safepoint poll took a global lock.** `__gc__poll` is emitted on every loop
+back-edge, and its fast path compared an allocation counter against a threshold
+under the GC's global mutex — a lock round-trip per iteration that also
+serialised every Taro thread against one lock. The answer is published in an
+atomic now.
 
-An interpreter is the worst possible shape for that. Its hot loop is a tower of
-small functions — fetch, decode, advance, push, pop — so the machine pays the
-preamble several times per bytecode instruction it executes. That also explains
-why the machine's advantage is *smaller* on the book's `fibonacci`, which nests
-two conditionals per call, than on a flatter one written with `x < 2`: more
-bytecode instructions per Monkey call means more preamble, so the more work the
-machine does the more of its architectural advantage it hands back.
+**Every function maintained a shadow call stack.** A thread-local list of
+function names was pushed and popped by every call, so that a panic could print
+language-level frames. Those opaque calls also stopped LLVM inlining anything
+containing them. Frames are now recovered from the native backtrace when a panic
+actually happens, and the poll became an inline flag load with a cold slow path.
+Per-call overhead fell from **12.5 ns to under 1 ns**.
 
-Most of that cost has since been removed, and the numbers above already include
-the fix. Three changes, in increasing order of what they bought:
+**GC roots moved to LLVM stack maps**, off a shadow stack the runtime maintained,
+which removed the per-function frame bookkeeping too.
 
-- `__gc__poll`'s fast path used to take the **global GC mutex** to compare an
-  allocation counter against its threshold — a lock round-trip on every loop
-  back-edge that also serialised every Taro thread against one lock. The answer
-  is now published in an atomic.
-- The logical stack is gone from generated code. Language-level frames are
-  reconstructed from the native backtrace when a panic actually happens, rather
-  than maintained by every call against the possibility of one.
-- The safepoint poll became an inline load of a flag with a cold slow path,
-  instead of an opaque call. That is what let LLVM start inlining small
-  functions again.
+**`List` told the collector its length on every push and pop.** `__gc__set_buf_len`
+resolved the buffer to a span under that same global mutex, so a push/pop pair
+on any element containing a pointer paid two lock round-trips — 87 ns for what
+should be a store and a bump. Buffers are now scanned to their capacity and the
+owner clears a slot it vacates, so the length never has to be published at all.
 
-Together those took the per-call overhead from **12.5 ns to 0.8 ns**, and this
-benchmark from 760.6 s to 217.1 s on the evaluator and 653.2 s to 144.3 s on the
-machine. The gap to Go narrowed from 69x to 21x, and from 173x to 40x. The
-machine's advantage over the evaluator grew from 1.2x to 1.5x as the fixed cost
-stopped masking it.
+Only then was the remaining cost the machine's own. It had been built on
+`List.append`/`pop` and re-derived the running frame's instruction stream two or
+three times per instruction. Rewriting it the way the book does — storage
+reserved once and addressed by a stack pointer, `ins` and `ip` held across the
+loop, operands read inside the arm that already knows the opcode — halved it
+again.
 
-What is left is ordinary work rather than a structural problem: generic code is
-now measurably slower than its monomorphic equivalent — `List[int64].at` costs
-about twice a hand-written non-generic version, a difference that was invisible
-while the poll dominated both.
+**`==` heap-allocated both of its operands.** A call to an interface method
+names the requirement, not the implementation — `a == b` is a call to
+`PartialEq.eq`, which has no body and so no escape summary. Every such call fell
+back to "the arguments escape", so both operands were promoted to the heap. The
+summary for the derived `eq` existed and said the parameters were safe; nothing
+looked it up, because the call named `std`'s requirement rather than the local
+implementation. Resolving the callee before asking made a derived `==` go from
+364 ms to 14 ms per five million comparisons, and stop allocating entirely.
 
-None of this is Monkey's fault, and none of it is visible from the language
-side — which is the point of building something like this against a young
-compiler.
+**GC maps stopped prohibiting useful inlining.** A collecting callee now inlines
+in MIR, before safepoints and precise roots are computed; LLVM still cannot
+inline a physical function after it has acquired a collecting site. The
+optimized `VM.run` body consequently has no calls to `Opcode.fromByte`,
+`readUint16`, `Instructions.raw`, `VM.push`, `VM.pop`, or `ptr.add`. The fixed
+growth budget deliberately leaves less-profitable calls in some opcode arms.
+For a smaller signal, 20 million `List.at` reads now take a median **11.024 ms**
+and the optimized loop contains no `List.at` call, versus 95 ms before.
+
+**Allocation stopped serialising warm mutators.** Small allocations now come
+from per-mutator cached spans without taking the global GC mutex. The collector
+zeroes reused storage before publication, paces itself from allocation debt and
+a soft memory limit, and scavenges unused pages after sweep. Precise, tag-aware
+layouts also avoid retaining dead locals and inactive enum payloads. The
+collector remains stop-the-world, non-moving mark-sweep; this is a faster and
+more exact version of that architecture, not a generational or concurrent one.
+
+| `fibonacci(35)` on the machine | Time | Gap to Go |
+| --- | --- | --- |
+| As first written | 653.2 s | 173x |
+| Safepoint and shadow-stack removal | 87.1 s | 24x |
+| `List` push/pop off the global lock | 66.6 s | 18.6x |
+| Machine rewritten to match the book | 33.1 s | 8.7x |
+| Interface calls resolved before escape analysis | 18.1 s | 4.9x |
+| Precise GC maps, MIR inlining, and allocator caches | **4.342 s** | **1.17x** |
+
+The evaluator went from 760.6 s to 99.7 s over the same period without changing
+its architecture, because the host-level fixes benefit its much heavier
+allocation workload too.
+
+The number worth watching through all of it is the machine's advantage over the
+evaluator: **1.2x, then 1.5x, then 2.4x, and now 23.0x**, against 3.0x for Go
+beside it. Removing fixed dispatch and allocation costs lets the architectural
+difference show through: this VM allocates only 118 managed objects while
+running `fibonacci(35)`, whereas the evaluator allocates aggressively while
+rebuilding environments and values.
+
+Not one of those fixes was visible from the language side, and three of them were
+in the compiler and runtime rather than in this directory. That is what a program
+like this is for: it is large enough to have a hot loop, small enough that every
+nanosecond in it can be accounted for, and written against a young compiler that
+had never had anything shaped like an interpreter pointed at it.
 
 Sources: [monkey-plusplus](https://github.com/joshuanunn/monkey-plusplus),
 [monkey.kt](https://github.com/MarioAriasC/monkey.kt), and Mario Arias'

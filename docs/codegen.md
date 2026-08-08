@@ -20,6 +20,32 @@ LLVM's maintained per-function SelectionDAG fallback because GlobalISel does
 not select `llvm.experimental.stackmap`; optimized builds use LLVM's maintained
 target defaults.
 
+## Canonical and final MIR
+
+The compiler stores two MIR forms for every body, including synthesized async
+constructors, poll thunks, and drop thunks:
+
+- **canonical inline MIR** has completed local cleanup and async lowering, but
+  has not run interprocedural optimization or inlining;
+- **final codegen MIR** has completed global optimization, explicit allocation
+  lowering, liveness-driven safepoints, and inlining.
+
+Both forms are serialized in metadata format 26. Dependency loading hydrates
+them into separate stores, and the MIR inliner reads only canonical bodies.
+Consequently, an inline decision does not depend on whether a callee came from
+source in the current build or from attached/cached metadata.
+
+MIR performs the only inlining that may cross a collecting site. It rejects
+recursive-SCC edges, preserves `@noinline`, understands cleanup continuations,
+and applies fixed profile-specific cost and growth budgets. LLVM may still
+inline a physical function that contains no collecting operation. Any function
+containing an entry/loop poll, managed or collecting-runtime call, allocation,
+blocking transition, or panic site is marked `noinline` with LLVM tail-call
+elimination disabled and a synchronous unwind-table entry after code
+generation, even if precise liveness made every map at that site rootless. The
+three constraints preserve and expose the physical frame assumed by PC metadata
+and by managed-call root transfer.
+
 ## Output Modes
 
 `taro build` normally produces a linked executable. Use `--emit llvm-bc` to
@@ -68,16 +94,37 @@ object. The runtime never parses LLVM's experimental format.
 The sidecar stores signed offsets relative to one module header instead of
 absolute pointers. The linker resolves those differences statically, leaving
 only the constructor's module pointer for the dynamic loader to rebase. Root
-recipes, root-location arrays, strings, and logical-frame arrays are
-deduplicated within the sidecar. Runtime registration is constant-size; the
-first stack walk indexes function headers, and the selected PC record is decoded
-only when its roots or logical frames are requested.
+recipes, typed-layout nodes, root-location arrays, strings, and logical-frame
+arrays are deduplicated within the sidecar. Nodes are copied into the PC object,
+so that object never relocates against an internal node-table symbol from
+another object. Runtime registration is constant-size; the first stack walk
+indexes exact function address ranges, and a return PC resolves to the closest
+preceding record within that range.
 
-Poll sites with no live GC roots are omitted because they cannot throw and
-carry no collector or diagnostic information. This leaves pure poll-only
-functions eligible for normal LLVM inlining. Managed calls, allocation sites,
-blocking transitions, and panic-capable sites retain PC records even when their
-root set is empty.
+Root storage is keyed by MIR `LocalId`. At each collecting operation the
+compiler intersects temporal liveness with definite initialization and emits
+only the applicable local subset. Calls retain values live across their normal
+or cleanup continuation; runtime/blocking calls additionally retain their
+GC-bearing arguments; allocations use values live after the allocation; polls
+use values live at the poll. `std.runtime.keepAlive(value)` becomes a
+compiler-only liveness use and emits neither a call nor another poll.
+
+Poll sites with no live GC roots omit the machine record because they cannot
+throw and publish no roots. They still count as collecting sites and therefore
+keep the physical LLVM function `noinline` with tail-call elimination disabled
+and synchronous unwind metadata. The unwind entry lets the stop-the-world stack
+walker cross the rootless frame to mapped callers.
+Managed calls, allocations, blocking transitions, and panic-capable sites
+retain PC records even when their root set is empty. Records that optimize to
+one machine PC are merged by taking the union of their roots.
+
+PC metadata schema 3 and pending-descriptor schema 2 encode one indexed,
+tag-aware layout graph shared with heap, static, and buffer scanning. Its node
+kinds are `Pointer`, `Reference`, `Aggregate`, `Repeat`, and `Tagged`; a tagged
+node reads a 1-, 2-, 4-, or 8-byte discriminator and visits only the active
+variant. Niche-pointer optionals use their native null/payload form. Static
+roots register as `(address, descriptor)` rather than an untyped byte range.
+Runtime ABI revision 14 is the matching consumer contract.
 
 ## Incremental Compilation
 
