@@ -1,0 +1,53 @@
+// An enum's tag only has to tell its variants apart, so it is sized to the
+// variant count rather than to a pointer. A payload-free enum is therefore one
+// byte, and a small payload is no longer padded out to sixteen.
+//
+// The tag must not cost the enum its alignment: the payload is lowered as an
+// array whose element width carries the alignment the widest variant needs, so
+// a contained pointer still lands on an aligned address.
+
+enum Pair { case a; case b }
+enum Ten { case a; case b; case c; case d; case e; case f; case g; case h; case i; case j }
+enum BytePayload { case nothing; case one(uint8) }
+enum WordPayload { case nothing; case one(int32) }
+enum PointerPayload { case nothing; case one(string) }
+
+struct Holder {
+    kind: Pair
+    value: uint8
+}
+
+func main() {
+    // A payload-free enum needs one byte however many variants it has.
+    std.printf("%v %v\n", std.mem.sizeOf[Pair](), std.mem.sizeOf[Ten]())
+
+    // A payload is placed after the tag, aligned to what the payload needs.
+    std.printf("%v %v\n", std.mem.sizeOf[BytePayload](), std.mem.alignOf[BytePayload]())
+    std.printf("%v %v\n", std.mem.sizeOf[WordPayload](), std.mem.alignOf[WordPayload]())
+
+    // The alignment of a pointer-carrying variant survives the smaller tag.
+    std.printf("%v %v\n", std.mem.sizeOf[PointerPayload](), std.mem.alignOf[PointerPayload]())
+
+    // A small enum packs into a struct rather than dominating it.
+    std.printf("%v\n", std.mem.sizeOf[Holder]())
+
+    // The narrow tag still round-trips every variant.
+    let values = [Ten.a, Ten.e, Ten.j]
+    var seen = 0
+    for value in &values {
+        match value {
+            case .a => seen += 1
+            case .e => seen += 10
+            case .j => seen += 100
+            case _ => seen += 1000
+        }
+    }
+    std.printf("%v\n", seen)
+
+    // And a pointer read back out of a small-tag enum is intact.
+    let held: PointerPayload = .one("aligned")
+    match held {
+        case .one(text) => std.printf("%s\n", text)
+        case .nothing => std.print("nothing\n")
+    }
+}

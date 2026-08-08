@@ -15,8 +15,13 @@ func testOptionalReferenceNpoLayout() {
         optional_ref_size == ref_size,
         "Optional[&T] should use null-pointer optimization",
     )
+    // Still tagged rather than niche-packed, but the tag is sized to the
+    // variant count, not to a pointer: one byte, rounded up to the payload's
+    // alignment.
+    let int_size = std.mem.sizeOf[int32]()
+    let int_align = std.mem.alignOf[int32]()
     assert(
-        optional_int_size == tagged_size,
+        optional_int_size == int_size + int_align,
         "Optional[int32] should keep tagged enum layout",
     )
     assert(

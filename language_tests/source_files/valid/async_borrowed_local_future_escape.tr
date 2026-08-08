@@ -1,0 +1,14 @@
+struct AsyncBorrowedCell {
+    value: int64
+}
+
+func readBorrowedCell(_ cell: &AsyncBorrowedCell) async -> int64 {
+    await std.testing.yieldNow()
+    return cell.value
+}
+
+func main() async {
+    var cell = AsyncBorrowedCell { value: 42_i64 }
+    let value = await readBorrowedCell(&cell)
+    std.printf("async borrow: %v\n", value)
+}

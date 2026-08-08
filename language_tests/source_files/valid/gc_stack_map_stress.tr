@@ -1,4 +1,6 @@
-// Run this fixture with TARO_GC_STRESS=1 to collect at every generated poll.
+// `make runtime-stress` runs this fixture with TARO_GC_STRESS=1 so every
+// generated poll collects, including rootless polls that LLVM might otherwise
+// turn into frame-erasing tail calls.
 // It keeps roots live through recursion, mutable indirect calls, List growth,
 // aggregate fields, optionals, and closure capture.
 
