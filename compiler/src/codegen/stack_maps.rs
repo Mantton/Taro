@@ -20,7 +20,7 @@ use super::pc_metadata::{
 };
 
 pub(crate) const DESCRIPTOR_SCHEMA_VERSION: u32 = 3;
-pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 4;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 5;
 
 /// Kind of machine site represented by a PC record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,14 +185,16 @@ pub(crate) fn read_pending_modules(
     Ok(records)
 }
 
-/// Validate path-discriminated records in one physical machine function.
+/// Validate and canonicalize path-discriminated records in one physical
+/// machine function.
 ///
 /// A union is not safe for typed roots: an inactive enum or reference layout
 /// may interpret storage initialized for another path. Each source site writes
 /// a distinct selector value instead. Every record must retain the same
-/// physical selector slot, equal-PC alternatives must use distinct values, and
-/// LLVM machine duplicates of one source selector must preserve GC semantics.
-fn validate_record_selectors(function: &PcFunction) -> Result<(), String> {
+/// physical selector slot, and LLVM machine duplicates of one source selector
+/// must preserve GC semantics. Identical machine duplicates collapse into one
+/// selector-table entry because runtime lookup is selector-authoritative.
+fn normalize_record_selectors(function: &mut PcFunction) -> Result<(), String> {
     if let Some(first) = function.records.first() {
         for record in &function.records[1..] {
             if record.selector.dwarf_register != first.selector.dwarf_register
@@ -205,38 +207,27 @@ fn validate_record_selectors(function: &PcFunction) -> Result<(), String> {
             }
         }
     }
-    let mut sites = BTreeMap::<u64, &PcRecord>::new();
-    for record in &function.records {
-        if let Some(previous) = sites.insert(record.selector.value, record)
-            && (previous.kind != record.kind
-                || previous.roots != record.roots
-                || previous.logical_frames != record.logical_frames)
-        {
-            return Err(format!(
-                "function '{}' has machine duplicates of selector {} with different GC semantics",
-                function.symbol, record.selector.value
-            ));
-        }
-    }
-    for group in function
-        .records
-        .chunk_by(|left, right| left.pc_offset == right.pc_offset)
-    {
-        let Some(first) = group.first() else {
-            continue;
-        };
-        for (index, record) in group.iter().enumerate() {
-            if group[..index]
-                .iter()
-                .any(|previous| previous.selector.value == record.selector.value)
-            {
-                return Err(format!(
-                    "function '{}' has duplicate selector value {} at stack-map offset {}",
-                    function.symbol, record.selector.value, first.pc_offset
-                ));
+    let mut sites = BTreeMap::<u64, PcRecord>::new();
+    for record in std::mem::take(&mut function.records) {
+        match sites.entry(record.selector.value) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(record);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let previous = entry.get();
+                if previous.kind != record.kind
+                    || previous.roots != record.roots
+                    || previous.logical_frames != record.logical_frames
+                {
+                    return Err(format!(
+                        "function '{}' has machine duplicates of selector {} with different GC semantics",
+                        function.symbol, record.selector.value
+                    ));
+                }
             }
         }
     }
+    function.records = sites.into_values().collect();
     Ok(())
 }
 
@@ -381,7 +372,6 @@ pub(crate) fn normalize_object(
             })
             .collect();
         let record = PcRecord {
-            pc_offset: raw_record.instruction_offset,
             kind: descriptor.kind,
             selector,
             roots,
@@ -423,11 +413,7 @@ pub(crate) fn normalize_object(
     }
 
     for function in functions.values_mut() {
-        function
-            .records
-            .sort_by_key(|record| (record.pc_offset, record.selector.value));
-        function.records.dedup();
-        validate_record_selectors(function)?;
+        normalize_record_selectors(function)?;
     }
 
     Ok(PcMetadata {
@@ -805,7 +791,7 @@ fn path_bytes(path: &Path) -> Result<Cow<'_, [u8]>, String> {
 mod tests {
     use super::{
         PcFunction, PcRecord, PcSafepointSelector, RawStackMapLocationKind, StackMapSiteKind,
-        parse_object, strip_object, validate_record_selectors,
+        normalize_record_selectors, parse_object, strip_object,
     };
     use inkwell::{
         OptimizationLevel,
@@ -922,9 +908,8 @@ mod tests {
     }
 
     #[test]
-    fn same_pc_records_remain_path_distinct() {
+    fn distinct_selectors_remain_path_distinct() {
         let record = |value| PcRecord {
-            pc_offset: 12,
             kind: StackMapSiteKind::Call,
             selector: PcSafepointSelector {
                 dwarf_register: 29,
@@ -934,26 +919,27 @@ mod tests {
             roots: Vec::new(),
             logical_frames: Vec::new(),
         };
-        let function = PcFunction {
+        let mut function = PcFunction {
             symbol: "same_pc".into(),
             stack_size: 32,
             code_size: 64,
             records: vec![record(1), record(2)],
         };
 
-        validate_record_selectors(&function).expect("distinct selectors are path-safe");
+        normalize_record_selectors(&mut function).expect("distinct selectors are path-safe");
         assert_eq!(function.records.len(), 2);
+        assert_eq!(function.records[0].selector.value, 1);
+        assert_eq!(function.records[1].selector.value, 2);
     }
 
     #[test]
-    fn same_pc_records_reject_different_selector_slots() {
+    fn records_reject_different_selector_slots() {
         let mut function = PcFunction {
             symbol: "bad_same_pc".into(),
             stack_size: 32,
             code_size: 64,
             records: vec![
                 PcRecord {
-                    pc_offset: 12,
                     kind: StackMapSiteKind::Call,
                     selector: PcSafepointSelector {
                         dwarf_register: 29,
@@ -964,7 +950,6 @@ mod tests {
                     logical_frames: Vec::new(),
                 },
                 PcRecord {
-                    pc_offset: 12,
                     kind: StackMapSiteKind::Call,
                     selector: PcSafepointSelector {
                         dwarf_register: 29,
@@ -976,17 +961,13 @@ mod tests {
                 },
             ],
         };
-        function
-            .records
-            .sort_by_key(|record| (record.pc_offset, record.selector.value));
 
-        assert!(validate_record_selectors(&function).is_err());
+        assert!(normalize_record_selectors(&mut function).is_err());
     }
 
     #[test]
     fn machine_duplicates_reject_changed_gc_semantics() {
-        let record = |pc_offset, kind| PcRecord {
-            pc_offset,
+        let record = |kind| PcRecord {
             kind,
             selector: PcSafepointSelector {
                 dwarf_register: 29,
@@ -996,18 +977,48 @@ mod tests {
             roots: Vec::new(),
             logical_frames: Vec::new(),
         };
-        let function = PcFunction {
+        let mut function = PcFunction {
             symbol: "bad_duplicate".into(),
             stack_size: 32,
             code_size: 64,
             records: vec![
-                record(12, StackMapSiteKind::Call),
-                record(24, StackMapSiteKind::Poll),
+                record(StackMapSiteKind::Call),
+                record(StackMapSiteKind::Poll),
             ],
         };
 
-        let error = validate_record_selectors(&function).unwrap_err();
+        let error = normalize_record_selectors(&mut function).unwrap_err();
         assert!(error.contains("different GC semantics"));
+    }
+
+    #[test]
+    fn identical_machine_duplicates_collapse_into_a_sorted_selector_table() {
+        let record = |value| PcRecord {
+            kind: StackMapSiteKind::Call,
+            selector: PcSafepointSelector {
+                dwarf_register: 29,
+                frame_offset: -8,
+                value,
+            },
+            roots: Vec::new(),
+            logical_frames: Vec::new(),
+        };
+        let mut function = PcFunction {
+            symbol: "duplicates".into(),
+            stack_size: 32,
+            code_size: 64,
+            records: vec![record(3), record(1), record(3), record(2)],
+        };
+
+        normalize_record_selectors(&mut function).expect("duplicates have identical semantics");
+        assert_eq!(
+            function
+                .records
+                .iter()
+                .map(|record| record.selector.value)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]

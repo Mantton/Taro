@@ -86,7 +86,6 @@ pub(crate) struct PcLogicalFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PcRecord {
-    pub pc_offset: u32,
     pub kind: StackMapSiteKind,
     pub selector: PcSafepointSelector,
     pub roots: Vec<PcRootLocation>,
@@ -171,7 +170,6 @@ impl<'ctx> ObjectBuilder<'ctx> {
                 i64.into(),
                 i64.into(),
                 i64.into(),
-                i32.into(),
                 i32.into(),
                 i32.into(),
                 i32.into(),
@@ -423,10 +421,6 @@ impl<'ctx> ObjectBuilder<'ctx> {
                         .into(),
                     self.context
                         .i32_type()
-                        .const_int(u64::from(record.pc_offset), false)
-                        .into(),
-                    self.context
-                        .i32_type()
                         .const_int(record.roots.len() as u64, false)
                         .into(),
                     self.context
@@ -606,7 +600,7 @@ mod tests {
         assert_eq!(data.get_store_size(&root.as_any_type_enum()), 24);
         assert_eq!(data.get_store_size(&string.as_any_type_enum()), 16);
         assert_eq!(data.get_store_size(&frame.as_any_type_enum()), 40);
-        assert_eq!(data.get_store_size(&record.as_any_type_enum()), 48);
+        assert_eq!(data.get_store_size(&record.as_any_type_enum()), 40);
         assert_eq!(data.get_store_size(&function.as_any_type_enum()), 48);
         assert_eq!(data.get_store_size(&module.as_any_type_enum()), 24);
         assert_eq!(data.get_pointer_byte_size(None), 8);

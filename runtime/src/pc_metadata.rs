@@ -13,7 +13,7 @@ use crate::gc_layout::{
 };
 use std::sync::{OnceLock, RwLock};
 
-pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 4;
+pub(crate) const PC_METADATA_SCHEMA_VERSION: u32 = 5;
 #[cfg(target_arch = "x86_64")]
 const ARCH_X86_64: u8 = 1;
 #[cfg(target_arch = "aarch64")]
@@ -57,7 +57,6 @@ struct AbiRecord {
     roots_offset: i64,
     logical_frames_offset: i64,
     selector_value: u64,
-    pc_offset: u32,
     root_count: u32,
     logical_frame_count: u32,
     selector_frame_offset: i32,
@@ -111,7 +110,6 @@ pub(crate) struct LogicalFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PcRecord {
-    pub(crate) pc_offset: u32,
     pub(crate) kind: u8,
     pub(crate) selector: SafepointSelector,
     pub(crate) roots: Vec<RootLocation>,
@@ -327,6 +325,11 @@ unsafe fn index_module(module: &AbiMetadataModule) -> Result<Vec<PcFunction>, St
         }
         relative_address(base, function.symbol.data_offset, "function symbol")?;
         let record_count = function.record_count as usize;
+        if record_count == 0 {
+            return Err(format!(
+                "PC metadata function at {entry:#x} has no selector records"
+            ));
+        }
         if record_count > MAX_RECORDS_PER_FUNCTION {
             return Err(format!(
                 "PC metadata record count for function {entry:#x} is too large"
@@ -336,11 +339,6 @@ unsafe fn index_module(module: &AbiMetadataModule) -> Result<Vec<PcFunction>, St
         let records: &[AbiRecord] =
             unsafe { abi_slice(base, function.records_offset, record_count, "record table")? };
         for (index, record) in records.iter().enumerate() {
-            if record.pc_offset >= function.code_size {
-                return Err(format!(
-                    "PC metadata record {index} for function {entry:#x} lies outside its code range"
-                ));
-            }
             if record.selector_value == 0 {
                 return Err(format!(
                     "PC metadata record {index} for function {entry:#x} has a zero selector"
@@ -356,12 +354,9 @@ unsafe fn index_module(module: &AbiMetadataModule) -> Result<Vec<PcFunction>, St
             }
             if index != 0 {
                 let previous = &records[index - 1];
-                if previous.pc_offset > record.pc_offset
-                    || (previous.pc_offset == record.pc_offset
-                        && previous.selector_value >= record.selector_value)
-                {
+                if previous.selector_value >= record.selector_value {
                     return Err(format!(
-                        "PC metadata records for function {entry:#x} are not sorted by PC and selector"
+                        "PC metadata records for function {entry:#x} are not strictly sorted by selector"
                     ));
                 }
             }
@@ -406,7 +401,6 @@ unsafe fn copy_record(
         ));
     }
     Ok(PcRecord {
-        pc_offset: record.pc_offset,
         kind: record.kind,
         selector: SafepointSelector {
             dwarf_register: record.selector_dwarf_register,
@@ -520,11 +514,10 @@ fn materialize_pending(registry: &mut Registry) {
     }
 }
 
-fn record_index_for_selector(records: &[AbiRecord], offset: u32, selector: u64) -> Option<usize> {
-    let end = records.partition_point(|record| record.pc_offset <= offset);
-    records[..end]
-        .iter()
-        .rposition(|record| record.selector_value == selector)
+fn record_index_for_selector(records: &[AbiRecord], selector: u64) -> Option<usize> {
+    records
+        .binary_search_by_key(&selector, |record| record.selector_value)
+        .ok()
 }
 
 fn find_record<R>(
@@ -549,9 +542,6 @@ fn find_record<R>(
     if offset >= function.code_size as usize {
         return Ok(None);
     }
-    let Ok(offset) = u32::try_from(offset) else {
-        return Ok(None);
-    };
     let records: &[AbiRecord] = match unsafe {
         abi_slice(
             function.module_base,
@@ -566,9 +556,6 @@ fn find_record<R>(
     let Some(first) = records.first() else {
         return Ok(None);
     };
-    if first.pc_offset > offset {
-        return Ok(None);
-    }
     let selector_location = SafepointSelector {
         dwarf_register: first.selector_dwarf_register,
         frame_offset: first.selector_frame_offset,
@@ -580,15 +567,14 @@ fn find_record<R>(
             selector_location.dwarf_register, selector_location.frame_offset
         )
     })?;
-    // Machine block layout is not temporal order: after a backedge, an
-    // unrelated record can lie numerically between the executed stack map and
-    // its return PC. The frame selector is authoritative; PC order only picks
-    // the appropriate machine duplicate of that source site.
-    let index = record_index_for_selector(records, offset, observed).ok_or_else(|| {
+    // Machine block layout is not temporal order: an executed stack-map anchor
+    // may lie before or after this frame's return PC. The PC identifies the
+    // physical function; its frame-local selector identifies the source site.
+    let index = record_index_for_selector(records, observed).ok_or_else(|| {
         let symbol = unsafe { copy_string(function.module_base, function.symbol, "function symbol") }
             .unwrap_or_else(|_| "<invalid>".into());
         format!(
-            "frame PC {pc:#x} (function '{symbol}' + {offset:#x}) published safepoint selector {observed}, but no preceding record in the function matches it"
+            "frame PC {pc:#x} (function '{symbol}' + {offset:#x}) published safepoint selector {observed}, but the function has no matching selector record"
         )
     })?;
     let record = unsafe { copy_record(function, &records[index], include_roots, include_frames) }
@@ -642,18 +628,17 @@ mod tests {
         assert_eq!(std::mem::size_of::<AbiRootLocation>(), 24);
         assert_eq!(std::mem::size_of::<AbiString>(), 16);
         assert_eq!(std::mem::size_of::<AbiLogicalFrame>(), 40);
-        assert_eq!(std::mem::size_of::<AbiRecord>(), 48);
+        assert_eq!(std::mem::size_of::<AbiRecord>(), 40);
         assert_eq!(std::mem::size_of::<AbiFunction>(), 48);
         assert_eq!(std::mem::size_of::<AbiMetadataModule>(), 24);
     }
 
     #[test]
-    fn return_pc_lookup_resolves_backward_to_the_pre_call_map_within_function_bounds() {
+    fn selector_lookup_ignores_machine_order_within_function_bounds() {
         let records = [AbiRecord {
             roots_offset: 0,
             logical_frames_offset: 0,
             selector_value: 1,
-            pc_offset: 0x20,
             root_count: 0,
             logical_frame_count: 0,
             selector_frame_offset: -8,
@@ -679,6 +664,9 @@ mod tests {
             },
         };
         registry().write().unwrap().functions.push(function);
+        // A stack-map anchor may be laid out after this return PC. Once the PC
+        // identifies the physical function, the published selector is the
+        // complete site identity.
         let lookup = |pc| {
             with_record_at_pc(
                 pc,
@@ -689,9 +677,10 @@ mod tests {
             )
             .unwrap()
         };
+        assert!(lookup(0x1000).is_some());
+        assert!(lookup(0x101f).is_some());
         assert!(lookup(0x1020).is_some());
         assert!(lookup(0x1024).is_some());
-        assert!(lookup(0x101f).is_none());
         assert!(lookup(0x1040).is_none());
         registry()
             .write()
@@ -702,11 +691,10 @@ mod tests {
 
     #[test]
     fn rootless_selector_hides_an_earlier_rooted_record() {
-        let record = |pc_offset, selector_value, root_count| AbiRecord {
+        let record = |selector_value, root_count| AbiRecord {
             roots_offset: 0,
             logical_frames_offset: 0,
             selector_value,
-            pc_offset,
             root_count,
             logical_frame_count: 0,
             selector_frame_offset: -8,
@@ -714,19 +702,18 @@ mod tests {
             kind: 1,
             reserved: 0,
         };
-        let records = [record(0x10, 1, 1), record(0x20, 2, 0)];
+        let records = [record(1, 1), record(2, 0)];
 
-        assert_eq!(record_index_for_selector(&records, 0x24, 2), Some(1));
+        assert_eq!(record_index_for_selector(&records, 2), Some(1));
         assert_eq!(records[1].root_count, 0);
     }
 
     #[test]
-    fn same_pc_alternatives_are_selected_individually() {
+    fn selector_table_uses_exact_binary_lookup() {
         let record = |selector_value| AbiRecord {
             roots_offset: 0,
             logical_frames_offset: 0,
             selector_value,
-            pc_offset: 0x20,
             root_count: 0,
             logical_frame_count: 0,
             selector_frame_offset: -8,
@@ -736,28 +723,8 @@ mod tests {
         };
         let records = [record(1), record(2)];
 
-        assert_eq!(record_index_for_selector(&records, 0x24, 1), Some(0));
-        assert_eq!(record_index_for_selector(&records, 0x24, 2), Some(1));
-    }
-
-    #[test]
-    fn selector_beats_unrelated_pc_order_after_a_backedge() {
-        let record = |pc_offset, selector_value| AbiRecord {
-            roots_offset: 0,
-            logical_frames_offset: 0,
-            selector_value,
-            pc_offset,
-            root_count: 0,
-            logical_frame_count: 0,
-            selector_frame_offset: -8,
-            selector_dwarf_register: 29,
-            kind: 2,
-            reserved: 0,
-        };
-        // Site 2 executed last, but site 1 happens to be closer to the return
-        // PC in machine-address order.
-        let records = [record(0x10, 2), record(0x20, 1)];
-
-        assert_eq!(record_index_for_selector(&records, 0x24, 2), Some(0));
+        assert_eq!(record_index_for_selector(&records, 1), Some(0));
+        assert_eq!(record_index_for_selector(&records, 2), Some(1));
+        assert_eq!(record_index_for_selector(&records, 3), None);
     }
 }
