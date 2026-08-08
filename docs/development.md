@@ -112,11 +112,16 @@ Repository tooling also measures the compiler itself:
 ```bash
 python3 development/scripts/benchmark_timings.py examples/hello.tr --runs 10
 make codegen-benchmark RUNS=10
+make monkey-host-benchmark
 ```
 
 The first command measures cold compiler phases. The codegen benchmark compares
 the release baseline with O2, verifies equivalent output, and reports compile
-time, runtime, and executable size.
+time, runtime, and executable size. The Monkey host-gap suite runs matched Taro
+and Go workloads for dictionary/environment lookup and churn, argument lists,
+successful `Result` propagation, and small allocations. It verifies checksums
+before reporting median time and allocation/GC counters; see
+`development/benchmarks/monkey_host_gap/README.md` for interpretation guidance.
 
 ## Troubleshooting
 
