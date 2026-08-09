@@ -303,6 +303,15 @@ layouts also avoid retaining dead locals and inactive enum payloads. The
 collector remains stop-the-world, non-moving mark-sweep; this is a faster and
 more exact version of that architecture, not a generational or concurrent one.
 
+**Generic escape analysis now follows the concrete instance.** Dictionary
+lookup used to analyze abstract interface requirements, so the compiler
+heapified the string key and `SipHasher13` state even though the selected string
+hash implementation retains neither. Placement now runs on concrete generic
+instances after inlining and lowering. The finalized `hashKey<string>` keeps
+both values on the stack; doubling lookup iterations no longer increases
+managed allocations. This is a compiler change only—the Monkey implementation
+and Dictionary/SipHash algorithms were not altered.
+
 | `fibonacci(35)` on the machine | Time | Gap to Go |
 | --- | --- | --- |
 | As first written | 653.2 s | 173x |
@@ -315,6 +324,26 @@ more exact version of that architecture, not a generational or concurrent one.
 The evaluator went from 760.6 s to 99.7 s over the same period without changing
 its architecture, because the host-level fixes benefit its much heavier
 allocation workload too.
+
+The instance-aware escape checkpoint used `fibonacci(28)` so five complete
+tree-walker runs remained practical. Both compilers used the same unchanged
+Monkey source, release/O2, `TARO_WORKERS=1`, and fresh processes. Pause entries
+are medians of each run's runtime statistic:
+
+| `fibonacci(28)` full two-engine run | Before | Final | Change |
+| --- | ---: | ---: | ---: |
+| Tree-walking median | 3.077 s | **2.299 s** | 25.3% faster |
+| Bytecode VM median | 142 ms | **142 ms** | unchanged |
+| Managed allocations | 18,119,598 | **6,170,942** | 65.9% fewer |
+| Allocated bytes | 1,944,133,392 | **1,466,187,648** | 24.6% fewer |
+| Collections | 1,894 | **1,433** | 24.3% fewer |
+| GC pause p50 | 599.4 us | **492.8 us** | 17.8% lower |
+| GC pause p95 | 769.7 us | **616.1 us** | 20.0% lower |
+| GC pause p99 | 1,058.7 us | **895.7 us** | 15.4% lower |
+| GC pause max | 5.086 ms | **5.087 ms** | unchanged |
+
+This checkpoint does not extrapolate a new `fibonacci(35)` result. The remaining
+host gaps are measured separately before choosing another optimization target.
 
 The number worth watching through all of it is the machine's advantage over the
 evaluator: **1.2x, then 1.5x, then 2.4x, and now 23.0x**, against 3.0x for Go

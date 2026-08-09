@@ -14,33 +14,42 @@ inline pointer arithmetic on the original Apple M2 measurement.
 
 ## Pipeline and stored MIR
 
-Every ordinary or synthesized async function has two stored representations:
+Every ordinary or synthesized async function has two serialized
+representations and one ephemeral representation:
 
 1. **Canonical inline MIR** has completed local lowering and cleanup but has not
    run interprocedural optimization or inlining.
-2. **Final codegen MIR** has completed global passes and is the body lowered to
-   LLVM.
+2. **Shared optimized MIR** has completed definition-wide global passes but not
+   escape placement or safepoint insertion.
+3. **Instance-final MIR** is cloned from shared MIR for a concrete generic
+   `Instance`, receives escape placement and cleanup, and then receives its
+   safepoints. LLVM consumes only this form.
 
-Metadata format 28 serializes both forms into separate stores. The inliner
-always reads canonical bodies, including for cached dependencies, so a source
-callee and the same attached callee produce the same decision. Retention is
-computed from canonical inline candidates while final bodies still needed for
-generic downstream codegen are retained independently. The ordinary-body
-retention bound is 115 cost units, matching O3's threshold plus the maximum loop
-and constant-argument bonuses; explicit-inline and generic bodies remain
-independent retention roots.
+Metadata format 29 serializes the first two forms into separate stores. The
+inliner always reads canonical bodies, including for cached dependencies, so a
+source callee and the same attached callee produce the same decision. Instance
+bodies and escape summaries stay in compilation-session caches and are rebuilt
+from shared MIR for cached dependencies. Retention is computed from canonical
+inline candidates while shared bodies still needed for generic downstream
+codegen are retained independently. The ordinary-body retention bound is 115
+cost units, matching O3's threshold plus the maximum loop and constant-argument
+bonuses; explicit-inline and generic bodies remain independent retention roots.
 
 The effective order is:
 
 ```text
-canonical MIR -> MIR inlining -> explicit effects/allocations/polls
-              -> precise roots -> LLVM -> PC metadata sidecar
+canonical MIR -> shared inlining/lowering/cleanup
+              -> concrete-instance escape placement
+              -> safepoints and precise roots -> LLVM -> PC metadata sidecar
 ```
 
 Hidden existential boxes become explicit `Alloc`, payload store, and
 non-allocating pack operations after inlining and before escape analysis. This
 makes allocation and collection behavior visible to both optimizers and root
 analysis.
+
+The instance-aware graph and its allocation-promotion/rooting rules are
+documented in `development/instance_escape_analysis.md`.
 
 `LowerAggregates` evaluates field expressions first, emits one contiguous
 safepoint-free field-store sequence, and then publishes a completed tuple,

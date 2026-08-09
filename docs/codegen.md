@@ -20,22 +20,35 @@ LLVM's maintained per-function SelectionDAG fallback because GlobalISel does
 not select `llvm.experimental.stackmap`; optimized builds use LLVM's maintained
 target defaults.
 
-## Canonical and final MIR
+## Canonical, shared, and instance-final MIR
 
-The compiler stores two MIR forms for every body, including synthesized async
-constructors, poll thunks, and drop thunks:
+The compiler serializes two MIR forms for every body, including synthesized
+async constructors, poll thunks, and drop thunks:
 
 - **canonical inline MIR** has completed local cleanup and async lowering, but
   has not run interprocedural optimization or inlining;
-- **final codegen MIR** has completed global optimization, explicit allocation
-  lowering, liveness-driven safepoints, and inlining.
+- **shared optimized MIR** has completed definition-wide inlining, existential
+  and aggregate lowering, propagation, coalescing, and cleanup, but has no
+  escape placement or safepoints.
 
-Both forms are serialized in metadata format 28. Dependency loading hydrates
-them into separate stores, and the MIR inliner reads only canonical bodies.
-Consequently, an inline decision does not depend on whether a callee came from
-source in the current build or from attached/cached metadata. Metadata retains
-ordinary bodies through cost 115, the largest O3 threshold after loop and
-constant-argument bonuses, as well as all explicit-inline and generic bodies.
+Metadata format 29 stores those two target-independent forms. Dependency
+loading hydrates them into separate stores, and the MIR inliner reads only
+canonical bodies. Consequently, an inline decision does not depend on whether
+a callee came from source in the current build or from attached/cached
+metadata. Metadata retains ordinary bodies through cost 115, the largest O3
+threshold after loop and constant-argument bonuses, as well as all
+explicit-inline and generic bodies.
+
+Final codegen MIR is a third, session-local form keyed by concrete `Instance`.
+The compiler clones shared MIR, substitutes the instance's generic arguments,
+computes interprocedural escape summaries, applies heap/stack placement, runs a
+focused cleanup, and only then inserts and merges safepoints. Witness-table and
+late codegen discoveries use the same finalizer. LLVM lowering accepts only the
+exact body pointer cached for that instance, making a fallback to shared generic
+MIR a compiler error. Finalized bodies and instance summaries are ephemeral;
+cached dependencies recompute them from serialized shared MIR instead of
+persisting target- or profile-specific placement decisions. See
+`development/instance_escape_analysis.md` for the analysis contract.
 
 MIR performs the only inlining that may cross a collecting site. It rejects
 recursive-SCC edges, preserves `@noinline`, understands cleanup continuations,
