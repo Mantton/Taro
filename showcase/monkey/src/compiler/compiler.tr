@@ -26,22 +26,22 @@ impl CompileError {
     public func describe(&self) -> string {
         match self {
             case .undefinedVariable(name) => {
-                return std.sprintf("undefined variable %s", *name)
+                return sprintf("undefined variable %s", *name)
             }
             case .tooManyConstants => return "too many constants: the pool holds at most 65536"
             case .tooManyGlobals => return "too many global bindings: at most 65536"
             case .tooManyLocals(function) => {
-                return std.sprintf("too many local bindings in %s: at most 256", *function)
+                return sprintf("too many local bindings in %s: at most 256", *function)
             }
             case .tooManyFreeVariables => return "too many captured variables: at most 256"
             case .tooManyArguments(found) => {
-                return std.sprintf("too many arguments: %v, at most 256", *found)
+                return sprintf("too many arguments: %v, at most 256", *found)
             }
             case .tooManyElements(found) => {
-                return std.sprintf("literal has too many elements: %v, at most 65536", *found)
+                return sprintf("literal has too many elements: %v, at most 65536", *found)
             }
             case .jumpOutOfRange(target) => {
-                return std.sprintf("jump target %v is beyond the reach of a jump", *target)
+                return sprintf("jump target %v is beyond the reach of a jump", *target)
             }
         }
     }
@@ -54,7 +54,7 @@ public struct Bytecode {
 }
 
 /// An instruction already emitted, remembered so it can be revisited.
-struct EmittedInstruction: std.marker.Copy {
+struct EmittedInstruction: Copy {
     opcode: Opcode
     position: usize
 }
@@ -83,7 +83,7 @@ impl CompilationScope {
 
 /// Narrows an index to the two bytes its operand reserves.
 func operand16(_ value: usize, _ overflow: CompileError) -> Result[uint16, CompileError] {
-    if value > (65535 as usize) {
+    if value > 65535 {
         return .err(overflow)
     }
     return .ok(value as uint16)
@@ -91,7 +91,7 @@ func operand16(_ value: usize, _ overflow: CompileError) -> Result[uint16, Compi
 
 /// Narrows an index to the single byte its operand reserves.
 func operand8(_ value: usize, _ overflow: CompileError) -> Result[uint8, CompileError] {
-    if value > (255 as usize) {
+    if value > 255 {
         return .err(overflow)
     }
     return .ok(value as uint8)
@@ -152,11 +152,11 @@ impl Compiler {
     }
 
     func currentIndex(&self) -> usize {
-        return self.scopes.len() - (1 as usize)
+        return self.scopes.len() - 1
     }
 
     func currentInstructions(&self) -> &Instructions {
-        let index = self.scopes.len() - (1 as usize)
+        let index = self.scopes.len() - 1
         return &self.scopes.at(index).instructions
     }
 
@@ -180,7 +180,7 @@ impl Compiler {
     /// Answers `false` for an empty scope because `last` is `.none` there, with
     /// no separate length check to remember.
     func lastInstructionIs(&self, _ opcode: Opcode) -> bool {
-        let index = self.scopes.len() - (1 as usize)
+        let index = self.scopes.len() - 1
         match &self.scopes.at(index).last {
             case .some(emitted) => return emitted.opcode == opcode
             case .none => return false
@@ -213,7 +213,7 @@ impl Compiler {
     /// Adds `value` to the constant pool, answering the index that names it.
     func addConstant(&mut self, _ value: Object) -> Result[uint16, CompileError] {
         self.constants.append(value)
-        return operand16(self.constants.len() - (1 as usize), .tooManyConstants)
+        return operand16(self.constants.len() - 1, .tooManyConstants)
     }
 
     /// Begins a nested function.
@@ -389,7 +389,7 @@ impl Compiler {
                 }
                 // Keys and values alternate on the stack, so the operand counts
                 // both halves of every pair.
-                let values = entries.len() * (2 as usize)
+                let values = entries.len() * 2
                 let count = operand16(values, .tooManyElements(found: entries.len()))!
                 self.emit(.hash(count))
                 return .ok(())

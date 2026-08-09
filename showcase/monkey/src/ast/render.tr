@@ -28,8 +28,8 @@ func renderBlock(_ statements: &List[Statement]) -> string {
 public func renderExpression(_ expression: &Expression) -> string {
     match expression {
         case .identifier(name) => return *name
-        case .integer(value) => return std.sprintf("%v", *value)
-        case .text(value) => return std.sprintf("\"%s\"", *value)
+        case .integer(value) => return sprintf("%v", *value)
+        case .text(value) => return sprintf("\"%s\"", *value)
         case .boolean(value) => {
             if *value { return "true" }
             return "false"

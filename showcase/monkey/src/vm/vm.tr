@@ -35,7 +35,7 @@ const GLOBALS_SIZE: usize = 65536
 /// Every payload is a small scalar, deliberately. This value comes back from the
 /// machine's innermost loop, so `Result[(), RuntimeError]` has to stay small.
 /// Nothing is lost by it: an argument count cannot exceed what `OpCall` names.
-public enum RuntimeError: std.marker.Copy {
+public enum RuntimeError: Copy {
     case stackOverflow
     case frameOverflow
     case unsupportedBinaryOperation(left: ObjectKind, right: ObjectKind)
@@ -59,40 +59,40 @@ impl RuntimeError {
         match self {
             case .stackOverflow => return "stack overflow"
             case .frameOverflow => {
-                return std.sprintf("call depth exceeded %v nested calls", MAX_FRAMES)
+                return sprintf("call depth exceeded %v nested calls", MAX_FRAMES)
             }
             case .unsupportedBinaryOperation(left, right) => {
-                return std.sprintf(
+                return sprintf(
                     "unsupported types for binary operation: %s %s",
                     left.describe(),
                     right.describe(),
                 )
             }
             case .unsupportedComparison(left, right) => {
-                return std.sprintf(
+                return sprintf(
                     "unsupported types for comparison: %s %s",
                     left.describe(),
                     right.describe(),
                 )
             }
             case .unsupportedNegation(kind) => {
-                return std.sprintf("unsupported type for negation: %s", kind.describe())
+                return sprintf("unsupported type for negation: %s", kind.describe())
             }
             case .unusableAsHashKey(kind) => {
-                return std.sprintf("unusable as hash key: %s", kind.describe())
+                return sprintf("unusable as hash key: %s", kind.describe())
             }
             case .unsupportedIndex(collection, index) => {
-                return std.sprintf(
+                return sprintf(
                     "index operator not supported: %s[%s]",
                     collection.describe(),
                     index.describe(),
                 )
             }
             case .notAFunction(kind) => {
-                return std.sprintf("calling non-function: %s", kind.describe())
+                return sprintf("calling non-function: %s", kind.describe())
             }
             case .wrongArgumentCount(expected, found) => {
-                return std.sprintf(
+                return sprintf(
                     "wrong number of arguments: want %v, got %v",
                     *expected,
                     *found,
@@ -100,10 +100,10 @@ impl RuntimeError {
             }
             case .divisionByZero => return "division by zero"
             case .unknownBuiltin(index) => {
-                return std.sprintf("no builtin at index %v", *index)
+                return sprintf("no builtin at index %v", *index)
             }
             case .builtin(error) => return error.describe()
-            case .unknownOpcode(byte) => return std.sprintf("unknown opcode %v", *byte)
+            case .unknownOpcode(byte) => return sprintf("unknown opcode %v", *byte)
         }
     }
 }
@@ -137,8 +137,8 @@ public struct VM {
 func mainClosure(_ instructions: Instructions) -> &Closure {
     let function = CompiledFunction {
         instructions: instructions,
-        localCount: 0 as usize,
-        parameterCount: 0 as usize,
+        localCount: 0,
+        parameterCount: 0,
     }
     return boxClosure(Closure {
         function: boxCompiledFunction(function),
@@ -150,10 +150,10 @@ func mainClosure(_ instructions: Instructions) -> &Closure {
 func reserved(_ count: usize) -> List[Object] {
     var slots = List[Object]()
     slots.reserve(count)
-    var index = 0 as usize
+    var index: usize = 0
     while index < count {
         slots.append(.null)
-        index += 1 as usize
+        index += 1
     }
     return slots
 }
@@ -169,14 +169,14 @@ impl VM {
     /// globals outlive the machine that made them.
     public func withGlobals(_ bytecode: Bytecode, _ globals: List[Object]) -> Self {
         let closure = mainClosure(bytecode.instructions)
-        let entry = Frame.new(closure, 0 as usize)
+        let entry = Frame.new(closure, 0)
 
         var frames = List[Frame]()
         frames.reserve(MAX_FRAMES)
-        var index = 0 as usize
+        var index: usize = 0
         while index < MAX_FRAMES {
             frames.append(entry)
-            index += 1 as usize
+            index += 1
         }
 
         var store = globals
@@ -189,13 +189,13 @@ impl VM {
         return VM {
             constants: bytecode.constants,
             stack: reserved(MAX_STACK),
-            sp: 0 as usize,
+            sp: 0,
             globals: store,
             frames: frames,
-            framesIndex: 1 as usize,
+            framesIndex: 1,
             code: code,
             codeLength: code.len(),
-            ip: 0 as usize,
+            ip: 0,
         }
     }
 
@@ -223,7 +223,7 @@ impl VM {
             return .err(.stackOverflow)
         }
         *self.stack.at(self.sp) = value
-        self.sp += 1 as usize
+        self.sp += 1
         return .ok(())
     }
 
@@ -233,17 +233,17 @@ impl VM {
     /// pops is only emitted after the pushes that feed it.
     @inline
     func pop(&mut self) -> Object {
-        if self.sp == 0 as usize {
+        if self.sp == 0 {
             return .null
         }
-        self.sp -= 1 as usize
+        self.sp -= 1
         return self.stack.at(self.sp).clone()
     }
 
     /// Reads the running frame's instructions and position into the machine.
     func enterCurrentFrame(&mut self) {
         let frames = &self.frames
-        let frame = *frames.at(self.framesIndex - (1 as usize))
+        let frame = *frames.at(self.framesIndex - 1)
         let code = frame.closure.function.instructions.raw()
         self.code = code
         self.codeLength = code.len()
@@ -252,7 +252,7 @@ impl VM {
 
     /// Records where the running frame had got to, before leaving it.
     func saveCurrentFrame(&mut self) {
-        let index = self.framesIndex - (1 as usize)
+        let index = self.framesIndex - 1
         var frame = self.frames.at(index)
         frame.ip = self.ip
     }
@@ -260,7 +260,7 @@ impl VM {
     /// The slot the running call's locals begin at.
     func currentBase(&self) -> usize {
         let frames = &self.frames
-        return frames.at(self.framesIndex - (1 as usize)).base
+        return frames.at(self.framesIndex - 1).base
     }
 
     /// Runs until the outermost frame is exhausted.
@@ -276,7 +276,7 @@ impl VM {
             // implementation keeps `ins` across its loop.
             let code = self.code
             let byte = *code.at(self.ip)
-            self.ip += 1 as usize
+            self.ip += 1
 
             let opcode = match Opcode.fromByte(byte) {
                 case .some(found) => found
@@ -286,7 +286,7 @@ impl VM {
             match opcode {
                 case .constant => {
                     let index = readUint16(code, at: self.ip)
-                    self.ip += 2 as usize
+                    self.ip += 2
                     let value = self.constants.at(index as usize).clone()
                     self.push(value)!
                 }
@@ -328,7 +328,7 @@ impl VM {
 
                 case .jumpNotTruthy => {
                     let target = readUint16(code, at: self.ip)
-                    self.ip += 2 as usize
+                    self.ip += 2
                     let condition = self.pop()
                     if !condition.isTruthy() {
                         self.ip = target as usize
@@ -337,21 +337,21 @@ impl VM {
 
                 case .setGlobal => {
                     let slot = readUint16(code, at: self.ip)
-                    self.ip += 2 as usize
+                    self.ip += 2
                     let value = self.pop()
                     *self.globals.at(slot as usize) = value
                 }
 
                 case .getGlobal => {
                     let slot = readUint16(code, at: self.ip)
-                    self.ip += 2 as usize
+                    self.ip += 2
                     let value = self.globals.at(slot as usize).clone()
                     self.push(value)!
                 }
 
                 case .setLocal => {
                     let slot = *code.at(self.ip)
-                    self.ip += 1 as usize
+                    self.ip += 1
                     let base = self.currentBase()
                     let value = self.pop()
                     *self.stack.at(base + (slot as usize)) = value
@@ -359,7 +359,7 @@ impl VM {
 
                 case .getLocal => {
                     let slot = *code.at(self.ip)
-                    self.ip += 1 as usize
+                    self.ip += 1
                     let base = self.currentBase()
                     let value = self.stack.at(base + (slot as usize)).clone()
                     self.push(value)!
@@ -367,9 +367,9 @@ impl VM {
 
                 case .getFree => {
                     let slot = *code.at(self.ip)
-                    self.ip += 1 as usize
+                    self.ip += 1
                     let frames = &self.frames
-                    let frame = *frames.at(self.framesIndex - (1 as usize))
+                    let frame = *frames.at(self.framesIndex - 1)
                     let captured = &frame.closure.free
                     let value = captured.at(slot as usize).clone()
                     self.push(value)!
@@ -377,7 +377,7 @@ impl VM {
 
                 case .getBuiltin => {
                     let slot = *code.at(self.ip)
-                    self.ip += 1 as usize
+                    self.ip += 1
                     match builtinAt(slot as usize) {
                         case .some(builtin) => self.push(.builtin(builtin))!
                         case .none => return .err(.unknownBuiltin(slot))
@@ -386,33 +386,33 @@ impl VM {
 
                 case .currentClosure => {
                     let frames = &self.frames
-                    let frame = *frames.at(self.framesIndex - (1 as usize))
+                    let frame = *frames.at(self.framesIndex - 1)
                     self.push(.closure(frame.closure))!
                 }
 
                 case .array => {
                     let count = readUint16(code, at: self.ip) as usize
-                    self.ip += 2 as usize
+                    self.ip += 2
                     let elements = self.take(count)
                     self.push(.array(boxArray(elements)))!
                 }
 
                 case .hash => {
                     let count = readUint16(code, at: self.ip) as usize
-                    self.ip += 2 as usize
+                    self.ip += 2
                     let values = self.take(count)
                     var entries = Dictionary[HashKey, Object]()
-                    var position = 0 as usize
+                    var position: usize = 0
                     while position < values.len() {
                         let key = values.at(position)
-                        let value = values.at(position + (1 as usize))
+                        let value = values.at(position + 1)
                         match key.toHashKey() {
                             case .some(hashKey) => {
                                 entries.set(key: hashKey, value: value.clone())
                             }
                             case .none => return .err(.unusableAsHashKey(key.kind()))
                         }
-                        position += 2 as usize
+                        position += 2
                     }
                     self.push(.hash(boxHash(entries)))!
                 }
@@ -426,14 +426,14 @@ impl VM {
 
                 case .closure => {
                     let constant = readUint16(code, at: self.ip) as usize
-                    let free = *code.at(self.ip + (2 as usize))
-                    self.ip += 3 as usize
+                    let free = *code.at(self.ip + 2)
+                    self.ip += 3
                     self.buildClosure(constant, free as usize)!
                 }
 
                 case .call => {
                     let arguments = *code.at(self.ip)
-                    self.ip += 1 as usize
+                    self.ip += 1
                     self.call(arguments as usize)!
                 }
 
@@ -462,7 +462,7 @@ impl VM {
         var position = self.sp - count
         while position < self.sp {
             taken.append(self.stack.at(position).clone())
-            position += 1 as usize
+            position += 1
         }
         self.sp -= count
         return taken
@@ -601,10 +601,10 @@ impl VM {
 
     /// Calls whatever sits below the top `arguments` values.
     func call(&mut self, _ arguments: usize) -> Result[(), RuntimeError] {
-        if self.sp < arguments + (1 as usize) {
+        if self.sp < arguments + 1 {
             return .err(.stackOverflow)
         }
-        let calleeSlot = self.sp - arguments - (1 as usize)
+        let calleeSlot = self.sp - arguments - 1
         let callee = self.stack.at(calleeSlot).clone()
 
         match &callee {
@@ -623,7 +623,7 @@ impl VM {
                 // belong, so the frame starts just above the callee and the
                 // rest of its slots are reserved by moving the pointer past
                 // them — no writing, as the reference implementation does.
-                let base = calleeSlot + (1 as usize)
+                let base = calleeSlot + 1
                 let reserved = base + closure.function.localCount
                 if reserved > MAX_STACK {
                     return .err(.stackOverflow)
@@ -631,7 +631,7 @@ impl VM {
 
                 self.saveCurrentFrame()
                 *self.frames.at(self.framesIndex) = Frame.new(*closure, base)
-                self.framesIndex += 1 as usize
+                self.framesIndex += 1
                 self.enterCurrentFrame()
                 self.sp = reserved
                 return .ok(())
@@ -639,7 +639,7 @@ impl VM {
             case .builtin(builtin) => {
                 let taken = self.take(arguments)
                 // The callee itself is still below; it goes with the call.
-                self.sp -= 1 as usize
+                self.sp -= 1
                 match callBuiltin(*builtin, taken) {
                     case .ok(value) => return self.push(value)
                     case .err(error) => return .err(.builtin(error))
@@ -651,13 +651,13 @@ impl VM {
 
     /// Discards the finished call's frame, its locals and its callee.
     func leaveFrame(&mut self) {
-        if self.framesIndex <= (1 as usize) {
+        if self.framesIndex <= 1 {
             return
         }
         let base = self.currentBase()
-        self.framesIndex -= 1 as usize
+        self.framesIndex -= 1
         self.enterCurrentFrame()
         // Everything from the callee upwards belonged to the call that ended.
-        self.sp = base - (1 as usize)
+        self.sp = base - 1
     }
 }

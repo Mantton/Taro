@@ -5,7 +5,6 @@ import monkey.lexer.Lexer
 import monkey.object.{Object, Environment, boxEnvironment}
 import monkey.parser.Parser
 import monkey.vm.VM
-import std.testing.{assertTrue, assertEqual}
 
 /// The two engines are independent implementations of one specification, so
 /// every program is really two tests. Running each through both and comparing
@@ -26,7 +25,7 @@ func viaEvaluator(_ program: &Program) -> string {
     var evaluator = Evaluator()
     match evaluator.run(program, env) {
         case .ok(value) => return value.inspect()
-        case .err(error) => return std.sprintf("error: %s", error.describe())
+        case .err(error) => return sprintf("error: %s", error.describe())
     }
 }
 
@@ -35,12 +34,12 @@ func viaMachine(_ program: &Program) -> string {
     var compiler = Compiler.new()
     match compiler.compile(program) {
         case .ok(_) => {}
-        case .err(error) => return std.sprintf("error: %s", error.describe())
+        case .err(error) => return sprintf("error: %s", error.describe())
     }
     var machine = VM.new(compiler.bytecode())
     match machine.run() {
         case .ok(_) => return machine.result().inspect()
-        case .err(error) => return std.sprintf("error: %s", error.describe())
+        case .err(error) => return sprintf("error: %s", error.describe())
     }
 }
 
@@ -49,15 +48,15 @@ func agree(_ source: string, _ expected: string) {
     let program = match parsed(source) {
         case .some(found) => found
         case .none => {
-            std.testing.fail(std.sprintf("%s did not parse", source))
+            fail(sprintf("%s did not parse", source))
             return
         }
     }
 
     let walked = viaEvaluator(&program)
     let compiled = viaMachine(&program)
-    assertEqual(walked, compiled, std.sprintf("%s: evaluator %s, machine %s", source, walked, compiled))
-    assertEqual(walked, expected, std.sprintf("%s => %s (want %s)", source, walked, expected))
+    assertEqual(walked, compiled, sprintf("%s: evaluator %s, machine %s", source, walked, compiled))
+    assertEqual(walked, expected, sprintf("%s => %s (want %s)", source, walked, expected))
 }
 
 @test
@@ -176,7 +175,7 @@ func divergencesAreDeliberate() {
     let program = match parsed("1 + true") {
         case .some(found) => found
         case .none => {
-            std.testing.fail("should parse")
+            fail("should parse")
             return
         }
     }

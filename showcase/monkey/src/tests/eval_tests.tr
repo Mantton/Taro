@@ -2,7 +2,6 @@ import monkey.lexer.Lexer
 import monkey.parser.Parser
 import monkey.eval.{Evaluator, EvalError}
 import monkey.object.{Object, Environment, boxEnvironment}
-import std.testing.{assertTrue, assertEqual}
 
 /// Evaluates a source and renders the result, or the first failure.
 func eval(_ source: string) -> string {
@@ -13,7 +12,7 @@ func eval(_ source: string) -> string {
             if errors.isEmpty() {
                 return "parse error"
             }
-            return std.sprintf("parse error: %s", errors.at(0 as usize).message)
+            return sprintf("parse error: %s", errors.at(0).message)
         }
     }
 
@@ -21,13 +20,13 @@ func eval(_ source: string) -> string {
     var evaluator = Evaluator()
     match evaluator.run(&program, env) {
         case .ok(value) => return value.inspect()
-        case .err(error) => return std.sprintf("error: %s", error.describe())
+        case .err(error) => return sprintf("error: %s", error.describe())
     }
 }
 
 func check(_ source: string, _ expected: string) {
     let actual = eval(source)
-    assertEqual(actual, expected, std.sprintf("%s => %s (want %s)", source, actual, expected))
+    assertEqual(actual, expected, sprintf("%s => %s (want %s)", source, actual, expected))
 }
 
 @test

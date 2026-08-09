@@ -86,9 +86,9 @@ impl Instructions {
         }
 
         // The opcode stays; only its operand changes.
-        let operands = offset + (1 as usize)
-        *self.bytes.at(operands) = (target >> (8 as uint16)) as uint8
-        *self.bytes.at(operands + (1 as usize)) = (target & (255 as uint16)) as uint8
+        let operands = offset + 1
+        *self.bytes.at(operands) = (target >> 8) as uint8
+        *self.bytes.at(operands + 1) = (target & 255) as uint8
         return true
     }
 
@@ -100,11 +100,11 @@ impl Instructions {
     /// reader, which is a second place for the encoding to be misunderstood.
     public func disassemble(&self) -> string {
         var out = ""
-        var offset = 0 as usize
+        var offset: usize = 0
         while offset < self.bytes.len() {
             match self.decodeAt(offset) {
                 case .ok(decoded) => {
-                    out = out + std.sprintf(
+                    out = out + sprintf(
                         "%04v %s\n",
                         offset,
                         describeInstruction(&decoded.instruction),
@@ -112,7 +112,7 @@ impl Instructions {
                     offset += decoded.width
                 }
                 case .err(error) => {
-                    out = out + std.sprintf("%04v %s\n", offset, error.describe())
+                    out = out + sprintf("%04v %s\n", offset, error.describe())
                     return out
                 }
             }
@@ -125,20 +125,20 @@ impl Instructions {
 public func describeInstruction(_ instruction: &Instruction) -> string {
     let name = instruction.opcode().name()
     match instruction {
-        case .constant(index) => return std.sprintf("%s %v", name, *index)
-        case .jump(target) => return std.sprintf("%s %v", name, *target)
-        case .jumpNotTruthy(target) => return std.sprintf("%s %v", name, *target)
-        case .getGlobal(slot) => return std.sprintf("%s %v", name, *slot)
-        case .setGlobal(slot) => return std.sprintf("%s %v", name, *slot)
-        case .array(count) => return std.sprintf("%s %v", name, *count)
-        case .hash(count) => return std.sprintf("%s %v", name, *count)
-        case .getLocal(slot) => return std.sprintf("%s %v", name, *slot)
-        case .setLocal(slot) => return std.sprintf("%s %v", name, *slot)
-        case .getFree(slot) => return std.sprintf("%s %v", name, *slot)
-        case .getBuiltin(slot) => return std.sprintf("%s %v", name, *slot)
-        case .call(arguments) => return std.sprintf("%s %v", name, *arguments)
+        case .constant(index) => return sprintf("%s %v", name, *index)
+        case .jump(target) => return sprintf("%s %v", name, *target)
+        case .jumpNotTruthy(target) => return sprintf("%s %v", name, *target)
+        case .getGlobal(slot) => return sprintf("%s %v", name, *slot)
+        case .setGlobal(slot) => return sprintf("%s %v", name, *slot)
+        case .array(count) => return sprintf("%s %v", name, *count)
+        case .hash(count) => return sprintf("%s %v", name, *count)
+        case .getLocal(slot) => return sprintf("%s %v", name, *slot)
+        case .setLocal(slot) => return sprintf("%s %v", name, *slot)
+        case .getFree(slot) => return sprintf("%s %v", name, *slot)
+        case .getBuiltin(slot) => return sprintf("%s %v", name, *slot)
+        case .call(arguments) => return sprintf("%s %v", name, *arguments)
         case .closure(constant, free) => {
-            return std.sprintf("%s %v %v", name, *constant, *free)
+            return sprintf("%s %v %v", name, *constant, *free)
         }
         case .add | .subtract | .multiply | .divide | .pop
             | .pushTrue | .pushFalse | .pushNull

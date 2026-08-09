@@ -3,7 +3,7 @@ import monkey.lexer.Lexer
 import monkey.token.{Token, TokenKind, TokenTag, Position}
 
 /// Binding power, lowest to highest.
-public enum Precedence: std.marker.Copy {
+public enum Precedence: Copy {
     case lowest
     case equals
     case comparison
@@ -113,7 +113,7 @@ impl Parser {
             current: first,
             peek: second,
             errors: List[ParseError](),
-            depth: 0 as usize,
+            depth: 0,
         }
     }
 
@@ -140,7 +140,7 @@ impl Parser {
             self.advance()
             return true
         }
-        let message = std.sprintf(
+        let message = sprintf(
             "expected %s, found %s",
             tag.describe(),
             self.peek.kind.describe(),
@@ -186,7 +186,7 @@ impl Parser {
             case .identifier(text) => name = text
             case _ => {
                 let found = self.peek.kind.describe()
-                self.report(std.sprintf("expected identifier after 'let', found %s", found), namePosition)
+                self.report(sprintf("expected identifier after 'let', found %s", found), namePosition)
                 return .none
             }
         }
@@ -229,9 +229,9 @@ impl Parser {
             self.report("expression nesting is too deep", position)
             return .none
         }
-        self.depth += 1 as usize
+        self.depth += 1
         let parsed = self.parseNested(precedence)
-        self.depth -= 1 as usize
+        self.depth -= 1
         return parsed
     }
 
@@ -276,7 +276,7 @@ impl Parser {
             case _ => {
                 let found = self.current.kind.describe()
                 let position = self.current.position
-                self.report(std.sprintf("expected an expression, found %s", found), position)
+                self.report(sprintf("expected an expression, found %s", found), position)
                 return .none
             }
         }
@@ -309,7 +309,7 @@ impl Parser {
             case .none => {
                 let found = self.current.kind.describe()
                 let position = self.current.position
-                self.report(std.sprintf("expected an operator, found %s", found), position)
+                self.report(sprintf("expected an operator, found %s", found), position)
                 return .none
             }
         }
@@ -469,7 +469,7 @@ impl Parser {
             case _ => {
                 let found = self.current.kind.describe()
                 let position = self.current.position
-                self.report(std.sprintf("expected a parameter name, found %s", found), position)
+                self.report(sprintf("expected a parameter name, found %s", found), position)
                 return .none
             }
         }
@@ -482,7 +482,7 @@ impl Parser {
                 case _ => {
                     let found = self.current.kind.describe()
                     let position = self.current.position
-                    self.report(std.sprintf("expected a parameter name, found %s", found), position)
+                    self.report(sprintf("expected a parameter name, found %s", found), position)
                     return .none
                 }
             }

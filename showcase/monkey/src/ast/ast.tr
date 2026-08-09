@@ -1,7 +1,7 @@
 import monkey.token.Position
 
 /// Monkey's prefix operators.
-public enum PrefixOperator: std.marker.Copy {
+public enum PrefixOperator: Copy {
     case not
     case negate
 }
@@ -20,7 +20,7 @@ impl PrefixOperator {
 /// The Go original compares operator strings at every dispatch site. Naming them
 /// makes evaluation exhaustive, so an unhandled operator is a compile error
 /// rather than a runtime "unknown operator".
-public enum InfixOperator: std.marker.Copy {
+public enum InfixOperator: Copy {
     case add
     case subtract
     case multiply
@@ -104,7 +104,7 @@ public func endsWithBinding(_ program: &Program) -> bool {
     if program.statements.isEmpty() {
         return false
     }
-    let last = program.statements.at(program.statements.len() - (1 as usize))
+    let last = program.statements.at(program.statements.len() - 1)
     match last {
         case .bind(_, _) => return true
         case _ => return false

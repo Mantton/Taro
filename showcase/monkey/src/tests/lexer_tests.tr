@@ -2,7 +2,6 @@ import monkey.ast.endsWithBinding
 import monkey.lexer.Lexer
 import monkey.parser.Parser
 import monkey.token.{TokenTag, TokenKind}
-import std.testing.{assertTrue, assertEqual}
 
 /// Renders a source as `kind` descriptions, so a test states the whole stream.
 func tokens(_ source: string) -> string {
@@ -25,7 +24,7 @@ func tokens(_ source: string) -> string {
 
 func checkTokens(_ source: string, _ expected: string) {
     let actual = tokens(source)
-    assertEqual(actual, expected, std.sprintf("%s => %s (want %s)", source, actual, expected))
+    assertEqual(actual, expected, sprintf("%s => %s (want %s)", source, actual, expected))
 }
 
 @test
@@ -64,8 +63,8 @@ func identifiersMayContainDigits() {
 func positionsTrackLinesAndColumns() {
     var lexer = Lexer("let x = 5;\nlet y = 10;")
     let first = lexer.nextToken()
-    assertTrue(first.position.line == (1 as usize), "first token is on line 1")
-    assertTrue(first.position.column == (1 as usize), "first token is at column 1")
+    assertTrue(first.position.line == 1, "first token is on line 1")
+    assertTrue(first.position.column == 1, "first token is at column 1")
 
     // Consume the rest of the first line: x = 5 ;
     let _ = lexer.nextToken()
@@ -74,8 +73,8 @@ func positionsTrackLinesAndColumns() {
     let _ = lexer.nextToken()
 
     let second = lexer.nextToken()
-    assertTrue(second.position.line == (2 as usize), "second `let` is on line 2")
-    assertTrue(second.position.column == (1 as usize), "second `let` is at column 1")
+    assertTrue(second.position.line == 2, "second `let` is on line 2")
+    assertTrue(second.position.column == 1, "second `let` is at column 1")
 }
 
 @test

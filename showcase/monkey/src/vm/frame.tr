@@ -9,7 +9,7 @@ import monkey.object.Closure
 ///
 /// Small and copyable, so the frame stack can be storage reserved once and
 /// written into by index rather than a list that grows and shrinks.
-public struct Frame: std.marker.Copy {
+public struct Frame: Copy {
     public closure: &Closure
     /// The offset of the next instruction to read.
     ///
@@ -23,7 +23,7 @@ public struct Frame: std.marker.Copy {
 
 impl Frame {
     public func new(_ closure: &Closure, _ base: usize) -> Self {
-        return Frame { closure: closure, ip: 0 as usize, base: base }
+        return Frame { closure: closure, ip: 0, base: base }
     }
 
     public func instructions(&self) -> &Instructions {

@@ -28,13 +28,13 @@ impl EvalError {
     public func describe(&self) -> string {
         match self {
             case .identifierNotFound(name) => {
-                return std.sprintf("identifier not found: %s", *name)
+                return sprintf("identifier not found: %s", *name)
             }
             case .unknownPrefixOperator(op, operand) => {
-                return std.sprintf("unknown operator: %s%s", op.symbol(), operand.describe())
+                return sprintf("unknown operator: %s%s", op.symbol(), operand.describe())
             }
             case .unknownInfixOperator(left, op, right) => {
-                return std.sprintf(
+                return sprintf(
                     "unknown operator: %s %s %s",
                     left.describe(),
                     op.symbol(),
@@ -42,7 +42,7 @@ impl EvalError {
                 )
             }
             case .typeMismatch(left, op, right) => {
-                return std.sprintf(
+                return sprintf(
                     "type mismatch: %s %s %s",
                     left.describe(),
                     op.symbol(),
@@ -50,20 +50,20 @@ impl EvalError {
                 )
             }
             case .notAFunction(kind) => {
-                return std.sprintf("not a function: %s", kind.describe())
+                return sprintf("not a function: %s", kind.describe())
             }
             case .unusableAsHashKey(kind) => {
-                return std.sprintf("unusable as hash key: %s", kind.describe())
+                return sprintf("unusable as hash key: %s", kind.describe())
             }
             case .unsupportedIndex(collection, index) => {
-                return std.sprintf(
+                return sprintf(
                     "index operator not supported: %s[%s]",
                     collection.describe(),
                     index.describe(),
                 )
             }
             case .wrongArgumentCount(function, expected, found) => {
-                return std.sprintf(
+                return sprintf(
                     "wrong number of arguments to `%s`: want %v, got %v",
                     *function,
                     *expected,
@@ -73,7 +73,7 @@ impl EvalError {
             case .builtin(error) => return error.describe()
             case .divisionByZero => return "division by zero"
             case .callDepthExceeded(limit) => {
-                return std.sprintf("call depth exceeded %v nested calls", *limit)
+                return sprintf("call depth exceeded %v nested calls", *limit)
             }
         }
     }

@@ -65,7 +65,7 @@ func isWhitespace(_ byte: uint8) -> bool {
 /// Monkey has no integer literal larger than `int64`, and the lexer only ever
 /// passes digit runs here, so this cannot fail.
 func digitsToInt(_ digits: string) -> int64 {
-    var value = 0 as int64
+    var value: int64 = 0
     for byte in digits.bytes() {
         value = value * 10 + ((byte - BYTE_ZERO) as int64)
     }
@@ -89,9 +89,9 @@ impl Lexer {
     public func new(_ source: string) -> Self {
         return Lexer {
             source,
-            offset: 0 as usize,
-            line: 1 as usize,
-            column: 1 as usize,
+            offset: 0,
+            line: 1,
+            column: 1,
         }
     }
 
@@ -105,7 +105,7 @@ impl Lexer {
     }
 
     func peekNext(&self) -> uint8 {
-        let next = self.offset + (1 as usize)
+        let next = self.offset + 1
         if next >= self.source.byteLen() { return BYTE_NUL }
         return self.source.byteAt(next)
     }
@@ -116,12 +116,12 @@ impl Lexer {
 
     func advance(&mut self) -> uint8 {
         let byte = self.peek()
-        self.offset += 1 as usize
+        self.offset += 1
         if byte == BYTE_NEWLINE {
-            self.line += 1 as usize
-            self.column = 1 as usize
+            self.line += 1
+            self.column = 1
         } else {
-            self.column += 1 as usize
+            self.column += 1
         }
         return byte
     }

@@ -1,14 +1,13 @@
 import monkey.ast.{Statement, renderStatement}
 import monkey.code.Instructions
 import std.hash.{Hashable, Hasher}
-import std.ops.PartialEq
 
 /// The kind of a value, without its payload.
 ///
 /// Error messages name types, and naming them from a closed set means a new
 /// object kind cannot be described as `""` by an overlooked branch. The spellings
 /// match Monkey's, so diagnostics read the same as the reference implementation.
-public enum ObjectKind: std.marker.Copy, PartialEq {
+public enum ObjectKind: Copy, PartialEq {
     case null
     case integer
     case boolean
@@ -104,6 +103,11 @@ impl PartialEq for HashKey {
 impl Hashable for HashKey {
     public func hash[H: Hasher](&self, into hasher: &mut H) {
         // The kind is mixed in first so `1` and `true` cannot collide.
+        //
+        // `combine` takes one generic argument, so the cast is the only thing
+        // naming the tag's width — an uncast literal would default to `int` and
+        // mix eight bytes instead of one. Unlike everywhere else in this
+        // package, these casts are load-bearing and must stay.
         match self {
             case .integer(value) => {
                 hasher.combine(0 as uint8)
@@ -205,7 +209,7 @@ public func boxClosure(_ closure: Closure) -> &Closure {
     return &boxed
 }
 
-impl std.marker.Clone for Object {
+impl Clone for Object {
     /// Copies the value, sharing rather than duplicating aggregates.
     @inline
     public func clone(&self) -> Self {
@@ -306,7 +310,7 @@ impl Object {
     public func inspect(&self) -> string {
         match self {
             case .null => return "null"
-            case .integer(value) => return std.sprintf("%v", *value)
+            case .integer(value) => return sprintf("%v", *value)
             case .boolean(value) => {
                 if *value { return "true" }
                 return "false"
@@ -346,12 +350,12 @@ impl Object {
                 }
                 return "fn(" + names + ") {\n" + body + "\n}"
             }
-            case .builtin(builtin) => return std.sprintf("builtin function %s", builtin.name())
+            case .builtin(builtin) => return sprintf("builtin function %s", builtin.name())
             case .compiledFunction(function) => {
-                return std.sprintf("compiled function[%v locals]", function.localCount)
+                return sprintf("compiled function[%v locals]", function.localCount)
             }
             case .closure(closure) => {
-                return std.sprintf("closure[%v free]", closure.free.len())
+                return sprintf("closure[%v free]", closure.free.len())
             }
         }
     }

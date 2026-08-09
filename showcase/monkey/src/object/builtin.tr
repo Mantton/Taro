@@ -4,7 +4,7 @@
 /// Go closures, so adding a builtin without wiring it up is a silent omission.
 /// Naming them makes both the lookup and the dispatch exhaustive: a new case
 /// fails to compile until it is implemented.
-public enum Builtin: std.marker.Copy, std.ops.PartialEq {
+public enum Builtin: Copy, PartialEq {
     case len
     case first
     case last
@@ -28,13 +28,13 @@ impl Builtin {
     /// How many arguments the builtin takes.
     public func arity(&self) -> usize {
         match self {
-            case .len => 1 as usize
-            case .first => 1 as usize
-            case .last => 1 as usize
-            case .rest => 1 as usize
-            case .push => 2 as usize
+            case .len => 1
+            case .first => 1
+            case .last => 1
+            case .rest => 1
+            case .push => 2
             // `puts` prints however many it is given.
-            case .puts => 0 as usize
+            case .puts => 0
         }
     }
 
@@ -55,24 +55,24 @@ impl Builtin {
     /// `map` in the evaluator and a slice in the machine.
     public func index(&self) -> usize {
         match self {
-            case .len => 0 as usize
-            case .puts => 1 as usize
-            case .first => 2 as usize
-            case .last => 3 as usize
-            case .rest => 4 as usize
-            case .push => 5 as usize
+            case .len => 0
+            case .puts => 1
+            case .first => 2
+            case .last => 3
+            case .rest => 4
+            case .push => 5
         }
     }
 }
 
 /// The builtin at `index`, or `.none` when nothing is there.
 public func builtinAt(_ index: usize) -> Optional[Builtin] {
-    if index == 0 as usize { return .some(.len) }
-    if index == 1 as usize { return .some(.puts) }
-    if index == 2 as usize { return .some(.first) }
-    if index == 3 as usize { return .some(.last) }
-    if index == 4 as usize { return .some(.rest) }
-    if index == 5 as usize { return .some(.push) }
+    if index == 0 { return .some(.len) }
+    if index == 1 { return .some(.puts) }
+    if index == 2 { return .some(.first) }
+    if index == 3 { return .some(.last) }
+    if index == 4 { return .some(.rest) }
+    if index == 5 { return .some(.push) }
     return .none
 }
 
@@ -109,7 +109,7 @@ public func builtinNamed(_ name: string) -> Optional[Builtin] {
 /// count cannot exceed what `OpCall`'s operand holds. That keeps the whole
 /// value small enough to travel in registers, which matters because it is
 /// returned from the machine's innermost loop.
-public enum BuiltinError: std.marker.Copy {
+public enum BuiltinError: Copy {
     case wrongArgumentCount(function: Builtin, expected: uint16, found: uint16)
     case wrongArgumentType(function: Builtin, expected: ObjectKind, found: ObjectKind)
     /// A builtin that accepts several kinds was given none of them.
@@ -121,7 +121,7 @@ public enum BuiltinError: std.marker.Copy {
 /// A call cannot carry more arguments than the instruction set can name, so
 /// this only ever clamps input no real program produces.
 public func reportCount(_ value: usize) -> uint16 {
-    if value > (65535 as usize) {
+    if value > 65535 {
         return 65535
     }
     return value as uint16
@@ -131,7 +131,7 @@ impl BuiltinError {
     public func describe(&self) -> string {
         match self {
             case .wrongArgumentCount(function, expected, found) => {
-                return std.sprintf(
+                return sprintf(
                     "wrong number of arguments to `%s`: want %v, got %v",
                     function.name(),
                     *expected,
@@ -139,7 +139,7 @@ impl BuiltinError {
                 )
             }
             case .wrongArgumentType(function, expected, found) => {
-                return std.sprintf(
+                return sprintf(
                     "argument to `%s` must be %s, got %s",
                     function.name(),
                     expected.describe(),
@@ -147,7 +147,7 @@ impl BuiltinError {
                 )
             }
             case .unsupportedArgument(function, found) => {
-                return std.sprintf(
+                return sprintf(
                     "argument to `%s` not supported, got %s",
                     function.name(),
                     found.describe(),
@@ -175,7 +175,7 @@ public func callBuiltin(
 
     match builtin {
         case .len => {
-            let argument = arguments.at(0 as usize)
+            let argument = arguments.at(0)
             match argument {
                 case .text(value) => return .ok(.integer(value.byteLen() as int64))
                 case .array(elements) => return .ok(.integer(elements.len() as int64))
@@ -192,7 +192,7 @@ public func callBuiltin(
 
         case .first => {
             let elements = arrayArgument(.first, &arguments)!
-            match elements.get(0 as usize) {
+            match elements.get(0) {
                 case .some(found) => return .ok(found.clone())
                 case .none => return .ok(.null)
             }
@@ -203,7 +203,7 @@ public func callBuiltin(
             if elements.isEmpty() {
                 return .ok(.null)
             }
-            return .ok(elements.at(elements.len() - (1 as usize)).clone())
+            return .ok(elements.at(elements.len() - 1).clone())
         }
 
         case .rest => {
@@ -212,10 +212,10 @@ public func callBuiltin(
                 return .ok(.null)
             }
             var tail = List[Object]()
-            var position = 1 as usize
+            var position: usize = 1
             while position < elements.len() {
                 tail.append(elements.at(position).clone())
-                position += 1 as usize
+                position += 1
             }
             return .ok(.array(boxArray(tail)))
         }
@@ -226,13 +226,13 @@ public func callBuiltin(
             for element in elements {
                 extended.append(element.clone())
             }
-            extended.append(arguments.at(1 as usize).clone())
+            extended.append(arguments.at(1).clone())
             return .ok(.array(boxArray(extended)))
         }
 
         case .puts => {
             for argument in &arguments {
-                std.printf("%s\n", argument.inspect())
+                printf("%s\n", argument.inspect())
             }
             return .ok(.null)
         }
@@ -244,7 +244,7 @@ func arrayArgument(
     _ name: Builtin,
     _ arguments: &List[Object],
 ) -> Result[&List[Object], BuiltinError] {
-    let argument = arguments.at(0 as usize)
+    let argument = arguments.at(0)
     match argument {
         case .array(elements) => return .ok(*elements)
         case _ => {

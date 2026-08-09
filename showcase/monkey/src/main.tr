@@ -14,7 +14,7 @@ func parse(_ source: string, _ origin: string) -> Optional[Program] {
         case .ok(parsed) => return .some(parsed)
         case .err(errors) => {
             for error in &errors {
-                std.eprintf(
+                eprintf(
                     "%s:%v:%v: %s\n",
                     origin,
                     error.position.line,
@@ -42,12 +42,12 @@ func runSource(_ source: string, _ origin: string, _ engine: Engine) -> bool {
             match evaluator.run(&program, env) {
                 case .ok(value) => {
                     if !endsWithBinding(&program) {
-                        std.printf("%s\n", value.inspect())
+                        printf("%s\n", value.inspect())
                     }
                     return true
                 }
                 case .err(error) => {
-                    std.eprintf("%s: %s\n", origin, error.describe())
+                    eprintf("%s: %s\n", origin, error.describe())
                     return false
                 }
             }
@@ -57,7 +57,7 @@ func runSource(_ source: string, _ origin: string, _ engine: Engine) -> bool {
             match compiler.compile(&program) {
                 case .ok(_) => {}
                 case .err(error) => {
-                    std.eprintf("%s: %s\n", origin, error.describe())
+                    eprintf("%s: %s\n", origin, error.describe())
                     return false
                 }
             }
@@ -65,12 +65,12 @@ func runSource(_ source: string, _ origin: string, _ engine: Engine) -> bool {
             match machine.run() {
                 case .ok(_) => {
                     if !endsWithBinding(&program) {
-                        std.printf("%s\n", machine.result().inspect())
+                        printf("%s\n", machine.result().inspect())
                     }
                     return true
                 }
                 case .err(error) => {
-                    std.eprintf("%s: %s\n", origin, error.describe())
+                    eprintf("%s: %s\n", origin, error.describe())
                     return false
                 }
             }
@@ -90,18 +90,18 @@ const FIBONACCI: string = "let fibonacci = fn(x) { if (x == 0) { 0 } else { if (
 
 /// Milliseconds in a duration, which `std.time` does not spell directly.
 func millis(_ duration: std.time.Duration) -> uint64 {
-    return duration.seconds() * (1000 as uint64)
-        + ((duration.subsecNanos() / (1000000 as uint32)) as uint64)
+    return duration.seconds() * 1000
+        + ((duration.subsecNanos() / 1000000) as uint64)
 }
 
 func benchmark(_ n: int64) {
-    let source = std.sprintf("%s fibonacci(%v);", FIBONACCI, n)
+    let source = sprintf("%s fibonacci(%v);", FIBONACCI, n)
     let program = match parse(source, "benchmark") {
         case .some(parsed) => parsed
         case .none => std.process.exit(1)
     }
 
-    std.printf("fibonacci(%v)\n", n)
+    printf("fibonacci(%v)\n", n)
 
     // The tree-walking evaluator bounds its own recursion, so a large enough
     // input is refused rather than run. That is worth reporting, not hiding.
@@ -110,7 +110,7 @@ func benchmark(_ n: int64) {
     var evaluator = Evaluator()
     match evaluator.run(&program, env) {
         case .ok(value) => {
-            std.printf(
+            printf(
                 "  %-22s %6v ms   %s\n",
                 "tree-walking",
                 millis(treeStart.elapsed()),
@@ -118,7 +118,7 @@ func benchmark(_ n: int64) {
             )
         }
         case .err(error) => {
-            std.printf("  %-22s %s\n", "tree-walking", error.describe())
+            printf("  %-22s %s\n", "tree-walking", error.describe())
         }
     }
 
@@ -127,7 +127,7 @@ func benchmark(_ n: int64) {
     match compiler.compile(&program) {
         case .ok(_) => {}
         case .err(error) => {
-            std.eprintf("benchmark: %s\n", error.describe())
+            eprintf("benchmark: %s\n", error.describe())
             std.process.exit(1)
         }
     }
@@ -138,7 +138,7 @@ func benchmark(_ n: int64) {
     var machine = VM.new(bytecode)
     match machine.run() {
         case .ok(_) => {
-            std.printf(
+            printf(
                 "  %-22s %6v ms   %s   (compiled in %v ms)\n",
                 "bytecode machine",
                 millis(runStart.elapsed()),
@@ -147,34 +147,34 @@ func benchmark(_ n: int64) {
             )
         }
         case .err(error) => {
-            std.printf("  %-22s %s\n", "bytecode machine", error.describe())
+            printf("  %-22s %s\n", "bytecode machine", error.describe())
         }
     }
 }
 
 func usage() {
-    std.eprint("usage: monkey [file | -e <source>] [--engine vm|eval]\n")
-    std.eprint("  with no arguments, starts a REPL\n")
-    std.eprint("  --bench [n]   time both engines on fibonacci(n)\n")
+    eprint("usage: monkey [file | -e <source>] [--engine vm|eval]\n")
+    eprint("  with no arguments, starts a REPL\n")
+    eprint("  --bench [n]   time both engines on fibonacci(n)\n")
 }
 
 /// Reads `--engine <name>`, answering the engine and the arguments without it.
 func selectEngine(_ arguments: &List[string]) -> (Engine, List[string]) {
     var engine = Engine.bytecode
     var rest = List[string]()
-    var index = 0 as usize
+    var index: usize = 0
     while index < arguments.len() {
         let argument = *arguments.at(index)
-        if argument == "--engine" && index + (1 as usize) < arguments.len() {
-            let name = *arguments.at(index + (1 as usize))
+        if argument == "--engine" && index + 1 < arguments.len() {
+            let name = *arguments.at(index + 1)
             if name == "eval" || name == "tree" {
                 engine = .tree
             }
-            index += 2 as usize
+            index += 2
             continue
         }
         rest.append(argument)
-        index += 1 as usize
+        index += 1
     }
     return (engine, rest)
 }
@@ -182,10 +182,10 @@ func selectEngine(_ arguments: &List[string]) -> (Engine, List[string]) {
 func main() {
     let raw = std.env.args()
     var passed = List[string]()
-    var index = 1 as usize
+    var index: usize = 1
     while index < raw.len() {
         passed.append(raw.at(index))
-        index += 1 as usize
+        index += 1
     }
 
     let selected = selectEngine(&passed)
@@ -199,7 +199,7 @@ func main() {
         return
     }
 
-    let first = *arguments.at(0 as usize)
+    let first = *arguments.at(0)
 
     if first == "-h" || first == "--help" {
         usage()
@@ -207,12 +207,12 @@ func main() {
     }
 
     if first == "--bench" {
-        var n = 30 as int64
-        if arguments.len() >= (2 as usize) {
-            match int64.parse(*arguments.at(1 as usize)) {
+        var n: int64 = 30
+        if arguments.len() >= 2 {
+            match int64.parse(*arguments.at(1)) {
                 case .ok(parsed) => n = parsed
                 case .err(_) => {
-                    std.eprint("error: --bench needs a number\n")
+                    eprint("error: --bench needs a number\n")
                     std.process.exit(2)
                 }
             }
@@ -222,12 +222,12 @@ func main() {
     }
 
     if first == "-e" {
-        if arguments.len() < (2 as usize) {
-            std.eprint("error: -e needs a source argument\n")
+        if arguments.len() < 2 {
+            eprint("error: -e needs a source argument\n")
             usage()
             std.process.exit(2)
         }
-        if !runSource(*arguments.at(1 as usize), "-e", engine) {
+        if !runSource(*arguments.at(1), "-e", engine) {
             std.process.exit(1)
         }
         return
@@ -240,7 +240,7 @@ func main() {
             }
         }
         case .err(error) => {
-            std.eprintf("cannot read %s: %v\n", first, error)
+            eprintf("cannot read %s: %v\n", first, error)
             std.process.exit(1)
         }
     }

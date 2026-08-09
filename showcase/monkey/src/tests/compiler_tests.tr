@@ -2,7 +2,6 @@ import monkey.compiler.{Compiler, SymbolTable, SymbolScope, boxSymbolTable}
 import monkey.lexer.Lexer
 import monkey.object.Object
 import monkey.parser.Parser
-import std.testing.{assertTrue, assertEqual, fail}
 
 /// Compiles `source` and renders everything it produced.
 ///
@@ -19,37 +18,37 @@ func compiled(_ source: string) -> string {
             if errors.isEmpty() {
                 return "parse error"
             }
-            return std.sprintf("parse error: %s", errors.at(0 as usize).message)
+            return sprintf("parse error: %s", errors.at(0).message)
         }
     }
 
     var compiler = Compiler.new()
     match compiler.compile(&program) {
         case .ok(_) => {}
-        case .err(error) => return std.sprintf("compile error: %s", error.describe())
+        case .err(error) => return sprintf("compile error: %s", error.describe())
     }
 
     let bytecode = compiler.bytecode()
     var out = bytecode.instructions.disassemble()
-    var index = 0 as usize
+    var index: usize = 0
     for constant in &bytecode.constants {
         match constant {
             case .compiledFunction(function) => {
-                out = out + std.sprintf("constant %v: fn\n", index)
+                out = out + sprintf("constant %v: fn\n", index)
                 out = out + function.instructions.disassemble()
             }
             case _ => {
-                out = out + std.sprintf("constant %v: %s\n", index, constant.inspect())
+                out = out + sprintf("constant %v: %s\n", index, constant.inspect())
             }
         }
-        index += 1 as usize
+        index += 1
     }
     return out
 }
 
 func check(_ source: string, _ expected: string) {
     let actual = compiled(source)
-    assertEqual(actual, expected, std.sprintf("%s compiled to\n%s\nwant\n%s", source, actual, expected))
+    assertEqual(actual, expected, sprintf("%s compiled to\n%s\nwant\n%s", source, actual, expected))
 }
 
 @test
@@ -234,15 +233,15 @@ func globalScopeDefinesAndResolves() {
     var table = SymbolTable.new()
     let a = table.define("a")
     assertTrue(a.scope == SymbolScope.global, "a top-level binding is global")
-    assertEqual(a.index, 0 as usize, "the first binding takes slot zero")
+    assertEqual(a.index, 0, "the first binding takes slot zero")
 
     let b = table.define("b")
-    assertEqual(b.index, 1 as usize, "the next takes the following slot")
+    assertEqual(b.index, 1, "the next takes the following slot")
 
     match table.resolve("a") {
         case .some(found) => {
             assertTrue(found.scope == SymbolScope.global, "a resolves as global")
-            assertEqual(found.index, 0 as usize, "to the slot it was given")
+            assertEqual(found.index, 0, "to the slot it was given")
         }
         case .none => fail("a should resolve")
     }
@@ -261,7 +260,7 @@ func nestedScopesResolveOutwards() {
     var local = SymbolTable.enclosedBy(outerRef)
     let b = local.define("b")
     assertTrue(b.scope == SymbolScope.local, "a binding inside a function is local")
-    assertEqual(b.index, 0 as usize, "locals are numbered from zero in each function")
+    assertEqual(b.index, 0, "locals are numbered from zero in each function")
 
     // A global stays a global when read from within a function.
     match local.resolve("a") {
@@ -287,32 +286,32 @@ func enclosingLocalsBecomeFree() {
     match inner.resolve("a") {
         case .some(found) => {
             assertTrue(found.scope == SymbolScope.free, "an enclosing local is captured")
-            assertEqual(found.index, 0 as usize, "as the first captured value")
+            assertEqual(found.index, 0, "as the first captured value")
         }
         case .none => fail("a should resolve as free")
     }
-    assertEqual(inner.free.len(), 1 as usize, "one value was captured")
+    assertEqual(inner.free.len(), 1, "one value was captured")
 
     // Resolving it again reuses the same capture rather than adding another.
     let _ = inner.resolve("a")
-    assertEqual(inner.free.len(), 1 as usize, "a second read captures nothing new")
+    assertEqual(inner.free.len(), 1, "a second read captures nothing new")
 }
 
 @test
 func builtinsResolveFromAnyDepth() {
     var global = SymbolTable.new()
-    let _ = global.defineBuiltin(0 as usize, "len")
+    let _ = global.defineBuiltin(0, "len")
     var globalRef = boxSymbolTable(global)
     var inner = SymbolTable.enclosedBy(globalRef)
 
     match inner.resolve("len") {
         case .some(found) => {
             assertTrue(found.scope == SymbolScope.builtin, "a builtin is never captured")
-            assertEqual(found.index, 0 as usize, "at its fixed index")
+            assertEqual(found.index, 0, "at its fixed index")
         }
         case .none => fail("len should resolve")
     }
-    assertEqual(inner.free.len(), 0 as usize, "a builtin is reachable without capturing it")
+    assertEqual(inner.free.len(), 0, "a builtin is reachable without capturing it")
 }
 
 @test

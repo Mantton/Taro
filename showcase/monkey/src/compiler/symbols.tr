@@ -5,7 +5,7 @@
 /// over scopes needs a default branch that reports "unresolved". Naming the
 /// alternatives makes the load site exhaustive: a scope added later fails to
 /// compile until every place that loads a symbol says what to emit for it.
-public enum SymbolScope: std.marker.Copy, std.ops.PartialEq {
+public enum SymbolScope: Copy, PartialEq {
     /// A binding at the top level, kept in the machine's globals.
     case global
     /// A binding inside a function, kept in that call's stack slots.
@@ -31,7 +31,7 @@ impl SymbolScope {
 }
 
 /// A resolved name: where it lives and which slot it occupies.
-public struct Symbol: std.marker.Copy {
+public struct Symbol: Copy {
     public name: string
     public scope: SymbolScope
     public index: usize
@@ -62,7 +62,7 @@ impl SymbolTable {
             store: Dictionary[string, Symbol](),
             outer: .none,
             free: List[Symbol](),
-            definitions: 0 as usize,
+            definitions: 0,
         }
     }
 
@@ -72,7 +72,7 @@ impl SymbolTable {
             store: Dictionary[string, Symbol](),
             outer: .some(outer),
             free: List[Symbol](),
-            definitions: 0 as usize,
+            definitions: 0,
         }
     }
 
@@ -93,7 +93,7 @@ impl SymbolTable {
         }
         let symbol = Symbol { name: name, scope: scope, index: self.definitions }
         self.store.set(key: name, value: symbol)
-        self.definitions += 1 as usize
+        self.definitions += 1
         return symbol
     }
 
@@ -110,7 +110,7 @@ impl SymbolTable {
     /// exists, so the name resolves to the closure being called rather than to
     /// a slot that has not been written yet.
     public func defineFunctionName(&mut self, _ name: string) -> Symbol {
-        let symbol = Symbol { name: name, scope: .function, index: 0 as usize }
+        let symbol = Symbol { name: name, scope: .function, index: 0 }
         self.store.set(key: name, value: symbol)
         return symbol
     }
@@ -121,7 +121,7 @@ impl SymbolTable {
         let symbol = Symbol {
             name: original.name,
             scope: .free,
-            index: self.free.len() - (1 as usize),
+            index: self.free.len() - 1,
         }
         self.store.set(key: original.name, value: symbol)
         return symbol

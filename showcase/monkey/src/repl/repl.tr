@@ -14,7 +14,7 @@ const PROMPT: string = ">> "
 /// Both are kept, and both are complete. The tree-walking evaluator is the
 /// first book's; the stack machine is this one's. Being able to switch between
 /// them on the same session is what makes it possible to check that they agree.
-public enum Engine: std.marker.Copy, std.ops.PartialEq {
+public enum Engine: Copy, PartialEq {
     /// Walks the syntax tree, evaluating as it goes.
     case tree
     /// Compiles to bytecode and runs it on the stack machine.
@@ -80,12 +80,12 @@ impl Repl {
 
     /// Reads, evaluates and prints until the input ends or the user quits.
     public func run(&mut self) {
-        std.print(GREETING)
-        std.printf("Running on the %s. Type :engine to switch.\n", self.engine.describe())
+        print(GREETING)
+        printf("Running on the %s. Type :engine to switch.\n", self.engine.describe())
 
         var reader = std.io.BufReader(std.io.stdin())
         loop {
-            std.print(PROMPT)
+            print(PROMPT)
 
             let line = match reader.readLine() {
                 case .ok(read) => {
@@ -97,7 +97,7 @@ impl Repl {
                     }
                 }
                 case .err(error) => {
-                    std.printf("cannot read input: %v\n", error)
+                    printf("cannot read input: %v\n", error)
                     break
                 }
             }
@@ -113,13 +113,13 @@ impl Repl {
             }
         }
 
-        std.print("\n")
+        print("\n")
     }
 
     /// Runs a REPL directive, answering whether the session continues.
     func runCommand(&mut self, _ name: string, _ argument: string) -> bool {
         if name == "help" {
-            std.print(HELP)
+            print(HELP)
             return true
         }
         if name == "engine" {
@@ -129,18 +129,18 @@ impl Repl {
         if name == "tree" {
             self.showTree = !self.showTree
             if self.showTree {
-                std.print("showing the parse tree\n")
+                print("showing the parse tree\n")
             } else {
-                std.print("hiding the parse tree\n")
+                print("hiding the parse tree\n")
             }
             return true
         }
         if name == "bytecode" {
             self.showBytecode = !self.showBytecode
             if self.showBytecode {
-                std.print("showing compiled instructions\n")
+                print("showing compiled instructions\n")
             } else {
-                std.print("hiding compiled instructions\n")
+                print("hiding compiled instructions\n")
             }
             return true
         }
@@ -153,14 +153,14 @@ impl Repl {
             self.symbols = freshSymbolTable()
             self.constants = List[Object]()
             self.globals = List[Object]()
-            std.print("every binding forgotten\n")
+            print("every binding forgotten\n")
             return true
         }
         if name == "quit" || name == "exit" {
             return false
         }
 
-        std.printf("unknown command :%s — try :help\n", name)
+        printf("unknown command :%s — try :help\n", name)
         return true
     }
 
@@ -176,12 +176,12 @@ impl Repl {
                 case .bytecode => self.engine = .tree
             }
         } else {
-            std.printf("unknown engine %s — try :engine vm or :engine eval\n", argument)
+            printf("unknown engine %s — try :engine vm or :engine eval\n", argument)
             return
         }
         // Bindings live in whichever engine made them, so the two do not share
         // them. Saying so is better than letting a name quietly vanish.
-        std.printf("now running on the %s (bindings are per engine)\n", self.engine.describe())
+        printf("now running on the %s (bindings are per engine)\n", self.engine.describe())
     }
 
     /// Parses one line and runs it on the current engine.
@@ -196,7 +196,7 @@ impl Repl {
         }
 
         if self.showTree {
-            std.printf("tree: %s\n", renderProgram(&program))
+            printf("tree: %s\n", renderProgram(&program))
         }
 
         match self.engine {
@@ -208,7 +208,7 @@ impl Repl {
     func evaluateWalking(&mut self, _ program: &Program) {
         match self.evaluator.run(program, self.env) {
             case .ok(value) => self.echo(program, value)
-            case .err(error) => std.printf("error: %s\n", error.describe())
+            case .err(error) => printf("error: %s\n", error.describe())
         }
     }
 
@@ -217,14 +217,14 @@ impl Repl {
         match compiler.compile(program) {
             case .ok(_) => {}
             case .err(error) => {
-                std.printf("compile error: %s\n", error.describe())
+                printf("compile error: %s\n", error.describe())
                 return
             }
         }
 
         let bytecode = compiler.bytecode()
         if self.showBytecode {
-            std.print(bytecode.instructions.disassemble())
+            print(bytecode.instructions.disassemble())
         }
         self.constants = cloneObjects(&bytecode.constants)
 
@@ -238,7 +238,7 @@ impl Repl {
                 // The globals a failed line did bind still stand, the same way
                 // the evaluator leaves an environment it partly updated.
                 self.globals = machine.globalStore()
-                std.printf("error: %s\n", error.describe())
+                printf("error: %s\n", error.describe())
             }
         }
     }
@@ -250,7 +250,7 @@ impl Repl {
     /// match look like they did nothing at all.
     func echo(&self, _ program: &Program, _ value: Object) {
         if !endsWithBinding(program) {
-            std.printf("%s\n", value.inspect())
+            printf("%s\n", value.inspect())
         }
     }
 }
@@ -280,11 +280,11 @@ func classify(_ line: string) -> Input {
     }
 
     // `substring` takes a count, not an end index.
-    let body = trimmed.substring(1 as usize, trimmed.byteLen() - (1 as usize))
+    let body = trimmed.substring(1, trimmed.byteLen() - 1)
     match body.find(" ") {
         case .some(space) => {
-            let name = body.substring(0 as usize, space)
-            let rest = space + (1 as usize)
+            let name = body.substring(0, space)
+            let rest = space + 1
             let argument = body.substring(rest, body.byteLen() - rest).trim()
             return .command(name: name, argument: argument)
         }
@@ -299,18 +299,18 @@ func classify(_ line: string) -> Input {
 /// problem pointed at directly.
 func printParseErrors(_ source: string, _ errors: &List[ParseError]) {
     for error in errors {
-        std.printf("  %s\n", error.message)
+        printf("  %s\n", error.message)
         // Only single-line input reaches the REPL, so the caret lines up
         // whenever the position is within the text.
-        if error.position.line == (1 as usize) && error.position.column <= source.byteLen() {
-            std.printf("    %s\n", source)
+        if error.position.line == 1 && error.position.column <= source.byteLen() {
+            printf("    %s\n", source)
             var caret = ""
-            var column = 1 as usize
+            var column: usize = 1
             while column < error.position.column {
                 caret = caret + " "
-                column += 1 as usize
+                column += 1
             }
-            std.printf("    %s^\n", caret)
+            printf("    %s^\n", caret)
         }
     }
 }
@@ -318,7 +318,7 @@ func printParseErrors(_ source: string, _ errors: &List[ParseError]) {
 /// Prints the token stream for a source, which the book's REPL does first.
 func printTokens(_ source: string) {
     if source.isEmpty() {
-        std.print("usage: :tokens <source>\n")
+        print("usage: :tokens <source>\n")
         return
     }
 
@@ -328,7 +328,7 @@ func printTokens(_ source: string) {
         if token.kind.tag() == TokenTag.eof {
             break
         }
-        std.printf(
+        printf(
             "  %v:%v %s\n",
             token.position.line,
             token.position.column,

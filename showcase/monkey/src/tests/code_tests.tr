@@ -1,5 +1,4 @@
 import monkey.code.{Instruction, Instructions, Opcode, decode, encoded, describeInstruction}
-import std.testing.{assertTrue, assertEqual}
 
 /// Every instruction, one of each, with distinguishable operands.
 ///
@@ -44,7 +43,7 @@ func everyInstruction() -> List[Instruction] {
 func everyOpcodeIsCovered() {
     // Thirty opcodes, matching the reference implementation. If one is added
     // without a sample here, the round-trip tests below would silently skip it.
-    assertEqual(everyInstruction().len(), 30 as usize, "one sample per opcode")
+    assertEqual(everyInstruction().len(), 30, "one sample per opcode")
 }
 
 @test
@@ -56,10 +55,10 @@ func encodingRoundTrips() {
         assertEqual(
             bytes.len(),
             instruction.width(),
-            std.sprintf("%s encodes to the width it declares", describeInstruction(instruction)),
+            sprintf("%s encodes to the width it declares", describeInstruction(instruction)),
         )
 
-        match decode(&bytes, at: 0 as usize) {
+        match decode(&bytes, at: 0) {
             case .ok(back) => {
                 assertEqual(
                     describeInstruction(&back.instruction),
@@ -69,7 +68,7 @@ func encodingRoundTrips() {
                 assertEqual(back.width, bytes.len(), "the decoded width covers the encoding")
             }
             case .err(error) => {
-                std.testing.fail(std.sprintf("could not decode: %s", error.describe()))
+                fail(sprintf("could not decode: %s", error.describe()))
             }
         }
     }
@@ -79,11 +78,11 @@ func encodingRoundTrips() {
 func opcodeBytesAreStable() {
     // The byte values are the reference implementation's, so bytecode produced
     // here is the same bytecode the book produces.
-    assertEqual(Opcode.constant.toByte(), 0 as uint8, "OpConstant is 0")
-    assertEqual(Opcode.add.toByte(), 1 as uint8, "OpAdd is 1")
-    assertEqual(Opcode.pop.toByte(), 2 as uint8, "OpPop is 2")
-    assertEqual(Opcode.closure.toByte(), 27 as uint8, "OpClosure is 27")
-    assertEqual(Opcode.currentClosure.toByte(), 29 as uint8, "OpCurrentClosure is 29")
+    assertEqual(Opcode.constant.toByte(), 0, "OpConstant is 0")
+    assertEqual(Opcode.add.toByte(), 1, "OpAdd is 1")
+    assertEqual(Opcode.pop.toByte(), 2, "OpPop is 2")
+    assertEqual(Opcode.closure.toByte(), 27, "OpClosure is 27")
+    assertEqual(Opcode.currentClosure.toByte(), 29, "OpCurrentClosure is 29")
 }
 
 @test
@@ -92,9 +91,9 @@ func everyOpcodeByteMapsBack() {
         let opcode = instruction.opcode()
         match Opcode.fromByte(opcode.toByte()) {
             case .some(back) => {
-                assertTrue(back == opcode, std.sprintf("%s maps back from its byte", opcode.name()))
+                assertTrue(back == opcode, sprintf("%s maps back from its byte", opcode.name()))
             }
-            case .none => std.testing.fail(std.sprintf("%s has no byte mapping", opcode.name()))
+            case .none => fail(sprintf("%s has no byte mapping", opcode.name()))
         }
     }
 }
@@ -102,12 +101,12 @@ func everyOpcodeByteMapsBack() {
 @test
 func unassignedBytesAreRejected() {
     // Thirty opcodes are defined, so 30 and up name nothing.
-    match Opcode.fromByte(30 as uint8) {
-        case .some(_) => std.testing.fail("byte 30 should name no opcode")
+    match Opcode.fromByte(30) {
+        case .some(_) => fail("byte 30 should name no opcode")
         case .none => {}
     }
-    match Opcode.fromByte(255 as uint8) {
-        case .some(_) => std.testing.fail("byte 255 should name no opcode")
+    match Opcode.fromByte(255) {
+        case .some(_) => fail("byte 255 should name no opcode")
         case .none => {}
     }
 }
@@ -116,15 +115,15 @@ func unassignedBytesAreRejected() {
 func operandsAreBigEndian() {
     // The layout matches the reference implementation byte for byte.
     let bytes = encoded(.constant(65534))
-    assertEqual(bytes.len(), 3 as usize, "an opcode and two operand bytes")
-    assertEqual(*bytes.at(0 as usize), 0 as uint8, "OpConstant")
-    assertEqual(*bytes.at(1 as usize), 255 as uint8, "high byte first")
-    assertEqual(*bytes.at(2 as usize), 254 as uint8, "then the low byte")
+    assertEqual(bytes.len(), 3, "an opcode and two operand bytes")
+    assertEqual(*bytes.at(0), 0, "OpConstant")
+    assertEqual(*bytes.at(1), 255, "high byte first")
+    assertEqual(*bytes.at(2), 254, "then the low byte")
 
     let wide = encoded(.closure(constant: 65534, free: 255))
-    assertEqual(wide.len(), 4 as usize, "two operands of different widths")
-    assertEqual(*wide.at(1 as usize), 255 as uint8, "the wide operand leads")
-    assertEqual(*wide.at(3 as usize), 255 as uint8, "the narrow one follows")
+    assertEqual(wide.len(), 4, "two operands of different widths")
+    assertEqual(*wide.at(1), 255, "the wide operand leads")
+    assertEqual(*wide.at(3), 255, "the narrow one follows")
 }
 
 @test
@@ -132,9 +131,9 @@ func truncatedStreamsAreReported() {
     // An operand that runs off the end is refused rather than read past.
     var partial = List[uint8]()
     partial.append(Opcode.constant.toByte())
-    partial.append(1 as uint8)
-    match decode(&partial, at: 0 as usize) {
-        case .ok(_) => std.testing.fail("a half-written operand should not decode")
+    partial.append(1)
+    match decode(&partial, at: 0) {
+        case .ok(_) => fail("a half-written operand should not decode")
         case .err(error) => {
             assertEqual(
                 error.describe(),
@@ -145,9 +144,9 @@ func truncatedStreamsAreReported() {
     }
 
     var unknown = List[uint8]()
-    unknown.append(200 as uint8)
-    match decode(&unknown, at: 0 as usize) {
-        case .ok(_) => std.testing.fail("an unassigned byte should not decode")
+    unknown.append(200)
+    match decode(&unknown, at: 0) {
+        case .ok(_) => fail("an unassigned byte should not decode")
         case .err(error) => {
             assertEqual(
                 error.describe(),
@@ -179,10 +178,10 @@ func disassemblyReadsBack() {
 @test
 func emitAnswersTheOffset() {
     var stream = Instructions.new()
-    assertEqual(stream.emit(.add), 0 as usize, "the first instruction starts at zero")
-    assertEqual(stream.emit(.constant(0)), 1 as usize, "the next follows OpAdd's single byte")
-    assertEqual(stream.emit(.pop), 4 as usize, "and follows OpConstant's three")
-    assertEqual(stream.len(), 5 as usize, "five bytes in total")
+    assertEqual(stream.emit(.add), 0, "the first instruction starts at zero")
+    assertEqual(stream.emit(.constant(0)), 1, "the next follows OpAdd's single byte")
+    assertEqual(stream.emit(.pop), 4, "and follows OpConstant's three")
+    assertEqual(stream.len(), 5, "five bytes in total")
 }
 
 @test
@@ -193,7 +192,7 @@ func jumpsArePatchedInPlace() {
     let placeholder = stream.emit(.jumpNotTruthy(9999))
     stream.emit(.pop)
 
-    assertTrue(stream.patchJump(at: placeholder, to: 42 as uint16), "the offset names a jump")
+    assertTrue(stream.patchJump(at: placeholder, to: 42), "the offset names a jump")
     match stream.decodeAt(placeholder) {
         case .ok(decoded) => {
             assertEqual(
@@ -202,9 +201,9 @@ func jumpsArePatchedInPlace() {
                 "the destination was rewritten",
             )
         }
-        case .err(_) => std.testing.fail("the patched instruction should decode")
+        case .err(_) => fail("the patched instruction should decode")
     }
-    assertEqual(stream.len(), 5 as usize, "patching does not change the width")
+    assertEqual(stream.len(), 5, "patching does not change the width")
 }
 
 @test
@@ -213,7 +212,7 @@ func onlyJumpsArePatched() {
     // this; restricting patching to jumps refuses it instead.
     var stream = Instructions.new()
     let offset = stream.emit(.constant(1))
-    assertTrue(!stream.patchJump(at: offset, to: 2 as uint16), "a constant is not a jump")
+    assertTrue(!stream.patchJump(at: offset, to: 2), "a constant is not a jump")
     match stream.decodeAt(offset) {
         case .ok(decoded) => {
             assertEqual(
@@ -222,7 +221,7 @@ func onlyJumpsArePatched() {
                 "the refused patch left the instruction alone",
             )
         }
-        case .err(_) => std.testing.fail("the instruction should still decode")
+        case .err(_) => fail("the instruction should still decode")
     }
 }
 
@@ -232,7 +231,7 @@ func truncateTakesBackAnInstruction() {
     stream.emit(.constant(1))
     let beforePop = stream.len()
     stream.emit(.pop)
-    assertEqual(stream.len(), beforePop + (1 as usize), "OpPop is one byte")
+    assertEqual(stream.len(), beforePop + 1, "OpPop is one byte")
 
     stream.truncate(to: beforePop)
     assertEqual(stream.len(), beforePop, "the stream is back where it was")

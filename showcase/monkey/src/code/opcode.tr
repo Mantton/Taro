@@ -8,7 +8,7 @@
 /// The byte values are the reference implementation's, assigned in the order the
 /// book introduces them, so bytecode produced here disassembles the same as
 /// bytecode produced by the Go version.
-public enum Opcode: std.marker.Copy, std.ops.PartialEq {
+public enum Opcode: Copy, PartialEq {
     case constant
     case add
     case pop

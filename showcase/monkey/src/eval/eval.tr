@@ -32,7 +32,7 @@ public struct Evaluator {
 
 impl Evaluator {
     public func new() -> Self {
-        return Evaluator { depth: 0 as usize }
+        return Evaluator { depth: 0 }
     }
 
     /// Evaluates a whole program.
@@ -196,15 +196,15 @@ impl Evaluator {
                 }
 
                 let scope = boxEnvironment(Environment.enclosedBy(function.env))
-                var position = 0 as usize
+                var position: usize = 0
                 for parameter in function.parameters {
                     scope.define(*parameter, arguments.at(position).clone())
-                    position += 1 as usize
+                    position += 1
                 }
 
-                self.depth += 1 as usize
+                self.depth += 1
                 let outcome = self.evalBlock(function.body, scope)
-                self.depth -= 1 as usize
+                self.depth -= 1
 
                 // A `return` anywhere in the body arrives here as a signal; this
                 // is the boundary where it becomes the call's value again.

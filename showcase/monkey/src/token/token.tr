@@ -49,7 +49,7 @@ public enum TokenKind {
 ///
 /// Mirrors `std.json.ValueKind`: the parser mostly asks "is this a `)`?", which
 /// needs no payload, and comparing tags keeps those checks a single `==`.
-public enum TokenTag: std.marker.Copy, std.ops.PartialEq {
+public enum TokenTag: Copy, PartialEq {
     case illegal
     case eof
     case identifier
@@ -162,16 +162,16 @@ impl TokenKind {
     /// How this token is written in a diagnostic, including its payload.
     public func describe(&self) -> string {
         match self {
-            case .identifier(name) => std.sprintf("identifier '%s'", *name)
-            case .integer(value) => std.sprintf("integer %v", *value)
-            case .text(value) => std.sprintf("string \"%s\"", *value)
+            case .identifier(name) => sprintf("identifier '%s'", *name)
+            case .integer(value) => sprintf("integer %v", *value)
+            case .text(value) => sprintf("string \"%s\"", *value)
             case _ => self.tag().describe()
         }
     }
 }
 
 /// A source position, one-based, used for parser diagnostics.
-public struct Position: std.marker.Copy {
+public struct Position: Copy {
     public line: usize
     public column: usize
 }
