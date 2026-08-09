@@ -22,7 +22,8 @@ Package kinds are:
 ## Manifest
 
 `[package].name` must use exactly `<host>/<author>/<project>`. `kind` defaults
-to `executable`.
+to `executable`. `no_std_prelude = true` disables the automatic `std.prelude`
+scope for bootstrap packages such as std.
 
 ```toml
 [package]
@@ -65,4 +66,4 @@ Locked Git revisions are reused from the local cache and fetched only when
 missing. Installed dependency contents are verified against their locked hash.
 
 Path dependencies are allowed only in the root manifest; transitive path
-dependencies are rejected. Old v1 lockfiles must be regenerated as v2.
+dependencies are rejected.

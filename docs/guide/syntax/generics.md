@@ -144,7 +144,7 @@ func firstOrZero[C](container: C) -> int32
 }
 ```
 
-std's own iteration protocol is `std.iter.Iterator`, which declares
+The prelude's iteration protocol is `Iterator`, which declares
 `type Element` and `func next(&mut self) -> Optional[Self.Element]`:
 
 ```taro
@@ -177,7 +177,7 @@ impl[T] Stack[T] {
 }
 
 // Constrained implementation
-impl[T] Stack[T] where T: std.ops.PartialEq {
+impl[T] Stack[T] where T: PartialEq {
     func contains(&self, item: &T) -> bool {
         for element in &self.items {
             if element == item { return true }

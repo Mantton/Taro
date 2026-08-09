@@ -52,9 +52,9 @@ calculate() |> process() // Pipe chain
 
 ## Formatted Output (`printf`)
 
-`printf` and `sprintf` are available from the prelude (`printf`, `sprintf`) and as `std.printf` / `std.sprintf`.
+`printf` and `sprintf` are available from the prelude.
 
-Supported format specifiers in v1:
+Supported format specifiers:
 - `%%` literal percent sign
 - `%d` integer arguments only
 - `%s` string arguments only
@@ -72,7 +72,7 @@ Validation behavior:
 func main() {
     printf("x=%d y=%s z=%v\n", 7, "ok", true)
     let line = sprintf("x=%d", 7)
-    std.printf("100%%\n")
+    printf("100%%\n")
 }
 ```
 

@@ -26,8 +26,7 @@ repository root.
 - [ ] Bump `META_FORMAT_VERSION` whenever serialized compiler metadata or its
       standard-item mapping changes. Rebuild `dist/` so attached standard-library
       metadata matches the compiler.
-- [ ] Verify old or corrupt caches fail safely or are invalidated by the metadata
-      version/compiler stamp rather than being silently reused.
+- [ ] Verify corrupt caches fail safely and incompatible metadata is invalidated.
 - [ ] Search the docs for stale `deferred`, `not yet implemented`, and
       `reserved for future` claims when enabling a feature.
 

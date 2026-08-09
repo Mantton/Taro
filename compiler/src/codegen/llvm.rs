@@ -3002,10 +3002,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // keep their physical frame against both inlining and tail-call
             // elimination, and remain unwindable through rootless sites, so
             // caller roots cannot be lost.
-            //
-            // Lifting this needs more than deleting the line: see
-            // development/stack_map_inlining.md for the four things that break
-            // and which two are already handled.
             self.preserve_collecting_frame(function);
         }
         self.stack_map_roots.clear();

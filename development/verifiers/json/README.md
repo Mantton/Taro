@@ -11,11 +11,11 @@ third-party inputs are stored in this repository.
 | [Jansson](https://github.com/akheron/jansson) | 103 | Valid, invalid, malformed-Unicode, and numeric-boundary cases |
 | [YAJL](https://github.com/lloyd/yajl) | 58 | Strict parsing and extension-boundary cases |
 | [yyjson](https://github.com/ibireme/yyjson) | 209 | Modern strict-parser, Unicode, number, and extension cases |
-| [JsonCpp](https://github.com/open-source-parsers/jsoncpp) | 69 | Parser regressions and legacy-extension rejection cases |
+| [JsonCpp](https://github.com/open-source-parsers/jsoncpp) | 69 | Parser regressions and extension rejection cases |
 | [JSON Schema Test Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite) | 513 | Larger real-world schema and remote documents |
 | [JSON Canonicalization Scheme](https://github.com/cyberphone/json-canonicalization) | 12 | Numeric, Unicode, and object-shaped documents |
 | [Big List of Naughty Strings](https://github.com/minimaxir/big-list-of-naughty-strings) | 1 | A string-heavy adversarial document |
-| [Boost.JSON](https://github.com/boostorg/json) | 16 | Historical parser-crash inputs |
+| [Boost.JSON](https://github.com/boostorg/json) | 16 | Parser-crash regression inputs |
 | [cJSON](https://github.com/DaveGamble/cJSON) | 14 | Fuzzer seed inputs |
 
 The committed manifests under `corpora/` document the exact selection and licensing policy. We

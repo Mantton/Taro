@@ -23,7 +23,7 @@ and structured concurrency with automatic garbage collection.
 
 ### Requirements
 
-- Latest stable Rust
+- Latest Rust nightly (required for associated type defaults)
 - LLVM 22.1.x; 22.1.8 is the certified development version
 - A C++17 compiler for the narrow LLVM ThinLTO shim
 
@@ -61,8 +61,6 @@ dist/bin/taro --help
 ## A Taste of Taro
 
 ```taro
-import std.ops.Add
-
 struct Point {
     x: int32
     y: int32
@@ -159,9 +157,6 @@ attributes and regression directives.
 - VS Code and Zed integrations provide syntax and static editing support, not
   diagnostics, completion, navigation, or refactoring.
 - `.taro_meta` is an internal binary format, not a stable interchange format.
-
-Near-term work includes package-manager polish, standard-library expansion,
-runtime and GC improvements, and richer editor tooling.
 
 ## Repository Layout
 

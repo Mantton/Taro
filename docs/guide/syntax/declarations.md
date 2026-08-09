@@ -277,7 +277,7 @@ impl[T] Stack[T] {
 }
 
 // Constrained implementation
-impl[T] Stack[T] where T: std.ops.PartialEq {
+impl[T] Stack[T] where T: PartialEq {
     func contains(&self, item: &T) -> bool {
         for element in &self.items {
             if element == item { return true }
@@ -479,10 +479,10 @@ Imports bring items into scope.
 
 ```taro
 // Import single item
-import std.io.File
+import std.fs.File
 
 // Import with alias
-import std.io.File as IoFile
+import std.fs.File as FsFile
 
 // Import multiple items
 import std.{io, fs, net}
@@ -491,8 +491,22 @@ import std.{io, fs, net}
 import std.io.*
 
 // Nested path
-import std.collections.{List, Map, Set}
+import std.collections.{Dictionary, List, Set}
 ```
+
+The standard prelude is available automatically unless a package sets
+`no_std_prelude = true`. It provides common results, optionals, collections,
+operators, marker interfaces, iteration interfaces, memory views, assertions,
+and printing functions. Prefer their unqualified names in application code:
+
+```taro
+func copyAll[T: Copy](_ values: List[T]) -> Result[List[T], string] {
+    return .ok(values)
+}
+```
+
+The standard library itself disables the prelude and imports its dependencies
+explicitly.
 
 ---
 
@@ -542,7 +556,7 @@ interface, not with an `operator` declaration. `operator` is reserved but
 unimplemented.
 
 ```taro
-impl std.ops.Add for Point {
+impl Add for Point {
     func add(self, rhs: Point) -> Point {
         return Point { x: self.x + rhs.x, y: self.y + rhs.y }
     }

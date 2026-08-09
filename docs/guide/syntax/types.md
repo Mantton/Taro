@@ -204,8 +204,7 @@ func panic(_ message: string) -> ! {
 }
 ```
 
-This matches `std.panic.panic`, which takes its message unlabeled and is
-re-exported through the prelude.
+The prelude's `panic` function returns this type.
 
 ### Infer Type
 

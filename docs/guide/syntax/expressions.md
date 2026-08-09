@@ -336,7 +336,7 @@ x <<= 1             // Left shift and assign
 x >>= 1             // Right shift and assign
 ```
 
-For user-defined types, compound assignments use the distinct `std.ops.AddAssign`,
+For user-defined types, compound assignments use the distinct `AddAssign`,
 `SubAssign`, `MulAssign`, `DivAssign`, `RemAssign`, `BitAndAssign`, `BitOrAssign`,
 `BitXorAssign`, `ShlAssign`, and `ShrAssign` interfaces rather than their
 value-producing operator interfaces.
