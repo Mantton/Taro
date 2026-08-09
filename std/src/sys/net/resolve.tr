@@ -1,4 +1,6 @@
 import std.collections.List
+import std.marker.Copy
+import std.ops.PartialEq
 import std.result.Result
 
 const RAW_RESOLVE_NOT_FOUND: uint8 = 1_u8
@@ -44,7 +46,7 @@ extern "taro_rt" {
     func __rt__net_snapshot_close(_ handle: usize)
 }
 
-public enum RawResolveErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum RawResolveErrorKind: Copy, PartialEq {
     case notFound
     case temporary
     case invalidInput
@@ -54,7 +56,7 @@ public enum RawResolveErrorKind: std.marker.Copy, std.ops.PartialEq {
     case unexpected
 }
 
-public struct RawResolveError: std.marker.Copy {
+public struct RawResolveError: Copy {
     kindValue: RawResolveErrorKind
     resolverCodeValue: int32
     systemCodeValue: int32

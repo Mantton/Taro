@@ -1,7 +1,9 @@
 import std.fmt.Display
+import std.marker.Copy
+import std.ops.PartialEq
 
 /// The category of a textual binary-decoding failure.
-public enum DecodeErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum DecodeErrorKind: Copy, PartialEq {
     /// The encoded byte count cannot represent a complete value.
     case invalidLength
     /// A byte does not belong to the selected encoding alphabet.
@@ -16,7 +18,7 @@ public enum DecodeErrorKind: std.marker.Copy, std.ops.PartialEq {
 ///
 /// When required data or padding is missing at end of input, `index()` equals
 /// the input byte length.
-public struct DecodeError: std.marker.Copy {
+public struct DecodeError: Copy {
     kindValue: DecodeErrorKind
     indexValue: usize
 }

@@ -12,6 +12,8 @@ import std.hint
 import std.time
 import std.fmt
 import std.default
+import std.mem.Span
+import std.panic.{panic, todo}
 
 @cfg(family("unix"))
 public func print(_ s: string) {
@@ -35,12 +37,12 @@ public func eprint(_ s: string) {
 
 @cfg(family("windows"))
 public func print(_ s: string) {
-    std.panic.todo("std.print not implemented on windows yet")
+    todo("std.print not implemented on windows yet")
 }
 
 @cfg(family("windows"))
 public func eprint(_ s: string) {
-    std.panic.todo("std.eprint not implemented on windows yet")
+    todo("std.eprint not implemented on windows yet")
 }
 
 public func println(_ s: string) {
@@ -48,7 +50,7 @@ public func println(_ s: string) {
     print("\n")
 }
 
-func renderFormat(_ format: string, _ args: std.mem.Span[any std.fmt.Display]) -> string {
+func renderFormat(_ format: string, _ args: Span[any std.fmt.Display]) -> string {
     std.fmt.formatPrintf(format, args)
 }
 
@@ -73,7 +75,7 @@ public func eprintf(_ format: string, _ args: any std.fmt.Display...) {
 
 public func assert(_ condition: bool, _ message: string) {
     if !condition {
-        std.panic.panic(message)
+        panic(message)
     }
 }
 

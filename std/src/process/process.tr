@@ -1,10 +1,11 @@
 import std.collections.List
 import std.io.{Error, Reader, Writer}
+import std.marker.{Copy, Sendable}
 import std.mem.{MutableSpan, Span}
 import std.result.Result
 
 /// Controls one standard stream of a spawned process.
-public enum Stdio: std.marker.Copy {
+public enum Stdio: Copy {
     /// Connect the child stream to the null device.
     case null
     /// Inherit the corresponding stream from the parent process.
@@ -51,7 +52,7 @@ public struct Command {
 
 // Command owns only immutable strings and private growable buffers. Moving it
 // to the blocking pool transfers exclusive builder ownership with the closure.
-impl std.marker.Sendable for Command {}
+impl Sendable for Command {}
 
 impl Command {
     /// Construct a one-shot command. Standard streams default to `.null`,
@@ -304,7 +305,7 @@ public struct Output {
 
 // Captured bytes are owned GC buffers. The blocking intrinsic transfers their
 // roots with the result before the worker returns to the pool.
-impl std.marker.Sendable for Output {}
+impl Sendable for Output {}
 
 impl Output {
     public func status(&self) -> &ExitStatus { return &self.statusValue }
@@ -456,8 +457,8 @@ public struct ChildStdout {
     state: &PipeCloseState
 }
 
-impl std.marker.Sendable for ChildStdin {}
-impl std.marker.Sendable for ChildStdout {}
+impl Sendable for ChildStdin {}
+impl Sendable for ChildStdout {}
 
 impl ChildStdin {
     public func close(&self) -> Result[(), Error] { closePipeState(self.state) }
@@ -590,7 +591,7 @@ public struct Child {
     programValue: string
 }
 
-impl std.marker.Sendable for Child {}
+impl Sendable for Child {}
 
 func terminateUnreturnableChild(_ raw: &std.sys.process.RawChild) {
     let _ = std.sys.process.childKill(raw)

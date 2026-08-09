@@ -1,3 +1,4 @@
+import std.default.Default
 import std.optional.Optional
 import std.panic.panic
 import std.iter.{Iterator, Iterable}
@@ -353,6 +354,6 @@ public func swap[T](_ x: &mut T, _ y: &mut T) {
     }
 }
 
-public func take[T: std.default.Default](_ dest: &mut T) -> T {
+public func take[T: Default](_ dest: &mut T) -> T {
     replace(dest, T.default())
 }

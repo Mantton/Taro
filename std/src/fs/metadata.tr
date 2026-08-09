@@ -1,9 +1,11 @@
 import std.io.Error
+import std.marker.Copy
+import std.ops.PartialEq
 import std.result.Result
 import std.time.SystemTime
 
 /// A portable category for the kind of filesystem object described by metadata.
-public enum FileType: std.marker.Copy, std.ops.PartialEq {
+public enum FileType: Copy, PartialEq {
     case regular
     case directory
     case symlink
@@ -25,7 +27,7 @@ impl FileType {
 /// Creation time and raw Unix mode bits are intentionally omitted: creation
 /// time is not available on many Unix filesystems, while exposing native mode
 /// bits here would prematurely make a platform-neutral type Unix-specific.
-public struct Metadata: std.marker.Copy {
+public struct Metadata: Copy {
     fileTypeValue: FileType
     lenValue: uint64
     modifiedValue: SystemTime

@@ -1,4 +1,6 @@
+import std.collections.List
 import std.io.{Error, AsyncReader, AsyncWriter}
+import std.marker.Sendable
 import std.mem.{Span, MutableSpan}
 import std.result.Result
 
@@ -74,7 +76,7 @@ public struct AsyncStream {
     state: &AsyncStreamCloseState
 }
 
-impl std.marker.Sendable for AsyncStream {}
+impl Sendable for AsyncStream {}
 
 /// Adopt a raw async stream and register its abandoned-resource cleanup.
 /// Registration failure closes `inner` before returning the error.
@@ -253,8 +255,8 @@ public func readAtLeast[R: AsyncReader](
     return .ok(total)
 }
 
-public func readAll[R: AsyncReader](_ reader: &R) async -> Result[std.collections.List[uint8], Error] {
-    var out = std.collections.List[uint8]()
+public func readAll[R: AsyncReader](_ reader: &R) async -> Result[List[uint8], Error] {
+    var out = List[uint8]()
     var storage: [uint8; IO_CHUNK_SIZE] = [0; IO_CHUNK_SIZE]
     let storagePtr = unsafe { (&mut storage as *mut [uint8; IO_CHUNK_SIZE]) as *mut uint8 }
 
@@ -420,7 +422,7 @@ impl AsyncStream {
         await std.io.task.readAtLeast(self, min, buf)
     }
 
-    public func readAll(&self) async -> Result[std.collections.List[uint8], Error] {
+    public func readAll(&self) async -> Result[List[uint8], Error] {
         match streamSourceId(self.state, "read") {
             case .ok(_) => {}
             case .err(err) => return .err(err)

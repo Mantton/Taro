@@ -1,4 +1,5 @@
 import std.io.Error
+import std.panic.todo
 import std.result.Result
 
 public struct PlatformAsyncStream {
@@ -14,39 +15,39 @@ public func lastError() -> Error {
 }
 
 public func writeStdout(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    std.panic.todo("std.sys.io.writeStdout not implemented on windows yet")
+    todo("std.sys.io.writeStdout not implemented on windows yet")
 }
 
 public func writeStderr(_ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    std.panic.todo("std.sys.io.writeStderr not implemented on windows yet")
+    todo("std.sys.io.writeStderr not implemented on windows yet")
 }
 
 public func readStdin(_ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    std.panic.todo("std.sys.io.readStdin not implemented on windows yet")
+    todo("std.sys.io.readStdin not implemented on windows yet")
 }
 
 public func stdin() -> Result[PlatformAsyncStream, Error] {
-    std.panic.todo("std.sys.io.stdin not implemented on windows yet")
+    todo("std.sys.io.stdin not implemented on windows yet")
 }
 
 public func stdout() -> Result[PlatformAsyncStream, Error] {
-    std.panic.todo("std.sys.io.stdout not implemented on windows yet")
+    todo("std.sys.io.stdout not implemented on windows yet")
 }
 
 public func stderr() -> Result[PlatformAsyncStream, Error] {
-    std.panic.todo("std.sys.io.stderr not implemented on windows yet")
+    todo("std.sys.io.stderr not implemented on windows yet")
 }
 
 public func pipe() -> Result[(PlatformAsyncStream, PlatformAsyncStream), Error] {
-    std.panic.todo("std.sys.io.pipe not implemented on windows yet")
+    todo("std.sys.io.pipe not implemented on windows yet")
 }
 
 public func adoptFd(_ fd: int32) -> Result[PlatformAsyncStream, Error] {
-    std.panic.todo("std.sys.io.adoptFd not implemented on windows yet")
+    todo("std.sys.io.adoptFd not implemented on windows yet")
 }
 
 public func close(_ stream: PlatformAsyncStream) -> Result[(), Error] {
-    std.panic.todo("std.sys.io.close not implemented on windows yet")
+    todo("std.sys.io.close not implemented on windows yet")
 }
 
 public func read(
@@ -54,7 +55,7 @@ public func read(
     _ buf: *mut uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
-    std.panic.todo("std.sys.io.read not implemented on windows yet")
+    todo("std.sys.io.read not implemented on windows yet")
 }
 
 public func write(
@@ -62,5 +63,5 @@ public func write(
     _ buf: *const uint8,
     _ len: usize,
 ) -> Result[usize, Error] {
-    std.panic.todo("std.sys.io.write not implemented on windows yet")
+    todo("std.sys.io.write not implemented on windows yet")
 }

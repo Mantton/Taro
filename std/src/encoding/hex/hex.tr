@@ -1,6 +1,7 @@
 import std.collections.List
 import std.encoding.{DecodeError, DecodeErrorKind}
 import std.mem.Span
+import std.panic.panic
 import std.result.Result
 import std.string.Builder
 
@@ -52,7 +53,7 @@ public func decodedLen(_ inputLen: usize) -> usize? {
 public func encode(_ bytes: Span[uint8]) -> string {
     let outputLen = match encodedLen(bytes.len()) {
         case .some(value) => value
-        case .none => std.panic.panic("hex encoded length overflow")
+        case .none => panic("hex encoded length overflow")
     }
     if outputLen == 0 {
         return ""

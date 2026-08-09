@@ -1,4 +1,5 @@
 import std.hash.Hashable
+import std.iter.{Iterable, Iterator}
 import std.marker.Clone
 
 @lang("Set")
@@ -54,7 +55,7 @@ public struct SetIterator[Element: Hashable] {
     inner: DictOwnedEntriesIterator[Element, ()]
 }
 
-impl[Element: Hashable] std.iter.Iterator for SetIterator[Element] {
+impl[Element: Hashable] Iterator for SetIterator[Element] {
     type Element = Element
 
     public func next(&mut self) -> Element? {
@@ -69,7 +70,7 @@ public struct SetRefIterator[Element: Hashable] {
     inner: DictKeysIterator[Element, ()]
 }
 
-impl[Element: Hashable] std.iter.Iterator for SetRefIterator[Element] {
+impl[Element: Hashable] Iterator for SetRefIterator[Element] {
     type Element = &Element
 
     public func next(&mut self) -> Self.Element? {
@@ -81,7 +82,7 @@ public struct SetMutIterator[Element: Hashable] {
     inner: DictMutKeysIterator[Element, ()]
 }
 
-impl[Element: Hashable] std.iter.Iterator for SetMutIterator[Element] {
+impl[Element: Hashable] Iterator for SetMutIterator[Element] {
     type Element = &Element
 
     public func next(&mut self) -> Self.Element? {
@@ -89,7 +90,7 @@ impl[Element: Hashable] std.iter.Iterator for SetMutIterator[Element] {
     }
 }
 
-impl[Element: Hashable] std.iter.Iterable for Set[Element] {
+impl[Element: Hashable] Iterable for Set[Element] {
     type Iterator = SetIterator[Element]
     type Element = Element
 
@@ -103,7 +104,7 @@ impl[Element: Hashable] std.iter.Iterable for Set[Element] {
     }
 }
 
-impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
+impl[Element: Hashable] Iterable for &Set[Element] {
     type Iterator = SetRefIterator[Element]
     type Element = &Element
 
@@ -114,7 +115,7 @@ impl[Element: Hashable] std.iter.Iterable for &Set[Element] {
     }
 }
 
-impl[Element: Hashable] std.iter.Iterable for &mut Set[Element] {
+impl[Element: Hashable] Iterable for &mut Set[Element] {
     type Iterator = SetMutIterator[Element]
     type Element = &Element
 

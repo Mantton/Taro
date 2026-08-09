@@ -1,12 +1,15 @@
 import std.io.Writer
 import std.collections.List
 import std.fmt.Display
+import std.marker.Copy
 import std.mem.Span
+import std.ops.PartialEq
+import std.optional.Optional
 import std.result.Result
 import std.string.Builder
 
 /// A stable category for JSON output failures.
-public enum EncodeErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum EncodeErrorKind: Copy, PartialEq {
     case invalidUtf8
     case invalidValue
     case invalidState
@@ -87,7 +90,7 @@ impl EncodeError {
         self.stringByteIndexValue
     }
 
-    public func ioError(&self) -> std.optional.Optional[&std.io.Error] {
+    public func ioError(&self) -> Optional[&std.io.Error] {
         match &self.ioErrorValue {
             case .some(cause) => return .some(cause)
             case .none => return .none
@@ -107,7 +110,7 @@ impl std.fmt.Display for EncodeErrorKind {
     }
 }
 
-enum EncodeContainerKind: std.marker.Copy {
+enum EncodeContainerKind: Copy {
     case sequence
     case object
 }

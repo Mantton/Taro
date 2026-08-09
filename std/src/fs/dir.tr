@@ -1,5 +1,6 @@
 import std.io.Error
 import std.iter.{Iterable, Iterator}
+import std.marker.{Copy, Sendable}
 import std.result.Result
 
 struct DirCloseState {
@@ -75,7 +76,7 @@ func closeDirState(_ state: &DirCloseState, _ path: string) -> Result[(), Error]
 /// while ordinary traversal avoids a hidden whole-directory allocation.
 // Copying the small wrapper is safe because every copy points at the same
 // cleanup-governed stream state; it does not duplicate the native handle.
-public struct ReadDir: std.marker.Copy {
+public struct ReadDir: Copy {
     state: &DirCloseState
     path: string
 }
@@ -217,11 +218,11 @@ func claimTempDir(_ state: &TempDirState, _ operation: string) -> Result[string,
 /// An atomically created temporary directory with automatic fallback cleanup.
 // Copies intentionally share one cleanup claim, so exactly one copy can close
 // or keep the directory and every other copy observes `.closed` afterward.
-public struct TempDir: std.marker.Copy {
+public struct TempDir: Copy {
     state: &TempDirState
 }
 
-impl std.marker.Sendable for TempDir {}
+impl Sendable for TempDir {}
 
 impl TempDir {
     /// Return the created path, including after `close` or `keep`, so failures

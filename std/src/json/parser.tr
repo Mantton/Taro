@@ -1,5 +1,6 @@
 import std.collections.List
 import std.io.Reader
+import std.marker.Copy
 import std.mem.MutableSpan
 import std.result.Result
 import std.string.Builder
@@ -7,7 +8,7 @@ import std.string.Builder
 const INPUT_BUFFER_SIZE: usize = 4096
 const ROOT_PATH: string = "$"
 
-struct Position: std.marker.Copy {
+struct Position: Copy {
     offset: usize
     line: usize
     column: usize
@@ -44,7 +45,7 @@ impl PositionTracker {
     }
 }
 
-struct ParseState: std.marker.Copy {
+struct ParseState: Copy {
     options: Options
     valueStart: usize
 }

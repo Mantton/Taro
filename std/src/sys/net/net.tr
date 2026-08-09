@@ -1,18 +1,21 @@
 import std.io.Error
 import std.libc
 import std.marker.Copy
+import std.mem.sizeOf
+import std.ops.PartialEq
+import std.panic.todo
 import std.result.Result
 
 public struct RawSocket: Copy {
     fd: int32
 }
 
-public enum IpAddress: Copy, std.ops.PartialEq {
+public enum IpAddress: Copy, PartialEq {
     case ipv4([uint8; 4])
     case ipv6([uint8; 16])
 }
 
-public struct SocketAddress: Copy, std.ops.PartialEq {
+public struct SocketAddress: Copy, PartialEq {
     ip: IpAddress
     port: uint16
 }
@@ -72,7 +75,7 @@ public func socket(_ domain: SocketDomain, _ type_: SocketType) -> Result[RawSoc
 
 @cfg(family("windows"))
 public func socket(_ domain: SocketDomain, _ type_: SocketType) -> Result[RawSocket, Error] {
-    std.panic.todo("std.sys.net.socket not implemented on windows yet")
+    todo("std.sys.net.socket not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -88,7 +91,7 @@ public func bind(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), E
 
 @cfg(family("windows"))
 public func bind(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.bind not implemented on windows yet")
+    todo("std.sys.net.bind not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -102,7 +105,7 @@ public func listen(_ socket: &RawSocket, _ backlog: int32) -> Result[(), Error] 
 
 @cfg(family("windows"))
 public func listen(_ socket: &RawSocket, _ backlog: int32) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.listen not implemented on windows yet")
+    todo("std.sys.net.listen not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -118,7 +121,7 @@ public func connect(_ socket: &RawSocket, _ address: SocketAddress) -> Result[()
 
 @cfg(family("windows"))
 public func connect(_ socket: &RawSocket, _ address: SocketAddress) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.connect not implemented on windows yet")
+    todo("std.sys.net.connect not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -155,7 +158,7 @@ public func accept(_ socket: &RawSocket) -> Result[(RawSocket, SocketAddress), E
 
 @cfg(family("windows"))
 public func accept(_ socket: &RawSocket) -> Result[(RawSocket, SocketAddress), Error] {
-    std.panic.todo("std.sys.net.accept not implemented on windows yet")
+    todo("std.sys.net.accept not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -174,7 +177,7 @@ public func close(_ socket: &mut RawSocket) -> Result[(), Error] {
 
 @cfg(family("windows"))
 public func close(_ socket: &mut RawSocket) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.close not implemented on windows yet")
+    todo("std.sys.net.close not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -188,7 +191,7 @@ public func read(_ socket: &RawSocket, _ buf: *mut uint8, _ len: usize) -> Resul
 
 @cfg(family("windows"))
 public func read(_ socket: &RawSocket, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    std.panic.todo("std.sys.net.read not implemented on windows yet")
+    todo("std.sys.net.read not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -202,7 +205,7 @@ public func write(_ socket: &RawSocket, _ buf: *const uint8, _ len: usize) -> Re
 
 @cfg(family("windows"))
 public func write(_ socket: &RawSocket, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    std.panic.todo("std.sys.net.write not implemented on windows yet")
+    todo("std.sys.net.write not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -220,7 +223,7 @@ public func localAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
 
 @cfg(family("windows"))
 public func localAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
-    std.panic.todo("std.sys.net.localAddress not implemented on windows yet")
+    todo("std.sys.net.localAddress not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -238,7 +241,7 @@ public func peerAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
 
 @cfg(family("windows"))
 public func peerAddress(_ socket: &RawSocket) -> Result[SocketAddress, Error] {
-    std.panic.todo("std.sys.net.peerAddress not implemented on windows yet")
+    todo("std.sys.net.peerAddress not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -264,7 +267,7 @@ public func sendTo(
     _ len: usize,
     _ address: SocketAddress,
 ) -> Result[usize, Error] {
-    std.panic.todo("std.sys.net.sendTo not implemented on windows yet")
+    todo("std.sys.net.sendTo not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -295,14 +298,14 @@ public func recvFrom(
     _ buf: *mut uint8,
     _ len: usize,
 ) -> Result[(usize, SocketAddress), Error] {
-    std.panic.todo("std.sys.net.recvFrom not implemented on windows yet")
+    todo("std.sys.net.recvFrom not implemented on windows yet")
 }
 
 @cfg(family("unix"))
 public func setReuseAddr(_ socket: &RawSocket, _ enabled: bool) -> Result[(), Error] {
     var value: int32 = if enabled { 1 } else { 0 }
     let valuePtr = unsafe { (&value as *const int32) as *const uint8 }
-    let valueLen = std.mem.sizeOf[int32]() as std.libc.socklen_t
+    let valueLen = sizeOf[int32]() as std.libc.socklen_t
     let res = std.libc.setsockopt(
         socket.fd,
         std.libc.SOL_SOCKET,
@@ -318,7 +321,7 @@ public func setReuseAddr(_ socket: &RawSocket, _ enabled: bool) -> Result[(), Er
 
 @cfg(family("windows"))
 public func setReuseAddr(_ socket: &RawSocket, _ enabled: bool) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.setReuseAddr not implemented on windows yet")
+    todo("std.sys.net.setReuseAddr not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -328,13 +331,13 @@ public func setCloseOnExec(_ socket: &RawSocket) -> Result[(), Error] {
 
 @cfg(family("windows"))
 public func setCloseOnExec(_ socket: &RawSocket) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.setCloseOnExec not implemented on windows yet")
+    todo("std.sys.net.setCloseOnExec not implemented on windows yet")
 }
 
 @cfg(family("unix"))
 public func socketError(_ socket: &RawSocket) -> Result[int32, Error] {
     var value: int32 = 0
-    var len: std.libc.socklen_t = std.mem.sizeOf[int32]() as std.libc.socklen_t
+    var len: std.libc.socklen_t = sizeOf[int32]() as std.libc.socklen_t
     let valuePtr = unsafe { (&mut value as *mut int32) as *mut uint8 }
     let lenPtr = unsafe { (&mut len as *mut std.libc.socklen_t) }
     let res = std.libc.getsockopt(
@@ -352,7 +355,7 @@ public func socketError(_ socket: &RawSocket) -> Result[int32, Error] {
 
 @cfg(family("windows"))
 public func socketError(_ socket: &RawSocket) -> Result[int32, Error] {
-    std.panic.todo("std.sys.net.socketError not implemented on windows yet")
+    todo("std.sys.net.socketError not implemented on windows yet")
 }
 
 public func fd(_ socket: &RawSocket) -> int32 {

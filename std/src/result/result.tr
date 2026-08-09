@@ -1,5 +1,5 @@
 import std.panic.panic
-import std.marker.Copy
+import std.marker.{Copy, Sendable}
 import std.ops.Fn
 import std.optional.Optional
 
@@ -15,7 +15,7 @@ public enum Result[Value, Error] {
 
 // Result is a tagged owner of exactly one payload, so cross-worker safety is
 // the conjunction of its success and error payload contracts.
-impl[Value, Error] std.marker.Sendable for Result[Value, Error] where Value: std.marker.Sendable, Error: std.marker.Sendable {}
+impl[Value, Error] Sendable for Result[Value, Error] where Value: Sendable, Error: Sendable {}
 
 impl[Value, Error] Result[Value, Error] {
     /// Returns true if the result is an ok value.

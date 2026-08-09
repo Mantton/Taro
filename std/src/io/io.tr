@@ -1,3 +1,4 @@
+import std.collections.List
 import std.io.{Error, Reader, Writer}
 import std.mem.{Span, MutableSpan}
 import std.result.Result
@@ -77,8 +78,8 @@ public func writeString[W: Writer](_ writer: &mut W, _ s: string) -> Result[(), 
     writeAll(writer, bytes)
 }
 
-public func readAll[R: Reader](_ reader: &mut R) -> Result[std.collections.List[uint8], Error] {
-    var out = std.collections.List[uint8]()
+public func readAll[R: Reader](_ reader: &mut R) -> Result[List[uint8], Error] {
+    var out = List[uint8]()
     var storage: [uint8; IO_CHUNK_SIZE] = [0; IO_CHUNK_SIZE]
     let storagePtr = unsafe { (&mut storage as *mut [uint8; IO_CHUNK_SIZE]) as *mut uint8 }
 

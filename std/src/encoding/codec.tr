@@ -1,4 +1,7 @@
 import std.collections.List
+import std.marker.Copy
+import std.ops.PartialEq
+import std.optional.Optional
 import std.result.Result
 
 /// A format-neutral category for failures reported while converting values.
@@ -6,7 +9,7 @@ import std.result.Result
 /// Concrete codecs own their error payloads and paths. Keeping only the stable
 /// category here lets JSON retain byte positions and JSONPath while a future
 /// binary codec can report offsets or schema locations appropriate to it.
-public enum CodingErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum CodingErrorKind: Copy, PartialEq {
     case typeMismatch
     case missingField
     case invalidValue
@@ -27,7 +30,7 @@ impl std.fmt.Display for CodingErrorKind {
 }
 
 /// The format-neutral shape visible at a decoder's current position.
-public enum CodingValueKind: std.marker.Copy, std.ops.PartialEq {
+public enum CodingValueKind: Copy, PartialEq {
     case null
     case boolean
     case number
@@ -411,7 +414,7 @@ impl Decodable for double {
     public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] { decoder.decodeDouble() }
 }
 
-impl[Wrapped: Encodable] Encodable for std.optional.Optional[Wrapped] {
+impl[Wrapped: Encodable] Encodable for Optional[Wrapped] {
     public func encode[E: Encoder](&self, into encoder: &mut E) -> Result[(), E.Error] {
         match self {
             case .some(value) => return value.encode(into: encoder)
@@ -420,7 +423,7 @@ impl[Wrapped: Encodable] Encodable for std.optional.Optional[Wrapped] {
     }
 }
 
-impl[Wrapped: Decodable] Decodable for std.optional.Optional[Wrapped] {
+impl[Wrapped: Decodable] Decodable for Optional[Wrapped] {
     public func decode[D: Decoder](from decoder: &mut D) -> Result[Self, D.Error] {
         if decoder.peekKind()! == CodingValueKind.null {
             decoder.decodeNull()!

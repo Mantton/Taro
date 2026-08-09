@@ -1,4 +1,8 @@
+import std.default.Default
 import std.fmt.Display
+import std.marker.Copy
+import std.ops.PartialEq
+import std.optional.Optional
 
 /// The default maximum nesting depth accepted by JSON parsers and encoders.
 public const DEFAULT_MAX_DEPTH: usize = 128
@@ -7,7 +11,7 @@ public const DEFAULT_MAX_DEPTH: usize = 128
 public const DEFAULT_MAX_INPUT_BYTES: usize = 16 * 1024 * 1024
 
 /// How an object parser handles a repeated member name.
-public enum DuplicateKeyPolicy: std.marker.Copy, std.ops.PartialEq {
+public enum DuplicateKeyPolicy: Copy, PartialEq {
     /// Reject the object. This is the default because silently choosing one
     /// value can create security differences between downstream consumers.
     case reject
@@ -18,7 +22,7 @@ public enum DuplicateKeyPolicy: std.marker.Copy, std.ops.PartialEq {
 }
 
 /// Resource and compatibility controls shared by parsers and encoders.
-public struct Options: std.marker.Copy {
+public struct Options: Copy {
     maxDepthValue: usize
     maxInputBytesValue: usize
     duplicateKeysValue: DuplicateKeyPolicy
@@ -71,14 +75,14 @@ impl Options {
     }
 }
 
-impl std.default.Default for Options {
+impl Default for Options {
     public func default() -> Self {
         Options()
     }
 }
 
 /// A stable category for JSON input failures.
-public enum ErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum ErrorKind: Copy, PartialEq {
     case unexpectedEof
     case unexpectedToken
     case trailingData
@@ -190,7 +194,7 @@ impl Error {
         self.pathValue
     }
 
-    public func ioError(&self) -> std.optional.Optional[&std.io.Error] {
+    public func ioError(&self) -> Optional[&std.io.Error] {
         match &self.ioErrorValue {
             case .some(cause) => return .some(cause)
             case .none => return .none

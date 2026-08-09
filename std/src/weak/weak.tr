@@ -1,4 +1,4 @@
-import std.marker.Copy
+import std.marker.{Copy, Sendable}
 import std.optional.Optional
 
 extern "taro_rt" {
@@ -42,4 +42,4 @@ impl[Target] Weak[Target] {
     }
 }
 
-impl[Target] std.marker.Sendable for Weak[Target] where Target: std.marker.Sendable {}
+impl[Target] Sendable for Weak[Target] where Target: Sendable {}

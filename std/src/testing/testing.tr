@@ -1,3 +1,6 @@
+import std.ops.PartialEq
+import std.panic.panic
+
 /// Assertion functions for use in @test functions.
 ///
 /// These are exported via the prelude and available in all test files.
@@ -20,29 +23,29 @@ extern "taro_rt" {
 }
 
 /// Assert that two values are equal (using `!=`), panicking with a message if not.
-public func assertEqual[T: std.ops.PartialEq](_ actual: T, _ expected: T, _ message: string) {
+public func assertEqual[T: PartialEq](_ actual: T, _ expected: T, _ message: string) {
     if actual != expected {
-        std.panic.panic(message)
+        panic(message)
     }
 }
 
 /// Assert that a condition is true.
 public func assertTrue(_ condition: bool, _ message: string) {
     if !condition {
-        std.panic.panic(message)
+        panic(message)
     }
 }
 
 /// Assert that a condition is false.
 public func assertFalse(_ condition: bool, _ message: string) {
     if condition {
-        std.panic.panic(message)
+        panic(message)
     }
 }
 
 /// Unconditionally fail the test with a message.
 public func fail(_ message: string) {
-    std.panic.panic(message)
+    panic(message)
 }
 
 public func yieldNow() async {}

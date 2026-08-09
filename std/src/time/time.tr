@@ -1,5 +1,6 @@
 
 import std.marker.Copy
+import std.panic.panic
 
 const NANOS_PER_SEC_U32: uint32 = 1000000000_u32
 const NANOS_PER_SEC_U64: uint64 = 1000000000_u64
@@ -53,7 +54,7 @@ public struct Duration: Copy {
 impl Duration {
     public func new(_ secs: uint64, _ nanos: uint32) -> Duration {
         if nanos >= NANOS_PER_SEC_U32 {
-            std.panic.panic("std.time.Duration.new: nanos must be < 1_000_000_000")
+            panic("std.time.Duration.new: nanos must be < 1_000_000_000")
         }
 
         return Duration {
@@ -209,7 +210,7 @@ impl SystemTime {
 
     public func fromUnixTimestamp(_ secs: int64, _ nanos: uint32) -> SystemTime {
         if nanos >= NANOS_PER_SEC_U32 {
-            std.panic.panic("std.time.SystemTime.fromUnixTimestamp: nanos must be < 1_000_000_000")
+            panic("std.time.SystemTime.fromUnixTimestamp: nanos must be < 1_000_000_000")
         }
 
         return SystemTime {

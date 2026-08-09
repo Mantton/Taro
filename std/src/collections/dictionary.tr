@@ -6,6 +6,7 @@ import std.iter.{Iterator, Iterable}
 import std.marker.Clone
 import std.ops.Fn
 import std.mem.assertBufferCapacity
+import std.testing.{assertFalse, assertTrue}
 
 const SWISS_GROUP_WIDTH: usize = 8
 const SWISS_CTRL_EMPTY: uint8 = 0x80
@@ -78,12 +79,12 @@ func testDictionaryShouldGrowForInsertUsesOverflowFreeThreshold() {
     let capacity = 0xffffffffffffffff_u64 as usize
     let maxLenBeforeGrow = capacity - (capacity / (4 as usize))
 
-    std.testing.assertFalse(
+    assertFalse(
         dictionaryShouldGrowForInsert(maxLenBeforeGrow - (1 as usize), capacity),
         "dictionary should not grow below the overflow-free load threshold",
     )
 
-    std.testing.assertTrue(
+    assertTrue(
         dictionaryShouldGrowForInsert(maxLenBeforeGrow, capacity),
         "dictionary should grow at the overflow-free load threshold",
     )

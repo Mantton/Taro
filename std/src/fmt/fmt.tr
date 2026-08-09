@@ -1,5 +1,6 @@
 import std.collections.List
 import std.mem.Span
+import std.panic.panic
 import std.string.Builder
 
 const BYTE_ZERO: uint8 = 48
@@ -135,7 +136,7 @@ func writeUnsignedInteger(_ into: &mut Formatter, _ value: uint64) {
 
 func formatSignedInteger(_ into: &mut Formatter, _ value: int64, _ spec: rune) {
     if !(spec == 'd' || spec == 'v') {
-        std.panic.panic("printf: invalid format specifier for integer argument")
+        panic("printf: invalid format specifier for integer argument")
     }
 
     writeSignedInteger(into, value)
@@ -143,7 +144,7 @@ func formatSignedInteger(_ into: &mut Formatter, _ value: int64, _ spec: rune) {
 
 func formatUnsignedInteger(_ into: &mut Formatter, _ value: uint64, _ spec: rune) {
     if !(spec == 'd' || spec == 'v') {
-        std.panic.panic("printf: invalid format specifier for integer argument")
+        panic("printf: invalid format specifier for integer argument")
     }
 
     writeUnsignedInteger(into, value)
@@ -219,7 +220,7 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
 
         index += 1
         if index >= format_len {
-            std.panic.panic("printf: dangling '%' at end of format string")
+            panic("printf: dangling '%' at end of format string")
         }
 
         // An escaped percent takes no flags, so it is settled before they are read.
@@ -257,16 +258,16 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
         }
 
         if index >= format_len {
-            std.panic.panic("printf: dangling '%' at end of format string")
+            panic("printf: dangling '%' at end of format string")
         }
 
         let spec_byte = format_data.add(index).read()
         if spec_byte != BYTE_D && spec_byte != BYTE_S && spec_byte != BYTE_V {
-            std.panic.panic("printf: unknown format specifier")
+            panic("printf: unknown format specifier")
         }
 
         if arg_index >= args.len() {
-            std.panic.panic("printf: missing format argument")
+            panic("printf: missing format argument")
         }
 
         let spec = if spec_byte == BYTE_D {
@@ -286,7 +287,7 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
             case .some(formattable) => formattable.format(&mut scratch, spec, &state)
             case .none => match spec == 'v' {
                 case true => (*value).display(&mut scratch)
-                case false => std.panic.panic("printf: argument does not support requested format specifier")
+                case false => panic("printf: argument does not support requested format specifier")
             }
         }
         writePadded(&mut writer, scratch.intoString(), &state)
@@ -295,7 +296,7 @@ public func formatPrintf(_ format: string, _ args: Span[any Display]) -> string 
     }
 
     if arg_index != args.len() {
-        std.panic.panic("printf: extra arguments provided")
+        panic("printf: extra arguments provided")
     }
 
     writer.intoString()
@@ -314,7 +315,7 @@ impl Formattable for string {
             return
         }
 
-        std.panic.panic("printf: invalid format specifier for string argument")
+        panic("printf: invalid format specifier for string argument")
     }
 }
 
@@ -339,7 +340,7 @@ impl Formattable for bool {
             return
         }
 
-        std.panic.panic("printf: invalid format specifier for bool argument")
+        panic("printf: invalid format specifier for bool argument")
     }
 }
 
@@ -356,7 +357,7 @@ impl Formattable for rune {
             return
         }
 
-        std.panic.panic("printf: invalid format specifier for rune argument")
+        panic("printf: invalid format specifier for rune argument")
     }
 }
 
@@ -482,7 +483,7 @@ impl[Element: Display] Display for List[Element] {
 impl[Element: Formattable] Formattable for List[Element] {
     public func format(&self, _ into: &mut Formatter, _ spec: rune, _ state: &FormatState) {
         if spec != 'v' {
-            std.panic.panic("printf: invalid format specifier for list argument")
+            panic("printf: invalid format specifier for list argument")
         }
 
         into.writeByte('[' as uint8)

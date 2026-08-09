@@ -1,4 +1,7 @@
 import std.fmt.Display
+import std.marker.Copy
+import std.ops.PartialEq
+import std.result.Result
 
 /// Interface for constructing a value from another type.
 ///
@@ -42,7 +45,7 @@ public interface Into[T] {
 }
 
 /// The category of a scalar parsing failure.
-public enum ParseErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum ParseErrorKind: Copy, PartialEq {
     /// The input contains no bytes.
     case empty
     /// A byte is not a digit in the requested radix.
@@ -60,7 +63,7 @@ public enum ParseErrorKind: std.marker.Copy, std.ops.PartialEq {
 /// The index points at the first invalid or range-crossing byte. When a
 /// required component is missing at the end of the input, the index equals
 /// the input's byte length.
-public struct ParseError: std.marker.Copy {
+public struct ParseError: Copy {
     kindValue: ParseErrorKind
     indexValue: usize
 }
@@ -112,10 +115,10 @@ impl std.error.Error for ParseError {}
 /// Implementations do not trim input implicitly. Invalid user input is
 /// returned as `ParseError` and must not panic.
 public interface Parse {
-    func parse(_ input: string) -> std.result.Result[Self, ParseError]
+    func parse(_ input: string) -> Result[Self, ParseError]
 }
 
 /// Parse `input` as `T` using its `Parse` implementation.
-public func parse[T: Parse](_ input: string) -> std.result.Result[T, ParseError] {
+public func parse[T: Parse](_ input: string) -> Result[T, ParseError] {
     T.parse(input)
 }

@@ -8,7 +8,10 @@ import std.intrinsic.__intrinsic_sleep
 import std.intrinsic.__intrinsic_spawn_async
 import std.intrinsic.__intrinsic_task_timeout
 import std.intrinsic.__intrinsic_task_result
+import std.marker.Sendable
+import std.ops.{AsyncFnOnce, FnOnce}
 import std.panic.PanicPayload
+import std.result.Result
 
 @lang("Task")
 public struct Task[T] {
@@ -35,13 +38,13 @@ public enum TimeoutError {
 /// Enqueue an async call on the executor for concurrent execution.
 /// The argument must be a zero-argument async closure. Returns a `Task[T]`
 /// handle that can be awaited later via `await task.result()`.
-public func spawn[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) -> Task[T] {
+public func spawn[T, F: AsyncFnOnce() -> T](_ thunk: F) -> Task[T] {
     return __intrinsic_spawn_async[T, F](thunk)
 }
 
 /// Enqueue explicit fire-and-forget work on the executor.
 /// The task continues running and its eventual result is discarded.
-public func detached[T, F: std.ops.AsyncFnOnce() -> T](_ thunk: F) {
+public func detached[T, F: AsyncFnOnce() -> T](_ thunk: F) {
     let task = spawn[T, F](thunk)
     task.detach()
 }
@@ -63,17 +66,17 @@ public func sleep(_ duration: std.time.Duration) async {
 /// async executor worker. Cancellation abandons result delivery; work that has
 /// already started is allowed to finish because terminating a native thread is
 /// unsafe.
-public func blocking[T: std.marker.Sendable, F: std.ops.FnOnce() -> T & std.marker.Sendable](_ thunk: F) async -> T {
+public func blocking[T: Sendable, F: FnOnce() -> T & Sendable](_ thunk: F) async -> T {
     return await __intrinsic_blocking[T, F](thunk)
 }
 
 /// Compiler adapter whose async frame owns the closure while it is queued or
 /// running on a blocking worker.
-func __blockingInvoke[T: std.marker.Sendable, F: std.ops.FnOnce() -> T & std.marker.Sendable](_ thunk: F) async -> T {
+func __blockingInvoke[T: Sendable, F: FnOnce() -> T & Sendable](_ thunk: F) async -> T {
     return thunk()
 }
 
-func drainSelectionLoser[T](_ task: Task[T]) async -> std.result.Result[(), TaskError] {
+func drainSelectionLoser[T](_ task: Task[T]) async -> Result[(), TaskError] {
     match await task.result() {
         case .ok(_) => return .ok(())
         case .err(.cancelled) => return .ok(())
@@ -87,9 +90,9 @@ func drainSelectionLoser[T](_ task: Task[T]) async -> std.result.Result[(), Task
 public func select[
     A,
     B,
-    First: std.ops.AsyncFnOnce() -> A,
-    Second: std.ops.AsyncFnOnce() -> B,
-](_ first: First, _ second: Second) async -> std.result.Result[SelectResult[A, B], TaskError] {
+    First: AsyncFnOnce() -> A,
+    Second: AsyncFnOnce() -> B,
+](_ first: First, _ second: Second) async -> Result[SelectResult[A, B], TaskError] {
     let firstTask = spawn[A, First](first)
     let secondTask = spawn[B, Second](second)
     let winner = await __intrinsic_select_tasks[A, B](&firstTask, &secondTask)
@@ -122,9 +125,9 @@ public func select[
 /// Run two same-typed async operations and return the first completion.
 public func race[
     T,
-    First: std.ops.AsyncFnOnce() -> T,
-    Second: std.ops.AsyncFnOnce() -> T,
-](_ first: First, _ second: Second) async -> std.result.Result[T, TaskError] {
+    First: AsyncFnOnce() -> T,
+    Second: AsyncFnOnce() -> T,
+](_ first: First, _ second: Second) async -> Result[T, TaskError] {
     match await select[T, T, First, Second](first, second) {
         case .ok(.first(value)) => return .ok(value)
         case .ok(.second(value)) => return .ok(value)
@@ -134,10 +137,10 @@ public func race[
 
 /// Run an async operation until it completes or the duration expires.
 /// A zero-duration timeout still gives an already-ready operation priority.
-public func withTimeout[T, Operation: std.ops.AsyncFnOnce() -> T](
+public func withTimeout[T, Operation: AsyncFnOnce() -> T](
     _ duration: std.time.Duration,
     _ operation: Operation,
-) async -> std.result.Result[T, TimeoutError] {
+) async -> Result[T, TimeoutError] {
     let operationTask = spawn[T, Operation](operation)
     let winner = await __intrinsic_task_timeout[T](&operationTask, duration)
 
@@ -156,7 +159,7 @@ public func withTimeout[T, Operation: std.ops.AsyncFnOnce() -> T](
     }
 }
 
-public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> std.result.Result[(A, B), TaskError] {
+public func join[A, B](_ left: Task[A], _ right: Task[B]) async -> Result[(A, B), TaskError] {
     let leftResult = await left.result()
     let leftValue = match leftResult {
         case .ok(v) => v
@@ -185,7 +188,7 @@ impl[T] Task[T] {
         __intrinsic_detach_task[T](self)
     }
 
-    public func result(self) async -> std.result.Result[T, TaskError] {
+    public func result(self) async -> Result[T, TaskError] {
         return await __intrinsic_task_result[T](self)
     }
 }

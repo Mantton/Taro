@@ -1,4 +1,5 @@
 import std.io.{Error, Reader, Writer, Seeker, SeekFrom}
+import std.marker.Sendable
 import std.mem.{MutableSpan, Span}
 import std.result.Result
 
@@ -122,7 +123,7 @@ public struct File {
     path: string
 }
 
-impl std.marker.Sendable for File {}
+impl Sendable for File {}
 
 impl File {
     public func open(_ path: string) -> Result[File, Error] {

@@ -1,5 +1,6 @@
 import std.io.Error
 import std.mem.{MutableSpan, Span}
+import std.panic.todo
 import std.result.Result
 
 public struct RawAsyncSocket {
@@ -50,7 +51,7 @@ public func socket(
     _ domain: std.sys.net.SocketDomain,
     _ type_: std.sys.net.SocketType,
 ) -> Result[RawAsyncSocket, Error] {
-    std.panic.todo("std.sys.net.task.socket not implemented on windows yet")
+    todo("std.sys.net.task.socket not implemented on windows yet")
 }
 
 public func bind(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddress) -> Result[(), Error] {
@@ -87,7 +88,7 @@ public func close(_ socket: RawAsyncSocket) -> Result[(), Error] {
 
 @cfg(family("windows"))
 public func close(_ socket: RawAsyncSocket) -> Result[(), Error] {
-    std.panic.todo("std.sys.net.task.close not implemented on windows yet")
+    todo("std.sys.net.task.close not implemented on windows yet")
 }
 
 
@@ -121,7 +122,7 @@ public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> 
 
 @cfg(family("windows"))
 public func read(_ socket: &RawAsyncSocket, _ buf: MutableSpan[uint8]) async -> Result[usize, Error] {
-    std.panic.todo("std.sys.net.task.read not implemented on windows yet")
+    todo("std.sys.net.task.read not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -152,7 +153,7 @@ public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) async -> Result
 
 @cfg(family("windows"))
 public func write(_ socket: &RawAsyncSocket, _ buf: Span[uint8]) async -> Result[usize, Error] {
-    std.panic.todo("std.sys.net.task.write not implemented on windows yet")
+    todo("std.sys.net.task.write not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -187,7 +188,7 @@ public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddr
 
 @cfg(family("windows"))
 public func connect(_ socket: &RawAsyncSocket, _ address: std.sys.net.SocketAddress) async -> Result[(), Error] {
-    std.panic.todo("std.sys.net.task.connect not implemented on windows yet")
+    todo("std.sys.net.task.connect not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -227,7 +228,7 @@ public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, s
 
 @cfg(family("windows"))
 public func accept(_ socket: &RawAsyncSocket) async -> Result[(RawAsyncSocket, std.sys.net.SocketAddress), Error] {
-    std.panic.todo("std.sys.net.task.accept not implemented on windows yet")
+    todo("std.sys.net.task.accept not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -265,7 +266,7 @@ public func sendTo(
     _ buf: Span[uint8],
     _ address: std.sys.net.SocketAddress,
 ) async -> Result[usize, Error] {
-    std.panic.todo("std.sys.net.task.sendTo not implemented on windows yet")
+    todo("std.sys.net.task.sendTo not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -302,7 +303,7 @@ public func recvFrom(
     _ socket: &RawAsyncSocket,
     _ buf: MutableSpan[uint8],
 ) async -> Result[(usize, std.sys.net.SocketAddress), Error] {
-    std.panic.todo("std.sys.net.task.recvFrom not implemented on windows yet")
+    todo("std.sys.net.task.recvFrom not implemented on windows yet")
 }
 
 @cfg(family("unix"))
@@ -318,5 +319,5 @@ public func intoStream(_ socket: &mut RawAsyncSocket) -> Result[std.io.task.Asyn
 
 @cfg(family("windows"))
 public func intoStream(_ socket: &mut RawAsyncSocket) -> Result[std.io.task.AsyncStream, Error] {
-    std.panic.todo("std.sys.net.task.intoStream not implemented on windows yet")
+    todo("std.sys.net.task.intoStream not implemented on windows yet")
 }

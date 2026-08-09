@@ -1,5 +1,7 @@
 import std.intrinsic.__intrinsic_rune_from_u32_unchecked
+import std.mem.MutableSpan
 import std.optional.Optional
+import std.panic.panic
 
 const UNICODE_MAX_SCALAR: uint32 = 0x10FFFF
 const UNICODE_SURROGATE_START: uint32 = 0xD800
@@ -39,12 +41,12 @@ public func runeLenUtf8(_ r: rune) -> usize {
 /// Encodes the rune as UTF-8 into the given buffer.
 /// Returns the number of bytes written.
 /// Panics if the buffer does not have enough capacity.
-public func runeEncode(_ r: rune, _ buffer: &mut std.mem.MutableSpan[uint8]) -> usize {
+public func runeEncode(_ r: rune, _ buffer: &mut MutableSpan[uint8]) -> usize {
     let val = r as uint32
     let len = runeLenUtf8(r)
 
     if buffer.len() < len {
-        std.panic.panic("runeEncode: buffer too small")
+        panic("runeEncode: buffer too small")
     }
 
     let ptr = buffer.ptr

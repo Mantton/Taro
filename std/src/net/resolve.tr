@@ -1,10 +1,12 @@
 import std.collections.List
 import std.fmt.{Display, Formatter}
 import std.io.Error
+import std.marker.Copy
+import std.ops.PartialEq
 import std.result.Result
 
 /// A stable category for host-name resolution failures.
-public enum ResolveErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum ResolveErrorKind: Copy, PartialEq {
     /// The resolver has no record for the requested name or address.
     case notFound
     /// A transient resolver or name-server failure may succeed when retried.

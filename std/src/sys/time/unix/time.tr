@@ -1,18 +1,19 @@
 import std.libc
+import std.panic.panic
 import std.sys.time.{MonotonicTime, RealtimeTime}
 
 const NANOS_PER_SEC_I64: int64 = 1000000000_i64
 
 func validateNanos(_ nanos: int64) -> uint32 {
     if nanos < 0_i64 || nanos >= NANOS_PER_SEC_I64 {
-        std.panic.panic("std.sys.time: invalid timespec nanoseconds")
+        panic("std.sys.time: invalid timespec nanoseconds")
     }
     return nanos as uint32
 }
 
 func convertMonotonic(_ ts: std.libc.Timespec) -> MonotonicTime {
     if ts.tv_sec < 0_i64 {
-        std.panic.panic("std.sys.time.monotonicNow: negative seconds")
+        panic("std.sys.time.monotonicNow: negative seconds")
     }
 
     let nanos = validateNanos(ts.tv_nsec)
@@ -38,7 +39,7 @@ public func monotonicNow() -> MonotonicTime {
     let tsPtr = unsafe { (&mut ts as *mut std.libc.Timespec) }
     let rc = std.libc.clock_gettime(std.libc.CLOCK_MONOTONIC, tsPtr)
     if rc != 0 {
-        std.panic.panic("std.sys.time.monotonicNow: clock_gettime failed")
+        panic("std.sys.time.monotonicNow: clock_gettime failed")
     }
     return convertMonotonic(ts)
 }
@@ -51,7 +52,7 @@ public func realtimeNow() -> RealtimeTime {
     let tsPtr = unsafe { (&mut ts as *mut std.libc.Timespec) }
     let rc = std.libc.clock_gettime(std.libc.CLOCK_REALTIME, tsPtr)
     if rc != 0 {
-        std.panic.panic("std.sys.time.realtimeNow: clock_gettime failed")
+        panic("std.sys.time.realtimeNow: clock_gettime failed")
     }
     return convertRealtime(ts)
 }

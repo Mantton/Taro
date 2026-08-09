@@ -1,4 +1,5 @@
 import std.io.Error
+import std.marker.Sendable
 import std.mem.{MutableSpan, Span}
 import std.result.Result
 
@@ -110,9 +111,9 @@ public struct UdpSocket {
     state: &SocketCloseState
 }
 
-impl std.marker.Sendable for TcpListener {}
-impl std.marker.Sendable for TcpStream {}
-impl std.marker.Sendable for UdpSocket {}
+impl Sendable for TcpListener {}
+impl Sendable for TcpStream {}
+impl Sendable for UdpSocket {}
 
 impl TcpListener {
     public func bind(_ address: SocketAddress) -> Result[TcpListener, Error] {

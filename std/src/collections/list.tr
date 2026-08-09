@@ -3,7 +3,7 @@ import std.optional.Optional
 import std.iter.{Iterator, Iterable, FromIterator}
 import std.panic.panic
 import std.cmp.{Ord, Ordering}
-import std.marker.Clone
+import std.marker.{Clone, Sendable}
 import std.intrinsic.{__intrinsic_list_read_unchecked, __intrinsic_list_read_mut_unchecked}
 
 const LIST_INITIAL_CAPACITY: usize = 4
@@ -61,7 +61,7 @@ public struct List[Element] {
 // List storage is managed by the collector rather than borrowed from a stack.
 // Transferring a List is therefore safe exactly when transferring its elements
 // is safe; the blocking runtime moves the buffer's GC root with the value.
-impl[Element] std.marker.Sendable for List[Element] where Element: std.marker.Sendable {}
+impl[Element] Sendable for List[Element] where Element: Sendable {}
 
 
 /// Clears the storage a removed element occupied.

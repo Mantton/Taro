@@ -1,3 +1,4 @@
+import std.collections.List
 import std.io.Error
 import std.mem.Span
 import std.result.Result
@@ -10,7 +11,7 @@ func withPathContext[T](_ result: Result[T, Error], _ operation: string, _ path:
 }
 
 /// Reads the entire file into memory.
-public func read(_ path: string) -> Result[std.collections.List[uint8], Error] {
+public func read(_ path: string) -> Result[List[uint8], Error] {
     let openRes = std.fs.File.open(path)
     var file = match openRes {
         case .ok(value) => value

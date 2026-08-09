@@ -1,4 +1,6 @@
+import std.collections.List
 import std.io.Error
+import std.marker.Sendable
 import std.mem.{MutableSpan, Span}
 import std.result.Result
 
@@ -96,7 +98,7 @@ public struct AsyncFile {
     path: string
 }
 
-impl std.marker.Sendable for AsyncFile {}
+impl Sendable for AsyncFile {}
 
 impl AsyncFile {
     public func open(_ path: string) -> Result[AsyncFile, Error] {
@@ -157,7 +159,7 @@ impl AsyncFile {
         withAsyncFileContext(await self.inner.readAtLeast(min, buf), "read at least", self.path)
     }
 
-    public func readAll(&self) async -> Result[std.collections.List[uint8], Error] {
+    public func readAll(&self) async -> Result[List[uint8], Error] {
         withAsyncFileContext(await self.inner.readAll(), "read", self.path)
     }
 

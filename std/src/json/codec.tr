@@ -2,6 +2,7 @@ import std.collections.List
 import std.convert.Parse
 import std.fmt.Display
 import std.io.Reader
+import std.marker.Copy
 import std.result.Result
 
 /// Preserve the JSON-facing category name while sharing the format-neutral
@@ -73,7 +74,7 @@ impl std.fmt.Display for JsonDecodeError {
 
 impl std.error.Error for JsonDecodeError {}
 
-enum DecodeContainerKind: std.marker.Copy {
+enum DecodeContainerKind: Copy {
     case sequence
     case object
 }

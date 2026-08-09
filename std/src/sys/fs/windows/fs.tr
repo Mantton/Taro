@@ -1,4 +1,5 @@
 import std.io.Error
+import std.panic.todo
 import std.result.Result
 
 public struct PlatformFile {
@@ -6,11 +7,11 @@ public struct PlatformFile {
 }
 
 public func openReadOnly(_ path: string) -> Result[PlatformFile, Error] {
-    std.panic.todo("std.sys.fs.openReadOnly not implemented on windows yet")
+    todo("std.sys.fs.openReadOnly not implemented on windows yet")
 }
 
 public func createWrite(_ path: string) -> Result[PlatformFile, Error] {
-    std.panic.todo("std.sys.fs.createWrite not implemented on windows yet")
+    todo("std.sys.fs.createWrite not implemented on windows yet")
 }
 
 public func openWithOptions(
@@ -21,15 +22,15 @@ public func openWithOptions(
     _ create: bool,
     _ truncate: bool,
 ) -> Result[PlatformFile, Error] {
-    std.panic.todo("std.sys.fs.openWithOptions not implemented on windows yet")
+    todo("std.sys.fs.openWithOptions not implemented on windows yet")
 }
 
 public func symlink(_ target: string, _ linkPath: string) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.symlink not implemented on windows yet")
+    todo("std.sys.fs.symlink not implemented on windows yet")
 }
 
 public func close(_ file: &mut PlatformFile) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.close not implemented on windows yet")
+    todo("std.sys.fs.close not implemented on windows yet")
 }
 
 public func isValid(_ file: &PlatformFile) -> bool {
@@ -43,33 +44,33 @@ public func take(_ file: &mut PlatformFile) -> PlatformFile {
 }
 
 public func read(_ file: &PlatformFile, _ buf: *mut uint8, _ len: usize) -> Result[usize, Error] {
-    std.panic.todo("std.sys.fs.read not implemented on windows yet")
+    todo("std.sys.fs.read not implemented on windows yet")
 }
 
 public func write(_ file: &PlatformFile, _ buf: *const uint8, _ len: usize) -> Result[usize, Error] {
-    std.panic.todo("std.sys.fs.write not implemented on windows yet")
+    todo("std.sys.fs.write not implemented on windows yet")
 }
 
 public func seek(_ file: &PlatformFile, _ offset: isize, _ whence: int32) -> Result[isize, Error] {
-    std.panic.todo("std.sys.fs.seek not implemented on windows yet")
+    todo("std.sys.fs.seek not implemented on windows yet")
 }
 
 public func intoAsyncStream(_ file: &mut PlatformFile) -> Result[std.sys.io.RawAsyncStream, Error] {
-    std.panic.todo("std.sys.fs.intoAsyncStream not implemented on windows yet")
+    todo("std.sys.fs.intoAsyncStream not implemented on windows yet")
 }
 
 public func createDir(_ path: string) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.createDir not implemented on windows yet")
+    todo("std.sys.fs.createDir not implemented on windows yet")
 }
 
 public func removeDir(_ path: string) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.removeDir not implemented on windows yet")
+    todo("std.sys.fs.removeDir not implemented on windows yet")
 }
 
 public func removeFile(_ path: string) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.removeFile not implemented on windows yet")
+    todo("std.sys.fs.removeFile not implemented on windows yet")
 }
 
 public func rename(_ from: string, _ to: string) -> Result[(), Error] {
-    std.panic.todo("std.sys.fs.rename not implemented on windows yet")
+    todo("std.sys.fs.rename not implemented on windows yet")
 }

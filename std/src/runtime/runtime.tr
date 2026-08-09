@@ -1,5 +1,7 @@
 
 import std.intrinsic.__intrinsic_add_cleanup
+import std.marker.Sendable
+import std.ops.FnOnce
 import std.result.Result
 
 extern "taro_rt" {
@@ -53,8 +55,8 @@ impl Cleanup {
 /// is not guaranteed to run before process exit.
 public func addCleanup[
     T,
-    State: std.marker.Sendable,
-    F: std.ops.FnOnce(State) -> () & std.marker.Sendable,
+    State: Sendable,
+    F: FnOnce(State) -> () & Sendable,
 ](_ owner: &T, _ state: State, _ cleanup: F) -> Result[Cleanup, CleanupError] {
     let token = __intrinsic_add_cleanup[T, State, F](owner, state, cleanup)
     if token == 0 {
@@ -76,8 +78,8 @@ public func keepAlive[T](_ value: &T) {
 /// Compiler adapter whose async frame owns cleanup state while the runtime is
 /// waiting for the owner to become unreachable.
 func __cleanupInvoke[
-    State: std.marker.Sendable,
-    F: std.ops.FnOnce(State) -> () & std.marker.Sendable,
+    State: Sendable,
+    F: FnOnce(State) -> () & Sendable,
 ](_ state: State, _ cleanup: F) async {
     cleanup(state)
 }

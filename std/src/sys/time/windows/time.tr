@@ -1,9 +1,10 @@
+import std.panic.todo
 import std.sys.time.{MonotonicTime, RealtimeTime}
 
 public func monotonicNow() -> MonotonicTime {
-    std.panic.todo("std.sys.time.monotonicNow not implemented on windows yet")
+    todo("std.sys.time.monotonicNow not implemented on windows yet")
 }
 
 public func realtimeNow() -> RealtimeTime {
-    std.panic.todo("std.sys.time.realtimeNow not implemented on windows yet")
+    todo("std.sys.time.realtimeNow not implemented on windows yet")
 }

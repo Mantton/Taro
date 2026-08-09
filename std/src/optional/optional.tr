@@ -1,5 +1,5 @@
 import std.panic.panic
-import std.marker.{Copy, Clone}
+import std.marker.{Copy, Clone, Sendable}
 import std.ops.Fn
 import std.default.Default
 
@@ -55,7 +55,7 @@ impl[Wrapped] Default for Optional[Wrapped] {
 impl[Wrapped] Copy for Optional[Wrapped] where Wrapped: Copy {}
 
 // Optional introduces no sharing beyond its payload.
-impl[Wrapped] std.marker.Sendable for Optional[Wrapped] where Wrapped: std.marker.Sendable {}
+impl[Wrapped] Sendable for Optional[Wrapped] where Wrapped: Sendable {}
 
 impl[Wrapped] Clone for Optional[Wrapped] where Wrapped: Clone {
     public func clone(&self) -> Self {

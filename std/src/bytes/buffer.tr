@@ -1,5 +1,6 @@
 import std.collections.{List, __list_from_raw_parts}
 import std.io.{Error, Reader, Writer}
+import std.marker.Sendable
 import std.mem.{MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity, setBufferLen}
 import std.result.Result
 
@@ -47,7 +48,7 @@ public struct Buffer {
     capacityValue: usize
 }
 
-impl std.marker.Sendable for Buffer {}
+impl Sendable for Buffer {}
 
 impl Buffer {
     /// Create an empty buffer without allocating.

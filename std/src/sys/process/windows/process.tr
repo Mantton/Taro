@@ -1,3 +1,5 @@
+import std.panic.todo
+
 public func exit(_ code: int32) -> ! {
-    std.panic.todo("std.sys.process.exit not implemented on windows yet")
+    todo("std.sys.process.exit not implemented on windows yet")
 }

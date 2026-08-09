@@ -1,14 +1,19 @@
 import std.collections.List
+import std.convert.ParseError
 import std.fmt.Display
+import std.marker.{Clone, Copy}
+import std.ops.PartialEq
+import std.optional.Optional
+import std.result.Result
 
 /// The category of a JSON number construction failure.
-public enum NumberErrorKind: std.marker.Copy, std.ops.PartialEq {
+public enum NumberErrorKind: Copy, PartialEq {
     case empty
     case invalidSyntax
 }
 
 /// A failure to construct an exact JSON number from text.
-public struct NumberError: std.marker.Copy {
+public struct NumberError: Copy {
     kindValue: NumberErrorKind
     indexValue: usize
 }
@@ -125,7 +130,7 @@ public struct Number {
 }
 
 impl Number {
-    public func parse(_ text: string) -> std.result.Result[Self, NumberError] {
+    public func parse(_ text: string) -> Result[Self, NumberError] {
         match validateNumberText(text) {
             case .some(error) => return .err(error)
             case .none => return .ok(Number { textValue: text })
@@ -143,20 +148,20 @@ impl Number {
         self.textValue
     }
 
-    public func asInt64(&self) -> std.result.Result[int64, std.convert.ParseError] {
+    public func asInt64(&self) -> Result[int64, ParseError] {
         int64.parse(self.textValue)
     }
 
-    public func asUint64(&self) -> std.result.Result[uint64, std.convert.ParseError] {
+    public func asUint64(&self) -> Result[uint64, ParseError] {
         uint64.parse(self.textValue)
     }
 
-    public func asDouble(&self) -> std.result.Result[double, std.convert.ParseError] {
+    public func asDouble(&self) -> Result[double, ParseError] {
         double.parse(self.textValue)
     }
 }
 
-impl std.marker.Clone for Number {
+impl Clone for Number {
     public func clone(&self) -> Self {
         Number { textValue: self.textValue }
     }
@@ -198,7 +203,7 @@ impl Object {
         self.indexOf(key).isSome()
     }
 
-    public func get(&self, _ key: string) -> std.optional.Optional[&Value] {
+    public func get(&self, _ key: string) -> Optional[&Value] {
         match self.indexOf(key) {
             case .some(index) => return .some(&self.members.at(index).valueValue)
             case .none => return .none
@@ -255,7 +260,7 @@ impl Object {
     }
 }
 
-impl std.marker.Clone for Object {
+impl Clone for Object {
     public func clone(&self) -> Self {
         var result = Object()
         var index: usize = 0
@@ -272,7 +277,7 @@ impl std.marker.Clone for Object {
 }
 
 /// The kind of a JSON DOM value.
-public enum ValueKind: std.marker.Copy, std.ops.PartialEq {
+public enum ValueKind: Copy, PartialEq {
     case null
     case boolean
     case number
@@ -331,14 +336,14 @@ impl Value {
         }
     }
 
-    public func arrayAt(&self, _ index: usize) -> std.optional.Optional[&Value] {
+    public func arrayAt(&self, _ index: usize) -> Optional[&Value] {
         match self {
             case .array(value) => value.get(index)
             case _ => .none
         }
     }
 
-    public func asObject(&self) -> std.optional.Optional[&Object] {
+    public func asObject(&self) -> Optional[&Object] {
         match self {
             case .object(value) => .some(value)
             case _ => .none
@@ -346,7 +351,7 @@ impl Value {
     }
 }
 
-impl std.marker.Clone for Value {
+impl Clone for Value {
     public func clone(&self) -> Self {
         match self {
             case .null => .null

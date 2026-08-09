@@ -1,7 +1,9 @@
 import std.io.Error
-import std.mem.MaybeUninit
+import std.mem.{MaybeUninit, sizeOf}
 import std.marker.Copy
 import std.optional.Optional
+import std.ops.FnOnce
+import std.panic.panic
 import std.result.Result
 
 public enum ChannelCreateError {
@@ -42,7 +44,7 @@ public func bounded[T](_ capacity: usize) -> Result[(Sender[T], Receiver[T]), Ch
     }
 
     let createRes = std.sys.sync.channelCreate(
-        std.mem.sizeOf[T](),
+        sizeOf[T](),
         std.intrinsic.__intrinsic_gc_desc[T](),
         capacity,
         true,
@@ -56,14 +58,14 @@ public func bounded[T](_ capacity: usize) -> Result[(Sender[T], Receiver[T]), Ch
 /// Create an unbounded channel and its directional endpoints.
 public func unbounded[T]() -> (Sender[T], Receiver[T]) {
     let createRes = std.sys.sync.channelCreate(
-        std.mem.sizeOf[T](),
+        sizeOf[T](),
         std.intrinsic.__intrinsic_gc_desc[T](),
         0,
         false,
     )
     match createRes {
         case .ok(raw) => return (Sender[T] { raw }, Receiver[T] { raw })
-        case .err(_) => std.panic.panic("failed to create unbounded channel")
+        case .err(_) => panic("failed to create unbounded channel")
     }
 }
 
@@ -122,11 +124,11 @@ impl[T] Receiver[T] {
                     match waitRes {
                         case .ok(_) => {}
                         case .err(err) if err.isKind(.brokenPipe) => return .none
-                        case .err(_) => std.panic.panic("channel receive wait failed")
+                        case .err(_) => panic("channel receive wait failed")
                     }
                 }
                 case .ok(.closed) => return .none
-                case .err(_) => std.panic.panic("channel receive failed")
+                case .err(_) => panic("channel receive failed")
             }
         }
     }
@@ -190,7 +192,7 @@ impl[T] Mutex[T] {
         }
     }
 
-    public func withLock[R, F: std.ops.FnOnce(&mut T) -> R](&self, _ body: F) async -> Result[R, Error] {
+    public func withLock[R, F: FnOnce(&mut T) -> R](&self, _ body: F) async -> Result[R, Error] {
         let lockRes = await self.lock()
         match lockRes {
             case .ok(value) => {
@@ -216,7 +218,7 @@ impl[T] Mutex[T] {
 impl[T] MutexGuard[T] {
     public func value(&mut self) -> &mut T {
         if !self.held {
-            std.panic.panic("mutex guard already unlocked")
+            panic("mutex guard already unlocked")
         }
 
         let ptr = unsafe { (&self.mutex.value as *const T) as *mut T }
@@ -312,7 +314,7 @@ impl[T] RwLock[T] {
         }
     }
 
-    public func withRead[R, F: std.ops.FnOnce(&T) -> R](&self, _ body: F) async -> Result[R, Error] {
+    public func withRead[R, F: FnOnce(&T) -> R](&self, _ body: F) async -> Result[R, Error] {
         let lockRes = await self.read()
         match lockRes {
             case .ok(value) => {
@@ -334,7 +336,7 @@ impl[T] RwLock[T] {
         }
     }
 
-    public func withWrite[R, F: std.ops.FnOnce(&mut T) -> R](&self, _ body: F) async -> Result[R, Error] {
+    public func withWrite[R, F: FnOnce(&mut T) -> R](&self, _ body: F) async -> Result[R, Error] {
         let lockRes = await self.write()
         match lockRes {
             case .ok(value) => {
@@ -360,7 +362,7 @@ impl[T] RwLock[T] {
 impl[T] RwLockReadGuard[T] {
     public func value(&self) -> &T {
         if !self.held {
-            std.panic.panic("rwlock read guard already unlocked")
+            panic("rwlock read guard already unlocked")
         }
         return unsafe { (&self.lock.value as *const T) as &T }
     }
@@ -381,7 +383,7 @@ impl[T] RwLockReadGuard[T] {
 impl[T] RwLockWriteGuard[T] {
     public func value(&mut self) -> &mut T {
         if !self.held {
-            std.panic.panic("rwlock write guard already unlocked")
+            panic("rwlock write guard already unlocked")
         }
         let ptr = unsafe { (&self.lock.value as *const T) as *mut T }
         return unsafe { ptr as &mut T }

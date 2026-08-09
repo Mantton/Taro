@@ -1,6 +1,9 @@
 import std.collections.List
 import std.encoding.{DecodeError, DecodeErrorKind}
+import std.marker.Copy
 import std.mem.Span
+import std.ops.PartialEq
+import std.panic.panic
 import std.result.Result
 import std.string.Builder
 
@@ -23,7 +26,7 @@ const ASCII_EQUALS: uint8 = 61_u8
 /// `standard` and `urlSafe` require canonical `=` padding when the final
 /// quantum is short. Their `raw` counterparts omit padding and reject it on
 /// decode, matching Go's standard/raw encoding split.
-public enum Encoding: std.marker.Copy, std.ops.PartialEq {
+public enum Encoding: Copy, PartialEq {
     case standard
     case rawStandard
     case urlSafe
@@ -102,7 +105,7 @@ impl Encoding {
     public func encode(&self, _ bytes: Span[uint8]) -> string {
         let outputLen = match self.encodedLen(bytes.len()) {
             case .some(value) => value
-            case .none => std.panic.panic("base64 encoded length overflow")
+            case .none => panic("base64 encoded length overflow")
         }
         if outputLen == 0 {
             return ""

@@ -2,6 +2,8 @@ import std.optional.Optional
 import std.string.{stringLen, stringData}
 import std.string.Builder
 import std.collections.List
+import std.marker.Copy
+import std.ops.PartialEq
 import std.result.Result
 
 /// Platform-independent POSIX lexical path helpers.
@@ -22,7 +24,7 @@ const SEPARATOR_BYTE: uint8 = 47
 public const SEPARATOR: string = "/"
 
 /// Why one path cannot be expressed relative to another lexically.
-public enum RelativeError: std.marker.Copy, std.ops.PartialEq {
+public enum RelativeError: Copy, PartialEq {
     /// One path is rooted and the other is relative.
     case incompatibleRoots
     /// The unmatched base begins with `..` and therefore requires a working directory.

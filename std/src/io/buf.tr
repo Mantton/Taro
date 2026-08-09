@@ -1,3 +1,4 @@
+import std.collections.List
 import std.io.{Error, Reader, Writer, writeAll}
 import std.mem.{Span, MutableSpan}
 import std.optional.Optional
@@ -42,8 +43,8 @@ impl[Inner: Reader] BufReader[Inner] {
         }
     }
 
-    public func readUntil(&mut self, _ delimiter: uint8) -> Result[std.collections.List[uint8], Error] {
-        var out = std.collections.List[uint8]()
+    public func readUntil(&mut self, _ delimiter: uint8) -> Result[List[uint8], Error] {
+        var out = List[uint8]()
 
         loop {
             if self.start == self.end {
