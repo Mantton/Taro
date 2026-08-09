@@ -1,0 +1,541 @@
+import adex_iris.config.{AdExParameters, ReferenceConfig}
+import adex_iris.data.{Sample, Scaler}
+import adex_iris.encoding.RateEncoder
+import adex_iris.model.{AdExState, AdExStep, Eligibility, advanceEligibility, finite, stepAdEx}
+import adex_iris.random.Random
+import std.collections.List
+
+func zeroVector(_ count: usize) -> List[double] {
+    var values = List[double](withCapacity: count)
+    var index: usize = 0
+    while index < count { values.append(0.0); index += 1 }
+    return values
+}
+
+/// One trainable connection entering an AdEx neuron. The learning state lives
+/// beside its weight so the e-prop recurrence can be read one synapse at a time.
+struct Synapse {
+    source: usize
+    weight: double
+    eligibility: Eligibility
+    gradient: double
+    firstMoment: double
+    secondMoment: double
+}
+
+impl Synapse {
+    func new(_ source: usize, _ weight: double) -> Self {
+        return Synapse {
+            source,
+            weight,
+            eligibility: Eligibility { voltage: 0.0, adaptation: 0.0, filtered: 0.0 },
+            gradient: 0.0,
+            firstMoment: 0.0,
+            secondMoment: 0.0,
+        }
+    }
+
+    func resetEligibility(&mut self) {
+        self.eligibility = Eligibility { voltage: 0.0, adaptation: 0.0, filtered: 0.0 }
+    }
+
+    func advance(
+        &mut self,
+        _ transition: AdExStep,
+        _ currentDerivative: double,
+        _ config: &ReferenceConfig,
+        _ parameters: &AdExParameters,
+    ) {
+        self.eligibility = advanceEligibility(
+            self.eligibility,
+            transition,
+            currentDerivative,
+            config.readoutDecay(),
+            parameters.spikeAdaptation,
+        )
+    }
+
+    func accumulate(&mut self, _ learningSignal: double) {
+        self.gradient += learningSignal * self.eligibility.filtered
+    }
+
+    func zeroGradient(&mut self) { self.gradient = 0.0 }
+    func gradientSquare(&self) -> double { self.gradient * self.gradient }
+
+    func applyAdam(
+        &mut self,
+        _ scale: double,
+        _ correction1: double,
+        _ correction2: double,
+        _ config: &ReferenceConfig,
+    ) {
+        let gradient = self.gradient * scale
+        self.firstMoment = config.adamBeta1() * self.firstMoment
+            + (1.0 - config.adamBeta1()) * gradient
+        self.secondMoment = config.adamBeta2() * self.secondMoment
+            + (1.0 - config.adamBeta2()) * gradient * gradient
+        let update = config.learningRate() * (self.firstMoment / correction1)
+            / ((self.secondMoment / correction2).sqrt() + config.adamEpsilon())
+        self.weight -= update
+    }
+}
+
+/// A neuron owns every connection that changes its AdEx state.
+struct Neuron {
+    state: AdExState
+    spike: double
+    inputSynapses: List[Synapse]
+    recurrentSynapses: List[Synapse]
+}
+
+/// Readout connections have an exact leaky trace instead of an AdEx
+/// eligibility vector.
+struct ReadoutSynapse {
+    source: usize
+    weight: double
+    trace: double
+    gradient: double
+    firstMoment: double
+    secondMoment: double
+}
+
+impl ReadoutSynapse {
+    func new(_ source: usize, _ weight: double) -> Self {
+        return ReadoutSynapse {
+            source,
+            weight,
+            trace: 0.0,
+            gradient: 0.0,
+            firstMoment: 0.0,
+            secondMoment: 0.0,
+        }
+    }
+
+    func resetTrace(&mut self) { self.trace = 0.0 }
+    func zeroGradient(&mut self) { self.gradient = 0.0 }
+    func gradientSquare(&self) -> double { self.gradient * self.gradient }
+
+    func applyAdam(
+        &mut self,
+        _ scale: double,
+        _ correction1: double,
+        _ correction2: double,
+        _ config: &ReferenceConfig,
+    ) {
+        let gradient = self.gradient * scale
+        self.firstMoment = config.adamBeta1() * self.firstMoment
+            + (1.0 - config.adamBeta1()) * gradient
+        self.secondMoment = config.adamBeta2() * self.secondMoment
+            + (1.0 - config.adamBeta2()) * gradient * gradient
+        let update = config.learningRate() * (self.firstMoment / correction1)
+            / ((self.secondMoment / correction2).sqrt() + config.adamEpsilon())
+        self.weight -= update
+    }
+}
+
+struct Readout {
+    value: double
+    synapses: List[ReadoutSynapse]
+}
+
+public struct SampleResult: Copy {
+    public loss: double
+    public prediction: usize
+    public finite: bool
+}
+
+/// Neurons own AdEx synapses and readouts own their output synapses, keeping
+/// state traversal explicit.
+public struct Network {
+    neurons: List[Neuron]
+    readouts: List[Readout]
+    inputTrace: List[double]
+    recurrentTrace: List[double]
+    beta1Power: double
+    beta2Power: double
+}
+
+impl Network {
+    public func initialized(_ seed: uint64, _ config: &ReferenceConfig) -> Self {
+        let parameters = AdExParameters.regularSpiking()
+        var random = Random.seeded(seed)
+        var neurons = List[Neuron](withCapacity: config.hiddenCount())
+        var target: usize = 0
+        while target < config.hiddenCount() {
+            var inputSynapses = List[Synapse](withCapacity: config.inputCount())
+            var input: usize = 0
+            while input < config.inputCount() {
+                inputSynapses.append(Synapse.new(input, random.unit()))
+                input += 1
+            }
+
+            var recurrentSynapses = List[Synapse](withCapacity: config.hiddenCount() - 1)
+            var source: usize = 0
+            while source < config.hiddenCount() {
+                if source != target {
+                    recurrentSynapses.append(Synapse.new(source, random.symmetric(0.25)))
+                }
+                source += 1
+            }
+            neurons.append(Neuron {
+                state: AdExState { voltage: parameters.leakPotential, adaptation: 0.0 },
+                spike: 0.0,
+                inputSynapses,
+                recurrentSynapses,
+            })
+            target += 1
+        }
+
+        var readouts = List[Readout](withCapacity: config.outputCount())
+        var output: usize = 0
+        while output < config.outputCount() {
+            var synapses = List[ReadoutSynapse](withCapacity: config.hiddenCount())
+            var source: usize = 0
+            while source < config.hiddenCount() {
+                synapses.append(ReadoutSynapse.new(source, random.symmetric(0.5)))
+                source += 1
+            }
+            readouts.append(Readout { value: 0.0, synapses })
+            output += 1
+        }
+
+        return Network {
+            neurons,
+            readouts,
+            inputTrace: zeroVector(config.inputCount()),
+            recurrentTrace: zeroVector(config.hiddenCount()),
+            beta1Power: 1.0,
+            beta2Power: 1.0,
+        }
+    }
+
+    func resetState(&mut self, _ parameters: &AdExParameters) {
+        var neuronIndex: usize = 0
+        while neuronIndex < self.neurons.len() {
+            let neuron = self.neurons.at(neuronIndex)
+            neuron.state = AdExState { voltage: parameters.leakPotential, adaptation: 0.0 }
+            neuron.spike = 0.0
+            var synapseIndex: usize = 0
+            while synapseIndex < neuron.inputSynapses.len() {
+                neuron.inputSynapses.at(synapseIndex).resetEligibility()
+                synapseIndex += 1
+            }
+            synapseIndex = 0
+            while synapseIndex < neuron.recurrentSynapses.len() {
+                neuron.recurrentSynapses.at(synapseIndex).resetEligibility()
+                synapseIndex += 1
+            }
+            neuronIndex += 1
+        }
+        var index: usize = 0
+        while index < self.inputTrace.len() { *self.inputTrace.at(index) = 0.0; index += 1 }
+        index = 0
+        while index < self.recurrentTrace.len() { *self.recurrentTrace.at(index) = 0.0; index += 1 }
+        var output: usize = 0
+        while output < self.readouts.len() {
+            let readout = self.readouts.at(output)
+            readout.value = 0.0
+            var synapseIndex: usize = 0
+            while synapseIndex < readout.synapses.len() {
+                readout.synapses.at(synapseIndex).resetTrace()
+                synapseIndex += 1
+            }
+            output += 1
+        }
+    }
+
+    public func zeroGradients(&mut self) {
+        var neuronIndex: usize = 0
+        while neuronIndex < self.neurons.len() {
+            let neuron = self.neurons.at(neuronIndex)
+            var synapseIndex: usize = 0
+            while synapseIndex < neuron.inputSynapses.len() {
+                neuron.inputSynapses.at(synapseIndex).zeroGradient()
+                synapseIndex += 1
+            }
+            synapseIndex = 0
+            while synapseIndex < neuron.recurrentSynapses.len() {
+                neuron.recurrentSynapses.at(synapseIndex).zeroGradient()
+                synapseIndex += 1
+            }
+            neuronIndex += 1
+        }
+        var output: usize = 0
+        while output < self.readouts.len() {
+            let readout = self.readouts.at(output)
+            var synapseIndex: usize = 0
+            while synapseIndex < readout.synapses.len() {
+                readout.synapses.at(synapseIndex).zeroGradient()
+                synapseIndex += 1
+            }
+            output += 1
+        }
+    }
+
+    func updateTraces(&mut self, _ inputSpikes: &List[double], _ config: &ReferenceConfig) {
+        let decay = config.synapseDecay()
+        var index: usize = 0
+        while index < self.inputTrace.len() {
+            *self.inputTrace.at(index) = decay * *self.inputTrace.at(index) + *inputSpikes.at(index)
+            index += 1
+        }
+        index = 0
+        while index < self.recurrentTrace.len() {
+            *self.recurrentTrace.at(index) = decay * *self.recurrentTrace.at(index)
+                + self.neurons.at(index).spike
+            index += 1
+        }
+    }
+
+    func hiddenStep(&mut self, _ config: &ReferenceConfig, _ parameters: &AdExParameters) {
+        let inputTrace = self.inputTrace.clone()
+        let recurrentTrace = self.recurrentTrace.clone()
+        var neuronIndex: usize = 0
+        while neuronIndex < self.neurons.len() {
+            let neuron = self.neurons.at(neuronIndex)
+            var current = parameters.biasCurrent
+            var synapseIndex: usize = 0
+            while synapseIndex < neuron.inputSynapses.len() {
+                let synapse = neuron.inputSynapses.at(synapseIndex)
+                current += parameters.inputCurrentScale * synapse.weight * *inputTrace.at(synapse.source)
+                synapseIndex += 1
+            }
+            synapseIndex = 0
+            while synapseIndex < neuron.recurrentSynapses.len() {
+                let synapse = neuron.recurrentSynapses.at(synapseIndex)
+                current += parameters.recurrentCurrentScale * synapse.weight * *recurrentTrace.at(synapse.source)
+                synapseIndex += 1
+            }
+
+            let transition = stepAdEx(neuron.state, current, config.dtMillis(), parameters)
+            synapseIndex = 0
+            while synapseIndex < neuron.inputSynapses.len() {
+                let synapse = neuron.inputSynapses.at(synapseIndex)
+                synapse.advance(
+                    transition,
+                    parameters.inputCurrentScale * *inputTrace.at(synapse.source),
+                    config,
+                    parameters,
+                )
+                synapseIndex += 1
+            }
+            synapseIndex = 0
+            while synapseIndex < neuron.recurrentSynapses.len() {
+                let synapse = neuron.recurrentSynapses.at(synapseIndex)
+                synapse.advance(
+                    transition,
+                    parameters.recurrentCurrentScale * *recurrentTrace.at(synapse.source),
+                    config,
+                    parameters,
+                )
+                synapseIndex += 1
+            }
+            neuron.state = transition.state
+            neuron.spike = transition.spike
+            neuronIndex += 1
+        }
+    }
+
+    func readoutStep(&mut self, _ config: &ReferenceConfig) {
+        var spikes = zeroVector(self.neurons.len())
+        var neuronIndex: usize = 0
+        while neuronIndex < self.neurons.len() {
+            *spikes.at(neuronIndex) = self.neurons.at(neuronIndex).spike
+            neuronIndex += 1
+        }
+        let decay = config.readoutDecay()
+        var output: usize = 0
+        while output < self.readouts.len() {
+            let readout = self.readouts.at(output)
+            var value = decay * readout.value
+            var synapseIndex: usize = 0
+            while synapseIndex < readout.synapses.len() {
+                let synapse = readout.synapses.at(synapseIndex)
+                let spike = *spikes.at(synapse.source)
+                synapse.trace = decay * synapse.trace + spike
+                value += synapse.weight * spike
+                synapseIndex += 1
+            }
+            readout.value = value
+            output += 1
+        }
+    }
+
+    func probabilities(&self, _ config: &ReferenceConfig) -> List[double] {
+        var maximum = self.readouts.at(0).value
+        var output: usize = 1
+        while output < config.outputCount() {
+            if self.readouts.at(output).value > maximum { maximum = self.readouts.at(output).value }
+            output += 1
+        }
+        var values = zeroVector(config.outputCount())
+        var total = 0.0
+        output = 0
+        while output < config.outputCount() {
+            let value = (self.readouts.at(output).value - maximum).exp()
+            *values.at(output) = value
+            total += value
+            output += 1
+        }
+        output = 0
+        while output < config.outputCount() {
+            *values.at(output) /= total
+            output += 1
+        }
+        return values
+    }
+
+    func accumulateGradient(
+        &mut self,
+        _ probabilities: &List[double],
+        _ target: usize,
+        _ config: &ReferenceConfig,
+    ) {
+        var learningSignals = zeroVector(config.hiddenCount())
+        var output: usize = 0
+        while output < self.readouts.len() {
+            let wanted = if output == target { 1.0 } else { 0.0 }
+            let error = (*probabilities.at(output) - wanted) * config.lossStepScale()
+            let readout = self.readouts.at(output)
+            var synapseIndex: usize = 0
+            while synapseIndex < readout.synapses.len() {
+                let synapse = readout.synapses.at(synapseIndex)
+                *learningSignals.at(synapse.source) += synapse.weight * error
+                synapse.gradient += error * synapse.trace
+                synapseIndex += 1
+            }
+            output += 1
+        }
+
+        var neuronIndex: usize = 0
+        while neuronIndex < self.neurons.len() {
+            let learningSignal = *learningSignals.at(neuronIndex)
+            let neuron = self.neurons.at(neuronIndex)
+            var synapseIndex: usize = 0
+            while synapseIndex < neuron.inputSynapses.len() {
+                neuron.inputSynapses.at(synapseIndex).accumulate(learningSignal)
+                synapseIndex += 1
+            }
+            synapseIndex = 0
+            while synapseIndex < neuron.recurrentSynapses.len() {
+                neuron.recurrentSynapses.at(synapseIndex).accumulate(learningSignal)
+                synapseIndex += 1
+            }
+            neuronIndex += 1
+        }
+    }
+
+    public func runSample(
+        &mut self,
+        _ sample: Sample,
+        _ scaler: Scaler,
+        _ config: &ReferenceConfig,
+        _ training: bool,
+    ) -> SampleResult {
+        let parameters = AdExParameters.regularSpiking()
+        self.resetState(&parameters)
+        var encoder = RateEncoder.forSample(&sample, scaler, config)
+        var inputSpikes = zeroVector(config.inputCount())
+        var score = zeroVector(config.outputCount())
+        var loss = 0.0
+        var allFinite = true
+        var timestep: usize = 0
+        while timestep < config.steps() {
+            encoder.next(&mut inputSpikes)
+            self.updateTraces(&inputSpikes, config)
+            self.hiddenStep(config, &parameters)
+            self.readoutStep(config)
+            if timestep >= config.lossStart() {
+                let probabilities = self.probabilities(config)
+                var targetProbability = *probabilities.at(sample.label().index())
+                if targetProbability < 0.000000000001 { targetProbability = 0.000000000001 }
+                loss -= targetProbability.log() * config.lossStepScale()
+                var output: usize = 0
+                while output < config.outputCount() {
+                    *score.at(output) += *probabilities.at(output)
+                    if !finite(*probabilities.at(output)) { allFinite = false }
+                    output += 1
+                }
+                if training { self.accumulateGradient(&probabilities, sample.label().index(), config) }
+            }
+            timestep += 1
+        }
+        var prediction: usize = 0
+        var output: usize = 1
+        while output < config.outputCount() {
+            if *score.at(output) > *score.at(prediction) { prediction = output }
+            output += 1
+        }
+        return SampleResult { loss, prediction, finite: allFinite && finite(loss) }
+    }
+
+    func gradientNorm(&self) -> double {
+        var sum = 0.0
+        var neuronIndex: usize = 0
+        while neuronIndex < self.neurons.len() {
+            let neuron = self.neurons.at(neuronIndex)
+            var synapseIndex: usize = 0
+            while synapseIndex < neuron.inputSynapses.len() {
+                sum += neuron.inputSynapses.at(synapseIndex).gradientSquare()
+                synapseIndex += 1
+            }
+            synapseIndex = 0
+            while synapseIndex < neuron.recurrentSynapses.len() {
+                sum += neuron.recurrentSynapses.at(synapseIndex).gradientSquare()
+                synapseIndex += 1
+            }
+            neuronIndex += 1
+        }
+        var output: usize = 0
+        while output < self.readouts.len() {
+            let readout = self.readouts.at(output)
+            var synapseIndex: usize = 0
+            while synapseIndex < readout.synapses.len() {
+                sum += readout.synapses.at(synapseIndex).gradientSquare()
+                synapseIndex += 1
+            }
+            output += 1
+        }
+        return sum.sqrt()
+    }
+
+    public func applyGradients(&mut self, _ batchSize: usize, _ config: &ReferenceConfig) {
+        let norm = self.gradientNorm()
+        let batchCount = double.parse(sprintf("%d", batchSize)).unwrap()
+        var scale = 1.0 / batchCount
+        if norm * scale > config.gradientClip() {
+            scale *= config.gradientClip() / (norm * scale)
+        }
+        self.beta1Power *= config.adamBeta1()
+        self.beta2Power *= config.adamBeta2()
+        let correction1 = 1.0 - self.beta1Power
+        let correction2 = 1.0 - self.beta2Power
+
+        var neuronIndex: usize = 0
+        while neuronIndex < self.neurons.len() {
+            let neuron = self.neurons.at(neuronIndex)
+            var synapseIndex: usize = 0
+            while synapseIndex < neuron.inputSynapses.len() {
+                neuron.inputSynapses.at(synapseIndex).applyAdam(scale, correction1, correction2, config)
+                synapseIndex += 1
+            }
+            synapseIndex = 0
+            while synapseIndex < neuron.recurrentSynapses.len() {
+                neuron.recurrentSynapses.at(synapseIndex).applyAdam(scale, correction1, correction2, config)
+                synapseIndex += 1
+            }
+            neuronIndex += 1
+        }
+        var output: usize = 0
+        while output < self.readouts.len() {
+            let readout = self.readouts.at(output)
+            var synapseIndex: usize = 0
+            while synapseIndex < readout.synapses.len() {
+                readout.synapses.at(synapseIndex).applyAdam(scale, correction1, correction2, config)
+                synapseIndex += 1
+            }
+            output += 1
+        }
+        self.zeroGradients()
+    }
+}

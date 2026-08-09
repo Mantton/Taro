@@ -1,0 +1,44 @@
+import adex_iris.config.ReferenceConfig
+import adex_iris.data.{Sample, Scaler}
+import std.collections.List
+
+/// Deterministic phase-accumulator rate encoding for the four Iris features.
+public struct RateEncoder {
+    rates: List[double]
+    phases: List[double]
+    dtSeconds: double
+}
+
+impl RateEncoder {
+    public func forSample(_ sample: &Sample, _ scaler: Scaler, _ config: &ReferenceConfig) -> Self {
+        var rates = List[double](withCapacity: 4)
+        var phases = List[double](withCapacity: 4)
+        var index: usize = 0
+        while index < 4 {
+            let normalized = scaler.normalize(sample, index)
+            rates.append(config.minimumRateHz() + normalized * (config.maximumRateHz() - config.minimumRateHz()))
+            if index == 0 { phases.append(0.1) }
+            if index == 1 { phases.append(0.3) }
+            if index == 2 { phases.append(0.5) }
+            if index == 3 { phases.append(0.7) }
+            index += 1
+        }
+        return RateEncoder { rates, phases, dtSeconds: config.dtMillis() / 1000.0 }
+    }
+
+    public func next(&mut self, _ spikes: &mut List[double]) {
+        if spikes.len() != 4 { panic("rate encoder needs four output slots") }
+        var index: usize = 0
+        while index < 4 {
+            var phase = *self.phases.at(index) + *self.rates.at(index) * self.dtSeconds
+            if phase >= 1.0 {
+                phase -= 1.0
+                *spikes.at(index) = 1.0
+            } else {
+                *spikes.at(index) = 0.0
+            }
+            *self.phases.at(index) = phase
+            index += 1
+        }
+    }
+}

@@ -1,0 +1,86 @@
+/// The fixed, reviewable experiment configuration.
+public struct ReferenceConfig {
+    inputCountValue: usize
+    hiddenCountValue: usize
+    outputCountValue: usize
+    stepsValue: usize
+    lossStartValue: usize
+    epochsValue: usize
+    batchSizeValue: usize
+}
+
+impl ReferenceConfig {
+    public func standard() -> Self {
+        ReferenceConfig {
+            inputCountValue: 4,
+            hiddenCountValue: 16,
+            outputCountValue: 3,
+            stepsValue: 100,
+            lossStartValue: 50,
+            epochsValue: 80,
+            batchSizeValue: 10,
+        }
+    }
+
+    public func inputCount(&self) -> usize { self.inputCountValue }
+    public func hiddenCount(&self) -> usize { self.hiddenCountValue }
+    public func outputCount(&self) -> usize { self.outputCountValue }
+    public func steps(&self) -> usize { self.stepsValue }
+    public func lossStart(&self) -> usize { self.lossStartValue }
+    public func epochs(&self) -> usize { self.epochsValue }
+    public func batchSize(&self) -> usize { self.batchSizeValue }
+
+    public func dtMillis(&self) -> double { 0.5 }
+    public func minimumRateHz(&self) -> double { 20.0 }
+    public func maximumRateHz(&self) -> double { 200.0 }
+    public func synapseDecay(&self) -> double { return (-self.dtMillis() / 5.0).exp() }
+    public func readoutDecay(&self) -> double { return (-self.dtMillis() / 20.0).exp() }
+    public func lossStepScale(&self) -> double { 1.0 / 50.0 }
+
+    public func adamBeta1(&self) -> double { 0.9 }
+    public func adamBeta2(&self) -> double { 0.999 }
+    public func adamEpsilon(&self) -> double { 0.00000001 }
+    public func learningRate(&self) -> double { 0.001 }
+    public func gradientClip(&self) -> double { 1.0 }
+}
+
+/// Brette-Gerstner regular-spiking AdEx parameters in pF, nS, mV, pA, and ms.
+public struct AdExParameters {
+    public capacitance: double
+    public leakConductance: double
+    public leakPotential: double
+    public exponentialThreshold: double
+    public slopeFactor: double
+    public adaptationTime: double
+    public subthresholdAdaptation: double
+    public spikeAdaptation: double
+    public resetPotential: double
+    public spikeCutoff: double
+    public biasCurrent: double
+    public inputCurrentScale: double
+    public recurrentCurrentScale: double
+    public surrogateWidth: double
+    public surrogateDampening: double
+}
+
+impl AdExParameters {
+    public func regularSpiking() -> Self {
+        AdExParameters {
+            capacitance: 281.0,
+            leakConductance: 30.0,
+            leakPotential: -70.6,
+            exponentialThreshold: -50.4,
+            slopeFactor: 2.0,
+            adaptationTime: 144.0,
+            subthresholdAdaptation: 4.0,
+            spikeAdaptation: 80.5,
+            resetPotential: -70.6,
+            spikeCutoff: -40.4,
+            biasCurrent: 300.0,
+            inputCurrentScale: 400.0,
+            recurrentCurrentScale: 40.0,
+            surrogateWidth: 5.0,
+            surrogateDampening: 0.3,
+        }
+    }
+}

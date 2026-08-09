@@ -1,0 +1,270 @@
+import adex_iris.random.Random
+import std.collections.List
+
+public enum Species: Copy, PartialEq {
+    case setosa
+    case versicolor
+    case virginica
+}
+
+impl Species {
+    public func index(&self) -> usize {
+        match self {
+            case .setosa => return 0
+            case .versicolor => return 1
+            case .virginica => return 2
+        }
+    }
+
+    public func name(&self) -> string {
+        match self {
+            case .setosa => return "Iris-setosa"
+            case .versicolor => return "Iris-versicolor"
+            case .virginica => return "Iris-virginica"
+        }
+    }
+}
+
+public struct Sample: Copy {
+    first: double
+    second: double
+    third: double
+    fourth: double
+    labelValue: Species
+    sourceIndexValue: usize
+}
+
+impl Sample {
+    public func new(
+        _ first: double,
+        _ second: double,
+        _ third: double,
+        _ fourth: double,
+        _ label: Species,
+        _ sourceIndex: usize,
+    ) -> Self {
+        Sample { first, second, third, fourth, labelValue: label, sourceIndexValue: sourceIndex }
+    }
+
+    public func feature(&self, _ index: usize) -> double {
+        if index == 0 { return self.first }
+        if index == 1 { return self.second }
+        if index == 2 { return self.third }
+        if index == 3 { return self.fourth }
+        panic("Iris feature index out of range")
+    }
+
+    public func label(&self) -> Species { self.labelValue }
+    public func sourceIndex(&self) -> usize { self.sourceIndexValue }
+}
+
+public struct Dataset {
+    samples: List[Sample]
+}
+
+impl Dataset {
+    public func fromSamples(_ samples: List[Sample]) -> Self { Dataset { samples } }
+    public func len(&self) -> usize { self.samples.len() }
+    public func sample(&self, _ index: usize) -> Sample { return *self.samples.at(index) }
+}
+
+func parseSpecies(_ value: string) -> Species? {
+    if value == "Iris-setosa" { return .some(.setosa) }
+    if value == "Iris-versicolor" { return .some(.versicolor) }
+    if value == "Iris-virginica" { return .some(.virginica) }
+    return .none
+}
+
+func isFinite(_ value: double) -> bool {
+    // IEEE-754 NaN and infinities are the only values for which x - x is NaN.
+    return value - value == 0.0
+}
+
+public func parseDataset(_ source: string) -> Result[Dataset, string] {
+    let lines = source.lines()
+    var samples = List[Sample](withCapacity: 150)
+    var counts = [0 as usize, 0 as usize, 0 as usize]
+    var lineIndex: usize = 0
+    while lineIndex < lines.len() {
+        let line = lines.at(lineIndex).trim()
+        if line.byteLen() > 0 {
+            let fields = line.split(",")
+            if fields.len() != 5 {
+                return .err(sprintf("line %d: expected five fields", lineIndex + 1))
+            }
+            var values = [0.0, 0.0, 0.0, 0.0]
+            var fieldIndex: usize = 0
+            while fieldIndex < 4 {
+                match double.parse(fields.at(fieldIndex).trim()) {
+                    case .ok(value) => {
+                        if !isFinite(value) {
+                            return .err(sprintf("line %d: feature is not finite", lineIndex + 1))
+                        }
+                        *values.at(fieldIndex) = value
+                    }
+                    case .err(_) => return .err(sprintf("line %d: invalid feature", lineIndex + 1))
+                }
+                fieldIndex += 1
+            }
+            let label = match parseSpecies(fields.at(4).trim()) {
+                case .some(value) => value
+                case .none => return .err(sprintf("line %d: unknown species", lineIndex + 1))
+            }
+            *counts.at(label.index()) += 1
+            samples.append(Sample.new(
+                *values.at(0), *values.at(1), *values.at(2), *values.at(3), label, samples.len(),
+            ))
+        }
+        lineIndex += 1
+    }
+
+    if samples.len() != 150 {
+        return .err(sprintf("expected 150 samples, found %d", samples.len()))
+    }
+    if *counts.at(0) != 50 || *counts.at(1) != 50 || *counts.at(2) != 50 {
+        return .err("expected exactly 50 samples for each species")
+    }
+    return .ok(Dataset.fromSamples(samples))
+}
+
+public struct Scaler: Copy {
+    minimum0: double
+    minimum1: double
+    minimum2: double
+    minimum3: double
+    maximum0: double
+    maximum1: double
+    maximum2: double
+    maximum3: double
+}
+
+impl Scaler {
+    public func fit(_ dataset: &Dataset, _ indices: &List[usize]) -> Self {
+        if indices.isEmpty() { panic("cannot fit an empty Iris fold") }
+        let first = dataset.sample(*indices.at(0))
+        var scaler = Scaler {
+            minimum0: first.feature(0), minimum1: first.feature(1),
+            minimum2: first.feature(2), minimum3: first.feature(3),
+            maximum0: first.feature(0), maximum1: first.feature(1),
+            maximum2: first.feature(2), maximum3: first.feature(3),
+        }
+        var position: usize = 1
+        while position < indices.len() {
+            let sample = dataset.sample(*indices.at(position))
+            var feature: usize = 0
+            while feature < 4 {
+                scaler.include(feature, sample.feature(feature))
+                feature += 1
+            }
+            position += 1
+        }
+        return scaler
+    }
+
+    func include(&mut self, _ feature: usize, _ value: double) {
+        if value < self.minimum(feature) { self.setMinimum(feature, value) }
+        if value > self.maximum(feature) { self.setMaximum(feature, value) }
+    }
+
+    func minimum(&self, _ feature: usize) -> double {
+        if feature == 0 { return self.minimum0 }
+        if feature == 1 { return self.minimum1 }
+        if feature == 2 { return self.minimum2 }
+        if feature == 3 { return self.minimum3 }
+        panic("scaler feature index out of range")
+    }
+
+    func maximum(&self, _ feature: usize) -> double {
+        if feature == 0 { return self.maximum0 }
+        if feature == 1 { return self.maximum1 }
+        if feature == 2 { return self.maximum2 }
+        if feature == 3 { return self.maximum3 }
+        panic("scaler feature index out of range")
+    }
+
+    func setMinimum(&mut self, _ feature: usize, _ value: double) {
+        if feature == 0 { self.minimum0 = value; return }
+        if feature == 1 { self.minimum1 = value; return }
+        if feature == 2 { self.minimum2 = value; return }
+        if feature == 3 { self.minimum3 = value; return }
+        panic("scaler feature index out of range")
+    }
+
+    func setMaximum(&mut self, _ feature: usize, _ value: double) {
+        if feature == 0 { self.maximum0 = value; return }
+        if feature == 1 { self.maximum1 = value; return }
+        if feature == 2 { self.maximum2 = value; return }
+        if feature == 3 { self.maximum3 = value; return }
+        panic("scaler feature index out of range")
+    }
+
+    public func normalize(&self, _ sample: &Sample, _ feature: usize) -> double {
+        let low = self.minimum(feature)
+        let high = self.maximum(feature)
+        if high == low { return 0.0 }
+        var result = (sample.feature(feature) - low) / (high - low)
+        if result < 0.0 { result = 0.0 }
+        if result > 1.0 { result = 1.0 }
+        return result
+    }
+}
+
+public struct Fold {
+    trainingValue: List[usize]
+    testingValue: List[usize]
+    scalerValue: Scaler
+}
+
+impl Fold {
+    public func training(&self) -> &List[usize] { return &self.trainingValue }
+    public func testing(&self) -> &List[usize] { return &self.testingValue }
+    public func scaler(&self) -> Scaler { self.scalerValue }
+}
+
+public func makeFolds(_ dataset: &Dataset, _ seed: uint64) -> List[Fold] {
+    var byClass = [List[usize](), List[usize](), List[usize]()]
+    var index: usize = 0
+    while index < dataset.len() {
+        let classIndex = dataset.sample(index).label().index()
+        byClass.at(classIndex).append(index)
+        index += 1
+    }
+    var random = Random.seeded(seed)
+    var classIndex: usize = 0
+    while classIndex < 3 {
+        random.shuffle(byClass.at(classIndex))
+        classIndex += 1
+    }
+
+    var testBuckets = [List[usize](), List[usize](), List[usize](), List[usize](), List[usize]()]
+    classIndex = 0
+    while classIndex < 3 {
+        var position: usize = 0
+        while position < byClass.at(classIndex).len() {
+            testBuckets.at(position % 5).append(*byClass.at(classIndex).at(position))
+            position += 1
+        }
+        classIndex += 1
+    }
+
+    var folds = List[Fold](withCapacity: 5)
+    var foldIndex: usize = 0
+    while foldIndex < 5 {
+        var training = List[usize](withCapacity: 120)
+        index = 0
+        while index < dataset.len() {
+            var heldOut = false
+            var testPosition: usize = 0
+            while testPosition < testBuckets.at(foldIndex).len() {
+                if *testBuckets.at(foldIndex).at(testPosition) == index { heldOut = true; break }
+                testPosition += 1
+            }
+            if !heldOut { training.append(index) }
+            index += 1
+        }
+        let scaler = Scaler.fit(dataset, &training)
+        folds.append(Fold { trainingValue: training, testingValue: testBuckets.at(foldIndex).clone(), scalerValue: scaler })
+        foldIndex += 1
+    }
+    return folds
+}

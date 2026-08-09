@@ -1,0 +1,122 @@
+import adex_iris.config.{AdExParameters, ReferenceConfig}
+import adex_iris.data.{Dataset, Sample, Scaler}
+import adex_iris.model.{AdExState, Eligibility, Network, advanceEligibility, finite, stepAdEx}
+import std.collections.List
+
+func approx(_ actual: double, _ expected: double, _ tolerance: double) -> bool {
+    return (actual - expected).abs() <= tolerance
+}
+
+@test
+func subthresholdJacobianMatchesFiniteDifference() {
+    let parameters = AdExParameters.regularSpiking()
+    let state = AdExState { voltage: -60.0, adaptation: 12.0 }
+    let epsilon = 0.000001
+    let center = stepAdEx(state, 350.0, 0.5, &parameters)
+    let plus = stepAdEx(AdExState { voltage: state.voltage + epsilon, adaptation: state.adaptation }, 350.0, 0.5, &parameters)
+    let minus = stepAdEx(AdExState { voltage: state.voltage - epsilon, adaptation: state.adaptation }, 350.0, 0.5, &parameters)
+    let numeric = (plus.rawVoltage - minus.rawVoltage) / (2.0 * epsilon)
+    assertTrue(approx(center.rawJvv, numeric, 0.000001), "AdEx voltage Jacobian")
+    let plusAdaptation = stepAdEx(AdExState { voltage: state.voltage, adaptation: state.adaptation + epsilon }, 350.0, 0.5, &parameters)
+    let minusAdaptation = stepAdEx(AdExState { voltage: state.voltage, adaptation: state.adaptation - epsilon }, 350.0, 0.5, &parameters)
+    assertTrue(approx(center.rawJvw, (plusAdaptation.rawVoltage - minusAdaptation.rawVoltage) / (2.0 * epsilon), 0.000001), "voltage/adaptation Jacobian")
+    assertTrue(approx(center.rawJwv, (plus.rawAdaptation - minus.rawAdaptation) / (2.0 * epsilon), 0.000001), "adaptation/voltage Jacobian")
+    assertTrue(approx(center.rawJww, (plusAdaptation.rawAdaptation - minusAdaptation.rawAdaptation) / (2.0 * epsilon), 0.000001), "adaptation Jacobian")
+    let plusCurrent = stepAdEx(state, 350.0 + epsilon, 0.5, &parameters)
+    let minusCurrent = stepAdEx(state, 350.0 - epsilon, 0.5, &parameters)
+    assertTrue(approx(center.rawCurrentDerivative, (plusCurrent.rawVoltage - minusCurrent.rawVoltage) / (2.0 * epsilon), 0.000001), "current Jacobian")
+    assertTrue(finite(center.state.voltage), "subthreshold voltage remains finite")
+}
+
+@test
+func restingEvokedAndCutoffDynamicsRemainFinite() {
+    let parameters = AdExParameters.regularSpiking()
+    var resting = AdExState { voltage: parameters.leakPotential, adaptation: 0.0 }
+    var step: usize = 0
+    while step < 1000 {
+        resting = stepAdEx(resting, 0.0, 0.5, &parameters).state
+        assertTrue(finite(resting.voltage) && finite(resting.adaptation), "resting trace remains finite")
+        step += 1
+    }
+    let settled = stepAdEx(resting, 0.0, 0.5, &parameters).state
+    assertTrue(approx(settled.voltage, resting.voltage, 0.000001), "resting voltage converges")
+    assertTrue(approx(settled.adaptation, resting.adaptation, 0.000001), "resting adaptation converges")
+
+    var evoked = AdExState { voltage: parameters.leakPotential, adaptation: 0.0 }
+    var spiked = false
+    step = 0
+    while step < 1000 {
+        let transition = stepAdEx(evoked, 1000.0, 0.5, &parameters)
+        evoked = transition.state
+        if transition.spike == 1.0 { spiked = true }
+        assertTrue(finite(evoked.voltage) && finite(evoked.adaptation), "evoked trace remains finite")
+        step += 1
+    }
+    assertTrue(spiked, "sustained current evokes a spike")
+
+    let cutoff = stepAdEx(AdExState { voltage: 1000000.0, adaptation: 0.0 }, 0.0, 0.5, &parameters)
+    assertTrue(finite(cutoff.rawVoltage) && finite(cutoff.state.voltage), "exponential cutoff blocks infinities")
+    assertEqual(cutoff.state.voltage, parameters.resetPotential, "cutoff transition resets")
+}
+
+@test
+func spikeResetsAndAdvancesBothEligibilityComponents() {
+    let parameters = AdExParameters.regularSpiking()
+    let transition = stepAdEx(AdExState { voltage: -40.5, adaptation: 0.0 }, -7200.0, 0.5, &parameters)
+    assertEqual(transition.spike, 1.0, "high voltage should spike")
+    assertEqual(transition.state.voltage, parameters.resetPotential, "spike reset")
+    assertTrue(transition.state.adaptation >= parameters.spikeAdaptation, "spike adaptation jump")
+    let eligibility = advanceEligibility(
+        Eligibility { voltage: 0.5, adaptation: 0.25, filtered: 0.0 },
+        transition,
+        2.0,
+        0.9,
+        parameters.spikeAdaptation,
+    )
+    assertTrue(eligibility.voltage != 0.0, "voltage eligibility advances")
+    assertTrue(eligibility.adaptation != 0.0, "adaptation eligibility advances")
+}
+
+@test
+func networkRunIsDeterministicAndFinite() {
+    let config = ReferenceConfig.standard()
+    var samples = List[Sample]()
+    samples.append(Sample.new(4.0, 3.0, 2.0, 1.0, .setosa, 0))
+    samples.append(Sample.new(8.0, 6.0, 4.0, 2.0, .virginica, 1))
+    let dataset = Dataset.fromSamples(samples)
+    var indices = List[usize](); indices.append(0); indices.append(1)
+    let scaler = Scaler.fit(&dataset, &indices)
+    var first = Network.initialized(53269_u64, &config)
+    var second = Network.initialized(53269_u64, &config)
+    let firstResult = first.runSample(dataset.sample(0), scaler, &config, false)
+    let secondResult = second.runSample(dataset.sample(0), scaler, &config, false)
+    assertTrue(firstResult.finite, "network trace must remain finite")
+    assertEqual(firstResult.prediction, secondResult.prediction, "network prediction repeats")
+    assertEqual(firstResult.loss, secondResult.loss, "network loss repeats exactly")
+}
+
+@test
+func adamUpdatesLowerSyntheticLoss() {
+    let config = ReferenceConfig.standard()
+    var samples = List[Sample]()
+    samples.append(Sample.new(4.0, 3.0, 2.0, 1.0, .setosa, 0))
+    samples.append(Sample.new(8.0, 6.0, 4.0, 2.0, .virginica, 1))
+    let dataset = Dataset.fromSamples(samples)
+    var indices = List[usize](); indices.append(0); indices.append(1)
+    let scaler = Scaler.fit(&dataset, &indices)
+    var network = Network.initialized(53269_u64, &config)
+    let before = network.runSample(dataset.sample(1), scaler, &config, false)
+    var update: usize = 0
+    while update < 10 {
+        network.zeroGradients()
+        var repetition: usize = 0
+        while repetition < 10 {
+            let _ = network.runSample(dataset.sample(1), scaler, &config, true)
+            repetition += 1
+        }
+        network.applyGradients(10, &config)
+        update += 1
+    }
+    let after = network.runSample(dataset.sample(1), scaler, &config, false)
+    assertTrue(after.loss < before.loss, "Adam updates should lower the target loss")
+}

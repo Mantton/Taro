@@ -1,0 +1,78 @@
+import std.collections.List
+
+const PARK_MILLER_MODULUS: uint64 = 2147483647_u64
+const PARK_MILLER_MULTIPLIER: uint64 = 16807_u64
+
+/// Deterministic Park-Miller generator. Its multiplication cannot overflow
+/// uint64, so debug and release builds have identical behavior.
+public struct Random {
+    state: uint64
+}
+
+impl Random {
+    public func seeded(_ seed: uint64) -> Self {
+        let reduced = seed % PARK_MILLER_MODULUS
+        return Random { state: if reduced == 0 { 1_u64 } else { reduced } }
+    }
+
+    public func nextUint(&mut self) -> uint64 {
+        self.state = (self.state * PARK_MILLER_MULTIPLIER) % PARK_MILLER_MODULUS
+        return self.state
+    }
+
+    public func unit(&mut self) -> double {
+        // Taro intentionally has no implicit integer-to-floating conversion.
+        // Quantized initialization is sufficient here and keeps the generator
+        // deterministic without parsing decimal text in hot setup loops.
+        let bucket = self.nextUint() % 32_u64
+        if bucket == 0_u64 { return 0.015625 }
+        if bucket == 1_u64 { return 0.046875 }
+        if bucket == 2_u64 { return 0.078125 }
+        if bucket == 3_u64 { return 0.109375 }
+        if bucket == 4_u64 { return 0.140625 }
+        if bucket == 5_u64 { return 0.171875 }
+        if bucket == 6_u64 { return 0.203125 }
+        if bucket == 7_u64 { return 0.234375 }
+        if bucket == 8_u64 { return 0.265625 }
+        if bucket == 9_u64 { return 0.296875 }
+        if bucket == 10_u64 { return 0.328125 }
+        if bucket == 11_u64 { return 0.359375 }
+        if bucket == 12_u64 { return 0.390625 }
+        if bucket == 13_u64 { return 0.421875 }
+        if bucket == 14_u64 { return 0.453125 }
+        if bucket == 15_u64 { return 0.484375 }
+        if bucket == 16_u64 { return 0.515625 }
+        if bucket == 17_u64 { return 0.546875 }
+        if bucket == 18_u64 { return 0.578125 }
+        if bucket == 19_u64 { return 0.609375 }
+        if bucket == 20_u64 { return 0.640625 }
+        if bucket == 21_u64 { return 0.671875 }
+        if bucket == 22_u64 { return 0.703125 }
+        if bucket == 23_u64 { return 0.734375 }
+        if bucket == 24_u64 { return 0.765625 }
+        if bucket == 25_u64 { return 0.796875 }
+        if bucket == 26_u64 { return 0.828125 }
+        if bucket == 27_u64 { return 0.859375 }
+        if bucket == 28_u64 { return 0.890625 }
+        if bucket == 29_u64 { return 0.921875 }
+        if bucket == 30_u64 { return 0.953125 }
+        return 0.984375
+    }
+
+    public func symmetric(&mut self, _ radius: double) -> double {
+        return (self.unit() * 2.0 - 1.0) * radius
+    }
+
+    public func shuffle(&mut self, _ values: &mut List[usize]) {
+        if values.len() < 2 { return }
+        var remaining = values.len()
+        while remaining > 1 {
+            let index = (self.nextUint() % remaining as uint64) as usize
+            let last = remaining - 1
+            let temporary = *values.at(last)
+            *values.at(last) = *values.at(index)
+            *values.at(index) = temporary
+            remaining -= 1
+        }
+    }
+}

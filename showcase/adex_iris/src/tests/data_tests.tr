@@ -1,0 +1,112 @@
+import adex_iris.config.ReferenceConfig
+import adex_iris.data.{Dataset, Sample, Scaler, makeFolds, parseDataset}
+import adex_iris.encoding.RateEncoder
+import adex_iris.random.Random
+import std.collections.List
+import std.string.Builder
+
+func fixtureDataset() -> string {
+    var output = Builder()
+    var index: usize = 0
+    while index < 50 { output.writeString("5.1,3.5,1.4,0.2,Iris-setosa\n"); index += 1 }
+    index = 0
+    while index < 50 { output.writeString("6.0,2.9,4.5,1.5,Iris-versicolor\n"); index += 1 }
+    index = 0
+    while index < 50 { output.writeString("6.5,3.0,5.5,2.0,Iris-virginica\n"); index += 1 }
+    return output.intoString()
+}
+
+@test
+func datasetIsStrictAndBalanced() {
+    let dataset = parseDataset(fixtureDataset()).unwrap()
+    assertEqual(dataset.len(), 150, "Iris fixture size")
+    assertTrue(parseDataset("5.1,3.5,1.4,Iris-setosa").isErr(), "four fields must fail")
+    assertTrue(parseDataset(fixtureDataset() + "1,2,3,4,unknown\n").isErr(), "unknown labels must fail")
+    assertTrue(parseDataset("nan,3.5,1.4,0.2,Iris-setosa\n" + fixtureDataset()).isErr(), "non-finite values must fail")
+    let unbalanced = fixtureDataset().replace("Iris-versicolor", "Iris-setosa")
+    assertTrue(parseDataset(unbalanced).isErr(), "class imbalance must fail")
+}
+
+@test
+func foldsAreStratifiedAndDeterministic() {
+    let dataset = parseDataset(fixtureDataset()).unwrap()
+    let first = makeFolds(&dataset, 53269_u64)
+    let second = makeFolds(&dataset, 53269_u64)
+    assertEqual(first.len(), 5, "five outer folds")
+    var seen = List[usize](withCapacity: 150)
+    var seenIndex: usize = 0
+    while seenIndex < 150 { seen.append(0); seenIndex += 1 }
+    var foldIndex: usize = 0
+    while foldIndex < 5 {
+        assertEqual(first.at(foldIndex).training().len(), 120, "fold training size")
+        assertEqual(first.at(foldIndex).testing().len(), 30, "fold testing size")
+        var classes = [0 as usize, 0 as usize, 0 as usize]
+        var position: usize = 0
+        while position < first.at(foldIndex).testing().len() {
+            let sourceIndex = *first.at(foldIndex).testing().at(position)
+            *seen.at(sourceIndex) += 1
+            *classes.at(dataset.sample(sourceIndex).label().index()) += 1
+            assertEqual(sourceIndex, *second.at(foldIndex).testing().at(position), "fold order must repeat")
+            position += 1
+        }
+        assertEqual(*classes.at(0), 10, "setosa per fold")
+        assertEqual(*classes.at(1), 10, "versicolor per fold")
+        assertEqual(*classes.at(2), 10, "virginica per fold")
+        foldIndex += 1
+    }
+    var index: usize = 0
+    while index < seen.len() { assertEqual(*seen.at(index), 1, "sample held out once"); index += 1 }
+}
+
+@test
+func scalingAndRateEncodingAreBounded() {
+    var samples = List[Sample]()
+    samples.append(Sample.new(0.0, 0.0, 0.0, 0.0, .setosa, 0))
+    samples.append(Sample.new(10.0, 10.0, 10.0, 10.0, .virginica, 1))
+    samples.append(Sample.new(-5.0, 15.0, 5.0, 5.0, .versicolor, 2))
+    let dataset = Dataset.fromSamples(samples)
+    var training = List[usize](); training.append(0); training.append(1)
+    let scaler = Scaler.fit(&dataset, &training)
+    assertEqual(scaler.normalize(&dataset.sample(0), 0), 0.0, "training minimum")
+    assertEqual(scaler.normalize(&dataset.sample(1), 0), 1.0, "training maximum")
+    assertEqual(scaler.normalize(&dataset.sample(2), 0), 0.0, "held-out low value clamps")
+    assertEqual(scaler.normalize(&dataset.sample(2), 1), 1.0, "held-out high value clamps")
+    let config = ReferenceConfig.standard()
+    var encoder = RateEncoder.forSample(&dataset.sample(1), scaler, &config)
+    var spikes = List[double](); spikes.append(0.0); spikes.append(0.0); spikes.append(0.0); spikes.append(0.0)
+    var spikeCount: usize = 0
+    var step: usize = 0
+    while step < 100 {
+        encoder.next(&mut spikes)
+        if *spikes.at(0) == 1.0 { spikeCount += 1 }
+        step += 1
+    }
+    assertEqual(spikeCount, 10, "200 Hz over 50 ms should emit ten spikes")
+
+    var reset = RateEncoder.forSample(&dataset.sample(1), scaler, &config)
+    var resetSpikes = List[double](); resetSpikes.append(0.0); resetSpikes.append(0.0); resetSpikes.append(0.0); resetSpikes.append(0.0)
+    var replay = RateEncoder.forSample(&dataset.sample(1), scaler, &config)
+    var replaySpikes = List[double](); replaySpikes.append(0.0); replaySpikes.append(0.0); replaySpikes.append(0.0); replaySpikes.append(0.0)
+    step = 0
+    while step < 20 {
+        reset.next(&mut resetSpikes)
+        replay.next(&mut replaySpikes)
+        var channel: usize = 0
+        while channel < 4 {
+            assertEqual(*resetSpikes.at(channel), *replaySpikes.at(channel), "sample phase resets deterministically")
+            channel += 1
+        }
+        step += 1
+    }
+}
+
+@test
+func randomSequenceRepeats() {
+    var first = Random.seeded(53269_u64)
+    var second = Random.seeded(53269_u64)
+    var index: usize = 0
+    while index < 32 { assertEqual(first.nextUint(), second.nextUint(), "seeded sequence"); index += 1 }
+    var distinct = Random.seeded(53270_u64)
+    var reference = Random.seeded(53269_u64)
+    assertTrue(distinct.nextUint() != reference.nextUint(), "fold seeds must separate streams")
+}

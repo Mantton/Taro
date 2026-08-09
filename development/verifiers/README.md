@@ -24,5 +24,7 @@ a project-local `test_*.py` file is sufficient.
 
 Available projects:
 
+- [`adex_iris`](adex_iris/README.md) checks the deterministic AdEx/e-prop
+  classifier against the pinned UCI Iris dataset and accuracy contract.
 - [`json`](json/README.md) checks `std.json` against ten pinned conformance, regression, fuzz, and
   real-document corpora.

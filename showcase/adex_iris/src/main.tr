@@ -1,0 +1,230 @@
+import adex_iris.config.ReferenceConfig
+import adex_iris.data.{makeFolds, parseDataset}
+import adex_iris.model.Network
+import adex_iris.training.{CrossValidationMetrics, FoldMetrics, crossValidate}
+import std.collections.List
+import std.string.Builder
+
+struct Arguments {
+    dataPath: string
+    selectedFold: usize?
+    json: bool
+    smoke: bool
+}
+
+func usage() {
+    eprint("usage: adex-iris --data <path> [--fold all|0|1|2|3|4] [--format human|json]\n")
+}
+
+func argumentError(_ message: string) -> Result[Arguments, string] {
+    return .err(message)
+}
+
+func parseArguments(_ passed: &List[string]) -> Result[Arguments, string] {
+    var dataPath = ""
+    var selectedFoldValue: usize = 0
+    var allFolds = true
+    var json = false
+    var smoke = false
+    var index: usize = 0
+    while index < passed.len() {
+        let argument: string = *passed.at(index)
+        if argument == "--data" {
+            if index + 1 >= passed.len() { return argumentError("--data requires a path") }
+            dataPath = *passed.at(index + 1)
+            index += 2
+            continue
+        }
+        if argument == "--smoke" {
+            smoke = true
+            index += 1
+            continue
+        }
+        if argument == "--fold" {
+            if index + 1 >= passed.len() { return argumentError("--fold requires a value") }
+            let value: string = *passed.at(index + 1)
+            if value == "all" {
+                allFolds = true
+            } else {
+                if value == "0" {
+                    selectedFoldValue = 0
+                } else if value == "1" {
+                    selectedFoldValue = 1
+                } else if value == "2" {
+                    selectedFoldValue = 2
+                } else if value == "3" {
+                    selectedFoldValue = 3
+                } else if value == "4" {
+                    selectedFoldValue = 4
+                } else {
+                    return argumentError("--fold must be all or 0 through 4")
+                }
+                allFolds = false
+            }
+            index += 2
+            continue
+        }
+        if argument == "--format" {
+            if index + 1 >= passed.len() { return argumentError("--format requires a value") }
+            let value: string = *passed.at(index + 1)
+            if value == "json" {
+                json = true
+            } else if value == "human" {
+                json = false
+            } else {
+                return argumentError("--format must be human or json")
+            }
+            index += 2
+            continue
+        }
+        return argumentError("unknown argument")
+    }
+    if dataPath.byteLen() == 0 { return argumentError("--data is required") }
+    if allFolds {
+        let selectedFold: usize? = .none
+        return .ok(Arguments { dataPath, selectedFold, json, smoke })
+    }
+    let selectedFold: usize? = .some(selectedFoldValue)
+    return .ok(Arguments { dataPath, selectedFold, json, smoke })
+}
+
+func encodeDouble(_ value: double) -> string {
+    if value - value != 0.0 { return "null" }
+    var magnitude = value
+    var output = Builder()
+    if magnitude < 0.0 {
+        output.writeByte('-' as uint8)
+        magnitude = -magnitude
+    }
+    // Metrics are small non-negative values. Render nine deterministic decimal
+    // places without depending on a locale-sensitive floating formatter.
+    magnitude += 0.0000000005
+    var whole: usize = 0
+    while magnitude >= 1.0 { magnitude -= 1.0; whole += 1 }
+    output.writeString(sprintf("%d", whole))
+    output.writeByte('.' as uint8)
+    var place: usize = 0
+    while place < 9 {
+        magnitude *= 10.0
+        var digit: uint8 = 0_u8
+        while magnitude >= 1.0 { magnitude -= 1.0; digit += 1_u8 }
+        output.writeByte(('0' as uint8) + digit)
+        place += 1
+    }
+    return output.intoString()
+}
+
+func metricsJson(_ metrics: &CrossValidationMetrics) -> string {
+    var output = Builder()
+    output.writeString("{\"schema\":1,\"folds\":[")
+    var index: usize = 0
+    while index < metrics.folds().len() {
+        if index > 0 { output.writeByte(',' as uint8) }
+        let fold: &FoldMetrics = metrics.folds().at(index)
+        let finiteText = if fold.finite { "true" } else { "false" }
+        output.writeString(sprintf(
+            "{\"fold\":%d,\"training_samples\":%d,\"testing_samples\":%d,\"correct\":%d,\"loss\":%s,\"finite\":%s}",
+            fold.fold,
+            fold.trainingSamples,
+            fold.testingSamples,
+            fold.correct,
+            encodeDouble(fold.loss),
+            finiteText,
+        ))
+        index += 1
+    }
+    let finiteText = if metrics.finite { "true" } else { "false" }
+    output.writeString(sprintf(
+        "],\"correct\":%d,\"samples\":%d,\"accuracy\":%s,\"finite\":%s,\"confusion\":[",
+        metrics.correct,
+        metrics.samples,
+        encodeDouble(metrics.accuracy()),
+        finiteText,
+    ))
+    var actual: usize = 0
+    while actual < 3 {
+        if actual > 0 { output.writeByte(',' as uint8) }
+        output.writeByte('[' as uint8)
+        var predicted: usize = 0
+        while predicted < 3 {
+            if predicted > 0 { output.writeByte(',' as uint8) }
+            output.writeString(sprintf("%d", metrics.confusion(actual, predicted)))
+            predicted += 1
+        }
+        output.writeByte(']' as uint8)
+        actual += 1
+    }
+    output.writeString("]}")
+    return output.intoString()
+}
+
+func printHuman(_ metrics: &CrossValidationMetrics) {
+    var index: usize = 0
+    while index < metrics.folds().len() {
+        let fold: &FoldMetrics = metrics.folds().at(index)
+        printf(
+            "fold %d: %d/%d accuracy=%s loss=%s\n",
+            fold.fold,
+            fold.correct,
+            fold.testingSamples,
+            encodeDouble(fold.accuracy()),
+            encodeDouble(fold.loss),
+        )
+        index += 1
+    }
+    printf("aggregate: %d/%d accuracy=%s\n", metrics.correct, metrics.samples, encodeDouble(metrics.accuracy()))
+    print("confusion:\n")
+    var actual: usize = 0
+    while actual < 3 {
+        printf(
+            "  %d %d %d\n",
+            metrics.confusion(actual, 0), metrics.confusion(actual, 1), metrics.confusion(actual, 2),
+        )
+        actual += 1
+    }
+}
+
+func main() {
+    let raw = std.env.args()
+    var passed = List[string]()
+    var rawIndex: usize = 1
+    while rawIndex < raw.len() { passed.append(raw.at(rawIndex)); rawIndex += 1 }
+    let arguments = match parseArguments(&passed) {
+        case .ok(value) => value
+        case .err(error) => { eprintf("adex-iris: %s\n", error); usage(); std.process.exit(2) }
+    }
+    let source = match std.fs.readToString(arguments.dataPath) {
+        case .ok(value) => value
+        case .err(error) => {
+            eprintf("adex-iris: cannot read %s: %v\n", arguments.dataPath, error)
+            std.process.exit(2)
+        }
+    }
+    let dataset = match parseDataset(source) {
+        case .ok(value) => value
+        case .err(error) => {
+            eprintf("adex-iris: invalid dataset: %s\n", error)
+            std.process.exit(2)
+        }
+    }
+    let folds = makeFolds(&dataset, 53269_u64)
+    let config = ReferenceConfig.standard()
+    if arguments.smoke {
+        let fold = folds.at(0)
+        var network = Network.initialized(53269_u64, &config)
+        let result = network.runSample(dataset.sample(*fold.testing().at(0)), fold.scaler(), &config, false)
+        let finiteText = if result.finite { "true" } else { "false" }
+        printf(
+            "{\"schema\":1,\"prediction\":%d,\"loss\":%s,\"finite\":%s}\n",
+            result.prediction,
+            encodeDouble(result.loss),
+            finiteText,
+        )
+        if !result.finite { std.process.exit(1) }
+        return
+    }
+    let metrics = crossValidate(&dataset, &folds, arguments.selectedFold, &config)
+    if arguments.json { println(metricsJson(&metrics)) } else { printHuman(&metrics) }
+    if !metrics.finite { std.process.exit(1) }
+    if arguments.selectedFold.isNone() && metrics.correct < 135 { std.process.exit(1) }
+}
