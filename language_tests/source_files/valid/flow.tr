@@ -92,6 +92,18 @@ func afterNeverCall() {
     let unreachable = 1
 }
 
+func returnOrContinueInWhile(_ values: &List[string]) -> Result[usize, string] {
+    var index: usize = 0
+    while index < values.len() {
+        if *values.at(index) == "skip" {
+            index += 1
+            continue
+        }
+        return .err("unexpected value")
+    }
+    return .ok(index)
+}
+
 func main() {
     let _ = implicitReturn(true)
     let _ = exhaustiveWithNever(true)
@@ -104,6 +116,9 @@ func main() {
     afterReturn()
     afterBreak()
     afterContinue()
+    var values = List[string]()
+    values.append("skip")
+    let _ = returnOrContinueInWhile(&values)
 }
 
 func deferReadsLaterInit() -> string {

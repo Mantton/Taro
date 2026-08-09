@@ -2859,10 +2859,23 @@ impl<'ctx> Checker<'ctx> {
 
         match else_ty {
             Some(else_ty) => {
+                let resolved_then = cs.infer_cx.resolve_vars_if_possible(then_ty);
+                let resolved_else = cs.infer_cx.resolve_vars_if_possible(else_ty);
+
+                // A desugared `while` ends in `if condition { body } else {
+                // break }`. When every path through `body` also returns or
+                // continues, both branches are `Never`. Do not create a fresh
+                // result variable that neither diverging branch can bind.
+                if expectation.is_none()
+                    && matches!(resolved_then.kind(), TyKind::Never)
+                    && matches!(resolved_else.kind(), TyKind::Never)
+                {
+                    return Ty::new(TyKind::Never, self.gcx());
+                }
+
                 let result_ty =
                     expectation.unwrap_or_else(|| cs.infer_cx.next_ty_var(expression.span));
 
-                let resolved_then = cs.infer_cx.resolve_vars_if_possible(then_ty);
                 if matches!(resolved_then.kind(), TyKind::Never) {
                     cs.add_goal(
                         Goal::Coerce {
@@ -2880,7 +2893,6 @@ impl<'ctx> Checker<'ctx> {
                     .else_block
                     .as_ref()
                     .expect("else_ty exists iff else block exists");
-                let resolved_else = cs.infer_cx.resolve_vars_if_possible(else_ty);
                 if matches!(resolved_else.kind(), TyKind::Never) {
                     cs.add_goal(
                         Goal::Coerce {
