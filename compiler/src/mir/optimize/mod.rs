@@ -2,13 +2,12 @@ use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::mir::{Body, MirPhase};
 
-pub mod alloc_escape;
 pub mod async_transform;
 pub mod coalesce;
 pub mod const_prop;
 pub mod devirtualize;
 pub mod dse;
-pub mod escape;
+pub mod escape_graph;
 pub mod inline;
 pub mod passes;
 pub mod propagate;
@@ -74,11 +73,8 @@ pub fn lower_async_for_canonical_mir<'ctx>(
         return Ok(());
     }
 
-    let mut passes: Vec<Box<dyn MirPass>> = vec![
-        Box::new(escape::EscapeAnalysis),
-        Box::new(escape::ApplyEscapeAnalysis),
-        Box::new(async_transform::AsyncTransform),
-    ];
+    escape_graph::apply_async_bridge(gcx, body)?;
+    let mut passes: Vec<Box<dyn MirPass>> = vec![Box::new(async_transform::AsyncTransform)];
     run_passes(gcx, body, &mut passes)?;
     // AsyncTransform builds a fresh constructor CFG. Canonical MIR always has
     // the same locally-cleaned boundary for ordinary and synthesized bodies.
@@ -91,9 +87,6 @@ pub fn lower_async_for_canonical_mir<'ctx>(
 /// but must not make decisions that can differ between monomorphized instances.
 /// Escape placement and safepoint insertion therefore run later on an
 /// instance-local clone via [`run_instance_passes`].
-///
-/// Note: escape::compute_escape_summaries must be called before these passes
-/// to enable interprocedural escape analysis.
 pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
     let mut passes: Vec<Box<dyn MirPass>> = vec![
         Box::new(devirtualize::DevirtualizeStaticCalls),
@@ -120,15 +113,15 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
 /// placement and safepoint mutation on this clone lets later analyses consult
 /// concrete generic arguments without contaminating another instantiation of
 /// the same source definition.
-pub fn run_instance_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
+pub fn run_instance_passes<'ctx>(
+    gcx: Gcx<'ctx>,
+    instance: crate::specialize::Instance<'ctx>,
+    body: &mut Body<'ctx>,
+) -> CompileResult<()> {
+    escape_graph::apply_instance_placement(gcx, instance, body)?;
     let mut passes: Vec<Box<dyn MirPass>> = vec![
-        Box::new(alloc_escape::AllocEscapeAnalysis),
-        Box::new(alloc_escape::StackPromoteAllocations),
         Box::new(dse::DeadStoreElimination),
         Box::new(passes::DeadLocalElimination),
-        // Interprocedural escape analysis (uses precomputed summaries)
-        Box::new(escape::EscapeAnalysis),
-        Box::new(escape::ApplyEscapeAnalysis),
         Box::new(passes::InsertSafepoints),
         Box::new(passes::MergeSafepoints), // Clean up redundant consecutive safepoints
     ];

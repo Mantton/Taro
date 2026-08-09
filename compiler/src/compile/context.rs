@@ -6,7 +6,7 @@ use crate::{
     diagnostics::DiagCtx,
     error::CompileResult,
     hir::{self, DefinitionID, StdItem},
-    mir::{self, Body, EscapeSummary},
+    mir::{self, Body},
     sema::std_items::{StdItemEntry, StdItemRegistry},
     sema::{
         models::{
@@ -802,20 +802,6 @@ impl<'arena> GlobalContext<'arena> {
             .intern_ty(TyKind::Pointer(self.types.uint8, hir::Mutability::Mutable))
     }
 
-    /// Get the escape summary for a function, if one has been computed.
-    pub fn get_escape_summary(self, id: DefinitionID) -> Option<EscapeSummary> {
-        self.with_type_database(id.package(), |db| {
-            db.def_to_escape_summary.get(&id).cloned()
-        })
-    }
-
-    /// Store an escape summary for a function.
-    pub fn set_escape_summary(self, id: DefinitionID, summary: EscapeSummary) {
-        self.with_type_database(id.package(), |db| {
-            db.def_to_escape_summary.insert(id, summary);
-        });
-    }
-
     /// Get closure capture information for a closure definition.
     pub fn get_closure_captures(self, id: DefinitionID) -> Option<ClosureCaptures<'arena>> {
         self.with_type_database(id.package(), |db| db.closure_captures.get(&id).cloned())
@@ -989,7 +975,7 @@ impl<'arena> GlobalContext<'arena> {
         }
 
         let mut body = self.get_mir_body(instance.def_id()).clone();
-        mir::optimize::run_instance_passes(self, &mut body)?;
+        mir::optimize::run_instance_passes(self, instance, &mut body)?;
         let body = self.context.store.arenas.mir_bodies.alloc(body);
         self.context
             .store
@@ -1004,6 +990,22 @@ impl<'arena> GlobalContext<'arena> {
         }
 
         Ok(body)
+    }
+
+    /// Whether `body` is the finalized MIR cached for exactly `instance`.
+    /// Codegen uses this guard to make falling back to shared generic MIR a
+    /// hard compiler error rather than silently emitting imprecise placement.
+    pub fn is_finalized_instance_mir(
+        self,
+        instance: Instance<'arena>,
+        body: &Body<'arena>,
+    ) -> bool {
+        self.context
+            .store
+            .instance_mir_bodies
+            .borrow()
+            .get(&instance)
+            .is_some_and(|cached| std::ptr::eq(*cached, body))
     }
 
     /// Returns the canonical, locally-cleaned MIR used for interprocedural
@@ -1846,6 +1848,9 @@ pub struct CompilerStore<'arena> {
     /// Target/profile-local MIR after concrete-instance placement and
     /// safepoint insertion. These bodies are deliberately never serialized.
     pub instance_mir_bodies: RefCell<FxHashMap<Instance<'arena>, &'arena Body<'arena>>>,
+    /// Session-local escape summaries for concrete monomorphized instances.
+    /// They are recomputed from shared MIR rather than serialized.
+    pub instance_escape_summaries: RefCell<FxHashMap<Instance<'arena>, mir::InstanceEscapeSummary>>,
     pub queued_mir_bodies: RefCell<FxHashMap<DefinitionID, Body<'arena>>>,
     pub llvm_modules: RefCell<FxHashMap<PackageIndex, String>>,
     pub module_artifacts: RefCell<FxHashMap<PackageIndex, ModuleArtifact>>,
@@ -1900,6 +1905,7 @@ impl<'arena> CompilerStore<'arena> {
             inline_mir_packages: Default::default(),
             mir_packages: Default::default(),
             instance_mir_bodies: Default::default(),
+            instance_escape_summaries: Default::default(),
             queued_mir_bodies: Default::default(),
             llvm_modules: Default::default(),
             module_artifacts: Default::default(),
@@ -2191,8 +2197,6 @@ pub struct TypeDatabase<'arena> {
     /// Fully flattened interface-set alias templates. Their synthetic Self
     /// placeholder is replaced with the bounded type at each use site.
     pub resolved_interface_aliases: FxHashMap<DefinitionID, &'arena [InterfaceReference<'arena>]>,
-    /// Escape summaries for functions (computed during MIR optimization)
-    pub def_to_escape_summary: FxHashMap<DefinitionID, EscapeSummary>,
     /// Closure capture information keyed by closure definition ID
     pub closure_captures: FxHashMap<DefinitionID, ClosureCaptures<'arena>>,
     pub empty_generics: Option<&'arena Generics>,

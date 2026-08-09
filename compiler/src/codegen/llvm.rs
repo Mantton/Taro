@@ -2892,6 +2892,17 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         instance: Instance<'gcx>,
         body: &'gcx mir::Body<'gcx>,
     ) -> CompileResult<()> {
+        if !self.gcx.is_finalized_instance_mir(instance, body) {
+            self.gcx.dcx().emit_error(
+                format!(
+                    "codegen received non-finalized MIR for `{}`",
+                    mangle_instance(self.gcx, instance)
+                ),
+                Some(self.gcx.definition_ident(instance.def_id()).span),
+            );
+            return Err(crate::error::ReportedError);
+        }
+
         // Set substitution context for monomorphization
         self.current_subst = instance.args();
 

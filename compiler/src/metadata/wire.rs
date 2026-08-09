@@ -338,7 +338,6 @@ pub struct TypeDatabaseWire {
     pub alias_table: PackageAliasTableWire,
     pub resolved_aliases: Vec<(DefIdWire, TyWire)>,
     pub resolved_interface_aliases: Vec<(DefIdWire, Vec<InterfaceReferenceWire>)>,
-    pub def_to_escape_summary: Vec<(DefIdWire, EscapeSummaryWire)>,
     pub closure_captures: Vec<(DefIdWire, ClosureCapturesWire)>,
     pub synthetic_methods: Vec<((TypeHeadWire, DefIdWire), SyntheticMethodInfoWire)>,
 }
@@ -758,17 +757,6 @@ pub struct AliasDefinitionWire {
     pub kind: AliasKindWire,
     pub span: SpanWire,
     pub extension_id: Option<DefIdWire>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EscapeSummaryWire {
-    pub params: Vec<ParamEscapeInfoWire>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParamEscapeInfoWire {
-    pub leaks_to_heap: bool,
-    pub flows_to_return: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3224,32 +3212,6 @@ pub fn alias_table_from_wire(
     }
 }
 
-pub fn escape_summary_to_wire(v: &mir::EscapeSummary) -> EscapeSummaryWire {
-    EscapeSummaryWire {
-        params: v
-            .params
-            .iter()
-            .map(|param| ParamEscapeInfoWire {
-                leaks_to_heap: param.leaks_to_heap,
-                flows_to_return: param.flows_to_return,
-            })
-            .collect(),
-    }
-}
-
-pub fn escape_summary_from_wire(v: &EscapeSummaryWire) -> mir::EscapeSummary {
-    mir::EscapeSummary {
-        params: v
-            .params
-            .iter()
-            .map(|param| mir::ParamEscapeInfo {
-                leaks_to_heap: param.leaks_to_heap,
-                flows_to_return: param.flows_to_return,
-            })
-            .collect(),
-    }
-}
-
 pub fn closure_captures_to_wire(
     v: &ClosureCaptures<'_>,
     symbols: &mut SymbolTableBuilder,
@@ -5176,11 +5138,6 @@ pub fn type_database_to_wire(
                 )
             })
             .collect(),
-        def_to_escape_summary: db
-            .def_to_escape_summary
-            .iter()
-            .map(|(def, summary)| (def_to_wire(*def), escape_summary_to_wire(summary)))
-            .collect(),
         closure_captures: db
             .closure_captures
             .iter()
@@ -5532,11 +5489,6 @@ pub fn type_database_from_wire<'a>(
                     gcx.store.arenas.global.alloc_slice_clone(&interfaces) as &'a [_],
                 )
             })
-            .collect(),
-        def_to_escape_summary: wire
-            .def_to_escape_summary
-            .iter()
-            .map(|(def, summary)| (def_from_wire(def), escape_summary_from_wire(summary)))
             .collect(),
         closure_captures: wire
             .closure_captures

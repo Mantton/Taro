@@ -43,21 +43,21 @@ pub enum MirPhase {
     Lowered,
 }
 
-/// Describes how a function parameter can escape.
+/// Escape behavior for one parameter of a concrete monomorphized instance.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ParamEscapeInfo {
-    /// Parameter leaks to heap (stored in global, escapes through called function, etc.)
-    pub leaks_to_heap: bool,
-    /// Parameter flows to the return value
-    pub flows_to_return: bool,
+pub struct ParamEscapeSummary {
+    /// The parameter's value (or something reached through it) can be retained
+    /// beyond the call.
+    pub heap_capture: bool,
+    /// Minimum dereference count by which the parameter can reach the logical
+    /// return value. `None` means it does not flow to the return.
+    pub return_deref: Option<u8>,
 }
 
-/// Escape summary for an entire function.
-/// Describes how each parameter's references escape (or don't).
+/// Escape summary for one concrete function instance.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EscapeSummary {
-    /// Escape info for each parameter (indexed by parameter position)
-    pub params: Vec<ParamEscapeInfo>,
+pub struct InstanceEscapeSummary {
+    pub params: Vec<ParamEscapeSummary>,
 }
 
 #[derive(Debug, Clone)]

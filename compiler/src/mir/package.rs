@@ -47,19 +47,9 @@ pub fn build_package<'ctx>(
         bodies.insert(id, body);
     }
 
-    // Async lowering needs source-form escape summaries, but it must itself
-    // finish package-wide before canonical MIR is published. Otherwise an
-    // earlier caller could see a source-form async body while a later caller
-    // sees the constructor that codegen actually consumes.
-    let source_functions = bodies
-        .iter()
-        .map(|(&id, body)| {
-            let body = gcx.store.arenas.mir_bodies.alloc(body.clone());
-            (id, &*body)
-        })
-        .collect();
-    optimize::escape::compute_escape_summaries(gcx, &source_functions);
-
+    // Async lowering applies a conservative source-form bridge before frame
+    // construction. Concrete constructor/poll/drop summaries are computed
+    // later from shared MIR when their instances are requested by codegen.
     let mut pending: Vec<_> = bodies.into_iter().collect();
     pending.sort_by_key(|(id, _)| *id);
     let mut canonical_bodies = FxHashMap::default();
@@ -96,11 +86,7 @@ pub fn build_package<'ctx>(
         .borrow_mut()
         .insert(gcx.package_index(), pkg);
 
-    // Recompute summaries from the same canonical constructor/poll/drop forms
-    // consumed by every global interprocedural pass.
-    optimize::escape::compute_escape_summaries(gcx, &pkg.functions);
-
-    // Phase 2: Run global passes (inlining, lowering, escape analysis, safepoints)
+    // Phase 2: Run shared global passes before instance placement/safepoints.
     // These passes need access to other function bodies
     let mut final_functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
     let pending: Vec<(DefinitionID, Body<'ctx>)> = pkg

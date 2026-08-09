@@ -17,6 +17,19 @@ pub enum RuntimeGcEffect {
     BlockingSafepoint,
 }
 
+/// How one argument may escape through a compiler-known runtime entry.
+///
+/// Runtime calls default conservatively; the explicit `NoCapture` case is
+/// reserved for entries whose contract guarantees that the pointer is only
+/// observed for the duration of the call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeParamEscapeEffect {
+    NoCapture,
+    Capture,
+    Return,
+    CaptureAndReturn,
+}
+
 impl RuntimeGcEffect {
     const fn name(self) -> &'static str {
         match self {
@@ -326,6 +339,77 @@ impl RuntimeAbiFunction {
             | F::PanicPayloadMessage => RuntimeGcEffect::NoGc,
         }
     }
+
+    /// Escape behavior for a concrete parameter of this runtime entry.
+    ///
+    /// Keeping this as an exhaustive match means adding a runtime function is
+    /// also a compile-time request to classify its arguments.
+    pub const fn param_escape_effect(self, parameter: usize) -> Option<RuntimeParamEscapeEffect> {
+        if parameter >= self.spec().inputs.len() {
+            return None;
+        }
+
+        use RuntimeAbiFunction as F;
+        use RuntimeParamEscapeEffect as E;
+        Some(match self {
+            // The created handle owns the frame. Polling and terminal handle
+            // operations only observe their arguments for the call duration.
+            F::Create => {
+                if parameter == 0 {
+                    E::CaptureAndReturn
+                } else {
+                    E::Capture
+                }
+            }
+            F::Poll | F::Destroy | F::CancelHandle | F::RunRoot => E::NoCapture,
+
+            // Executor registration retains the handle and diagnostic strings.
+            F::Spawn | F::CleanupRegister | F::TaskGroupSpawn => E::Capture,
+            F::Blocking => {
+                if parameter == 0 {
+                    E::CaptureAndReturn
+                } else {
+                    E::NoCapture
+                }
+            }
+
+            // These entries consume scalar handles/identifiers or synchronously
+            // inspect output storage without retaining its address.
+            F::FromSpawnedChecked
+            | F::SelectTasks
+            | F::TaskTimeout
+            | F::TaskCompletionStatus
+            | F::ReclaimSpawned
+            | F::CancelTask
+            | F::DetachTask
+            | F::DropTask
+            | F::WaitReadable
+            | F::WaitWritable
+            | F::Sleep
+            | F::IsTaskCancelled
+            | F::TaskGroupCreate
+            | F::TaskGroupClose
+            | F::TaskGroupCancelAll
+            | F::TaskGroupDestroy
+            | F::TaskGroupDestroyAndRethrowPanic
+            | F::TaskGroupNextStatus
+            | F::GroupNext
+            | F::TakeTaskPanicPayload => E::NoCapture,
+
+            // The returned awaitable retains the synchronization object.
+            F::ChannelWaitSend
+            | F::ChannelWaitRecv
+            | F::MutexLock
+            | F::RwLockRead
+            | F::RwLockWrite => E::CaptureAndReturn,
+
+            F::PanicPayloadMessage => E::Return,
+            F::PanicPayloadRethrow => E::Capture,
+
+            // No parameters; the bounds check above makes these unreachable.
+            F::YieldNow | F::DumpTasks => E::NoCapture,
+        })
+    }
 }
 
 const fn spec(
@@ -346,6 +430,7 @@ pub struct AdditionalRuntimeSymbol {
     pub signature: &'static str,
     pub availability: RuntimeSymbolAvailability,
     pub gc_effect: RuntimeGcEffect,
+    pub param_escape_effect: RuntimeParamEscapeEffect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -468,7 +553,11 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     ),
     additional("__rt__hash_seed0", "()->u64"),
     additional("__rt__hash_seed1", "()->u64"),
-    additional("__rt__keep_alive", "(*const u8)->void"),
+    additional_with_escape(
+        "__rt__keep_alive",
+        "(*const u8)->void",
+        RuntimeParamEscapeEffect::NoCapture,
+    ),
     additional_unix(
         "__rt__net_ip_snapshot_at",
         "(usize,usize,*mut u8,*mut u8)->i32",
@@ -564,11 +653,24 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
 ];
 
 const fn additional(symbol: &'static str, signature: &'static str) -> AdditionalRuntimeSymbol {
+    additional_with_escape(
+        symbol,
+        signature,
+        RuntimeParamEscapeEffect::CaptureAndReturn,
+    )
+}
+
+const fn additional_with_escape(
+    symbol: &'static str,
+    signature: &'static str,
+    param_escape_effect: RuntimeParamEscapeEffect,
+) -> AdditionalRuntimeSymbol {
     AdditionalRuntimeSymbol {
         symbol,
         signature,
         availability: RuntimeSymbolAvailability::AllTargets,
         gc_effect: RuntimeGcEffect::NoGc,
+        param_escape_effect,
     }
 }
 
@@ -581,6 +683,7 @@ const fn additional_safepoint(
         signature,
         availability: RuntimeSymbolAvailability::AllTargets,
         gc_effect: RuntimeGcEffect::RuntimeSafepoint,
+        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
     }
 }
 
@@ -593,6 +696,7 @@ const fn additional_blocking(
         signature,
         availability: RuntimeSymbolAvailability::AllTargets,
         gc_effect: RuntimeGcEffect::BlockingSafepoint,
+        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
     }
 }
 
@@ -602,6 +706,7 @@ const fn additional_unix(symbol: &'static str, signature: &'static str) -> Addit
         signature,
         availability: RuntimeSymbolAvailability::Unix,
         gc_effect: RuntimeGcEffect::NoGc,
+        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
     }
 }
 
@@ -614,6 +719,7 @@ const fn additional_unix_blocking(
         signature,
         availability: RuntimeSymbolAvailability::Unix,
         gc_effect: RuntimeGcEffect::BlockingSafepoint,
+        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
     }
 }
 
@@ -645,6 +751,197 @@ pub fn gc_effect_for_symbol(symbol: &str) -> Option<RuntimeGcEffect> {
                 .iter()
                 .find_map(|entry| (entry.symbol == symbol).then_some(entry.gc_effect))
         })
+}
+
+/// Return the escape contract for a parameter of a canonical runtime symbol.
+///
+/// Most runtime APIs are intentionally conservative in this first instance-
+/// aware analysis. Keeping the classification in the canonical ABI module
+/// prevents name-based exceptions from accumulating in MIR passes.
+pub fn param_escape_effect_for_symbol(
+    symbol: &str,
+    parameter: usize,
+) -> Option<RuntimeParamEscapeEffect> {
+    RuntimeAbiFunction::ALL
+        .iter()
+        .find(|function| function.spec().symbol == symbol)
+        .and_then(|function| function.param_escape_effect(parameter))
+        .or_else(|| {
+            ADDITIONAL_RUNTIME_SYMBOLS
+                .iter()
+                .find(|entry| entry.symbol == symbol)
+                .map(|entry| entry.param_escape_effect)
+        })
+}
+
+/// Escape contract for compiler-lowered intrinsics.
+///
+/// Unlike arbitrary foreign calls, intrinsics execute as part of the current
+/// operation and cannot retain arguments unless their documented lowering
+/// explicitly publishes a value. `None` deliberately rejects unknown entries
+/// so adding an intrinsic also requires reviewing its escape behavior.
+pub fn intrinsic_param_escape_effect(
+    symbol: &str,
+    parameter: usize,
+) -> Option<RuntimeParamEscapeEffect> {
+    use RuntimeParamEscapeEffect as E;
+
+    let effect = match symbol {
+        // Identity or pointer-producing operations return provenance from the
+        // first argument without retaining it.
+        "__intrinsic_black_box"
+        | "__intrinsic_array_read_unchecked"
+        | "__intrinsic_array_read_mut_unchecked"
+        | "__intrinsic_list_read_unchecked"
+        | "__intrinsic_list_read_mut_unchecked"
+        | "__intrinsic_ref_to_ptr"
+        | "__intrinsic_mut_ref_to_ptr"
+        | "__intrinsic_ptr_to_u8"
+        | "__intrinsic_ptr_to_u8_mut"
+        | "__intrinsic_ptr_add"
+        | "__intrinsic_ptr_sub"
+        | "__intrinsic_ptr_offset"
+        | "__intrinsic_ptr_byte_add"
+        | "__intrinsic_ptr_byte_sub"
+        | "__intrinsic_ptr_read"
+        | "__intrinsic_string_from_parts"
+        | "__intrinsic_string_data"
+            if parameter == 0 =>
+        {
+            E::Return
+        }
+
+        // These operations publish argument bytes into storage that may be
+        // managed or otherwise outlive the call. The destination pointer is
+        // only observed for the duration of the intrinsic.
+        "__intrinsic_array_write_unchecked" | "__intrinsic_list_write" if parameter == 2 => {
+            E::Capture
+        }
+        "__intrinsic_ptr_write" if parameter == 1 => E::Capture,
+        "__intrinsic_memcpy" | "__intrinsic_memmove" if parameter == 1 => E::Capture,
+
+        // Async constructors retain closures/state in their returned future
+        // or task. Source-async placement is additionally conservative before
+        // coroutine lowering.
+        "__intrinsic_spawn_async" | "__intrinsic_blocking" if parameter == 0 => E::CaptureAndReturn,
+        "__intrinsic_add_cleanup" => E::Capture,
+        "__intrinsic_select_tasks"
+        | "__intrinsic_task_timeout"
+        | "__intrinsic_task_result"
+        | "__intrinsic_channel_wait_send"
+        | "__intrinsic_channel_wait_recv"
+        | "__intrinsic_mutex_lock"
+        | "__intrinsic_rwlock_read"
+        | "__intrinsic_rwlock_write" => E::CaptureAndReturn,
+        "__intrinsic_task_group_spawn" if parameter == 1 => E::Capture,
+
+        // Synchronous value/scalar operations and handle-only runtime shims do
+        // not retain or return argument provenance.
+        "__intrinsic_black_box"
+        | "__intrinsic_array_read_unchecked"
+        | "__intrinsic_array_read_mut_unchecked"
+        | "__intrinsic_list_read_unchecked"
+        | "__intrinsic_list_read_mut_unchecked"
+        | "__intrinsic_ref_to_ptr"
+        | "__intrinsic_mut_ref_to_ptr"
+        | "__intrinsic_ptr_to_u8"
+        | "__intrinsic_ptr_to_u8_mut"
+        | "__intrinsic_ptr_add"
+        | "__intrinsic_ptr_sub"
+        | "__intrinsic_ptr_offset"
+        | "__intrinsic_ptr_byte_add"
+        | "__intrinsic_ptr_byte_sub"
+        | "__intrinsic_ptr_read"
+        | "__intrinsic_string_from_parts"
+        | "__intrinsic_string_data"
+        | "__intrinsic_spawn_async"
+        | "__intrinsic_blocking"
+        | "__intrinsic_task_group_spawn"
+        | "__intrinsic_array_write_unchecked"
+        | "__intrinsic_list_write"
+        | "__intrinsic_ptr_write"
+        | "__intrinsic_memcpy"
+        | "__intrinsic_memmove"
+        | "__intrinsic_memset"
+        | "__intrinsic_string_len"
+        | "__intrinsic_size_of"
+        | "__intrinsic_align_of"
+        | "__intrinsic_maybe_uninit"
+        | "__intrinsic_gc_desc"
+        | "__intrinsic_env_argc"
+        | "__intrinsic_env_argv"
+        | "__intrinsic_rune_from_u32_unchecked"
+        | "__intrinsic_cancel_task"
+        | "__intrinsic_detach_task"
+        | "__intrinsic_dump_tasks"
+        | "__intrinsic_is_task_cancelled"
+        | "__intrinsic_task_group_create"
+        | "__intrinsic_task_group_close"
+        | "__intrinsic_task_group_cancel"
+        | "__intrinsic_task_group_destroy"
+        | "__intrinsic_task_group_destroy_and_rethrow"
+        | "__intrinsic_task_group_next"
+        | "__intrinsic_wait_readable"
+        | "__intrinsic_wait_writable"
+        | "__intrinsic_sleep"
+        | "__intrinsic_panic_payload_message"
+        | "__intrinsic_panic_payload_rethrow" => E::NoCapture,
+
+        // Checked arithmetic and typed math names are a closed compiler-owned
+        // family. They operate only on scalar operands.
+        name if name.starts_with("__intrinsic_checked_") || is_typed_math_intrinsic_name(name) => {
+            E::NoCapture
+        }
+        _ => return None,
+    };
+    Some(effect)
+}
+
+/// Dereference depth for an intrinsic's `Return` effect.
+pub fn intrinsic_return_deref(symbol: &str, parameter: usize) -> Option<u8> {
+    (symbol == "__intrinsic_ptr_read" && parameter == 0)
+        .then_some(1)
+        .or(Some(0))
+}
+
+fn is_typed_math_intrinsic_name(symbol: &str) -> bool {
+    const OPERATIONS: &[&str] = &[
+        "sqrt",
+        "sin",
+        "cos",
+        "tan",
+        "asin",
+        "acos",
+        "atan",
+        "sinh",
+        "cosh",
+        "tanh",
+        "exp",
+        "exp2",
+        "log",
+        "log2",
+        "log10",
+        "fabs",
+        "floor",
+        "ceil",
+        "trunc",
+        "rint",
+        "nearbyint",
+        "round",
+        "roundeven",
+        "pow",
+        "powi",
+        "copysign",
+        "fma",
+        "minimum",
+        "maximum",
+        "minimumnum",
+        "maximumnum",
+    ];
+    OPERATIONS.iter().any(|operation| {
+        symbol == format!("__intrinsic_{operation}")
+            || symbol.starts_with(&format!("__intrinsic_{operation}_"))
+    })
 }
 
 pub fn fingerprint() -> String {
@@ -713,6 +1010,37 @@ mod tests {
             Some(RuntimeGcEffect::BlockingSafepoint)
         );
         assert_eq!(gc_effect_for_symbol("__rt__missing"), None);
+    }
+
+    #[test]
+    fn every_runtime_symbol_has_an_escape_effect() {
+        for function in RuntimeAbiFunction::ALL {
+            let spec = function.spec();
+            for parameter in 0..spec.inputs.len() {
+                assert!(
+                    param_escape_effect_for_symbol(spec.symbol, parameter).is_some(),
+                    "missing parameter {parameter} escape effect for {}",
+                    spec.symbol
+                );
+            }
+            assert_eq!(
+                function.param_escape_effect(spec.inputs.len()),
+                None,
+                "typed runtime entries must reject out-of-range parameters"
+            );
+        }
+        for entry in ADDITIONAL_RUNTIME_SYMBOLS {
+            assert_eq!(
+                param_escape_effect_for_symbol(entry.symbol, 0),
+                Some(entry.param_escape_effect),
+                "additional runtime symbol must carry its classification"
+            );
+        }
+        assert_eq!(
+            param_escape_effect_for_symbol("__rt__keep_alive", 0),
+            Some(RuntimeParamEscapeEffect::NoCapture)
+        );
+        assert_eq!(param_escape_effect_for_symbol("__rt__missing", 0), None);
     }
 
     #[test]
