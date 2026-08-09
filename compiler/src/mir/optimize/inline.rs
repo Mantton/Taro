@@ -1063,6 +1063,9 @@ fn remap_rvalue<'ctx>(
         Rvalue::Alloc { ty } => Rvalue::Alloc {
             ty: instantiate_mono_ty(gcx, *ty, gen_args),
         },
+        Rvalue::Zeroed { ty } => Rvalue::Zeroed {
+            ty: instantiate_mono_ty(gcx, *ty, gen_args),
+        },
         Rvalue::Aggregate { kind, fields } => Rvalue::Aggregate {
             kind: remap_aggregate_kind(gcx, kind, gen_args),
             fields: fields

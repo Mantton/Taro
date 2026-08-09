@@ -4324,6 +4324,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     .unwrap();
                 Some(cast)
             }
+            mir::Rvalue::Zeroed { ty } => self
+                .lower_ty(*ty)
+                .map(|llvm_ty| llvm_ty.const_zero().as_basic_value_enum()),
         };
         Ok(value)
     }

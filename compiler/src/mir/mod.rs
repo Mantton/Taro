@@ -367,6 +367,13 @@ pub enum Rvalue<'ctx> {
     Alloc {
         ty: Ty<'ctx>,
     },
+    /// The all-zero bit pattern for `ty`.
+    ///
+    /// Instance placement uses this before publishing stack storage that
+    /// replaces a zero-initialized managed allocation.
+    Zeroed {
+        ty: Ty<'ctx>,
+    },
     Aggregate {
         kind: AggregateKind<'ctx>,
         fields: IndexVec<FieldIndex, Operand<'ctx>>,
@@ -443,7 +450,10 @@ fn for_each_function_constant_in_rvalue<'ctx>(
             }
         }
         Rvalue::Repeat { operand, .. } => for_each_function_constant_in_operand(operand, visit),
-        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => {}
+        Rvalue::Ref { .. }
+        | Rvalue::Discriminant { .. }
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => {}
     }
 }
 

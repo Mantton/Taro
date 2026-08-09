@@ -210,6 +210,7 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                     element: *element,
                 },
                 Rvalue::Alloc { ty } => Rvalue::Alloc { ty: *ty },
+                Rvalue::Zeroed { ty } => Rvalue::Zeroed { ty: *ty },
             }
         };
 
@@ -352,7 +353,7 @@ fn record_rvalue_uses(
                 record_operand_use(f, block, stmt_index, uses);
             }
         }
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 

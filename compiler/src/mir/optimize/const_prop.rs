@@ -303,7 +303,7 @@ fn record_rvalue_uses(
                 record_operand_use(field, block, statement, uses, invalid);
             }
         }
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -331,7 +331,10 @@ fn rewrite_rvalue_operands<'ctx>(rvalue: &mut Rvalue<'ctx>, constants: &[Option<
                 rewrite_operand(field, constants);
             }
         }
-        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => {}
+        Rvalue::Ref { .. }
+        | Rvalue::Discriminant { .. }
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => {}
     }
 }
 

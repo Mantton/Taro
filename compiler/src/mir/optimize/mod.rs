@@ -102,6 +102,12 @@ pub fn run_global_passes<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Compile
         Box::new(propagate::CopyPropagation),
         Box::new(coalesce::TempCoalescing),
         Box::new(coalesce::RepeatFieldForwarding),
+        // Instance analysis must see semantic uses, not aggregate-lowering
+        // scaffolding that a later cleanup would discard. In particular, a
+        // dead `move` must not consume provenance before the real return or
+        // capture use is analyzed.
+        Box::new(dse::DeadStoreElimination),
+        Box::new(passes::DeadLocalElimination),
     ];
     run_passes(gcx, body, &mut passes)?;
     Ok(())

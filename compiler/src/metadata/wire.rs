@@ -1189,6 +1189,9 @@ pub enum RvalueWire {
     Alloc {
         ty: TyWire,
     },
+    Zeroed {
+        ty: TyWire,
+    },
     Aggregate {
         kind: AggregateKindWire,
         fields: Vec<OperandWire>,
@@ -3836,6 +3839,9 @@ pub fn rvalue_to_wire(v: &mir::Rvalue<'_>) -> RvalueWire {
         mir::Rvalue::Alloc { ty } => RvalueWire::Alloc {
             ty: ty_to_wire(*ty),
         },
+        mir::Rvalue::Zeroed { ty } => RvalueWire::Zeroed {
+            ty: ty_to_wire(*ty),
+        },
         mir::Rvalue::Aggregate { kind, fields } => RvalueWire::Aggregate {
             kind: aggregate_kind_to_wire(kind),
             fields: fields.iter().map(operand_to_wire).collect(),
@@ -3877,6 +3883,9 @@ pub fn rvalue_from_wire<'a>(gcx: GlobalContext<'a>, v: &RvalueWire) -> mir::Rval
             place: place_from_wire(gcx, place),
         },
         RvalueWire::Alloc { ty } => mir::Rvalue::Alloc {
+            ty: ty_from_wire(gcx, ty),
+        },
+        RvalueWire::Zeroed { ty } => mir::Rvalue::Zeroed {
             ty: ty_from_wire(gcx, ty),
         },
         RvalueWire::Aggregate { kind, fields } => {

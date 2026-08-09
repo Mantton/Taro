@@ -320,6 +320,14 @@ impl<'ctx> StructureValidator<'ctx, '_> {
                     );
                 }
             }
+            Rvalue::Zeroed { ty } => {
+                if matches!(ty.kind(), TyKind::Error | TyKind::Infer(_)) {
+                    self.error(
+                        format!("zeroed value has unresolved type {}", ty.format(self.gcx)),
+                        Some(span),
+                    );
+                }
+            }
             Rvalue::Aggregate { fields, .. } => {
                 for operand in fields {
                     self.check_operand(operand, span);
@@ -1040,6 +1048,7 @@ fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> 
         )),
         Rvalue::Discriminant { .. } => Some(gcx.types.uint),
         Rvalue::Alloc { ty } => Some(Ty::new(TyKind::Pointer(*ty, Mutability::Immutable), gcx)),
+        Rvalue::Zeroed { ty } => Some(*ty),
         Rvalue::Aggregate { kind, fields } => match kind {
             AggregateKind::Tuple => Some(Ty::new(
                 TyKind::Tuple(
@@ -1420,7 +1429,7 @@ fn check_rvalue_uses<'ctx>(
             }
         }
         Rvalue::Repeat { operand, .. } => check_operand(gcx, body, state, operand, span)?,
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
     Ok(())
 }
@@ -1621,7 +1630,10 @@ fn collect_moves_from_rvalue<'ctx>(
             }
         }
         Rvalue::Repeat { operand, .. } => collect_move_from_operand(body, operand, state),
-        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => {}
+        Rvalue::Ref { .. }
+        | Rvalue::Discriminant { .. }
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -2014,7 +2026,7 @@ fn live_use_rvalue<'ctx>(rvalue: &Rvalue<'ctx>, live: &mut FxHashSet<LocalId>) {
             }
         }
         Rvalue::Repeat { operand, .. } => live_use_operand(operand, live),
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -2079,7 +2091,10 @@ fn check_rvalue_moves_borrowed<'ctx>(
             }
             Ok(())
         }
-        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => Ok(()),
+        Rvalue::Ref { .. }
+        | Rvalue::Discriminant { .. }
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => Ok(()),
     }
 }
 

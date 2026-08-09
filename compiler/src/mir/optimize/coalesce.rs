@@ -581,7 +581,7 @@ fn record_rvalue_use_counts(rv: &Rvalue<'_>, use_counts: &mut [usize]) {
                 use_counts[place.local.index()] += 1;
             }
         }
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -696,7 +696,7 @@ fn record_rvalue_uses(
                 record_operand_use(f, block, stmt_index, use_sites, use_counts, place_used);
             }
         }
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -776,7 +776,10 @@ fn replace_rvalue_operands<'ctx>(rv: &mut Rvalue<'ctx>, replace_map: &[Option<Re
                 replace_operand(f, replace_map);
             }
         }
-        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => {}
+        Rvalue::Ref { .. }
+        | Rvalue::Discriminant { .. }
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -833,7 +836,7 @@ fn rvalue_mentions_local(rv: &Rvalue<'_>, local: LocalId) -> bool {
         Rvalue::Aggregate { fields, .. } => fields
             .iter()
             .any(|field| operand_mentions_local(field, local)),
-        Rvalue::Alloc { .. } => false,
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => false,
     }
 }
 

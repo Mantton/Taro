@@ -237,6 +237,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
                 write!(f, ")")
             }
             Rvalue::Alloc { ty } => write!(f, "alloc {}", ty.format(self.gcx)),
+            Rvalue::Zeroed { ty } => write!(f, "zeroed {}", ty.format(self.gcx)),
             Rvalue::Cast { operand, ty, kind } => {
                 self.write_operand(operand, f)?;
                 write!(f, " as {} ({:?})", ty.format(self.gcx), kind)

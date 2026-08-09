@@ -430,7 +430,28 @@ pub struct AdditionalRuntimeSymbol {
     pub signature: &'static str,
     pub availability: RuntimeSymbolAvailability,
     pub gc_effect: RuntimeGcEffect,
-    pub param_escape_effect: RuntimeParamEscapeEffect,
+    parameter_count: usize,
+    param_escape_effects: AdditionalRuntimeParamEscapeEffects,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdditionalRuntimeParamEscapeEffects {
+    Uniform(RuntimeParamEscapeEffect),
+    PerParameter(&'static [RuntimeParamEscapeEffect]),
+}
+
+impl AdditionalRuntimeSymbol {
+    fn param_escape_effect(&self, parameter: usize) -> Option<RuntimeParamEscapeEffect> {
+        if parameter >= self.parameter_count {
+            return None;
+        }
+        match self.param_escape_effects {
+            AdditionalRuntimeParamEscapeEffects::Uniform(effect) => Some(effect),
+            AdditionalRuntimeParamEscapeEffects::PerParameter(effects) => {
+                effects.get(parameter).copied()
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -478,13 +499,34 @@ pub const ADDITIONAL_RUNTIME_SYMBOLS: &[AdditionalRuntimeSymbol] = &[
     additional("__rt__bench_set_bytes", "(usize)->void"),
     additional("__rt__black_box", "(*mut u8,usize)->void"),
     additional("__rt__install_stack_guard", "()->void"),
-    additional_safepoint("__gc__alloc", "(usize,*const gc_desc)->*mut u8"),
+    additional_safepoint_with_param_escape(
+        "__gc__alloc",
+        "(usize,*const gc_desc)->*mut u8",
+        &[
+            RuntimeParamEscapeEffect::NoCapture,
+            RuntimeParamEscapeEffect::Capture,
+        ],
+    ),
     additional_safepoint("__gc__collect", "()->void"),
-    additional_safepoint(
+    additional_safepoint_with_param_escape(
         "__gc__grow_buf",
         "(*mut u8,*const gc_desc,usize,usize)->*mut u8",
+        &[
+            RuntimeParamEscapeEffect::NoCapture,
+            RuntimeParamEscapeEffect::Capture,
+            RuntimeParamEscapeEffect::NoCapture,
+            RuntimeParamEscapeEffect::NoCapture,
+        ],
     ),
-    additional_safepoint("__gc__makebuf", "(*const gc_desc,usize,usize)->*mut u8"),
+    additional_safepoint_with_param_escape(
+        "__gc__makebuf",
+        "(*const gc_desc,usize,usize)->*mut u8",
+        &[
+            RuntimeParamEscapeEffect::Capture,
+            RuntimeParamEscapeEffect::NoCapture,
+            RuntimeParamEscapeEffect::NoCapture,
+        ],
+    ),
     additional_safepoint("__gc__poll", "()->void"),
     additional("__gc__poll_flags", "atomic u8"),
     additional("__gc__register_static", "(*const u8,*const gc_desc)->void"),
@@ -670,7 +712,8 @@ const fn additional_with_escape(
         signature,
         availability: RuntimeSymbolAvailability::AllTargets,
         gc_effect: RuntimeGcEffect::NoGc,
-        param_escape_effect,
+        parameter_count: runtime_signature_parameter_count(signature),
+        param_escape_effects: AdditionalRuntimeParamEscapeEffects::Uniform(param_escape_effect),
     }
 }
 
@@ -683,7 +726,27 @@ const fn additional_safepoint(
         signature,
         availability: RuntimeSymbolAvailability::AllTargets,
         gc_effect: RuntimeGcEffect::RuntimeSafepoint,
-        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
+        parameter_count: runtime_signature_parameter_count(signature),
+        param_escape_effects: AdditionalRuntimeParamEscapeEffects::Uniform(
+            RuntimeParamEscapeEffect::CaptureAndReturn,
+        ),
+    }
+}
+
+const fn additional_safepoint_with_param_escape(
+    symbol: &'static str,
+    signature: &'static str,
+    param_escape_effects: &'static [RuntimeParamEscapeEffect],
+) -> AdditionalRuntimeSymbol {
+    AdditionalRuntimeSymbol {
+        symbol,
+        signature,
+        availability: RuntimeSymbolAvailability::AllTargets,
+        gc_effect: RuntimeGcEffect::RuntimeSafepoint,
+        parameter_count: runtime_signature_parameter_count(signature),
+        param_escape_effects: AdditionalRuntimeParamEscapeEffects::PerParameter(
+            param_escape_effects,
+        ),
     }
 }
 
@@ -696,7 +759,10 @@ const fn additional_blocking(
         signature,
         availability: RuntimeSymbolAvailability::AllTargets,
         gc_effect: RuntimeGcEffect::BlockingSafepoint,
-        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
+        parameter_count: runtime_signature_parameter_count(signature),
+        param_escape_effects: AdditionalRuntimeParamEscapeEffects::Uniform(
+            RuntimeParamEscapeEffect::CaptureAndReturn,
+        ),
     }
 }
 
@@ -706,7 +772,10 @@ const fn additional_unix(symbol: &'static str, signature: &'static str) -> Addit
         signature,
         availability: RuntimeSymbolAvailability::Unix,
         gc_effect: RuntimeGcEffect::NoGc,
-        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
+        parameter_count: runtime_signature_parameter_count(signature),
+        param_escape_effects: AdditionalRuntimeParamEscapeEffects::Uniform(
+            RuntimeParamEscapeEffect::CaptureAndReturn,
+        ),
     }
 }
 
@@ -719,8 +788,40 @@ const fn additional_unix_blocking(
         signature,
         availability: RuntimeSymbolAvailability::Unix,
         gc_effect: RuntimeGcEffect::BlockingSafepoint,
-        param_escape_effect: RuntimeParamEscapeEffect::CaptureAndReturn,
+        parameter_count: runtime_signature_parameter_count(signature),
+        param_escape_effects: AdditionalRuntimeParamEscapeEffects::Uniform(
+            RuntimeParamEscapeEffect::CaptureAndReturn,
+        ),
     }
+}
+
+const fn runtime_signature_parameter_count(signature: &str) -> usize {
+    let bytes = signature.as_bytes();
+    if bytes.is_empty() || bytes[0] != b'(' {
+        return 0;
+    }
+
+    let mut index = 1;
+    let mut nested = 0usize;
+    let mut count = 0usize;
+    let mut has_parameter = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' => {
+                nested += 1;
+                has_parameter = true;
+            }
+            b')' if nested == 0 => {
+                return if has_parameter { count + 1 } else { 0 };
+            }
+            b')' => nested -= 1,
+            b',' if nested == 0 => count += 1,
+            byte if !byte.is_ascii_whitespace() => has_parameter = true,
+            _ => {}
+        }
+        index += 1;
+    }
+    0
 }
 
 pub fn required_symbols() -> impl Iterator<Item = &'static str> {
@@ -770,7 +871,7 @@ pub fn param_escape_effect_for_symbol(
             ADDITIONAL_RUNTIME_SYMBOLS
                 .iter()
                 .find(|entry| entry.symbol == symbol)
-                .map(|entry| entry.param_escape_effect)
+                .and_then(|entry| entry.param_escape_effect(parameter))
         })
 }
 
@@ -811,14 +912,18 @@ pub fn intrinsic_param_escape_effect(
             E::Return
         }
 
-        // These operations publish argument bytes into storage that may be
+        // Typed writes publish the value argument into storage that may be
         // managed or otherwise outlive the call. The destination pointer is
         // only observed for the duration of the intrinsic.
         "__intrinsic_array_write_unchecked" | "__intrinsic_list_write" if parameter == 2 => {
             E::Capture
         }
         "__intrinsic_ptr_write" if parameter == 1 => E::Capture,
-        "__intrinsic_memcpy" | "__intrinsic_memmove" if parameter == 1 => E::Capture,
+
+        // Raw memory operations synchronously copy bytes; they do not retain
+        // either pointer value. Typed collection writes are responsible for
+        // establishing any element escape before a buffer is copied or grown.
+        "__intrinsic_memcpy" | "__intrinsic_memmove" => E::NoCapture,
 
         // Async constructors retain closures/state in their returned future
         // or task. Source-async placement is additionally conservative before
@@ -860,8 +965,6 @@ pub fn intrinsic_param_escape_effect(
         | "__intrinsic_array_write_unchecked"
         | "__intrinsic_list_write"
         | "__intrinsic_ptr_write"
-        | "__intrinsic_memcpy"
-        | "__intrinsic_memmove"
         | "__intrinsic_memset"
         | "__intrinsic_string_len"
         | "__intrinsic_size_of"
@@ -1030,17 +1133,61 @@ mod tests {
             );
         }
         for entry in ADDITIONAL_RUNTIME_SYMBOLS {
+            for parameter in 0..entry.parameter_count {
+                assert!(
+                    param_escape_effect_for_symbol(entry.symbol, parameter).is_some(),
+                    "missing parameter {parameter} escape effect for {}",
+                    entry.symbol
+                );
+            }
             assert_eq!(
-                param_escape_effect_for_symbol(entry.symbol, 0),
-                Some(entry.param_escape_effect),
-                "additional runtime symbol must carry its classification"
+                param_escape_effect_for_symbol(entry.symbol, entry.parameter_count),
+                None,
+                "additional runtime entries must reject out-of-range parameters"
             );
         }
         assert_eq!(
             param_escape_effect_for_symbol("__rt__keep_alive", 0),
             Some(RuntimeParamEscapeEffect::NoCapture)
         );
+        assert_eq!(
+            param_escape_effect_for_symbol("__gc__grow_buf", 0),
+            Some(RuntimeParamEscapeEffect::NoCapture)
+        );
+        assert_eq!(
+            param_escape_effect_for_symbol("__gc__grow_buf", 1),
+            Some(RuntimeParamEscapeEffect::Capture)
+        );
         assert_eq!(param_escape_effect_for_symbol("__rt__missing", 0), None);
+    }
+
+    #[test]
+    fn intrinsic_escape_effects_distinguish_aliases_stores_and_scalars() {
+        assert_eq!(
+            intrinsic_param_escape_effect("__intrinsic_ptr_add", 0),
+            Some(RuntimeParamEscapeEffect::Return)
+        );
+        assert_eq!(
+            intrinsic_param_escape_effect("__intrinsic_ptr_add", 1),
+            Some(RuntimeParamEscapeEffect::NoCapture)
+        );
+        assert_eq!(
+            intrinsic_param_escape_effect("__intrinsic_ptr_write", 1),
+            Some(RuntimeParamEscapeEffect::Capture)
+        );
+        assert_eq!(
+            intrinsic_param_escape_effect("__intrinsic_memcpy", 1),
+            Some(RuntimeParamEscapeEffect::NoCapture)
+        );
+        assert_eq!(
+            intrinsic_param_escape_effect("__intrinsic_checked_add", 0),
+            Some(RuntimeParamEscapeEffect::NoCapture)
+        );
+        assert_eq!(intrinsic_return_deref("__intrinsic_ptr_read", 0), Some(1));
+        assert_eq!(
+            intrinsic_param_escape_effect("__intrinsic_not_registered", 0),
+            None
+        );
     }
 
     #[test]

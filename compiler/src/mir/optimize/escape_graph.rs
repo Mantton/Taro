@@ -20,7 +20,9 @@ use crate::{
         param_escape_effect_for_symbol,
     },
     sema::{
-        models::{GenericArgument, GenericArguments, Ty, TyKind},
+        models::{
+            AdtKind, CaptureKind, EnumVariantKind, GenericArgument, GenericArguments, Ty, TyKind,
+        },
         tycheck::utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
     },
     specialize::{Instance, InstanceKind, resolve_instance},
@@ -62,7 +64,12 @@ pub fn apply_instance_placement<'ctx>(
 
     // These are temporarily delegated to the established rewrites. The graph
     // owns both decisions; the helpers merely materialize them.
-    allocation_rewrite::promote_allocation_sites(gcx, body, &placement.escaping_alloc_sites)?;
+    allocation_rewrite::promote_allocation_sites(
+        gcx,
+        body,
+        &placement.escaping_alloc_sites,
+        &placement.allocation_keepalive_blocks,
+    )?;
     heapify_rewrite::apply_heapified_locals(gcx, body)?;
     Ok(())
 }
@@ -90,6 +97,7 @@ pub(crate) struct AllocationSite {
 struct EscapePlacement {
     heap_locals: FxHashSet<LocalId>,
     escaping_alloc_sites: FxHashSet<AllocationSite>,
+    allocation_keepalive_blocks: FxHashMap<AllocationSite, FxHashSet<BasicBlockId>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +131,7 @@ struct EscapeGraph {
     terminator_values: FxHashMap<BasicBlockId, usize>,
     allocation_nodes: FxHashMap<AllocationSite, usize>,
     overlapping_allocations: FxHashSet<AllocationSite>,
+    allocation_live_blocks: FxHashMap<AllocationSite, FxHashSet<BasicBlockId>>,
     saturated: bool,
 }
 
@@ -158,6 +167,7 @@ impl EscapeGraph {
             terminator_values: FxHashMap::default(),
             allocation_nodes: FxHashMap::default(),
             overlapping_allocations: FxHashSet::default(),
+            allocation_live_blocks: FxHashMap::default(),
             saturated: false,
         };
         graph.heap = graph.push_node(NodeKind::Heap);
@@ -207,6 +217,7 @@ impl EscapeGraph {
         let (in_states, reachable) = graph.compute_flow_states(body, entry_state);
         graph.add_flow_edges(gcx, body, mode, &in_states, &reachable)?;
         graph.overlapping_allocations = graph.find_overlapping_allocations(body, &in_states);
+        graph.allocation_live_blocks = graph.find_allocation_live_blocks(body, &in_states);
         Ok(graph)
     }
 
@@ -274,26 +285,30 @@ impl EscapeGraph {
         }
     }
 
-    fn add_rvalue_edges(
+    fn add_rvalue_edges<'a, 'ctx>(
         &mut self,
+        gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
+        mode: AnalysisMode<'a, 'ctx>,
         destination: usize,
-        rvalue: &Rvalue<'_>,
+        rvalue: &Rvalue<'ctx>,
         state: &FlowState,
         allocation: Option<usize>,
     ) {
         match rvalue {
-            Rvalue::Use(operand)
-            | Rvalue::UnaryOp { operand, .. }
-            | Rvalue::Cast { operand, .. }
-            | Rvalue::Repeat { operand, .. } => {
-                self.add_operand_edge(destination, operand, state, 0);
+            Rvalue::Use(operand) | Rvalue::Repeat { operand, .. } => {
+                if operand_may_carry_provenance(gcx, body, operand, mode) {
+                    self.add_operand_edge(destination, operand, state, 0);
+                }
             }
-            Rvalue::BinaryOp { lhs, rhs, .. } => {
-                self.add_operand_edge(destination, lhs, state, 0);
-                self.add_operand_edge(destination, rhs, state, 0);
-            }
+            // Pointer casts preserve provenance even when their source is an
+            // integer-shaped raw representation.
+            Rvalue::Cast { operand, .. } => self.add_operand_edge(destination, operand, state, 0),
             Rvalue::Ref { place, .. } => self.add_place_edge(destination, place, state, -1),
-            Rvalue::Discriminant { .. } => {}
+            Rvalue::UnaryOp { .. }
+            | Rvalue::BinaryOp { .. }
+            | Rvalue::Discriminant { .. }
+            | Rvalue::Zeroed { .. } => {}
             Rvalue::Alloc { .. } => {
                 if let Some(allocation) = allocation {
                     self.add_edge(destination, allocation, -1);
@@ -301,7 +316,9 @@ impl EscapeGraph {
             }
             Rvalue::Aggregate { fields, .. } => {
                 for field in fields {
-                    self.add_operand_edge(destination, field, state, 0);
+                    if operand_may_carry_provenance(gcx, body, field, mode) {
+                        self.add_operand_edge(destination, field, state, 0);
+                    }
                 }
             }
         }
@@ -310,10 +327,10 @@ impl EscapeGraph {
     fn add_call_edges<'a, 'ctx>(
         &mut self,
         gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
         function: &Operand<'ctx>,
         arguments: &[Operand<'ctx>],
         destination_value: Option<usize>,
-        destination_carries_provenance: bool,
         state: &FlowState,
         mode: AnalysisMode<'a, 'ctx>,
     ) -> CompileResult<()> {
@@ -344,10 +361,11 @@ impl EscapeGraph {
                     .unwrap_or_else(capture_and_return),
             };
 
-            if effect.heap_capture {
+            let carries_provenance = operand_may_carry_provenance(gcx, body, argument, mode);
+            if effect.heap_capture && carries_provenance {
                 self.add_operand_edge(self.heap, argument, state, 0);
             }
-            if destination_carries_provenance && let Some(deref) = effect.return_deref {
+            if carries_provenance && let Some(deref) = effect.return_deref {
                 self.add_operand_edge(destination, argument, state, i16::from(deref));
             }
         }
@@ -536,9 +554,7 @@ impl EscapeGraph {
                         .allocation_nodes
                         .get(&AllocationSite { block, statement })
                         .copied();
-                    if rvalue_carries_provenance(gcx, body, destination, rvalue, mode) {
-                        self.add_rvalue_edges(sink, rvalue, &state, allocation);
-                    }
+                    self.add_rvalue_edges(gcx, body, mode, sink, rvalue, &state, allocation);
                     if let Some(&defined) = self.statement_values.get(&(block, statement)) {
                         self.add_edge(self.storage(destination.local), defined, 1);
                     }
@@ -550,33 +566,34 @@ impl EscapeGraph {
                 continue;
             };
             match &terminator.kind {
-                TerminatorKind::Call {
-                    func,
-                    args,
-                    destination,
-                    ..
-                } => self.add_call_edges(
+                TerminatorKind::Call { func, args, .. } => self.add_call_edges(
                     gcx,
+                    body,
                     func,
                     args,
                     self.terminator_values.get(&block).copied(),
-                    type_may_carry_provenance(concrete_place_ty(gcx, body, destination, mode)),
                     &state,
                     mode,
                 )?,
                 TerminatorKind::Yield { value, .. } => {
-                    self.add_operand_edge(self.heap, value, &state, 0);
+                    if operand_may_carry_provenance(gcx, body, value, mode) {
+                        self.add_operand_edge(self.heap, value, &state, 0);
+                    }
                     if let Some(liveness) = &async_liveness {
                         for local in liveness.live_after_terminator(block) {
-                            for &source in &state[local.index()] {
-                                self.add_edge(self.heap, source, 0);
+                            if local_may_carry_provenance(gcx, body, *local, mode) {
+                                for &source in &state[local.index()] {
+                                    self.add_edge(self.heap, source, 0);
+                                }
                             }
                         }
                     }
                 }
                 TerminatorKind::Return => {
-                    for &source in &state[body.return_local.index()] {
-                        self.add_edge(self.returned, source, 0);
+                    if local_may_carry_provenance(gcx, body, body.return_local, mode) {
+                        for &source in &state[body.return_local.index()] {
+                            self.add_edge(self.returned, source, 0);
+                        }
                     }
                 }
                 TerminatorKind::UnresolvedGoto => self.saturated = true,
@@ -631,6 +648,83 @@ impl EscapeGraph {
             }
         }
         overlapping
+    }
+
+    /// Identify the blocks in which an alias of each allocation is live.
+    ///
+    /// Stack-promoted storage with GC-bearing fields needs a typed companion
+    /// root only while some raw/reference alias can still reach it. Recording
+    /// that region on the pre-rewrite graph avoids extending every promoted
+    /// object to function exit while still covering calls and polls inserted
+    /// later in instance finalization.
+    fn find_allocation_live_blocks(
+        &self,
+        body: &Body<'_>,
+        in_states: &IndexVec<BasicBlockId, FlowState>,
+    ) -> FxHashMap<AllocationSite, FxHashSet<BasicBlockId>> {
+        let liveness = crate::mir::analysis::liveness::compute_liveness(body);
+        let mut reachable_cache: FxHashMap<usize, Vec<AllocationSite>> = FxHashMap::default();
+        let mut blocks: FxHashMap<AllocationSite, FxHashSet<BasicBlockId>> = FxHashMap::default();
+
+        for (block, data) in body.basic_blocks.iter_enumerated() {
+            let mut state = in_states[block].clone();
+            for (statement, value) in data.statements.iter().enumerate() {
+                self.record_live_allocation_blocks(
+                    block,
+                    liveness.live_before_statement(block, statement),
+                    &state,
+                    &mut reachable_cache,
+                    &mut blocks,
+                );
+                self.transfer_statement_state(block, statement, &value.kind, &mut state);
+            }
+            self.record_live_allocation_blocks(
+                block,
+                liveness.live_before_terminator(block),
+                &state,
+                &mut reachable_cache,
+                &mut blocks,
+            );
+        }
+        blocks
+    }
+
+    fn record_live_allocation_blocks(
+        &self,
+        block: BasicBlockId,
+        live: &FxHashSet<LocalId>,
+        state: &FlowState,
+        reachable_cache: &mut FxHashMap<usize, Vec<AllocationSite>>,
+        blocks: &mut FxHashMap<AllocationSite, FxHashSet<BasicBlockId>>,
+    ) {
+        for local in live {
+            for &source in &state[local.index()] {
+                let sites = reachable_cache
+                    .entry(source)
+                    .or_insert_with(|| self.reachable_allocations(source));
+                for &site in sites.iter() {
+                    blocks.entry(site).or_default().insert(block);
+                }
+            }
+        }
+    }
+
+    fn reachable_allocations(&self, start: usize) -> Vec<AllocationSite> {
+        let mut seen = FxHashSet::default();
+        let mut pending = vec![start];
+        let mut allocations = FxHashSet::default();
+        while let Some(node) = pending.pop() {
+            if !seen.insert(node) {
+                continue;
+            }
+            if let NodeKind::Allocation(site) = self.nodes[node] {
+                allocations.insert(site);
+            }
+            pending.extend(self.edges[node].iter().map(|edge| edge.target));
+        }
+        let mut allocations: Vec<_> = allocations.into_iter().collect();
+        allocations.sort_by_key(|site| (site.block.index(), site.statement));
+        allocations
     }
 
     fn node_reaches(&self, start: usize, target: usize) -> bool {
@@ -742,6 +836,9 @@ impl EscapeGraph {
         placement
             .escaping_alloc_sites
             .extend(self.overlapping_allocations);
+        self.allocation_live_blocks
+            .retain(|site, _| !placement.escaping_alloc_sites.contains(site));
+        placement.allocation_keepalive_blocks = self.allocation_live_blocks;
         placement
     }
 }
@@ -750,24 +847,35 @@ fn empty_flow_state(local_count: usize) -> FlowState {
     vec![FxHashSet::default(); local_count]
 }
 
-fn rvalue_carries_provenance<'a, 'ctx>(
+fn operand_may_carry_provenance<'a, 'ctx>(
     gcx: Gcx<'ctx>,
     body: &Body<'ctx>,
-    destination: &Place<'ctx>,
-    rvalue: &Rvalue<'ctx>,
+    operand: &Operand<'ctx>,
     mode: AnalysisMode<'a, 'ctx>,
 ) -> bool {
-    match rvalue {
-        // Pointer/numeric casts intentionally preserve raw-pointer provenance.
-        Rvalue::Cast { .. } | Rvalue::Ref { .. } | Rvalue::Alloc { .. } => true,
-        Rvalue::Use(_) | Rvalue::Aggregate { .. } | Rvalue::Repeat { .. } => {
-            type_may_carry_provenance(concrete_place_ty(gcx, body, destination, mode))
+    match operand {
+        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+            type_may_carry_provenance(gcx, concrete_place_ty(gcx, body, place, mode))
         }
-        // MIR arithmetic cannot produce a language pointer. Cutting these
-        // edges is what prevents scalar mutation through `&mut uint64` from
-        // looking like retention of the reference itself.
-        Rvalue::UnaryOp { .. } | Rvalue::BinaryOp { .. } | Rvalue::Discriminant { .. } => false,
+        Operand::Constant(_) => false,
     }
+}
+
+fn local_may_carry_provenance<'a, 'ctx>(
+    gcx: Gcx<'ctx>,
+    body: &Body<'ctx>,
+    local: LocalId,
+    mode: AnalysisMode<'a, 'ctx>,
+) -> bool {
+    let ty = match mode {
+        AnalysisMode::Instance { caller, .. } => {
+            instantiate_ty_with_args(gcx, body.locals[local].ty, caller.args())
+        }
+        AnalysisMode::AsyncBridge => body.locals[local].ty,
+        #[cfg(test)]
+        AnalysisMode::FixedEffects { .. } => body.locals[local].ty,
+    };
+    type_may_carry_provenance(gcx, ty)
 }
 
 fn concrete_place_ty<'a, 'ctx>(
@@ -779,13 +887,8 @@ fn concrete_place_ty<'a, 'ctx>(
     let mut ty = body.locals[place.local].ty;
     for projection in &place.projection {
         match projection {
-            PlaceElem::Deref => {
-                ty = ty.dereference().unwrap_or_else(|| Ty::error(gcx));
-            }
+            PlaceElem::Deref => ty = ty.dereference().unwrap_or_else(|| Ty::error(gcx)),
             PlaceElem::Field(_, field_ty) => ty = *field_ty,
-            // A following field projection carries the payload type. Without
-            // one, retaining the enum type is the conservative whole-local
-            // answer required by this milestone.
             PlaceElem::VariantDowncast { .. } => {}
         }
     }
@@ -797,29 +900,84 @@ fn concrete_place_ty<'a, 'ctx>(
     }
 }
 
-fn type_may_carry_provenance(ty: Ty<'_>) -> bool {
-    match ty.kind() {
-        TyKind::Bool
-        | TyKind::Rune
-        | TyKind::Int(_)
-        | TyKind::UInt(_)
-        | TyKind::Float(_)
-        | TyKind::FnPointer { .. }
-        | TyKind::Never => false,
-        TyKind::Array { element, .. } => type_may_carry_provenance(element),
-        TyKind::Tuple(elements) => elements.iter().copied().any(type_may_carry_provenance),
-        TyKind::String
-        | TyKind::Adt(..)
-        | TyKind::Pointer(..)
-        | TyKind::Reference(..)
-        | TyKind::BoxedExistential { .. }
-        | TyKind::Alias { .. }
-        | TyKind::Infer(_)
-        | TyKind::Parameter(_)
-        | TyKind::Closure { .. }
-        | TyKind::Opaque(_)
-        | TyKind::Error => true,
+fn type_may_carry_provenance<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> bool {
+    fn visit<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>, visiting: &mut FxHashSet<Ty<'ctx>>) -> bool {
+        if !visiting.insert(ty) {
+            return true;
+        }
+        let carries = match ty.kind() {
+            TyKind::Bool
+            | TyKind::Rune
+            | TyKind::Int(_)
+            | TyKind::UInt(_)
+            | TyKind::Float(_)
+            | TyKind::FnPointer { .. }
+            | TyKind::Never => false,
+            TyKind::String
+            | TyKind::Pointer(..)
+            | TyKind::Reference(..)
+            | TyKind::BoxedExistential { .. } => true,
+            TyKind::Array { element, .. } => visit(gcx, element, visiting),
+            TyKind::Tuple(elements) => elements
+                .iter()
+                .copied()
+                .any(|element| visit(gcx, element, visiting)),
+            TyKind::Adt(definition, arguments) => match definition.kind {
+                AdtKind::Struct => {
+                    gcx.get_struct_definition(definition.id)
+                        .fields
+                        .iter()
+                        .any(|field| {
+                            visit(
+                                gcx,
+                                instantiate_ty_with_args(gcx, field.ty, arguments),
+                                visiting,
+                            )
+                        })
+                }
+                AdtKind::Enum => {
+                    gcx.get_enum_definition(definition.id)
+                        .variants
+                        .iter()
+                        .any(|variant| match variant.kind {
+                            EnumVariantKind::Unit => false,
+                            EnumVariantKind::Tuple(fields) => fields.iter().any(|field| {
+                                visit(
+                                    gcx,
+                                    instantiate_ty_with_args(gcx, field.ty, arguments),
+                                    visiting,
+                                )
+                            }),
+                        })
+                }
+            },
+            TyKind::Closure {
+                closure_def_id,
+                captured_generics,
+                ..
+            } => gcx
+                .get_closure_captures(closure_def_id)
+                .is_none_or(|captures| {
+                    captures.captures.iter().any(|capture| {
+                        matches!(capture.capture_kind, CaptureKind::ByRef { .. })
+                            || visit(
+                                gcx,
+                                instantiate_ty_with_args(gcx, capture.ty, captured_generics),
+                                visiting,
+                            )
+                    })
+                }),
+            TyKind::Alias { .. }
+            | TyKind::Infer(_)
+            | TyKind::Parameter(_)
+            | TyKind::Opaque(_)
+            | TyKind::Error => true,
+        };
+        visiting.remove(&ty);
+        carries
     }
+
+    visit(gcx, ty, &mut FxHashSet::default())
 }
 
 fn place_has_deref(place: &Place<'_>) -> bool {
@@ -873,7 +1031,10 @@ fn kill_moved_rvalue(rvalue: &Rvalue<'_>, state: &mut FlowState) {
                 kill_moved_operand(field, state);
             }
         }
-        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => {}
+        Rvalue::Ref { .. }
+        | Rvalue::Discriminant { .. }
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -1253,7 +1414,7 @@ fn instance_sort_key<'ctx>(gcx: GlobalContext<'ctx>, instance: Instance<'ctx>) -
 mod allocation_rewrite {
     //! Materialization of allocation-site placement selected by `escape_graph`.
 
-    use super::AllocationSite;
+    use super::{AllocationSite, type_may_carry_provenance};
     use crate::{
         compile::context::Gcx,
         error::CompileResult,
@@ -1273,6 +1434,7 @@ mod allocation_rewrite {
         gcx: Gcx<'ctx>,
         body: &mut Body<'ctx>,
         escaping: &FxHashSet<AllocationSite>,
+        keepalive_blocks: &FxHashMap<AllocationSite, FxHashSet<crate::mir::BasicBlockId>>,
     ) -> CompileResult<()> {
         let mut promoted = FxHashMap::default();
         for (block, data) in body.basic_blocks.iter_enumerated() {
@@ -1318,9 +1480,51 @@ mod allocation_rewrite {
             }
         }
 
+        let mut promoted_sites: Vec<_> = promoted.iter().collect();
+        promoted_sites.sort_by_key(|(site, _)| (site.block.index(), site.statement));
+        let reference_initializers: Vec<_> = promoted_sites
+            .iter()
+            .map(|(_, (_, reference, _, _))| Statement {
+                kind: StatementKind::Assign(
+                    Place::from_local(*reference),
+                    Rvalue::Zeroed {
+                        ty: body.locals[*reference].ty,
+                    },
+                ),
+                span: body.locals[*reference].span,
+            })
+            .collect();
+        let mut block_keepalives: FxHashMap<_, Vec<_>> = FxHashMap::default();
+        for (site, (_, reference, promoted_ty, _)) in &promoted_sites {
+            if !type_may_carry_provenance(gcx, *promoted_ty) {
+                continue;
+            }
+            let mut blocks: Vec<_> = keepalive_blocks
+                .get(site)
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect();
+            blocks.sort_by_key(|block| block.index());
+            for block in blocks {
+                block_keepalives
+                    .entry(block)
+                    .or_default()
+                    .push((*reference, body.locals[*reference].span));
+            }
+        }
+
         for (block, data) in body.basic_blocks.iter_mut_enumerated() {
             let old = std::mem::take(&mut data.statements);
-            let mut rewritten = Vec::with_capacity(old.len() + promoted.len());
+            let mut rewritten = Vec::with_capacity(
+                old.len()
+                    + promoted.len()
+                    + block_keepalives.get(&block).map_or(0, Vec::len)
+                    + usize::from(block == body.start_block) * reference_initializers.len(),
+            );
+            if block == body.start_block {
+                rewritten.extend(reference_initializers.iter().cloned());
+            }
             for (statement, value) in old.into_iter().enumerate() {
                 let site = AllocationSite { block, statement };
                 let Statement { kind, span } = value;
@@ -1329,6 +1533,13 @@ mod allocation_rewrite {
                         StatementKind::Assign(destination, Rvalue::Alloc { ty }),
                         Some((stack_object, stack_reference, promoted_ty, destination_ty)),
                     ) if ty == promoted_ty => {
+                        rewritten.push(Statement {
+                            kind: StatementKind::Assign(
+                                Place::from_local(stack_object),
+                                Rvalue::Zeroed { ty: promoted_ty },
+                            ),
+                            span,
+                        });
                         rewritten.push(Statement {
                             kind: StatementKind::Assign(
                                 Place::from_local(stack_reference),
@@ -1352,6 +1563,16 @@ mod allocation_rewrite {
                         });
                     }
                     (kind, _) => rewritten.push(Statement { kind, span }),
+                }
+            }
+            if let Some(references) = block_keepalives.get(&block) {
+                for (reference, span) in references {
+                    rewritten.push(Statement {
+                        kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(
+                            *reference,
+                        ))),
+                        span: *span,
+                    });
                 }
             }
             data.statements = rewritten;
@@ -1866,7 +2087,7 @@ mod heapify_rewrite {
             Rvalue::Repeat { operand, .. } => {
                 rewrite_operand(operand, heapified, param_replacements);
             }
-            Rvalue::Alloc { .. } => {}
+            Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
         }
     }
 
@@ -1934,5 +2155,1392 @@ mod heapify_rewrite {
             return;
         }
         place.projection.insert(0, PlaceElem::Deref);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        hir::Mutability,
+        mir::{
+            AggregateKind, BasicBlockData, CallUnwindAction, CastKind, Constant, ConstantKind,
+            LocalDecl, LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue, Statement,
+            StatementKind, Terminator, TerminatorKind,
+            test_support::{minimal_body, push_temp, with_test_gcx},
+        },
+        sema::models::{GenericArguments, Ty, TyKind},
+        thir::FieldIndex,
+    };
+    use index_vec::IndexVec;
+
+    fn push_parameter<'ctx>(body: &mut Body<'ctx>, ty: Ty<'ctx>) -> LocalId {
+        let span = body.locals[body.return_local].span;
+        body.escape_locals.push(false);
+        body.locals.push(LocalDecl {
+            ty,
+            kind: LocalKind::Param,
+            mutable: false,
+            name: None,
+            span,
+        })
+    }
+
+    fn push_user<'ctx>(body: &mut Body<'ctx>, ty: Ty<'ctx>) -> LocalId {
+        let span = body.locals[body.return_local].span;
+        body.escape_locals.push(false);
+        body.locals.push(LocalDecl {
+            ty,
+            kind: LocalKind::User,
+            mutable: true,
+            name: None,
+            span,
+        })
+    }
+
+    fn reference_ty<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {
+        Ty::new(TyKind::Reference(ty, Mutability::Immutable), gcx)
+    }
+
+    fn pointer_ty<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {
+        Ty::new(TyKind::Pointer(ty, Mutability::Immutable), gcx)
+    }
+
+    fn tuple_ty<'ctx>(gcx: Gcx<'ctx>, fields: Vec<Ty<'ctx>>) -> Ty<'ctx> {
+        Ty::new(
+            TyKind::Tuple(gcx.store.interners.intern_ty_list(fields)),
+            gcx,
+        )
+    }
+
+    fn unit_operand(gcx: Gcx<'_>) -> Operand<'_> {
+        Operand::Constant(Constant {
+            ty: gcx.types.void,
+            value: ConstantKind::Unit,
+        })
+    }
+
+    fn bool_operand(gcx: Gcx<'_>, value: bool) -> Operand<'_> {
+        Operand::Constant(Constant {
+            ty: gcx.types.bool,
+            value: ConstantKind::Bool(value),
+        })
+    }
+
+    fn return_block(body: &mut Body<'_>) -> BasicBlockId {
+        let span = body.locals[body.return_local].span;
+        body.basic_blocks.push(BasicBlockData {
+            note: Some("return".into()),
+            statements: Vec::new(),
+            terminator: Some(Terminator {
+                kind: TerminatorKind::Return,
+                span,
+            }),
+        })
+    }
+
+    fn placement_with_effects<'ctx>(
+        gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
+        params: &[ParamEscapeSummary],
+    ) -> EscapePlacement {
+        EscapeGraph::build(gcx, body, AnalysisMode::FixedEffects { params })
+            .unwrap_or_else(|_| panic!("escape graph"))
+            .placement()
+    }
+
+    fn summary_with_effects<'ctx>(
+        gcx: Gcx<'ctx>,
+        body: &Body<'ctx>,
+        params: &[ParamEscapeSummary],
+    ) -> InstanceEscapeSummary {
+        EscapeGraph::build(gcx, body, AnalysisMode::FixedEffects { params })
+            .unwrap_or_else(|_| panic!("escape graph"))
+            .summary()
+    }
+
+    #[test]
+    fn concrete_callee_summary_changes_placement() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let value = push_user(&mut body, gcx.types.int64);
+            let reference = push_temp(&mut body, reference_ty(gcx, gcx.types.int64));
+            let call_result = push_temp(&mut body, gcx.types.void);
+            let target = return_block(&mut body);
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(reference),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place::from_local(value),
+                        },
+                    ),
+                    span,
+                });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Copy(Place::from_local(reference))],
+                    devirt_hint: None,
+                    destination: Place::from_local(call_result),
+                    target,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+
+            let noncapturing = placement_with_effects(
+                gcx,
+                &body,
+                &[ParamEscapeSummary {
+                    heap_capture: false,
+                    return_deref: None,
+                }],
+            );
+            let capturing = placement_with_effects(
+                gcx,
+                &body,
+                &[ParamEscapeSummary {
+                    heap_capture: true,
+                    return_deref: None,
+                }],
+            );
+
+            assert!(!noncapturing.heap_locals.contains(&value));
+            assert!(capturing.heap_locals.contains(&value));
+        });
+    }
+
+    #[test]
+    fn summaries_record_return_dereference_depth() {
+        with_test_gcx(|gcx| {
+            let ref_ty = reference_ty(gcx, gcx.types.uint8);
+
+            let mut direct = minimal_body(gcx);
+            direct.locals[direct.return_local].ty = ref_ty;
+            let parameter = push_parameter(&mut direct, ref_ty);
+            let span = direct.locals[direct.return_local].span;
+            direct.basic_blocks[direct.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(direct.return_local),
+                        Rvalue::Use(Operand::Copy(Place::from_local(parameter))),
+                    ),
+                    span,
+                });
+            assert_eq!(
+                summary_with_effects(gcx, &direct, &[]).params[0],
+                ParamEscapeSummary {
+                    heap_capture: false,
+                    return_deref: Some(0),
+                }
+            );
+
+            let mut loaded = minimal_body(gcx);
+            loaded.locals[loaded.return_local].ty = ref_ty;
+            let nested_ref_ty = reference_ty(gcx, ref_ty);
+            let parameter = push_parameter(&mut loaded, nested_ref_ty);
+            let span = loaded.locals[loaded.return_local].span;
+            loaded.basic_blocks[loaded.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(loaded.return_local),
+                        Rvalue::Use(Operand::Copy(Place {
+                            local: parameter,
+                            projection: vec![PlaceElem::Deref],
+                        })),
+                    ),
+                    span,
+                });
+            assert_eq!(
+                summary_with_effects(gcx, &loaded, &[]).params[0],
+                ParamEscapeSummary {
+                    heap_capture: false,
+                    return_deref: Some(1),
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn branch_join_propagates_all_reaching_references() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let ref_ty = reference_ty(gcx, gcx.types.int64);
+            let left_value = push_user(&mut body, gcx.types.int64);
+            let right_value = push_user(&mut body, gcx.types.int64);
+            let left_ref = push_temp(&mut body, ref_ty);
+            let right_ref = push_temp(&mut body, ref_ty);
+            let joined = push_temp(&mut body, ref_ty);
+            let call_result = push_temp(&mut body, gcx.types.void);
+            let target = return_block(&mut body);
+            let merge = body.basic_blocks.push(BasicBlockData {
+                note: Some("merge".into()),
+                statements: Vec::new(),
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Call {
+                        func: unit_operand(gcx),
+                        args: vec![Operand::Copy(Place::from_local(joined))],
+                        devirt_hint: None,
+                        destination: Place::from_local(call_result),
+                        target,
+                        unwind: CallUnwindAction::Terminate,
+                    },
+                    span,
+                }),
+            });
+            let left = body.basic_blocks.push(BasicBlockData {
+                note: Some("left".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(joined),
+                        Rvalue::Use(Operand::Copy(Place::from_local(left_ref))),
+                    ),
+                    span,
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto { target: merge },
+                    span,
+                }),
+            });
+            let right = body.basic_blocks.push(BasicBlockData {
+                note: Some("right".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(joined),
+                        Rvalue::Use(Operand::Copy(Place::from_local(right_ref))),
+                    ),
+                    span,
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto { target: merge },
+                    span,
+                }),
+            });
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(left_ref),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place::from_local(left_value),
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(right_ref),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place::from_local(right_value),
+                        },
+                    ),
+                    span,
+                },
+            ]);
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::SwitchInt {
+                    discr: bool_operand(gcx, true),
+                    targets: vec![(0, left)],
+                    otherwise: right,
+                },
+                span,
+            });
+
+            let placement = placement_with_effects(
+                gcx,
+                &body,
+                &[ParamEscapeSummary {
+                    heap_capture: true,
+                    return_deref: None,
+                }],
+            );
+            assert!(placement.heap_locals.contains(&left_value));
+            assert!(placement.heap_locals.contains(&right_value));
+        });
+    }
+
+    #[test]
+    fn call_destinations_distinguish_cleanup_and_projected_results() {
+        with_test_gcx(|gcx| {
+            let ref_ty = reference_ty(gcx, gcx.types.int64);
+            let return_effect = [ParamEscapeSummary {
+                heap_capture: false,
+                return_deref: Some(0),
+            }];
+
+            let mut cleanup_body = minimal_body(gcx);
+            cleanup_body.locals[cleanup_body.return_local].ty = ref_ty;
+            let span = cleanup_body.locals[cleanup_body.return_local].span;
+            let stale_value = push_user(&mut cleanup_body, gcx.types.int64);
+            let returned_value = push_user(&mut cleanup_body, gcx.types.int64);
+            let destination = push_temp(&mut cleanup_body, ref_ty);
+            let argument = push_temp(&mut cleanup_body, ref_ty);
+            let normal = cleanup_body.basic_blocks.push(BasicBlockData {
+                note: Some("normal".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(cleanup_body.return_local),
+                        Rvalue::Use(Operand::Copy(Place::from_local(destination))),
+                    ),
+                    span,
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                }),
+            });
+            let cleanup = cleanup_body.basic_blocks.push(BasicBlockData {
+                note: Some("cleanup".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(cleanup_body.return_local),
+                        Rvalue::Use(Operand::Copy(Place::from_local(destination))),
+                    ),
+                    span,
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                }),
+            });
+            cleanup_body.basic_blocks[cleanup_body.start_block]
+                .statements
+                .extend([
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(destination),
+                            Rvalue::Ref {
+                                mutable: false,
+                                place: Place::from_local(stale_value),
+                            },
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(argument),
+                            Rvalue::Ref {
+                                mutable: false,
+                                place: Place::from_local(returned_value),
+                            },
+                        ),
+                        span,
+                    },
+                ]);
+            cleanup_body.basic_blocks[cleanup_body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Copy(Place::from_local(argument))],
+                    devirt_hint: None,
+                    destination: Place::from_local(destination),
+                    target: normal,
+                    unwind: CallUnwindAction::Cleanup(cleanup),
+                },
+                span,
+            });
+            let placement = placement_with_effects(gcx, &cleanup_body, &return_effect);
+            assert!(!placement.heap_locals.contains(&stale_value));
+            assert!(placement.heap_locals.contains(&returned_value));
+
+            let mut projected_body = minimal_body(gcx);
+            let aggregate_ty = tuple_ty(gcx, vec![ref_ty]);
+            projected_body.locals[projected_body.return_local].ty = aggregate_ty;
+            let span = projected_body.locals[projected_body.return_local].span;
+            let existing_value = push_user(&mut projected_body, gcx.types.int64);
+            let returned_value = push_user(&mut projected_body, gcx.types.int64);
+            let aggregate = push_temp(&mut projected_body, aggregate_ty);
+            let argument = push_temp(&mut projected_body, ref_ty);
+            let target = projected_body.basic_blocks.push(BasicBlockData {
+                note: Some("return aggregate".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(projected_body.return_local),
+                        Rvalue::Use(Operand::Copy(Place::from_local(aggregate))),
+                    ),
+                    span,
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                }),
+            });
+            projected_body.basic_blocks[projected_body.start_block]
+                .statements
+                .extend([
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place {
+                                local: aggregate,
+                                projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ref_ty)],
+                            },
+                            Rvalue::Ref {
+                                mutable: false,
+                                place: Place::from_local(existing_value),
+                            },
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(argument),
+                            Rvalue::Ref {
+                                mutable: false,
+                                place: Place::from_local(returned_value),
+                            },
+                        ),
+                        span,
+                    },
+                ]);
+            projected_body.basic_blocks[projected_body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Copy(Place::from_local(argument))],
+                    devirt_hint: None,
+                    destination: Place {
+                        local: aggregate,
+                        projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ref_ty)],
+                    },
+                    target,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+            let placement = placement_with_effects(gcx, &projected_body, &return_effect);
+            assert!(placement.heap_locals.contains(&existing_value));
+            assert!(placement.heap_locals.contains(&returned_value));
+        });
+    }
+
+    #[test]
+    fn moves_and_storage_live_kill_stale_provenance() {
+        with_test_gcx(|gcx| {
+            let ref_ty = reference_ty(gcx, gcx.types.int64);
+            let effect = [ParamEscapeSummary {
+                heap_capture: true,
+                return_deref: None,
+            }];
+
+            let mut moved_body = minimal_body(gcx);
+            let span = moved_body.locals[moved_body.return_local].span;
+            let first_value = push_user(&mut moved_body, gcx.types.int64);
+            let replacement_value = push_user(&mut moved_body, gcx.types.int64);
+            let source = push_temp(&mut moved_body, ref_ty);
+            let moved = push_temp(&mut moved_body, ref_ty);
+            let result = push_temp(&mut moved_body, gcx.types.void);
+            let target = return_block(&mut moved_body);
+            moved_body.basic_blocks[moved_body.start_block]
+                .statements
+                .extend([
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(source),
+                            Rvalue::Ref {
+                                mutable: false,
+                                place: Place::from_local(first_value),
+                            },
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(moved),
+                            Rvalue::Use(Operand::Move(Place::from_local(source))),
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(source),
+                            Rvalue::Ref {
+                                mutable: false,
+                                place: Place::from_local(replacement_value),
+                            },
+                        ),
+                        span,
+                    },
+                ]);
+            moved_body.basic_blocks[moved_body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Copy(Place::from_local(moved))],
+                    devirt_hint: None,
+                    destination: Place::from_local(result),
+                    target,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+            let placement = placement_with_effects(gcx, &moved_body, &effect);
+            assert!(placement.heap_locals.contains(&first_value));
+            assert!(!placement.heap_locals.contains(&replacement_value));
+
+            let mut rebound_body = minimal_body(gcx);
+            let span = rebound_body.locals[rebound_body.return_local].span;
+            let value = push_user(&mut rebound_body, gcx.types.int64);
+            let reference = push_temp(&mut rebound_body, ref_ty);
+            let result = push_temp(&mut rebound_body, gcx.types.void);
+            let target = return_block(&mut rebound_body);
+            rebound_body.basic_blocks[rebound_body.start_block]
+                .statements
+                .extend([
+                    Statement {
+                        kind: StatementKind::Assign(
+                            Place::from_local(reference),
+                            Rvalue::Ref {
+                                mutable: false,
+                                place: Place::from_local(value),
+                            },
+                        ),
+                        span,
+                    },
+                    Statement {
+                        kind: StatementKind::StorageLive(reference),
+                        span,
+                    },
+                ]);
+            rebound_body.basic_blocks[rebound_body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Copy(Place::from_local(reference))],
+                    devirt_hint: None,
+                    destination: Place::from_local(result),
+                    target,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+            assert!(
+                !placement_with_effects(gcx, &rebound_body, &effect)
+                    .heap_locals
+                    .contains(&value)
+            );
+        });
+    }
+
+    #[test]
+    fn aggregates_projected_fields_and_raw_casts_preserve_provenance() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let ref_ty = reference_ty(gcx, gcx.types.uint8);
+            let ptr_ty = pointer_ty(gcx, gcx.types.uint8);
+            let aggregate_ty = tuple_ty(gcx, vec![ptr_ty]);
+            let projected_value = push_user(&mut body, gcx.types.uint8);
+            let aggregate_value = push_user(&mut body, gcx.types.uint8);
+            let projected_ref = push_temp(&mut body, ref_ty);
+            let aggregate_ref = push_temp(&mut body, ref_ty);
+            let projected_ptr = push_temp(&mut body, ptr_ty);
+            let aggregate_ptr = push_temp(&mut body, ptr_ty);
+            let projected = push_temp(&mut body, aggregate_ty);
+            let aggregate = push_temp(&mut body, aggregate_ty);
+            let first_result = push_temp(&mut body, gcx.types.void);
+            let second_result = push_temp(&mut body, gcx.types.void);
+            let target = return_block(&mut body);
+            let second_call = body.basic_blocks.push(BasicBlockData {
+                note: Some("capture aggregate".into()),
+                statements: Vec::new(),
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Call {
+                        func: unit_operand(gcx),
+                        args: vec![Operand::Copy(Place::from_local(aggregate))],
+                        devirt_hint: None,
+                        destination: Place::from_local(second_result),
+                        target,
+                        unwind: CallUnwindAction::Terminate,
+                    },
+                    span,
+                }),
+            });
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(projected_ref),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place::from_local(projected_value),
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(projected_ptr),
+                        Rvalue::Cast {
+                            operand: Operand::Copy(Place::from_local(projected_ref)),
+                            ty: ptr_ty,
+                            kind: CastKind::Pointer,
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place {
+                            local: projected,
+                            projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ptr_ty)],
+                        },
+                        Rvalue::Use(Operand::Copy(Place::from_local(projected_ptr))),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(aggregate_ref),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place::from_local(aggregate_value),
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(aggregate_ptr),
+                        Rvalue::Cast {
+                            operand: Operand::Copy(Place::from_local(aggregate_ref)),
+                            ty: ptr_ty,
+                            kind: CastKind::Numeric,
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(aggregate),
+                        Rvalue::Aggregate {
+                            kind: AggregateKind::Tuple,
+                            fields: IndexVec::from_vec(vec![Operand::Move(Place::from_local(
+                                aggregate_ptr,
+                            ))]),
+                        },
+                    ),
+                    span,
+                },
+            ]);
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Copy(Place::from_local(projected))],
+                    devirt_hint: None,
+                    destination: Place::from_local(first_result),
+                    target: second_call,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+
+            let placement = placement_with_effects(
+                gcx,
+                &body,
+                &[ParamEscapeSummary {
+                    heap_capture: true,
+                    return_deref: None,
+                }],
+            );
+            assert!(placement.heap_locals.contains(&projected_value));
+            assert!(placement.heap_locals.contains(&aggregate_value));
+        });
+    }
+
+    #[test]
+    fn projected_capture_uses_weighted_flow_not_field_type_pruning() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let ptr_ty = pointer_ty(gcx, gcx.types.int64);
+            let ref_ty = reference_ty(gcx, gcx.types.int64);
+            let capture_ty = tuple_ty(gcx, vec![ref_ty]);
+            let allocation = push_temp(&mut body, ptr_ty);
+            let reference = push_temp(&mut body, ref_ty);
+            let capture = push_temp(&mut body, capture_ty);
+            let result = push_temp(&mut body, gcx.types.void);
+            let target = return_block(&mut body);
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(allocation),
+                        Rvalue::Alloc {
+                            ty: gcx.types.int64,
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(reference),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place {
+                                local: allocation,
+                                projection: vec![PlaceElem::Deref],
+                            },
+                        },
+                    ),
+                    span,
+                },
+                // Closure capture projections currently carry the captured
+                // pointee type. The operand still carries a reference, so the
+                // zero-weight assignment edge must not be pruned by this
+                // annotation.
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place {
+                            local: capture,
+                            projection: vec![PlaceElem::Field(
+                                FieldIndex::from_raw(0),
+                                gcx.types.int64,
+                            )],
+                        },
+                        Rvalue::Use(Operand::Copy(Place::from_local(reference))),
+                    ),
+                    span,
+                },
+            ]);
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Move(Place::from_local(capture))],
+                    devirt_hint: None,
+                    destination: Place::from_local(result),
+                    target,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+
+            let placement = placement_with_effects(
+                gcx,
+                &body,
+                &[ParamEscapeSummary {
+                    heap_capture: true,
+                    return_deref: None,
+                }],
+            );
+            assert!(placement.escaping_alloc_sites.contains(&AllocationSite {
+                block: body.start_block,
+                statement: 0,
+            }));
+        });
+    }
+
+    #[test]
+    fn scalar_loads_and_stores_do_not_capture_their_reference() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let reference = push_parameter(&mut body, reference_ty(gcx, gcx.types.int64));
+            let loaded = push_temp(&mut body, gcx.types.int64);
+            let pointee = Place {
+                local: reference,
+                projection: vec![PlaceElem::Deref],
+            };
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(loaded),
+                        Rvalue::Use(Operand::Copy(pointee.clone())),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        pointee,
+                        Rvalue::Use(Operand::Copy(Place::from_local(loaded))),
+                    ),
+                    span,
+                },
+            ]);
+
+            assert_eq!(
+                summary_with_effects(gcx, &body, &[]).params[0],
+                ParamEscapeSummary::default()
+            );
+        });
+    }
+
+    #[test]
+    fn allocation_sites_sharing_a_local_receive_independent_decisions() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let pointer = push_temp(&mut body, pointer_ty(gcx, gcx.types.int64));
+            let result = push_temp(&mut body, gcx.types.void);
+            let target = return_block(&mut body);
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(pointer),
+                        Rvalue::Alloc {
+                            ty: gcx.types.int64,
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(pointer),
+                        Rvalue::Alloc {
+                            ty: gcx.types.int64,
+                        },
+                    ),
+                    span,
+                },
+            ]);
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: unit_operand(gcx),
+                    args: vec![Operand::Copy(Place::from_local(pointer))],
+                    devirt_hint: None,
+                    destination: Place::from_local(result),
+                    target,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+
+            let placement = placement_with_effects(
+                gcx,
+                &body,
+                &[ParamEscapeSummary {
+                    heap_capture: true,
+                    return_deref: None,
+                }],
+            );
+            let first = AllocationSite {
+                block: body.start_block,
+                statement: 0,
+            };
+            let second = AllocationSite {
+                block: body.start_block,
+                statement: 1,
+            };
+            assert!(!placement.escaping_alloc_sites.contains(&first));
+            assert!(placement.escaping_alloc_sites.contains(&second));
+
+            allocation_rewrite::promote_allocation_sites(
+                gcx,
+                &mut body,
+                &placement.escaping_alloc_sites,
+                &placement.allocation_keepalive_blocks,
+            )
+            .unwrap_or_else(|_| panic!("allocation rewrite"));
+            assert_eq!(
+                body.basic_blocks
+                    .iter()
+                    .flat_map(|block| &block.statements)
+                    .filter(|statement| matches!(
+                        statement.kind,
+                        StatementKind::Assign(_, Rvalue::Alloc { .. })
+                    ))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn shared_cleanup_preserves_returned_allocation_provenance() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let ptr_ty = pointer_ty(gcx, gcx.types.int64);
+            let return_ty = tuple_ty(gcx, vec![ptr_ty]);
+            body.locals[body.return_local].ty = return_ty;
+            let pointer = push_temp(&mut body, ptr_ty);
+            let dead_move = push_temp(&mut body, ptr_ty);
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(pointer),
+                        Rvalue::Alloc {
+                            ty: gcx.types.int64,
+                        },
+                    ),
+                    span,
+                },
+                // Aggregate lowering can leave a dead move before the actual
+                // projected return store. Shared cleanup must discard it
+                // before flow-sensitive provenance consumes the source.
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(dead_move),
+                        Rvalue::Use(Operand::Move(Place::from_local(pointer))),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place {
+                            local: body.return_local,
+                            projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ptr_ty)],
+                        },
+                        Rvalue::Use(Operand::Move(Place::from_local(pointer))),
+                    ),
+                    span,
+                },
+            ]);
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Return,
+                span,
+            });
+
+            let mut passes: Vec<Box<dyn crate::mir::optimize::MirPass<'_>>> = vec![
+                Box::new(crate::mir::optimize::dse::DeadStoreElimination),
+                Box::new(crate::mir::optimize::passes::DeadLocalElimination),
+            ];
+            crate::mir::optimize::run_passes(gcx, &mut body, &mut passes)
+                .unwrap_or_else(|_| panic!("shared cleanup"));
+
+            assert!(body.basic_blocks[body.start_block].statements.iter().all(
+                |statement| !matches!(
+                    &statement.kind,
+                    StatementKind::Assign(destination, _)
+                        if destination.local == dead_move
+                )
+            ));
+            let placement = placement_with_effects(gcx, &body, &[]);
+            assert_eq!(placement.escaping_alloc_sites.len(), 1);
+        });
+    }
+
+    #[test]
+    fn projected_nonescaping_allocation_is_stack_promoted() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let ptr_ty = pointer_ty(gcx, gcx.types.int64);
+            let aggregate_ty = tuple_ty(gcx, vec![ptr_ty]);
+            let aggregate = push_temp(&mut body, aggregate_ty);
+            let destination = Place {
+                local: aggregate,
+                projection: vec![PlaceElem::Field(FieldIndex::from_raw(0), ptr_ty)],
+            };
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        destination.clone(),
+                        Rvalue::Alloc {
+                            ty: gcx.types.int64,
+                        },
+                    ),
+                    span,
+                });
+
+            let placement = placement_with_effects(gcx, &body, &[]);
+            assert!(placement.escaping_alloc_sites.is_empty());
+            allocation_rewrite::promote_allocation_sites(
+                gcx,
+                &mut body,
+                &placement.escaping_alloc_sites,
+                &placement.allocation_keepalive_blocks,
+            )
+            .unwrap_or_else(|_| panic!("allocation rewrite"));
+            let statements = &body.basic_blocks[body.start_block].statements;
+            assert!(statements.iter().all(|statement| !matches!(
+                statement.kind,
+                StatementKind::Assign(_, Rvalue::Alloc { .. })
+            )));
+            assert!(statements.iter().any(|statement| matches!(
+                &statement.kind,
+                StatementKind::Assign(place, Rvalue::Cast { ty, .. })
+                    if place == &destination && *ty == ptr_ty
+            )));
+
+            let (zero_index, stack_object) = statements
+                .iter()
+                .enumerate()
+                .find_map(|(index, statement)| match &statement.kind {
+                    StatementKind::Assign(place, Rvalue::Zeroed { ty })
+                        if *ty == gcx.types.int64 =>
+                    {
+                        Some((index, place.local))
+                    }
+                    _ => None,
+                })
+                .expect("promoted storage is zeroed");
+            let (reference_index, stack_reference) = statements
+                .iter()
+                .enumerate()
+                .find_map(|(index, statement)| match &statement.kind {
+                    StatementKind::Assign(
+                        destination,
+                        Rvalue::Ref {
+                            place,
+                            mutable: true,
+                        },
+                    ) if place.local == stack_object => Some((index, destination.local)),
+                    _ => None,
+                })
+                .expect("promoted storage publishes a typed reference");
+            assert!(zero_index < reference_index);
+            assert!(statements.iter().all(|statement| !matches!(
+                &statement.kind,
+                StatementKind::KeepAlive(Operand::Copy(place))
+                    if place.local == stack_reference
+            )));
+        });
+    }
+
+    #[test]
+    fn promoted_gc_backing_is_rooted_only_in_alias_live_blocks() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let element_ty = pointer_ty(gcx, gcx.types.int64);
+            let allocation_pointer_ty = pointer_ty(gcx, element_ty);
+            let pointer = push_temp(&mut body, allocation_pointer_ty);
+            let site = AllocationSite {
+                block: body.start_block,
+                statement: 0,
+            };
+            body.basic_blocks[body.start_block].statements.extend([
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(pointer),
+                        Rvalue::Alloc { ty: element_ty },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(pointer))),
+                    span,
+                },
+            ]);
+            let finished = return_block(&mut body);
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: finished },
+                span,
+            });
+
+            let placement = placement_with_effects(gcx, &body, &[]);
+            assert!(placement.escaping_alloc_sites.is_empty());
+            assert_eq!(
+                placement.allocation_keepalive_blocks.get(&site),
+                Some(&FxHashSet::from_iter([body.start_block]))
+            );
+            allocation_rewrite::promote_allocation_sites(
+                gcx,
+                &mut body,
+                &placement.escaping_alloc_sites,
+                &placement.allocation_keepalive_blocks,
+            )
+            .unwrap_or_else(|_| panic!("allocation rewrite"));
+
+            let stack_reference = body.basic_blocks[body.start_block]
+                .statements
+                .iter()
+                .find_map(|statement| match &statement.kind {
+                    StatementKind::Assign(
+                        destination,
+                        Rvalue::Ref {
+                            place,
+                            mutable: true,
+                        },
+                    ) if body.locals[place.local].ty == element_ty => Some(destination.local),
+                    _ => None,
+                })
+                .expect("promoted backing has a typed reference");
+            assert!(body.basic_blocks[body.start_block].statements.iter().any(
+                |statement| matches!(
+                    &statement.kind,
+                    StatementKind::KeepAlive(Operand::Copy(place))
+                        if place.local == stack_reference
+                )
+            ));
+            assert!(
+                body.basic_blocks[finished]
+                    .statements
+                    .iter()
+                    .all(|statement| !matches!(
+                        &statement.kind,
+                        StatementKind::KeepAlive(Operand::Copy(place))
+                            if place.local == stack_reference
+                    ))
+            );
+            assert!(body.basic_blocks[body.start_block].statements.iter().any(
+                |statement| matches!(
+                    &statement.kind,
+                    StatementKind::Assign(place, Rvalue::Zeroed { ty })
+                        if place.local == stack_reference
+                            && *ty == body.locals[stack_reference].ty
+                )
+            ));
+        });
+    }
+
+    fn loop_allocation_body<'ctx>(
+        gcx: Gcx<'ctx>,
+        consume_before_allocation: bool,
+    ) -> (Body<'ctx>, AllocationSite) {
+        let mut body = minimal_body(gcx);
+        let span = body.locals[body.return_local].span;
+        let ptr_ty = pointer_ty(gcx, gcx.types.int64);
+        let pointer = push_temp(&mut body, ptr_ty);
+        let carried = push_temp(&mut body, ptr_ty);
+        body.basic_blocks[body.start_block]
+            .statements
+            .push(Statement {
+                kind: StatementKind::Assign(
+                    Place::from_local(carried),
+                    Rvalue::Alloc {
+                        ty: gcx.types.int64,
+                    },
+                ),
+                span,
+            });
+        let loop_block = body.basic_blocks.push(BasicBlockData {
+            note: Some("loop".into()),
+            statements: Vec::new(),
+            terminator: None,
+        });
+        body.basic_blocks[body.start_block].terminator = Some(Terminator {
+            kind: TerminatorKind::Goto { target: loop_block },
+            span,
+        });
+        if consume_before_allocation {
+            body.basic_blocks[loop_block].statements.push(Statement {
+                kind: StatementKind::KeepAlive(Operand::Move(Place::from_local(carried))),
+                span,
+            });
+        }
+        let statement = body.basic_blocks[loop_block].statements.len();
+        body.basic_blocks[loop_block].statements.push(Statement {
+            kind: StatementKind::Assign(
+                Place::from_local(pointer),
+                Rvalue::Alloc {
+                    ty: gcx.types.int64,
+                },
+            ),
+            span,
+        });
+        if !consume_before_allocation {
+            body.basic_blocks[loop_block].statements.push(Statement {
+                kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(carried))),
+                span,
+            });
+        }
+        body.basic_blocks[loop_block].statements.push(Statement {
+            kind: StatementKind::Assign(
+                Place::from_local(carried),
+                Rvalue::Use(Operand::Copy(Place::from_local(pointer))),
+            ),
+            span,
+        });
+        body.basic_blocks[loop_block].terminator = Some(Terminator {
+            kind: TerminatorKind::Goto { target: loop_block },
+            span,
+        });
+        (
+            body,
+            AllocationSite {
+                block: loop_block,
+                statement,
+            },
+        )
+    }
+
+    #[test]
+    fn loop_promotion_only_rejects_overlapping_allocation_instances() {
+        with_test_gcx(|gcx| {
+            let (overlapping, site) = loop_allocation_body(gcx, false);
+            assert!(
+                placement_with_effects(gcx, &overlapping, &[])
+                    .escaping_alloc_sites
+                    .contains(&site)
+            );
+
+            let (consumed, site) = loop_allocation_body(gcx, true);
+            assert!(
+                !placement_with_effects(gcx, &consumed, &[])
+                    .escaping_alloc_sites
+                    .contains(&site)
+            );
+        });
+    }
+
+    #[test]
+    fn async_bridge_heapifies_referents_live_across_yield() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            body.is_async = true;
+            let span = body.locals[body.return_local].span;
+            let value = push_user(&mut body, gcx.types.int64);
+            let reference = push_temp(&mut body, reference_ty(gcx, gcx.types.int64));
+            let resume_arg = push_temp(&mut body, gcx.types.void);
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(reference),
+                        Rvalue::Ref {
+                            mutable: false,
+                            place: Place::from_local(value),
+                        },
+                    ),
+                    span,
+                });
+            let resume = body.basic_blocks.push(BasicBlockData {
+                note: Some("resume".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(reference))),
+                    span,
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                }),
+            });
+            let cancel_complete = body.basic_blocks.push(BasicBlockData {
+                note: Some("cancel complete".into()),
+                statements: Vec::new(),
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Unreachable,
+                    span,
+                }),
+            });
+            let cancel = body.basic_blocks.push(BasicBlockData {
+                note: Some("cancel".into()),
+                statements: Vec::new(),
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto {
+                        target: cancel_complete,
+                    },
+                    span,
+                }),
+            });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Yield {
+                    value: unit_operand(gcx),
+                    resume,
+                    resume_arg: Place::from_local(resume_arg),
+                    cancel,
+                    cancel_complete,
+                    unwind: CallUnwindAction::Terminate,
+                },
+                span,
+            });
+
+            let placement = EscapeGraph::build(gcx, &body, AnalysisMode::AsyncBridge)
+                .unwrap_or_else(|_| panic!("async escape graph"))
+                .placement();
+            assert!(placement.heap_locals.contains(&value));
+        });
+    }
+
+    #[test]
+    fn unresolved_and_unknown_calls_are_conservative() {
+        with_test_gcx(|gcx| {
+            assert_eq!(
+                conservative_parameter_effect(gcx, None, 0)
+                    .unwrap_or_else(|_| panic!("unknown call effect")),
+                ParamEscapeSummary {
+                    heap_capture: true,
+                    return_deref: Some(0),
+                }
+            );
+
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let pointer = push_temp(&mut body, pointer_ty(gcx, gcx.types.int64));
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(pointer),
+                        Rvalue::Alloc {
+                            ty: gcx.types.int64,
+                        },
+                    ),
+                    span,
+                });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::UnresolvedGoto,
+                span,
+            });
+            let placement = placement_with_effects(gcx, &body, &[]);
+            assert!(placement.escaping_alloc_sites.contains(&AllocationSite {
+                block: body.start_block,
+                statement: 0,
+            }));
+        });
+    }
+
+    #[test]
+    fn recursive_scc_partition_is_deterministic() {
+        let graph = [vec![1], vec![0, 2], Vec::new()];
+        let mut tarjan = Tarjan::new(&graph);
+        for node in 0..graph.len() {
+            if tarjan.indices[node].is_none() {
+                tarjan.visit(node);
+            }
+        }
+        assert_eq!(tarjan.components, vec![vec![2], vec![1, 0]]);
+    }
+
+    #[test]
+    fn heapified_storage_live_allocates_at_the_binding_boundary() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let local = push_user(&mut body, gcx.types.int64);
+            body.escape_locals[local.index()] = true;
+            let loop_block = body.basic_blocks.push(BasicBlockData {
+                note: Some("loop declaration".into()),
+                statements: vec![Statement {
+                    kind: StatementKind::StorageLive(local),
+                    span,
+                }],
+                terminator: None,
+            });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: loop_block },
+                span,
+            });
+            body.basic_blocks[loop_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: loop_block },
+                span,
+            });
+
+            heapify_rewrite::apply_heapified_locals(gcx, &mut body)
+                .unwrap_or_else(|_| panic!("heapify rewrite"));
+            assert!(body.basic_blocks[body.start_block].statements.iter().all(
+                |statement| !matches!(
+                    &statement.kind,
+                    StatementKind::Assign(place, Rvalue::Alloc { .. }) if place.local == local
+                )
+            ));
+            assert!(matches!(
+                &body.basic_blocks[loop_block].statements[0].kind,
+                StatementKind::Assign(place, Rvalue::Alloc { ty })
+                    if place.local == local && *ty == gcx.types.int64
+            ));
+        });
+    }
+
+    #[test]
+    fn finalized_body_guard_is_instance_and_pointer_exact() {
+        with_test_gcx(|gcx| {
+            let body = minimal_body(gcx);
+            let instance = Instance::item(body.owner, GenericArguments::empty());
+            assert!(!gcx.is_finalized_instance_mir(instance, &body));
+
+            let finalized = gcx.store.arenas.mir_bodies.alloc(body.clone());
+            finalized.phase = MirPhase::Lowered;
+            gcx.store
+                .instance_mir_bodies
+                .borrow_mut()
+                .insert(instance, finalized);
+            assert!(gcx.is_finalized_instance_mir(instance, finalized));
+            assert!(!gcx.is_finalized_instance_mir(instance, &body));
+        });
     }
 }

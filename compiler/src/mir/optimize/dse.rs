@@ -173,7 +173,7 @@ fn use_rvalue(rv: &Rvalue, live: &mut FxHashSet<LocalId>) {
             }
         }
         Rvalue::Repeat { operand, .. } => use_operand(operand, live),
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -186,7 +186,8 @@ fn rvalue_has_side_effects(rv: &Rvalue) -> bool {
         | Rvalue::Ref { .. }
         | Rvalue::Discriminant { .. }
         | Rvalue::Repeat { .. }
-        | Rvalue::Alloc { .. } => false,
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => false,
         Rvalue::Aggregate { .. } => false, // Initializing aggregate has no side effects (unless allocation?)
     }
 }

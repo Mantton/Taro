@@ -507,7 +507,10 @@ fn apply_rvalue_moves(rvalue: &Rvalue<'_>, initialized: &mut FxHashSet<LocalId>)
                 apply_operand_move(field, initialized);
             }
         }
-        Rvalue::Ref { .. } | Rvalue::Discriminant { .. } | Rvalue::Alloc { .. } => {}
+        Rvalue::Ref { .. }
+        | Rvalue::Discriminant { .. }
+        | Rvalue::Alloc { .. }
+        | Rvalue::Zeroed { .. } => {}
     }
 }
 
@@ -553,7 +556,7 @@ fn use_rvalue(rv: &Rvalue, live: &mut FxHashSet<LocalId>) {
             }
         }
         Rvalue::Repeat { operand, .. } => use_operand(operand, live),
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 

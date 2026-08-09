@@ -434,7 +434,7 @@ fn remap_resident_rvalue<'ctx>(rvalue: &mut Rvalue<'ctx>, remaps: &[Option<Place
             remap_resident_place(place, remaps);
         }
         Rvalue::Repeat { operand, .. } => remap_resident_operand(operand, remaps),
-        Rvalue::Alloc { .. } => {}
+        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 

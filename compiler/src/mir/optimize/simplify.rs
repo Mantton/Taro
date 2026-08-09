@@ -381,7 +381,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
             }
             Rvalue::Ref { place, .. } => mark_place_used(place, used),
             Rvalue::Discriminant { place } => mark_place_used(place, used),
-            Rvalue::Alloc { .. } => {}
+            Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
             Rvalue::Repeat { operand, .. } => mark_operand_used(operand, used),
         }
     }
@@ -533,6 +533,7 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
                 place: remap_place(place, remap),
             },
             Rvalue::Alloc { ty } => Rvalue::Alloc { ty: *ty },
+            Rvalue::Zeroed { ty } => Rvalue::Zeroed { ty: *ty },
             Rvalue::Repeat {
                 operand,
                 count,
