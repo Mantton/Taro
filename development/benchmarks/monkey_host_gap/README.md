@@ -17,10 +17,10 @@ The fixtures keep equivalent algorithms and checksums in both languages. Each
 sample runs in a fresh process, and the harness alternates language order.
 
 ```bash
-make monkey-host-benchmark
-make monkey-host-benchmark RUNS=9
-make monkey-host-benchmark QUICK=1
-make monkey-host-benchmark HOST_BENCH_ARGS='--case result_success'
+make -C showcase/monkey host-benchmark
+make -C showcase/monkey host-benchmark RUNS=9
+make -C showcase/monkey host-benchmark QUICK=1
+make -C showcase/monkey host-benchmark HOST_BENCH_ARGS='--case result_success'
 ```
 
 Taro runs in release/O2 mode with one worker and runtime statistics. Go uses its

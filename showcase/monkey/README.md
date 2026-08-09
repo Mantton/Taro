@@ -18,6 +18,7 @@ taro run . -- -e '1 + 2 * 3'          # evaluate source
 taro run . -- --engine eval -e '1+2'  # use the evaluator
 taro run . -- --bench 35              # benchmark both engines
 taro test .
+make host-benchmark                   # matched Taro/Go diagnostic workloads
 ```
 
 ## Layout

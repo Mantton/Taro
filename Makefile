@@ -10,7 +10,6 @@ LANGUAGE_TESTS := $(ROOT)/development/scripts/language_tests.py
 TEST_ALL := $(ROOT)/development/scripts/test_all.py
 BENCHMARK_TIMINGS := $(ROOT)/development/scripts/benchmark_timings.py
 CODEGEN_BENCHMARK := $(ROOT)/development/scripts/codegen_benchmarks.py
-MONKEY_HOST_BENCHMARK := $(ROOT)/development/scripts/monkey_host_benchmarks.py
 JSON_VERIFIER := $(ROOT)/development/verifiers/json/verify.py
 JSON_BENCHMARK_PACKAGE := $(ROOT)/development/benchmarks/json
 RUNTIME_STRESS := $(ROOT)/development/scripts/runtime_stress.py
@@ -20,7 +19,7 @@ DIST_DIR := $(ROOT)/dist
 TARO := $(DIST_DIR)/bin/taro
 STD_PATH := $(ROOT)/std
 
-.PHONY: help compiler compiler-release dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark monkey-host-benchmark
+.PHONY: help compiler compiler-release dist run check cargo-test test language-tests codegen-matrix std-tests runtime-stress all-tests verify-json-prepare verify-json bench json-benchmark benchmark codegen-benchmark
 
 help:
 	@echo "Taro development shortcuts"
@@ -59,8 +58,6 @@ help:
 	@echo "  make benchmark PACKAGE=std RUNS=10"
 	@echo "  make codegen-benchmark        Compare release baseline and O2 code generation"
 	@echo "  make codegen-benchmark RUNS=10"
-	@echo "  make monkey-host-benchmark    Compare matched Monkey hot-path workloads with Go"
-	@echo "  make monkey-host-benchmark QUICK=1"
 
 compiler:
 	$(CARGO) build -p taro-bin
@@ -130,8 +127,3 @@ benchmark:
 
 codegen-benchmark:
 	$(PYTHON) $(CODEGEN_BENCHMARK) $(if $(FILE),$(FILE),) $(if $(RUNS),--runs $(RUNS),)
-
-monkey-host-benchmark: dist
-	$(PYTHON) $(MONKEY_HOST_BENCHMARK) --compiler $(TARO) --taro-home $(DIST_DIR) \
-		$(if $(RUNS),--runs $(RUNS),) $(if $(WARMUPS),--warmups $(WARMUPS),) \
-		$(if $(QUICK),--quick,) $(HOST_BENCH_ARGS)

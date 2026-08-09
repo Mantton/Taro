@@ -112,12 +112,12 @@ Use `std.hint.blackBox(value)` as a best-effort optimizer barrier and
 `std.runtime.keepAlive(value)` when GC reachability is the requirement.
 `taro bench --help` documents the measurement and timeout controls.
 
-Repository tooling also measures the compiler itself:
+Repository tooling also provides compiler and showcase diagnostics:
 
 ```bash
 python3 development/scripts/benchmark_timings.py examples/hello.tr --runs 10
 make codegen-benchmark RUNS=10
-make monkey-host-benchmark
+make -C showcase/monkey host-benchmark
 ```
 
 The first command measures cold compiler phases. The codegen benchmark compares
