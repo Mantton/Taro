@@ -128,7 +128,7 @@ def main() -> int:
             gc_stress_env["TARO_GC_STRESS"] = "1"
             for regression in [
                 "gc_stack_map_stress.tr",
-                "gc_precise_liveness_regression.tr",
+                "gc_precise_liveness.tr",
             ]:
                 gc_stress_command = [
                     str(taro),

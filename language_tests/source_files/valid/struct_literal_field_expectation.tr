@@ -1,11 +1,4 @@
-// Test: struct literal fields receive their declared type as an expectation.
-//
-// Regression: `synth_struct_literal` synthesized field values with no
-// expectation, so an inferred member expression had no base type to resolve
-// against. `.identifier("x")` synthesizes a constructor variable that is then
-// applied, and only the application's result is constrained by the literal's
-// coercion goal, so the base could never be recovered from it. Every
-// `Struct { field: .case(...) }` failed with "type annotations needed".
+// Struct literal fields provide contextual types to inferred member expressions.
 
 enum Kind {
     case identifier(string)

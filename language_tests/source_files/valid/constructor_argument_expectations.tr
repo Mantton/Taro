@@ -1,17 +1,5 @@
-// Test: the initializer shorthand supplies argument expectations when it is
-// safe to do so.
-//
-// Regression: `argument_expectations_for_call` only produced expectations for a
-// `FnPointer` callee. The shorthand's callee is an overload set over the type's
-// `new` methods, so arguments were synthesized with no expected type and
-// `Type(field: .case(x))` failed with "type annotations needed", even though
-// `Type.new(field: .case(x))` succeeded.
-//
-// The expectation is only safe when a single `new` exists. Overload selection
-// probes candidates and rolls back inference, but arguments are synthesized
-// once and that is not rolled back, so a guess belonging to a losing candidate
-// would leave them checked against the wrong parameter types. Constructors that
-// are generic, or overloaded, must therefore behave exactly as before.
+// A single non-generic initializer supplies contextual argument types.
+// Generic and overloaded initializers do not commit expectations from one candidate.
 
 enum Left {
     case value(int32)

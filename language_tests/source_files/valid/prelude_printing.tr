@@ -1,0 +1,19 @@
+// Every top-level printing helper is available through the prelude.
+//
+// EXPECT_STDERR_CONTAINS: eprint eprintln
+// EXPECT_STDERR_CONTAINS: eprintf 2
+
+func main() {
+    print("print ")
+    println("println")
+    printf("printf %v\n", 1)
+
+    eprint("eprint ")
+    eprintln("eprintln")
+    eprintf("eprintf %v\n", 2)
+
+    println(sprintf("sprintf %v", 3))
+
+    assert(true, "prelude assert is reachable")
+    debugAssert(true, "prelude debugAssert is reachable")
+}

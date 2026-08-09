@@ -1,0 +1,58 @@
+// Loop temporaries use fixed preamble storage rather than per-iteration allocas.
+
+interface Speak {
+    func id(&self) -> int32
+}
+
+struct Dog {
+    tag: int32
+}
+
+impl Speak for Dog {
+    func id(&self) -> int32 {
+        self.tag
+    }
+}
+
+// Large enough to cross the indirect-argument ABI threshold, so calls pass
+// it by pointer and the caller spills a defensive copy per call.
+const LEN: usize = 512
+
+struct Big: Copy {
+    data: [int64; LEN]
+}
+
+func edges(_ input: Big) -> int64 {
+    *input.data.at(0) + *input.data.at(LEN - 1)
+}
+
+func main() {
+    var total: int32 = 0
+    var i: int32 = 0
+    while i < 5000000 {
+        let d = Dog { tag: 1 }
+        let s: any Speak = d
+        let maybe = s as? Dog
+        match maybe {
+            case .some(back) => total += back.tag
+            case .none => {}
+        }
+        i += 1
+    }
+    assert(total == 5000000, "every cast in the loop should succeed")
+
+    var big = Big { data: [0; LEN] }
+    big.data.set(0, 1)
+    big.data.set(LEN - 1, 2)
+    var sum: int64 = 0
+    var j: int32 = 0
+    while j < 50000 {
+        // `big` stays live across the call, so the argument is copied into
+        // an indirect_arg_copy spill slot on every iteration.
+        sum += edges(big)
+        j += 1
+    }
+    assert(sum == 150000, "every indirect call in the loop should see both edges")
+
+    print("PASS: loop stack allocation\n")
+}

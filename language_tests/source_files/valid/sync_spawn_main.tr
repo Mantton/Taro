@@ -1,7 +1,0 @@
-func main() {
-    std.print("hello\n")
-
-    std.task.detached(|| async {
-        std.print("world\n")
-    })
-}

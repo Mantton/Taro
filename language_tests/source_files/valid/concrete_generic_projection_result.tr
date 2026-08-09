@@ -33,9 +33,7 @@ func projectionResult[Source: ProjectionResultSource](
     source.result()
 }
 
-// Regression: after explicit generic substitution, the projected return error
-// is `ProjectionGenericSource[Value].Error` and must normalize through the
-// concrete generic impl before it is compared with `ProjectionConcreteError`.
+// Concrete generic substitution normalizes the projected error type.
 func normalizeConcreteProjection[Value: ProjectionSink](
     _ source: &ProjectionGenericSource[Value],
 ) -> std.result.Result[(), ProjectionConcreteError] {

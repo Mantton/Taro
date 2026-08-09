@@ -1,0 +1,51 @@
+// Safepoint polls trigger threshold collections without losing live data.
+
+func makeGarbage(_ size: int64) -> int64 {
+    var scratch = List[int64]()
+    var i = 0 as int64
+    while i < size {
+        scratch.append(i)
+        i += 1
+    }
+    var sum = 0 as int64
+    for value in &scratch {
+        sum += *value
+    }
+    return sum
+}
+
+func main() {
+    // Held live across every collection the loop below triggers.
+    var live = List[int64]()
+    var seed = 0 as int64
+    while seed < 500 {
+        live.append(seed)
+        seed += 1
+    }
+
+    var round = 0 as int64
+    var checksum = 0 as int64
+    while round < 200 {
+        // Each round drops everything it allocated.
+        checksum += makeGarbage(200)
+        round += 1
+    }
+
+    var total = 0 as int64
+    for value in &live {
+        total += *value
+    }
+    assert(total == 124750, "live values survive threshold collections")
+    assert(checksum == 3980000, "allocation rounds complete")
+
+    // A loop that allocates nothing still reaches its safepoints and still
+    // terminates; the poll's fast path must not stop the counter advancing.
+    var spin = 0 as int64
+    var k = 0 as int64
+    while k < 200000 {
+        spin += 1
+        k += 1
+    }
+    assert(spin == 200000, "non-allocating loop polls make progress")
+    print("PASS: GC poll threshold\n")
+}

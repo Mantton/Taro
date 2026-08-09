@@ -1,0 +1,185 @@
+// Typed descriptors retain roots in aggregates, optionals, closures, and buffers.
+
+import std.collections.List
+
+struct Leaf {
+    text: string
+}
+
+struct Nested {
+    name: string
+    leaf: Leaf
+    maybe: string?
+}
+
+struct Bundle {
+    head: string
+    nested: Nested
+    pair: (string, Leaf)
+    fixed: [Leaf; 2]
+}
+
+func makeText(_ index: usize) -> string {
+    std.sprintf("gc descriptor text %v", index)
+}
+
+func makeLeaf(_ index: usize) -> Leaf {
+    Leaf { text: makeText(index) }
+}
+
+func makeBundle(_ base: usize) -> Bundle {
+    Bundle {
+        head: makeText(base),
+        nested: Nested {
+            name: makeText(base + (1 as usize)),
+            leaf: makeLeaf(base + (2 as usize)),
+            maybe: Optional.some(makeText(base + (3 as usize))),
+        },
+        pair: (makeText(base + (4 as usize)), makeLeaf(base + (5 as usize))),
+        fixed: [
+            makeLeaf(base + (6 as usize)),
+            makeLeaf(base + (7 as usize)),
+        ],
+    }
+}
+
+func assertText(_ actual: string, _ index: usize, _ message: string) {
+    assert(actual == makeText(index), message)
+}
+
+func assertMaybeText(_ actual: string?, _ index: usize, _ message: string) {
+    match actual {
+        case .some(text) => assertText(text, index, message)
+        case .none => assert(false, message)
+    }
+}
+
+func assertBundle(_ bundle: &Bundle, _ base: usize) {
+    assertText(bundle.head, base, "bundle head should survive GC")
+    assertText(
+        bundle.nested.name,
+        base + (1 as usize),
+        "nested string field should survive GC",
+    )
+    assertText(
+        bundle.nested.leaf.text,
+        base + (2 as usize),
+        "nested struct field should survive GC",
+    )
+    assertMaybeText(
+        bundle.nested.maybe,
+        base + (3 as usize),
+        "optional string payload should survive GC",
+    )
+    assertText(bundle.pair.0, base + (4 as usize), "tuple string field should survive GC")
+    assertText(
+        bundle.pair.1.text,
+        base + (5 as usize),
+        "tuple nested struct field should survive GC",
+    )
+    assertText(
+        bundle.fixed.at(0).text,
+        base + (6 as usize),
+        "fixed array element 0 should survive GC",
+    )
+    assertText(
+        bundle.fixed.at(1).text,
+        base + (7 as usize),
+        "fixed array element 1 should survive GC",
+    )
+}
+
+func churnAllocations(_ count: usize) -> usize {
+    var i: usize = 0
+    var total: usize = 0
+    while i < count {
+        let rendered = std.sprintf("gc churn %v", i)
+        total = total + std.string.stringLen(rendered)
+        i += 1
+    }
+    return total
+}
+
+func forceCollections() {
+    std.runtime.collect()
+    let total = churnAllocations(50000)
+    assert(total > 0, "allocation churn should run")
+    std.runtime.collect()
+}
+
+func testLocalShadowRootOffsets() {
+    let bundle = makeBundle(10 as usize)
+    let tupleRoot = (makeText(30 as usize), makeLeaf(31 as usize))
+    let optionalRoot: string? = Optional.some(makeText(32 as usize))
+    let fixedRoot: [Leaf; 2] = [makeLeaf(33 as usize), makeLeaf(34 as usize)]
+
+    forceCollections()
+
+    assertBundle(&bundle, 10 as usize)
+    assertText(tupleRoot.0, 30 as usize, "local tuple root should survive GC")
+    assertText(tupleRoot.1.text, 31 as usize, "local tuple nested root should survive GC")
+    assertMaybeText(optionalRoot, 32 as usize, "local optional root should survive GC")
+    assertText(fixedRoot.at(0).text, 33 as usize, "local array root 0 should survive GC")
+    assertText(fixedRoot.at(1).text, 34 as usize, "local array root 1 should survive GC")
+}
+
+func testListElementDescriptors() {
+    var bundles = List[Bundle]()
+    bundles.append(makeBundle(100 as usize))
+    bundles.append(makeBundle(200 as usize))
+
+    forceCollections()
+
+    assert(bundles.len() == 2 as usize, "list length should survive GC")
+    assertBundle(bundles.at(0), 100 as usize)
+    assertBundle(bundles.at(1), 200 as usize)
+}
+
+func makeSentinelBuffer() -> *mut uint8 {
+    let ptr = std.mem.allocBytes(4 as usize)
+    ptr.write(0x54_u8)
+    ptr.add(1 as usize).write(0x41_u8)
+    ptr.add(2 as usize).write(0x52_u8)
+    ptr.add(3 as usize).write(0x4f_u8)
+    return ptr
+}
+
+func testOptionalPointerNpoShadowRoot() {
+    let maybePtr: Optional[*mut uint8] = Optional.some(makeSentinelBuffer())
+
+    forceCollections()
+
+    match maybePtr {
+        case .some(ptr) => {
+            assert(ptr.read() == 0x54_u8, "optional pointer byte 0 should survive GC")
+            assert(ptr.add(1 as usize).read() == 0x41_u8, "optional pointer byte 1 should survive GC")
+            assert(ptr.add(2 as usize).read() == 0x52_u8, "optional pointer byte 2 should survive GC")
+            assert(ptr.add(3 as usize).read() == 0x4f_u8, "optional pointer byte 3 should survive GC")
+        }
+        case .none => assert(false, "optional pointer should be present")
+    }
+}
+
+func applyStringClosure[F: Fn() -> string](_ f: F) -> string {
+    forceCollections()
+    return f()
+}
+
+func testClosureCaptureShadowRoot() {
+    let captured = makeText(300 as usize)
+    let capturedLeaf = makeLeaf(301 as usize)
+    let rendered = applyStringClosure(|| -> string {
+        assertText(capturedLeaf.text, 301 as usize, "closure captured struct should survive GC")
+        return captured
+    })
+    assertText(rendered, 300 as usize, "closure captured string should survive GC")
+}
+
+func main() {
+    testLocalShadowRootOffsets()
+    testListElementDescriptors()
+    testOptionalPointerNpoShadowRoot()
+    testClosureCaptureShadowRoot()
+
+    print("PASS: GC descriptor roots\n")
+}

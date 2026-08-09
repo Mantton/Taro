@@ -1,15 +1,4 @@
-// Test: a reference derived from an enum payload keeps its referent alive.
-//
-// Regression: escape analysis only recognised a reference taken directly from a
-// local, `&local.field`. Pattern matching lowers a payload binding to a reborrow
-// through the matched reference, `&(*r as case).0`, whose projection starts with
-// a `Deref` — and any place containing one was dropped from the analysis. The
-// local was left on the stack while a reference to its interior outlived the
-// frame, so reads returned garbage or crashed.
-//
-// Two further paths had the same effect: a reference returned through a call was
-// not connected to the argument it came from, and a reference built into an
-// aggregate was not followed at all.
+// References derived from payloads, calls, and aggregates keep their referents alive.
 
 enum Node {
     case leaf(int64)

@@ -1,0 +1,65 @@
+// Generic allocations use the descriptor for each concrete specialization.
+
+struct NoRoot {
+    value: int32
+}
+
+struct DoubleRoot {
+    first: string
+    second: string
+}
+
+func makeText(_ index: usize) -> string {
+    std.sprintf("generic make descriptor text %v", index)
+}
+
+func assertText(_ actual: string, _ index: usize, _ message: string) {
+    assert(actual == makeText(index), message)
+}
+
+func churnAllocations(_ count: usize) -> usize {
+    var i: usize = 0
+    var total: usize = 0
+    while i < count {
+        let rendered = std.sprintf("generic make descriptor churn %v", i)
+        total = total + std.string.stringLen(rendered)
+        i += 1
+    }
+    return total
+}
+
+func forceCollections() {
+    std.runtime.collect()
+    let total = churnAllocations(50000 as usize)
+    assert(total > 0 as usize, "allocation churn should run")
+    std.runtime.collect()
+}
+
+func heapValue[T](_ value: T) -> &T {
+    return make(value)
+}
+
+func primeNoRootDescriptor() {
+    let boxed = heapValue(NoRoot { value: 11 })
+    forceCollections()
+    assert((*boxed).value == 11, "no-root specialization should survive GC")
+}
+
+func makeDoubleRootBox() -> &DoubleRoot {
+    return heapValue(DoubleRoot {
+        first: makeText(2 as usize),
+        second: makeText(3 as usize),
+    })
+}
+
+func main() {
+    primeNoRootDescriptor()
+
+    let boxed = makeDoubleRootBox()
+    forceCollections()
+
+    assertText((*boxed).first, 2 as usize, "double-root first field should survive GC")
+    assertText((*boxed).second, 3 as usize, "double-root second field should survive GC")
+
+    print("PASS: GC generic allocation descriptors\n")
+}

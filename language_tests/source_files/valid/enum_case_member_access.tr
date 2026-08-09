@@ -1,7 +1,4 @@
-// A qualified enum case is a value, so a member access on it belongs to that
-// value. Resolution used to read `Color.red.code()` as a type-relative path,
-// looking for an associated type named `red` on `Color` and failing before the
-// method was ever considered.
+// Member access on a qualified enum case resolves against the case value.
 
 enum Color {
     case red

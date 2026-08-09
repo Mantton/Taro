@@ -11,6 +11,18 @@ namespace Strings {
     const SPACE: string = " "
 }
 
+namespace Outer {
+    public namespace Inner {
+        public struct Value {
+            n: int32
+        }
+    }
+}
+
+func makeQualifiedValue() -> Outer.Inner.Value {
+    return Outer.Inner.Value { n: 7 }
+}
+
 func main() {
     let x = Math.TWO
     assert(x == 2, "Math.TWO should be 2")
@@ -26,5 +38,10 @@ func main() {
 
     let space = Strings.SPACE
     assert(space == " ", "Strings.SPACE should be single space")
+
+    let value = Outer.Inner.Value { n: 11 }
+    assert(value.n == 11, "qualified struct literal")
+    assert(makeQualifiedValue().n == 7, "qualified struct literal return")
+
     std.print("PASS: namespace declaration coverage\n")
 }

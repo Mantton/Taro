@@ -1,10 +1,4 @@
-// Test: field and tuple projections coerce at the use site.
-//
-// Regression: `synth_member_expression` and the tuple-access synthesis equated
-// the expectation with the projection's result type, which forced an exact
-// match and defeated coercions applied by the consuming context. Boxing into an
-// existential and wrapping into an `Optional` both failed for any `x.field` or
-// `t.0` argument, while the same value bound to a local first succeeded.
+// Field and tuple projections accept contextual existential and optional coercions.
 
 struct Holder {
     num: int64;

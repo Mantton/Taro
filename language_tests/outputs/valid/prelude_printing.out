@@ -1,0 +1,3 @@
+print println
+printf 1
+sprintf 3

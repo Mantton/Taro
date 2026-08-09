@@ -11,7 +11,21 @@ func testPointerMutWriteArithmetic() {
     assert(ptr_off.read() == 42, "read after write should return updated value")
 }
 
+func storeConstPointer(_ out: *mut *const uint8, _ value: *const uint8) {
+    out.write(value)
+}
+
+func testMutableConstPointerSlot() {
+    let source = "slot"
+    var slot: *const uint8 = unsafe { 0 as *const uint8 }
+    let out = unsafe { &mut slot as *mut *const uint8 }
+    storeConstPointer(out, std.string.stringData(source))
+
+    assert(slot.read() == 115_u8, "a mutable slot can replace a const pointer")
+}
+
 func main() {
     testPointerMutWriteArithmetic()
+    testMutableConstPointerSlot()
     print("pointer mut write arithmetic ok\n")
 }

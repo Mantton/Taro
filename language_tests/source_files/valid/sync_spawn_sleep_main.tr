@@ -2,6 +2,10 @@ func main() {
     std.print("hello\n")
 
     std.task.detached(|| async {
+        std.print("world\n")
+    })
+
+    std.task.detached(|| async {
         await std.task.sleep(std.time.Duration.fromMillis(1_u64))
         std.print("world\n")
     })

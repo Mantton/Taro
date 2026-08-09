@@ -1,0 +1,75 @@
+// TEST
+
+func checkedAdd(_ lhs: uint8, _ rhs: uint8) -> uint8 { lhs + rhs }
+func checkedSub(_ lhs: uint8, _ rhs: uint8) -> uint8 { lhs - rhs }
+func checkedMul(_ lhs: uint8, _ rhs: uint8) -> uint8 { lhs * rhs }
+func checkedDivSigned(_ lhs: int64, _ rhs: int64) -> int64 { lhs / rhs }
+func checkedDivUnsigned(_ lhs: uint32, _ rhs: uint32) -> uint32 { lhs / rhs }
+func checkedRemSigned(_ lhs: int64, _ rhs: int64) -> int64 { lhs % rhs }
+func checkedRemUnsigned(_ lhs: uint32, _ rhs: uint32) -> uint32 { lhs % rhs }
+func checkedShl(_ value: uint64, _ amount: uint64) -> uint64 { value << amount }
+func checkedShr(_ value: uint64, _ amount: uint64) -> uint64 { value >> amount }
+func checkedNeg(_ value: int32) -> int32 { -value }
+
+@test
+@expectPanic("attempt to add with overflow")
+func addOverflow() {
+    let _ = checkedAdd(255, 1)
+}
+
+@test
+@expectPanic("attempt to subtract with overflow")
+func subtractOverflow() {
+    let _ = checkedSub(0, 1)
+}
+
+@test
+@expectPanic("attempt to multiply with overflow")
+func multiplyOverflow() {
+    let _ = checkedMul(128, 2)
+}
+
+@test
+@expectPanic("attempt to divide with overflow")
+func divideOverflow() {
+    let minimum = (1 as int64) << 63
+    let _ = checkedDivSigned(minimum, -1)
+}
+
+@test
+@expectPanic("attempt to divide by zero")
+func divideByZero() {
+    let _ = checkedDivUnsigned(10, 0)
+}
+
+@test
+@expectPanic("attempt to calculate the remainder with overflow")
+func remainderOverflow() {
+    let minimum = (1 as int64) << 63
+    let _ = checkedRemSigned(minimum, -1)
+}
+
+@test
+@expectPanic("attempt to calculate the remainder with a divisor of zero")
+func remainderByZero() {
+    let _ = checkedRemUnsigned(10, 0)
+}
+
+@test
+@expectPanic("attempt to shift left with overflow")
+func shiftLeftOverflow() {
+    let _ = checkedShl(1, 64)
+}
+
+@test
+@expectPanic("attempt to shift right with overflow")
+func shiftRightOverflow() {
+    let _ = checkedShr(1, 64)
+}
+
+@test
+@expectPanic("attempt to negate with overflow")
+func negateOverflow() {
+    let minimum = (1 as int32) << 31
+    let _ = checkedNeg(minimum)
+}

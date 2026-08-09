@@ -3,9 +3,8 @@ extern "taro_intrinsic" {
 }
 
 func main() {
-    // LLVM 16's AArch64 GlobalISel crashed on this intrinsic. The strict
-    // codegen matrix now proves LLVM 22 lowers it without selector fallback.
+    // Debug GlobalISel lowers this intrinsic without selector fallback.
     let value = unsafe { __intrinsic_powi_f64_i32(2.0 as double, 3_i32) }
     assert(value == 8.0 as double, "debug codegen should lower powi")
-    std.print("PASS: LLVM 22 GlobalISel debug codegen\n")
+    std.print("PASS: GlobalISel intrinsic codegen\n")
 }

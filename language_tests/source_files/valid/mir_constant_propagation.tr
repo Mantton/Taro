@@ -1,7 +1,0 @@
-func main() {
-    if true {
-        print("constant branch selected\n")
-    } else {
-        print("unreachable branch\n")
-    }
-}

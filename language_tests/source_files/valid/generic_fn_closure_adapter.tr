@@ -1,6 +1,4 @@
-// Regression coverage for deferred callable conformance and synthetic Fn adapters.
-// The closure owns a non-Copy aggregate but only copies one field from it, so
-// it remains reusable and must be callable through a generic Fn bound.
+// A reusable closure with an owned non-Copy capture satisfies a generic Fn bound.
 
 struct Holder {
     value: int32

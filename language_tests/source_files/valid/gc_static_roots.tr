@@ -1,0 +1,27 @@
+// Typed static roots retain managed values across collections.
+static var STATIC_TEXT: string = ""
+
+func seedStaticText() {
+    STATIC_TEXT = std.sprintf("static root %v", 12345)
+}
+
+func churnAllocations() {
+    var i: usize = 0
+    var total: usize = 0
+    while i < 50000 {
+        let rendered = std.sprintf("churn %v", i)
+        total = total + std.string.stringLen(rendered)
+        i += 1
+    }
+    assert(total > 0, "allocation churn should run")
+}
+
+func main() {
+    seedStaticText()
+    std.runtime.collect()
+    churnAllocations()
+    std.runtime.collect()
+
+    assert(STATIC_TEXT == "static root 12345", "static GC root should retain formatted string")
+    print("PASS: GC static roots\n")
+}

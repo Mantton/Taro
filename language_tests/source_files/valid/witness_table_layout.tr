@@ -1,15 +1,5 @@
-// Test: witness-table layout for interfaces whose requirement lists contain
-// non-dispatchable methods (static methods and generic methods).
-//
-// Only methods that take `self` and have no method-level generics occupy
-// witness-table slots. The table writer, the table's struct type, superface
-// pointer offsets, and sema slot numbering must all agree on that filtered
-// numbering. They previously diverged: any interface mixing a non-self method
-// with a superface produced a malformed table and segfaulted at runtime
-// when the superface pointer was read past the initialized fields.
-//
-// The calls below go through opaque function boundaries so the devirtualizer
-// cannot optimize the virtual dispatch away (which would mask layout bugs).
+// Witness-table writers, readers, and superface offsets agree on dispatchable slots.
+// Opaque call boundaries keep the calls virtual during optimization.
 
 interface Area {
     func area(&self) -> int32

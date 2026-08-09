@@ -1,14 +1,6 @@
 // EXPECT_EXIT: 101
 // EXPECT_STDERR_CONTAINS: panic: stack overflow
-//
-// Test: exhausting the stack is reported instead of killing the process.
-//
-// Regression: nothing installed a handler for the guard-page fault a stack
-// overflow raises, so the default action terminated the process with a bare
-// SIGSEGV — no message, and an exit status indistinguishable from memory
-// corruption. Rust's standard library installs that handler from `std::rt::init`,
-// which a Taro binary never reaches: `main` is emitted by codegen and calls
-// `taro_start` directly.
+// Stack exhaustion reports a Taro panic instead of an unhandled guard-page fault.
 
 func descend(_ n: int64) -> int64 {
     if n == 0 {

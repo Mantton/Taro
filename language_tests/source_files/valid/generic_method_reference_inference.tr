@@ -1,0 +1,23 @@
+// Generic methods infer parameters through referenced arguments.
+interface GenericMethodValue {}
+
+struct GenericMethodItem {}
+
+impl GenericMethodValue for GenericMethodItem {}
+
+struct GenericMethodContainer[State] {
+    state: State
+}
+
+impl[State] GenericMethodContainer[State] {
+    func accepts[Value: GenericMethodValue](&mut self, _ value: &Value) -> bool {
+        true
+    }
+}
+
+func main() {
+    var container = GenericMethodContainer[int32] { state: 1 }
+    let item = GenericMethodItem {}
+    assert(container.accepts(&item), "generic method should infer its referenced argument")
+    print("PASS: generic method reference inference\n")
+}

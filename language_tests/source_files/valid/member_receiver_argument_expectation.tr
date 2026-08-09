@@ -1,11 +1,4 @@
-// Test: a method called on a field receiver still gets argument expectations.
-//
-// Regression: `synth_member_expression` always returned a fresh inference
-// variable and left the field type to a deferred goal. A method call reads its
-// receiver's type immediately to build argument expectations, so
-// `holder.field.method(.case(...))` saw an unresolved receiver, supplied no
-// expectation, and failed with "type annotations needed" — while the same call
-// on a local variable worked.
+// Method calls derive argument expectations from field and projected receivers.
 
 enum Kind {
     case identifier(string)

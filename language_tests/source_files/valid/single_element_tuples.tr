@@ -21,5 +21,10 @@ func main() {
     assert(inner.0 == 1, "nested single-element tuple access")
     assert(nested.1 == 2, "outer tuple second element")
 
+    let pair = (1, (2, 3))
+    let (first, (second, _)) = pair
+    assert(first == 1, "nested tuple outer binding")
+    assert(second == 2, "nested tuple inner binding")
+
     std.print("PASS: Single-element tuples\n")
 }

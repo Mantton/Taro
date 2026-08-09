@@ -1,0 +1,18 @@
+// Heap placement preserves the destination of an enum discriminant write.
+
+enum ReferenceChoice: std.marker.Copy, std.ops.PartialEq {
+    case first
+    case second
+}
+
+impl ReferenceChoice {
+    func isFirst(&self) -> bool {
+        *self == ReferenceChoice.first
+    }
+}
+
+func main() {
+    let choice = ReferenceChoice.first
+    assert(choice.isFirst(), "enum comparison through a reference should preserve the literal")
+    print("PASS: heapified enum discriminant\n")
+}

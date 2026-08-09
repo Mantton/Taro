@@ -157,10 +157,14 @@ func testMixedSignednessCasts() {
     let e: int64 = -1
     assert((e as uint8) == 255, "int64 truncates to uint8")
 
-    // Rune sources widen as unsigned values.
     let r = 'A'
+    assert((r as uint32) == 65, "rune widens to uint32")
     assert((r as int64) == 65, "rune widens to int64")
     assert((r as uint64) == 65, "rune widens to uint64")
+
+    let byte: uint8 = 255
+    let codepoint = byte as rune
+    assert(codepoint == '\u{00FF}', "uint8 converts to the same rune value")
 }
 
 func testNegativeLiteralInference() {

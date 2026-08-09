@@ -1,0 +1,77 @@
+// Virtual calls and witness thunks agree on indirect aggregate arguments.
+
+const LEN: usize = 512
+
+struct Big: Copy {
+    data: [int64; LEN]
+}
+
+func makeBig(_ seed: int64) -> Big {
+    var out = Big { data: [0; LEN] }
+    var i: usize = 0
+    while i < LEN {
+        out.data.set(i, seed + i as int64)
+        i += 1
+    }
+    return out
+}
+
+func checksum(_ input: Big) -> int64 {
+    var total: int64 = 0
+    var i: usize = 0
+    while i < LEN {
+        total += *input.data.at(i)
+        i += 1
+    }
+    return total
+}
+
+interface Summer {
+    func sum(&self, _ big: Big) -> int64
+    func boosted(&self, _ big: Big) -> Big
+}
+
+struct Calculator {
+    bias: int64
+}
+
+impl Summer for Calculator {
+    func sum(&self, _ big: Big) -> int64 {
+        var total: int64 = self.bias
+        var i: usize = 0
+        while i < LEN {
+            total += *big.data.at(i)
+            i += 1
+        }
+        return total
+    }
+
+    // Indirect return and indirect argument at the same time: the sret
+    // pointer occupies the first parameter slot, the existential data
+    // pointer the second, and the argument pointer the third.
+    func boosted(&self, _ big: Big) -> Big {
+        var out = Big { data: [0; LEN] }
+        var i: usize = 0
+        while i < LEN {
+            out.data.set(i, *big.data.at(i) + self.bias)
+            i += 1
+        }
+        return out
+    }
+}
+
+func main() {
+    let summer: any Summer = Calculator { bias: 7 }
+    let big = makeBig(1)
+
+    // Elements are 1..=512, so the checksum is 512 * 513 / 2 = 131328.
+    let total = summer.sum(big)
+    assert(total == 131335, "virtual call should pass the large argument indirectly")
+
+    let boosted = summer.boosted(big)
+    assert(checksum(boosted) == 131328 + 512 * 7, "boosted checksum should add the bias per element")
+    assert(*boosted.data.at(0) == 8, "first element should be 1 + bias")
+    assert(*boosted.data.at(LEN - 1) == 519, "last element should be 512 + bias")
+
+    print("PASS: virtual call indirect argument\n")
+}
