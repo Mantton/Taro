@@ -46,10 +46,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         source: LexicalScopeSource<'a>,
         work: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        self.scopes.push(LexicalScope::new(source));
-        let result = work(self);
-        self.scopes.pop();
-        result
+        self.with_built_scope(LexicalScope::new(source), work)
     }
 
     fn with_built_scope<T>(
@@ -64,11 +61,32 @@ impl<'r, 'a> Actor<'r, 'a> {
     }
 
     fn with_scope<T>(&mut self, scope: Scope<'a>, work: impl FnOnce(&mut Self) -> T) -> T {
-        self.scopes
-            .push(LexicalScope::new(LexicalScopeSource::Scoped(scope)));
-        let result = work(self);
-        self.scopes.pop();
-        result
+        self.with_scope_source(LexicalScopeSource::Scoped(scope), work)
+    }
+
+    fn with_definition_generics(
+        &mut self,
+        id: NodeID,
+        generics: &ast::Generics,
+        work: impl FnOnce(&mut Self),
+    ) {
+        let def_id = self.resolver.definition_id(id);
+        let self_binding = match self.resolver.definition_kind(def_id) {
+            DefinitionKind::Struct | DefinitionKind::Enum => {
+                Some(Resolution::SelfTypeAlias(def_id))
+            }
+            DefinitionKind::Interface => Some(Resolution::InterfaceSelfTypeParameter(def_id)),
+            _ => None,
+        };
+        self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
+            this.with_generics_scope(generics, |this| {
+                if let Some(binding) = self_binding {
+                    this.with_self_alias_scope(binding, work);
+                } else {
+                    work(this);
+                }
+            });
+        });
     }
 
     fn with_generics_scope(&mut self, generics: &ast::Generics, work: impl FnOnce(&mut Self)) {
@@ -303,89 +321,45 @@ impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_declaration(&mut self, declaration: &ast::Declaration) {
         match &declaration.kind {
             ast::DeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
-            | ast::DeclarationKind::Function(ast::Function { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        ast::walk_declaration(this, declaration)
-                    });
-                })
-            }
-            ast::DeclarationKind::Interface(node) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                let self_res = Resolution::InterfaceSelfTypeParameter(def_id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(&node.generics, |this| {
-                        this.with_self_alias_scope(self_res, |this| {
-                            ast::walk_declaration(this, declaration)
-                        });
-                    });
-                })
-            }
-            ast::DeclarationKind::Enum(ast::Enum { generics, .. })
+            | ast::DeclarationKind::Function(ast::Function { generics, .. })
+            | ast::DeclarationKind::Interface(ast::Interface { generics, .. })
+            | ast::DeclarationKind::Enum(ast::Enum { generics, .. })
             | ast::DeclarationKind::Struct(ast::Struct { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                let self_res = Resolution::SelfTypeAlias(def_id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        this.with_self_alias_scope(self_res, |this| {
-                            ast::walk_declaration(this, declaration)
-                        });
-                    });
-                })
+                self.with_definition_generics(declaration.id, generics, |this| {
+                    ast::walk_declaration(this, declaration)
+                });
             }
-            ast::DeclarationKind::StaticVariable(..)
-            | ast::DeclarationKind::Constant(..)
-            | ast::DeclarationKind::Import(..)
-            | ast::DeclarationKind::Export(..) => ast::walk_declaration(self, declaration),
             ast::DeclarationKind::Namespace(..) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let scope = self.resolver.get_definition_scope(def_id);
-                self.with_scope(scope, |this| ast::walk_declaration(this, declaration))
+                self.with_scope(scope, |this| ast::walk_declaration(this, declaration));
             }
-            ast::DeclarationKind::ExternBlock(..) => ast::walk_declaration(self, declaration),
             ast::DeclarationKind::Impl(node) => self.resolve_impl(declaration.id, node),
+            ast::DeclarationKind::StaticVariable(..)
+            | ast::DeclarationKind::Constant(..)
+            | ast::DeclarationKind::Import(..)
+            | ast::DeclarationKind::Export(..)
+            | ast::DeclarationKind::ExternBlock(..) => ast::walk_declaration(self, declaration),
         }
     }
 
     fn resolve_extern_declaration(&mut self, declaration: &ast::ExternDeclaration) {
-        match &declaration.kind {
-            ast::ExternDeclarationKind::Function(ast::Function { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        ast::walk_extern_declaration(this, declaration)
-                    });
-                })
-            }
-            ast::ExternDeclarationKind::Type(_) => {
-                // Opaque types have no body to resolve
-            }
+        if let ast::ExternDeclarationKind::Function(function) = &declaration.kind {
+            self.with_definition_generics(declaration.id, &function.generics, |this| {
+                ast::walk_extern_declaration(this, declaration)
+            });
         }
     }
 
     fn resolve_function_declaration(&mut self, declaration: &ast::FunctionDeclaration) {
         match &declaration.kind {
             ast::FunctionDeclarationKind::Enum(ast::Enum { generics, .. })
-            | ast::FunctionDeclarationKind::Struct(ast::Struct { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                let self_res = Resolution::SelfTypeAlias(def_id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        this.with_self_alias_scope(self_res, |this| {
-                            ast::walk_function_declaration(this, declaration)
-                        });
-                    });
-                })
-            }
-            ast::FunctionDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
+            | ast::FunctionDeclarationKind::Struct(ast::Struct { generics, .. })
+            | ast::FunctionDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
             | ast::FunctionDeclarationKind::Function(ast::Function { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        ast::walk_function_declaration(this, declaration)
-                    });
-                })
+                self.with_definition_generics(declaration.id, generics, |this| {
+                    ast::walk_function_declaration(this, declaration)
+                });
             }
             ast::FunctionDeclarationKind::Constant(..)
             | ast::FunctionDeclarationKind::Import(..) => {
@@ -397,43 +371,20 @@ impl<'r, 'a> Actor<'r, 'a> {
     fn resolve_namespace_declaration(&mut self, declaration: &ast::NamespaceDeclaration) {
         match &declaration.kind {
             ast::NamespaceDeclarationKind::Enum(ast::Enum { generics, .. })
-            | ast::NamespaceDeclarationKind::Struct(ast::Struct { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                let self_res = Resolution::SelfTypeAlias(def_id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        this.with_self_alias_scope(self_res, |this| {
-                            ast::walk_namespace_declaration(this, declaration)
-                        });
-                    });
-                })
-            }
-            ast::NamespaceDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
-            | ast::NamespaceDeclarationKind::Function(ast::Function { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        ast::walk_namespace_declaration(this, declaration)
-                    });
-                })
-            }
-            ast::NamespaceDeclarationKind::Interface(node) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                let self_res = Resolution::InterfaceSelfTypeParameter(def_id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(&node.generics, |this| {
-                        this.with_self_alias_scope(self_res, |this| {
-                            ast::walk_namespace_declaration(this, declaration)
-                        });
-                    });
-                })
+            | ast::NamespaceDeclarationKind::Struct(ast::Struct { generics, .. })
+            | ast::NamespaceDeclarationKind::TypeAlias(ast::TypeAlias { generics, .. })
+            | ast::NamespaceDeclarationKind::Function(ast::Function { generics, .. })
+            | ast::NamespaceDeclarationKind::Interface(ast::Interface { generics, .. }) => {
+                self.with_definition_generics(declaration.id, generics, |this| {
+                    ast::walk_namespace_declaration(this, declaration)
+                });
             }
             ast::NamespaceDeclarationKind::Namespace(..) => {
                 let def_id = self.resolver.definition_id(declaration.id);
                 let scope = self.resolver.get_definition_scope(def_id);
                 self.with_scope(scope, |this| {
                     ast::walk_namespace_declaration(this, declaration)
-                })
+                });
             }
             ast::NamespaceDeclarationKind::StaticVariable(..)
             | ast::NamespaceDeclarationKind::Constant(..)
@@ -450,42 +401,31 @@ impl<'r, 'a> Actor<'r, 'a> {
         ctx: AssocContext,
     ) {
         match &declaration.kind {
-            ast::AssociatedDeclarationKind::Constant(..) => {
-                ast::walk_assoc_declaration(self, declaration, ctx);
-            }
             ast::AssociatedDeclarationKind::AssociatedType(ast::TypeAlias { generics, .. }) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(generics, |this| {
-                        ast::walk_assoc_declaration(this, declaration, ctx);
-                    });
-                })
+                self.with_definition_generics(declaration.id, generics, |this| {
+                    ast::walk_assoc_declaration(this, declaration, ctx)
+                });
             }
             ast::AssociatedDeclarationKind::Function(function) => {
-                let def_id = self.resolver.definition_id(declaration.id);
-                self.with_scope_source(LexicalScopeSource::Definition(def_id), |this| {
-                    this.with_generics_scope(&function.generics, |this| {
-                        if matches!(ctx, AssocContext::Impl(..)) {
-                            if let Some(pos) = explicit_self_param_position(
-                                &function.signature,
-                                this.resolver.context,
-                            ) {
-                                if pos != 0 {
-                                    this.resolver.dcx().emit_error(
-                                        "`self` must be the first parameter of a method"
-                                            .to_string(),
-                                        Some(declaration.span),
-                                    );
-                                }
+                self.with_definition_generics(declaration.id, &function.generics, |this| {
+                    if matches!(ctx, AssocContext::Impl(..)) {
+                        if let Some(pos) =
+                            explicit_self_param_position(&function.signature, this.resolver.context)
+                        {
+                            if pos != 0 {
+                                this.resolver.dcx().emit_error(
+                                    "`self` must be the first parameter of a method".to_string(),
+                                    Some(declaration.span),
+                                );
                             }
                         }
-
-                        ast::walk_assoc_declaration(this, declaration, ctx);
-                    });
-                })
+                    }
+                    ast::walk_assoc_declaration(this, declaration, ctx);
+                });
             }
-            ast::AssociatedDeclarationKind::Property(..) => {
-                ast::walk_assoc_declaration(self, declaration, ctx);
+            ast::AssociatedDeclarationKind::Constant(..)
+            | ast::AssociatedDeclarationKind::Property(..) => {
+                ast::walk_assoc_declaration(self, declaration, ctx)
             }
         }
     }

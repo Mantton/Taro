@@ -57,7 +57,6 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
                 },
                 ScopeNamespace::Type,
                 Resolution::Definition(id, DefinitionKind::Module),
-                0,
             );
         }
 
@@ -98,12 +97,8 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
     }
 
     fn visit_function_declaration(&mut self, node: &ast::FunctionDeclaration) -> Self::Result {
-        let scope = self.define_function_declaration(node);
-        if let Some(scope) = scope {
-            self.with_scope(scope, |this| ast::walk_function_declaration(this, node));
-        } else {
-            ast::walk_function_declaration(self, node)
-        }
+        self.define_function_declaration(node);
+        ast::walk_function_declaration(self, node)
     }
 
     fn visit_assoc_declaration(
@@ -115,41 +110,12 @@ impl<'r, 'a> AstVisitor for Actor<'r, 'a> {
             return;
         }
 
-        let scope = self.define_assoc_declaration(node);
-        if let Some(scope) = scope {
-            self.with_scope(scope, |this| {
-                ast::walk_assoc_declaration(this, node, context)
-            });
-        } else {
-            ast::walk_assoc_declaration(self, node, context)
-        }
+        self.define_named_declaration(node.id, &node.identifier);
+        ast::walk_assoc_declaration(self, node, context)
     }
 
     fn visit_extern_declaration(&mut self, node: &ast::ExternDeclaration) -> Self::Result {
-        let def_id = self.resolver.definition_id(node.id);
-        let def_kind = self.resolver.definition_kind(def_id);
-        let resolution = Resolution::Definition(def_id, def_kind);
-        let visibility = 0;
-
-        match &node.kind {
-            ast::ExternDeclarationKind::Function(..) => {
-                self.define(
-                    &node.identifier,
-                    ScopeNamespace::Value,
-                    resolution,
-                    visibility,
-                );
-            }
-            ast::ExternDeclarationKind::Type(_) => {
-                self.define(
-                    &node.identifier,
-                    ScopeNamespace::Type,
-                    resolution,
-                    visibility,
-                );
-            }
-        }
-
+        self.define_named_declaration(node.id, &node.identifier);
         ast::walk_extern_declaration(self, node)
     }
 
@@ -193,158 +159,70 @@ impl<'r, 'a> Actor<'r, 'a> {
 
 impl<'r, 'a> Actor<'r, 'a> {
     fn define_module_declaration(&mut self, declaration: &ast::Declaration) -> Option<Scope<'a>> {
-        let def_id = self.resolver.definition_id(declaration.id);
-        let def_kind = self.resolver.definition_kind(def_id);
-        let resolution = Resolution::Definition(def_id, def_kind);
-        let identifier = &declaration.identifier;
-        let visibility = 0;
-
         match &declaration.kind {
-            ast::DeclarationKind::Struct(_) => {
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-            }
-            ast::DeclarationKind::Enum(..) | ast::DeclarationKind::TypeAlias(..) => {
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-            }
-            ast::DeclarationKind::Function(..)
-            | ast::DeclarationKind::StaticVariable(..)
-            | ast::DeclarationKind::Constant(..) => {
-                self.define(identifier, ScopeNamespace::Value, resolution, visibility);
-            }
-            ast::DeclarationKind::ExternBlock(..) => return None,
-            ast::DeclarationKind::Impl(_) => return None,
-            ast::DeclarationKind::Interface(..) => {
-                let scope = ScopeData::new(
-                    ScopeKind::Definition(def_id, DefinitionKind::Interface),
-                    self.scopes.current,
-                );
-                let scope = self.create_scope(scope);
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-                return Some(scope);
-            }
-            ast::DeclarationKind::Namespace(..) => {
-                let scope = ScopeData::new(
-                    ScopeKind::Definition(def_id, DefinitionKind::Namespace),
-                    self.scopes.current,
-                );
-                let scope = self.create_scope(scope);
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-                return Some(scope);
-            }
-
-            ast::DeclarationKind::Import(node) => {
-                self.define_use_tree(declaration.id, node, true);
-            }
-            ast::DeclarationKind::Export(node) => {
-                self.define_use_tree(declaration.id, node, false);
-            }
+            ast::DeclarationKind::Import(tree) => self.define_use_tree(declaration.id, tree, true),
+            ast::DeclarationKind::Export(tree) => self.define_use_tree(declaration.id, tree, false),
+            ast::DeclarationKind::Impl(_) | ast::DeclarationKind::ExternBlock(_) => {}
+            _ => return self.define_named_declaration(declaration.id, &declaration.identifier),
         }
-
-        return None;
+        None
     }
 
     fn define_namespace_declaration(
         &mut self,
         declaration: &ast::NamespaceDeclaration,
     ) -> Option<Scope<'a>> {
-        let def_id = self.resolver.definition_id(declaration.id);
-        let def_kind = self.resolver.definition_kind(def_id);
-        let resolution = Resolution::Definition(def_id, def_kind);
-        let identifier = &declaration.identifier;
-        let visibility = 0;
-
         match &declaration.kind {
-            ast::NamespaceDeclarationKind::Struct(..)
-            | ast::NamespaceDeclarationKind::Enum(..)
-            | ast::NamespaceDeclarationKind::TypeAlias(..) => {
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
+            ast::NamespaceDeclarationKind::Import(tree) => {
+                self.define_use_tree(declaration.id, tree, true)
             }
-
-            ast::NamespaceDeclarationKind::Function(..)
-            | ast::NamespaceDeclarationKind::StaticVariable(..)
-            | ast::NamespaceDeclarationKind::Constant(..) => {
-                self.define(identifier, ScopeNamespace::Value, resolution, visibility);
+            ast::NamespaceDeclarationKind::Export(tree) => {
+                self.define_use_tree(declaration.id, tree, false)
             }
-
-            ast::NamespaceDeclarationKind::Namespace(..) => {
-                let scope = ScopeData::new(
-                    ScopeKind::Definition(def_id, DefinitionKind::Namespace),
-                    self.scopes.current,
-                );
-                let scope = self.create_scope(scope);
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-                return Some(scope);
-            }
-            ast::NamespaceDeclarationKind::Interface(..) => {
-                let scope = ScopeData::new(
-                    ScopeKind::Definition(def_id, DefinitionKind::Interface),
-                    self.scopes.current,
-                );
-                let scope = self.create_scope(scope);
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-                return Some(scope);
-            }
-            ast::NamespaceDeclarationKind::Import(node) => {
-                self.define_use_tree(declaration.id, node, true);
-            }
-            ast::NamespaceDeclarationKind::Export(node) => {
-                self.define_use_tree(declaration.id, node, false);
-            }
+            _ => return self.define_named_declaration(declaration.id, &declaration.identifier),
         }
-
-        return None;
+        None
     }
 
-    fn define_function_declaration(
-        &mut self,
-        declaration: &ast::FunctionDeclaration,
-    ) -> Option<Scope<'a>> {
-        let def_id = self.resolver.definition_id(declaration.id);
-        let def_kind = self.resolver.definition_kind(def_id);
-        let resolution = Resolution::Definition(def_id, def_kind);
-        let identifier = &declaration.identifier;
-        let visibility = 0;
-        match &declaration.kind {
-            ast::FunctionDeclarationKind::Struct(..)
-            | ast::FunctionDeclarationKind::Enum(..)
-            | ast::FunctionDeclarationKind::TypeAlias(..) => {
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-            }
-
-            ast::FunctionDeclarationKind::Function(..)
-            | ast::FunctionDeclarationKind::Constant(..) => {
-                self.define(identifier, ScopeNamespace::Value, resolution, visibility);
-            }
-            ast::FunctionDeclarationKind::Import(node) => {
-                self.define_use_tree(declaration.id, node, true);
-            }
+    fn define_function_declaration(&mut self, declaration: &ast::FunctionDeclaration) {
+        if let ast::FunctionDeclarationKind::Import(tree) = &declaration.kind {
+            self.define_use_tree(declaration.id, tree, true);
+        } else {
+            self.define_named_declaration(declaration.id, &declaration.identifier);
         }
-
-        return None;
     }
 
-    fn define_assoc_declaration(
+    fn define_named_declaration(
         &mut self,
-        declaration: &ast::AssociatedDeclaration,
+        node: NodeID,
+        identifier: &Identifier,
     ) -> Option<Scope<'a>> {
-        let def_id = self.resolver.definition_id(declaration.id);
-        let def_kind = self.resolver.definition_kind(def_id);
-        let resolution = Resolution::Definition(def_id, def_kind);
-        let identifier = &declaration.identifier;
-        let visibility = 0;
-
-        match &declaration.kind {
-            ast::AssociatedDeclarationKind::Constant(..)
-            | ast::AssociatedDeclarationKind::Function(..)
-            | ast::AssociatedDeclarationKind::Property(..) => {
-                self.define(identifier, ScopeNamespace::Value, resolution, visibility);
-            }
-            ast::AssociatedDeclarationKind::AssociatedType(..) => {
-                self.define(identifier, ScopeNamespace::Type, resolution, visibility);
-            }
-        }
-
-        return None;
+        let def_id = self.resolver.definition_id(node);
+        let kind = self.resolver.definition_kind(def_id);
+        let (namespace, scoped) = match kind {
+            DefinitionKind::Struct
+            | DefinitionKind::Enum
+            | DefinitionKind::TypeAlias
+            | DefinitionKind::AssociatedType
+            | DefinitionKind::OpaqueType => (ScopeNamespace::Type, false),
+            DefinitionKind::Interface | DefinitionKind::Namespace => (ScopeNamespace::Type, true),
+            DefinitionKind::Function
+            | DefinitionKind::ModuleVariable
+            | DefinitionKind::Constant
+            | DefinitionKind::AssociatedFunction
+            | DefinitionKind::AssociatedOperator
+            | DefinitionKind::AssociatedConstant
+            | DefinitionKind::AssociatedProperty => (ScopeNamespace::Value, false),
+            _ => unreachable!("non-declaration kind in named declaration: {kind:?}"),
+        };
+        let scope = scoped.then(|| {
+            self.create_scope(ScopeData::new(
+                ScopeKind::Definition(def_id, kind),
+                self.scopes.current,
+            ))
+        });
+        self.define(identifier, namespace, Resolution::Definition(def_id, kind));
+        scope
     }
 }
 impl<'r, 'a> Actor<'r, 'a> {
@@ -353,7 +231,6 @@ impl<'r, 'a> Actor<'r, 'a> {
         identifier: &Identifier,
         namespace: ScopeNamespace,
         resolution: Resolution,
-        _visibility: usize,
     ) {
         let Some(current_scope) = self.scopes.current else {
             return;
@@ -413,14 +290,7 @@ impl<'r, 'a> Actor<'r, 'a> {
         match &tree.kind {
             UseTreeKind::Glob => {
                 let kind = UsageKind::Glob { id };
-                self.define_usage(
-                    id,
-                    scope,
-                    tree.path.nodes.clone(),
-                    kind,
-                    is_import,
-                    tree.span,
-                );
+                self.define_usage(scope, tree.path.nodes.clone(), kind, is_import, tree.span);
             }
             UseTreeKind::Simple { alias } => {
                 let mut module_path = tree.path.nodes.clone();
@@ -437,7 +307,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                     target,
                 };
                 let kind = UsageKind::Single(binding);
-                self.define_usage(id, scope, module_path, kind, is_import, tree.span);
+                self.define_usage(scope, module_path, kind, is_import, tree.span);
             }
             UseTreeKind::Nested { nodes, span } => {
                 if nodes.is_empty() {
@@ -459,7 +329,7 @@ impl<'r, 'a> Actor<'r, 'a> {
                         target,
                     };
                     let kind = UsageKind::Single(binding);
-                    self.define_usage(id, scope, module_path, kind, is_import, *span);
+                    self.define_usage(scope, module_path, kind, is_import, *span);
                 }
             }
         }
@@ -467,7 +337,6 @@ impl<'r, 'a> Actor<'r, 'a> {
 
     fn define_usage(
         &mut self,
-        _node_id: NodeID,
         scope: Scope<'a>,
         module_path: Vec<Identifier>,
         kind: UsageKind,
