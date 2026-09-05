@@ -8,6 +8,23 @@ struct CapacityWideElement {
     right: uint64
 }
 
+@test
+func testWideListInitialCapacityAndGrowth() {
+    var wide: List[CapacityWideElement] = List()
+    wide.append(CapacityWideElement { left: 11, right: 12 })
+    wide.append(CapacityWideElement { left: 21, right: 22 })
+    std.testing.assertEqual(wide.capacity(), 2 as usize, "wide pairs should fit one small buffer")
+    wide.append(CapacityWideElement { left: 31, right: 32 })
+    std.runtime.collect()
+    std.testing.assertEqual(wide.len(), 3 as usize, "growth preserves length")
+    std.testing.assertEqual(wide.at(0).left, 11 as uint64, "growth preserves first element")
+    std.testing.assertEqual(wide.at(1).right, 22 as uint64, "growth preserves second element")
+    std.testing.assertEqual(wide.at(2).left, 31 as uint64, "growth writes third element")
+    var scalar: List[int32] = List()
+    scalar.append(1)
+    std.testing.assertEqual(scalar.capacity(), 4 as usize, "scalar lists retain four slots")
+}
+
 func sumRef(_ list: &List[int32]) -> int32 {
     var sum: int32 = 0
     for x in list {

@@ -7,6 +7,7 @@ import std.optional.Optional
 import std.collections.List
 import std.rune.replacementCharacter
 import std.intrinsic.{
+    __intrinsic_memcpy,
     __intrinsic_string_from_parts,
     __intrinsic_string_data,
     __intrinsic_string_len,
@@ -148,6 +149,13 @@ func trimEndByteIndex(_ value: string, _ start: usize) -> usize {
     return end
 }
 
+// Copying supports unaligned string data; native byte order suffices for equality.
+func equalityWord(_ data: *const uint8) -> uint64 {
+    var word: uint64 = 0
+    unsafe { __intrinsic_memcpy((&mut word as *mut uint64) as *mut uint8, data, 8 as usize) }
+    return word
+}
+
 func stringEq(_ lhs: string, _ rhs: string) -> bool {
     let lhs_len = stringLen(lhs)
     let rhs_len = stringLen(rhs)
@@ -161,6 +169,16 @@ func stringEq(_ lhs: string, _ rhs: string) -> bool {
     let lhs_ptr = stringData(lhs)
     let rhs_ptr = stringData(rhs)
     var idx: usize = 0
+
+    // Read full words only within both strings, then compare the remaining bytes.
+    if lhs_len >= 8 {
+        while lhs_len - idx >= 8 {
+            if equalityWord(lhs_ptr.add(idx)) != equalityWord(rhs_ptr.add(idx)) {
+                return false
+            }
+            idx += 8
+        }
+    }
 
     while idx < lhs_len {
         if lhs_ptr.add(idx).read() != rhs_ptr.add(idx).read() {

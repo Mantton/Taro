@@ -99,6 +99,36 @@ func testDeletedSlotCanBeReused() {
 }
 
 @test
+func testSmallCollisionTableGrowsAfterTombstoneReuse() {
+    var dict: [CollisionKey: int32] = [:]
+    var id: int32 = 0
+    while id < 6 {
+        let _ = dict.insert(key: CollisionKey { id }, value: id + 100)
+        id += 1
+    }
+    let _ = dict.remove(&CollisionKey { id: 1 })
+    let _ = dict.remove(&CollisionKey { id: 4 })
+    while id < 13 {
+        let _ = dict.insert(key: CollisionKey { id }, value: id + 100)
+        id += 1
+    }
+    std.testing.assertEqual(dict.len(), 11 as usize, "growth must preserve live entries after tombstone reuse")
+    id = 0
+    while id < 13 {
+        let found = dict.get(&CollisionKey { id })
+        if id == 1 || id == 4 {
+            std.testing.assertTrue(found.isNone(), "removed collision key must stay absent after growth")
+        } else {
+            std.testing.assertEqual(*found.unwrap(), id + 100, "collision key must survive growth")
+        }
+        id += 1
+    }
+    let previous = dict.insert(key: CollisionKey { id: 3 }, value: 999)
+    std.testing.assertEqual(previous.unwrap(), 103, "overwrite must return the previous value")
+    std.testing.assertEqual(dict.len(), 11 as usize, "overwrite must not change length")
+}
+
+@test
 func testGrowthThresholdAndOverwrite() {
     var dict: [int32: int32] = [:]
 

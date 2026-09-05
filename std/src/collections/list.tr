@@ -28,7 +28,14 @@ func nextListCapacity[Element](_ current: usize, _ required: usize) -> usize {
         listCapacityOverflow()
     }
 
-    var newCap = if current == 0 { LIST_INITIAL_CAPACITY } else { current }
+    // Keep the first buffer small for wider elements, while still fitting a
+    // pair without a second allocation. Scalar lists retain four initial slots.
+    let initialCapacity = if sizeOf[Element]() > (8 as usize) {
+        2 as usize
+    } else {
+        LIST_INITIAL_CAPACITY
+    }
+    var newCap = if current == 0 { initialCapacity } else { current }
     if newCap > maxCapacity {
         newCap = required
     }
@@ -161,6 +168,7 @@ impl[Element] FromIterator for List[Element] {
 }
 
 impl[Element] List[Element] {
+    @inline
     public func append(&mut self, _ item: Element) {
         let nextLen = checkedListLenAfterInsert(self.len)
         if self.len >= self.cap {

@@ -37,6 +37,31 @@ func useHasher[H: Hasher](_ hasher: &mut H) -> uint64 {
 }
 
 @test
+func testSipHash13EverySplitAcrossFullWords() {
+    let data: [uint8; 33] = [
+        99, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    ]
+    // Start at an odd address and cover every boundary, including empty chunks.
+    let all = data.asSpan().slice(1, 32)
+    var length: usize = 0
+    while length <= (32 as usize) {
+        var single = DefaultHasher.new(KEY0, KEY1)
+        single.write(all.slice(0, length))
+        let expected = single.finish()
+        var split: usize = 0
+        while split <= length {
+            var chunked = DefaultHasher.new(KEY0, KEY1)
+            chunked.write(all.slice(0, split))
+            chunked.write(all.slice(split, length - split))
+            std.testing.assertEqual(chunked.finish(), expected, "split hashing must preserve full words and tails")
+            split += 1
+        }
+        length += 1
+    }
+}
+
+@test
 func testSipHash13KnownVectorsUpTo16() {
     let data: [uint8; 17] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     let all = data.asSpan()

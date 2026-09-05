@@ -11,3 +11,49 @@ func testStringEqualityEdgeCases() {
     std.testing.assertTrue(a == b, "same value equality")
     std.testing.assertTrue(!(a == c), "different value inequality")
 }
+
+func equalityTestStorage(_ length: usize, _ prefix: usize, _ mismatch: usize) -> string {
+    var builder = std.string.Builder()
+    var index: usize = 0
+    while index < prefix { builder.writeByte(255_u8); index += 1 }
+    index = 0
+    while index < length {
+        let byte = if index == mismatch { 254_u8 } else { (index % 128) as uint8 }
+        builder.writeByte(byte)
+        index += 1
+    }
+    return builder.intoString()
+}
+
+@test
+func testStringEqualityWordBoundariesAndUnalignedData() {
+    var length: usize = 0
+    while length <= 40 {
+        let expected = equalityTestStorage(length, 0, length)
+        var offset: usize = 0
+        while offset < 8 {
+            let backing = equalityTestStorage(length, offset, length)
+            // Construct an interior string explicitly: substring currently copies.
+            let interior = unsafe { std.string.stringFromParts(
+                std.string.stringData(backing).add(offset) as *mut uint8, length) }
+            std.testing.assertTrue(expected == interior, "unaligned equal bytes, including NUL")
+            std.testing.assertTrue(interior == expected, "unaligned left operand")
+            std.runtime.keepAlive(&backing)
+            offset += 1
+        }
+        var mismatch: usize = 0
+        while mismatch < length {
+            let backing = equalityTestStorage(length, 1, mismatch)
+            let different = unsafe { std.string.stringFromParts(
+                std.string.stringData(backing).add(1) as *mut uint8, length) }
+            std.testing.assertFalse(expected == different, "mismatch at every word or tail byte")
+            std.runtime.keepAlive(&backing)
+            mismatch += 1
+        }
+        length += 1
+    }
+    let unicode = "é🙂日本語".repeat(8)
+    let independent = "é🙂日本語".repeat(8)
+    std.testing.assertTrue(unicode == independent, "long independently allocated UTF-8 strings")
+    std.testing.assertFalse(unicode == independent + "x", "different lengths")
+}

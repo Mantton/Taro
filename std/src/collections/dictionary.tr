@@ -11,7 +11,8 @@ import std.testing.{assertFalse, assertTrue}
 const SWISS_GROUP_WIDTH: usize = 8
 const SWISS_CTRL_EMPTY: uint8 = 0x80
 const SWISS_CTRL_DELETED: uint8 = 0xfe
-const SWISS_INITIAL_CAPACITY: usize = 16
+// A single probe group keeps small dictionaries from allocating unused groups.
+const SWISS_INITIAL_CAPACITY: usize = SWISS_GROUP_WIDTH
 
 func swissFingerprint(_ hash: uint64) -> uint8 {
     ((hash >> 57) as uint8) & 0x7f_u8
