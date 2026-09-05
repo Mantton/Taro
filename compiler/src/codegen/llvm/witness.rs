@@ -1,4 +1,4 @@
-use super::{Emitter, LocalStorage, StackMapSiteKind};
+use super::{CallTarget, Emitter, LocalStorage, StackMapSiteKind};
 use crate::{
     codegen::{
         abi,
@@ -759,7 +759,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         hint: &mir::DevirtHint<'gcx>,
         args: &[Operand<'gcx>],
         destination: &Place<'gcx>,
-        normal_bb: BasicBlock<'llvm>,
         unwind_target: Option<BasicBlock<'llvm>>,
         stack_map: Option<(crate::span::Span, &FxHashSet<mir::LocalId>)>,
     ) -> CompileResult<bool> {
@@ -857,14 +856,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some((span, roots)) = stack_map {
             self.emit_stack_map_with_roots(span, StackMapSiteKind::Call, roots);
         }
-        let call_site = self.emit_direct_call_maybe_unwind(
-            callable,
+        let call_site = self.emit_call_maybe_unwind(
+            CallTarget::Direct(callable),
             &lowered_args,
-            normal_bb,
             unwind_target,
             "devirt_call",
         )?;
-        self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
+        self.store_call_result(body, locals, destination, &fn_abi, call_site)?;
         Ok(true)
     }
 
@@ -875,7 +873,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         instance: &crate::specialize::VirtualInstance<'gcx>,
         args: &[Operand<'gcx>],
         destination: &Place<'gcx>,
-        normal_bb: BasicBlock<'llvm>,
         unwind_target: Option<BasicBlock<'llvm>>,
         stack_map: Option<(crate::span::Span, &FxHashSet<mir::LocalId>)>,
     ) -> CompileResult<()> {
@@ -1018,15 +1015,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let param_types: Vec<BasicMetadataTypeEnum<'llvm>> = lowered_args
             .iter()
-            .map(|arg| match arg {
-                BasicValueEnum::ArrayValue(v) => v.get_type().into(),
-                BasicValueEnum::IntValue(v) => v.get_type().into(),
-                BasicValueEnum::FloatValue(v) => v.get_type().into(),
-                BasicValueEnum::PointerValue(v) => v.get_type().into(),
-                BasicValueEnum::StructValue(v) => v.get_type().into(),
-                BasicValueEnum::VectorValue(v) => v.get_type().into(),
-                BasicValueEnum::ScalableVectorValue(v) => v.get_type().into(),
-            })
+            .map(|arg| arg.get_type().into())
             .collect();
         let fn_ty = match ret_mode {
             abi::PassMode::Indirect { .. } | abi::PassMode::Ignore => {
@@ -1053,22 +1042,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         if let Some((span, roots)) = stack_map {
             self.emit_stack_map_with_roots(span, StackMapSiteKind::Call, roots);
         }
-        let call_site = self.emit_indirect_call_maybe_unwind(
-            fn_ty,
-            fn_ptr_cast,
+        let call_site = self.emit_call_maybe_unwind(
+            CallTarget::Indirect(fn_ty, fn_ptr_cast),
             &lowered_args,
-            normal_bb,
             unwind_target,
             "virt_call",
         )?;
 
-        if !matches!(ret_mode, abi::PassMode::Indirect { .. }) {
-            if let Some(ret) = call_site.try_as_basic_value().basic() {
-                self.store_place(destination, body, locals, ret)?;
-            }
-        }
-        // Branch to normal_bb is emitted by the caller (lower_terminator) so that
-        // Rc release of old destination can be inserted before the branch.
+        self.store_call_result(body, locals, destination, &virt_fn_abi, call_site)?;
 
         Ok(())
     }

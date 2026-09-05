@@ -60,6 +60,12 @@ mod intrinsics;
 mod normalize;
 mod witness;
 
+#[derive(Clone, Copy)]
+enum CallTarget<'llvm> {
+    Direct(FunctionValue<'llvm>),
+    Indirect(FunctionType<'llvm>, PointerValue<'llvm>),
+}
+
 const NON_AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 256;
 const AARCH64_INDIRECT_RETURN_THRESHOLD_BYTES: u64 = 24;
 const NON_AARCH64_INDIRECT_ARG_THRESHOLD_BYTES: u64 = 2048;
@@ -2578,10 +2584,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         lowered_args.push(self.usize_ty.const_int(column, false).as_basic_value_enum());
 
         self.emit_stack_map(span, StackMapSiteKind::Panic);
-        let call_site = self.emit_direct_call_maybe_unwind(
-            self.get_panic_unwind_at_fn(),
+        let call_site = self.emit_call_maybe_unwind(
+            CallTarget::Direct(self.get_panic_unwind_at_fn()),
             &lowered_args,
-            normal_bb,
             unwind_target,
             "panic_unwind_at",
         )?;
@@ -3228,7 +3233,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(lowered)
     }
 
-    fn store_direct_call_result(
+    fn store_call_result(
         &mut self,
         body: &mir::Body<'gcx>,
         locals: &mut [LocalStorage<'llvm>],
@@ -3245,28 +3250,32 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(())
     }
 
-    fn emit_direct_call_maybe_unwind(
+    fn emit_call_maybe_unwind(
         &mut self,
-        function: FunctionValue<'llvm>,
+        target: CallTarget<'llvm>,
         args: &[BasicValueEnum<'llvm>],
-        _normal_bb: BasicBlock<'llvm>,
         unwind_target: Option<BasicBlock<'llvm>>,
         name: &str,
     ) -> CompileResult<CallSiteValue<'llvm>> {
         if let Some(unwind_bb) = unwind_target {
             let invoke_normal_bb = self.append_block_to_current_fn("invoke_ok");
             let landing_bb = self.append_block_to_current_fn("invoke_lpad");
-            let param_types: Vec<BasicMetadataTypeEnum<'llvm>> =
-                args.iter().map(|arg| arg.get_type().into()).collect();
-            let declared_ty = function.get_type();
-            let fn_ty = match declared_ty.get_return_type() {
-                Some(ret) => ret.fn_type(&param_types, declared_ty.is_var_arg()),
-                None => self
-                    .context
-                    .void_type()
-                    .fn_type(&param_types, declared_ty.is_var_arg()),
+            let (fn_ty, fn_ptr) = match target {
+                CallTarget::Direct(function) => {
+                    let param_types: Vec<BasicMetadataTypeEnum<'llvm>> =
+                        args.iter().map(|arg| arg.get_type().into()).collect();
+                    let declared_ty = function.get_type();
+                    let fn_ty = match declared_ty.get_return_type() {
+                        Some(ret) => ret.fn_type(&param_types, declared_ty.is_var_arg()),
+                        None => self
+                            .context
+                            .void_type()
+                            .fn_type(&param_types, declared_ty.is_var_arg()),
+                    };
+                    (fn_ty, function.as_global_value().as_pointer_value())
+                }
+                CallTarget::Indirect(fn_ty, fn_ptr) => (fn_ty, fn_ptr),
             };
-            let fn_ptr = function.as_global_value().as_pointer_value();
             let call_site = self
                 .builder
                 .build_indirect_invoke(fn_ty, fn_ptr, args, invoke_normal_bb, landing_bb, name)
@@ -3278,43 +3287,16 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         } else {
             let args_meta: Vec<BasicMetadataValueEnum<'llvm>> = args
                 .iter()
-                .cloned()
+                .copied()
                 .map(BasicMetadataValueEnum::from)
                 .collect();
-            Ok(self.builder.build_call(function, &args_meta, name).unwrap())
-        }
-    }
-
-    fn emit_indirect_call_maybe_unwind(
-        &mut self,
-        fn_ty: FunctionType<'llvm>,
-        fn_ptr: PointerValue<'llvm>,
-        args: &[BasicValueEnum<'llvm>],
-        _normal_bb: BasicBlock<'llvm>,
-        unwind_target: Option<BasicBlock<'llvm>>,
-        name: &str,
-    ) -> CompileResult<CallSiteValue<'llvm>> {
-        if let Some(unwind_bb) = unwind_target {
-            let invoke_normal_bb = self.append_block_to_current_fn("invoke_ok");
-            let landing_bb = self.append_block_to_current_fn("invoke_lpad");
-            let call_site = self
-                .builder
-                .build_indirect_invoke(fn_ty, fn_ptr, args, invoke_normal_bb, landing_bb, name)
-                .unwrap();
-            self.builder.position_at_end(landing_bb);
-            self.emit_cleanup_landingpad(unwind_bb)?;
-            self.builder.position_at_end(invoke_normal_bb);
-            Ok(call_site)
-        } else {
-            let args_meta: Vec<BasicMetadataValueEnum<'llvm>> = args
-                .iter()
-                .cloned()
-                .map(BasicMetadataValueEnum::from)
-                .collect();
-            Ok(self
-                .builder
-                .build_indirect_call(fn_ty, fn_ptr, &args_meta, name)
-                .unwrap())
+            Ok(match target {
+                CallTarget::Direct(function) => self.builder.build_call(function, &args_meta, name),
+                CallTarget::Indirect(fn_ty, fn_ptr) => self
+                    .builder
+                    .build_indirect_call(fn_ty, fn_ptr, &args_meta, name),
+            }
+            .unwrap())
         }
     }
 
@@ -4877,16 +4859,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let column = self
             .usize_ty
             .const_int((span.start.offset + 1) as u64, false);
-        let current_bb = self
-            .builder
-            .get_insert_block()
-            .expect("builder must be positioned in the panic block");
         let panic_fn = self.get_panic_unwind_at_fn();
         self.emit_stack_map(span, StackMapSiteKind::Panic);
-        let _ = self.emit_direct_call_maybe_unwind(
-            panic_fn,
+        let _ = self.emit_call_maybe_unwind(
+            CallTarget::Direct(panic_fn),
             &[msg, file_val, line.into(), column.into()],
-            current_bb,
             unwind_bb,
             "arith_panic",
         )?;
@@ -5361,7 +5338,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         hint,
                         args,
                         destination,
-                        normal_bb,
                         unwind_bb,
                         roots.as_ref().map(|roots| (terminator.span, roots)),
                     )? {
@@ -5388,15 +5364,14 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         "__rt__gc_enter_blocking",
                         "gc_blocking_enter",
                     );
-                    let call_site = self.emit_direct_call_maybe_unwind(
-                        callable,
+                    let call_site = self.emit_call_maybe_unwind(
+                        CallTarget::Direct(callable),
                         &lowered_args,
-                        normal_bb,
                         None,
                         "blocking_call",
                     )?;
                     self.emit_gc_blocking_transition("__rt__gc_exit_blocking", "gc_blocking_exit");
-                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
+                    self.store_call_result(body, locals, destination, &fn_abi, call_site)?;
                     let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
                     return Ok(());
                 }
@@ -5410,55 +5385,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         instance,
                         args,
                         destination,
-                        normal_bb,
                         unwind_bb,
                         roots.as_ref().map(|roots| (terminator.span, roots)),
                     )?;
-                } else if let Some((closure_fn, fn_abi)) = self.closure_callable(body, func) {
-                    let lowered_args =
-                        self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
-                    if gc_effect != mir::CallGcEffect::NoGc {
-                        let roots = self.live_roots_for_call(gc_effect, args);
-                        self.emit_stack_map_with_roots(
-                            terminator.span,
-                            StackMapSiteKind::Call,
-                            &roots,
-                        );
-                    }
-                    let call_site = self.emit_direct_call_maybe_unwind(
-                        closure_fn,
-                        &lowered_args,
-                        normal_bb,
-                        unwind_bb,
-                        "call",
-                    )?;
-                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
-                } else if matches!(self.operand_ty(body, func).kind(), TyKind::FnPointer { .. })
-                    && !matches!(func, Operand::Constant(_))
-                {
-                    let (fn_ty, fn_ptr, fn_abi) =
-                        self.lower_fn_pointer_call_target(body, locals, func)?;
-                    let lowered_args =
-                        self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
-                    if gc_effect != mir::CallGcEffect::NoGc {
-                        let roots = self.live_roots_for_call(gc_effect, args);
-                        self.emit_stack_map_with_roots(
-                            terminator.span,
-                            StackMapSiteKind::Call,
-                            &roots,
-                        );
-                    }
-                    let call_site = self.emit_indirect_call_maybe_unwind(
-                        fn_ty,
-                        fn_ptr,
-                        &lowered_args,
-                        normal_bb,
-                        unwind_bb,
-                        "call",
-                    )?;
-                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
                 } else {
-                    let (callable, fn_abi) = self.lower_callable_with_abi(func);
+                    let (target, fn_abi) = self.lower_call_target(body, locals, func)?;
                     let lowered_args =
                         self.lower_call_args_with_fn_abi(body, locals, args, destination, &fn_abi)?;
                     if gc_effect != mir::CallGcEffect::NoGc {
@@ -5469,14 +5400,9 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             &roots,
                         );
                     }
-                    let call_site = self.emit_direct_call_maybe_unwind(
-                        callable,
-                        &lowered_args,
-                        normal_bb,
-                        unwind_bb,
-                        "call",
-                    )?;
-                    self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
+                    let call_site =
+                        self.emit_call_maybe_unwind(target, &lowered_args, unwind_bb, "call")?;
+                    self.store_call_result(body, locals, destination, &fn_abi, call_site)?;
                 }
                 let _ = self.builder.build_unconditional_branch(normal_bb).unwrap();
             }
@@ -6650,6 +6576,28 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             .unwrap();
 
         self.store_place(destination, body, locals, cast.into())
+    }
+
+    fn lower_call_target(
+        &mut self,
+        body: &mir::Body<'gcx>,
+        locals: &mut [LocalStorage<'llvm>],
+        function: &Operand<'gcx>,
+    ) -> CompileResult<(CallTarget<'llvm>, abi::FnAbi<'gcx>)> {
+        if let Some((callable, fn_abi)) = self.closure_callable(body, function) {
+            return Ok((CallTarget::Direct(callable), fn_abi));
+        }
+        if matches!(
+            self.operand_ty(body, function).kind(),
+            TyKind::FnPointer { .. }
+        ) && !matches!(function, Operand::Constant(_))
+        {
+            let (ty, pointer, fn_abi) =
+                self.lower_fn_pointer_call_target(body, locals, function)?;
+            return Ok((CallTarget::Indirect(ty, pointer), fn_abi));
+        }
+        let (callable, fn_abi) = self.lower_callable_with_abi(function);
+        Ok((CallTarget::Direct(callable), fn_abi))
     }
 
     fn lower_callable_with_abi(
