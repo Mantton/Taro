@@ -110,10 +110,9 @@ impl RuntimeError {
 
 /// A stack machine that runs compiled Monkey.
 ///
-/// The stack, the globals and the frames are each storage reserved once and
-/// addressed by index, as the reference implementation does. Nothing grows or
-/// shrinks while a program runs: a push is a store and a bump, and returning
-/// from a call is one assignment to the stack pointer.
+/// Stack and globals use storage reserved once and addressed by index. Taro
+/// also reserves frame records in place; the Go reference reserves a list of
+/// frame pointers and allocates a new record per call.
 public struct VM {
     constants: List[Object]
     stack: List[Object]
@@ -123,8 +122,8 @@ public struct VM {
     frames: List[Frame]
     framesIndex: usize
     /// The running frame's instructions and position, read out of the frame
-    /// when it changes rather than re-derived on every step — the reference
-    /// implementation keeps the same two in locals across its loop.
+    /// when it changes rather than re-derived on every step. The Go reference
+    /// reloads its current frame's instructions and position on each iteration.
     code: &List[uint8]
     codeLength: usize
     ip: usize
@@ -539,9 +538,8 @@ impl VM {
             case _ => {}
         }
 
-        // Equality is defined for every value, so it needs no kind check —
-        // unlike the reference implementation, which compares pointers for
-        // anything that is not an integer and quietly answers `false`.
+        // Scalars compare by value and aggregates by identity. String value
+        // equality is an extension over the Go reference's pointer equality.
         let same = left.equals(&right)
         match opcode {
             case .equal => return self.push(.boolean(same))

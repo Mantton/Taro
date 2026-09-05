@@ -129,6 +129,18 @@ func compositesAgree() {
 }
 
 @test
+func aggregateAliasesPreserveReferenceIdentity() {
+    agree("let a = [1]; let b = a; a == b", "true")
+    agree("let a = [1]; a != a", "false")
+    agree("[1] == [1]", "false")
+    agree("let h = {\"x\": 1}; h == h", "true")
+    agree("{\"x\": 1} == {\"x\": 1}", "false")
+    agree("let f = fn() { 1 }; f == f", "true")
+    agree("fn() { 1 } == fn() { 1 }", "false")
+    agree("let id = fn(x) { x }; let a = []; id(a) == a", "true")
+}
+
+@test
 func builtinsAgree() {
     agree("len(\"hello\")", "5")
     agree("len([1, 2, 3])", "3")
@@ -169,9 +181,7 @@ func sharedFailuresAgree() {
 
 @test
 func divergencesAreDeliberate() {
-    // Where the two disagree, it is because they are different machines, not
-    // because one is wrong. These are the only differences, and each is a
-    // message rather than a value.
+    // The engines intentionally report different diagnostics for mixed-type arithmetic.
     let program = match parsed("1 + true") {
         case .some(found) => found
         case .none => {

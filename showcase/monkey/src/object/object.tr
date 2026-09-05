@@ -151,9 +151,8 @@ public struct CompiledFunction {
 
 /// A compiled function together with the values it captured.
 ///
-/// Every function the machine calls is one of these, even one that captures
-/// nothing. Treating the two the same removes the reference implementation's
-/// branch on whether a callee is a bare function or a closure.
+/// Every compiled function the machine calls is one of these, even one that
+/// captures nothing, matching the Go reference's closure call path.
 public struct Closure {
     public function: &CompiledFunction
     public free: List[Object]
@@ -207,6 +206,11 @@ public func boxCompiledFunction(_ function: CompiledFunction) -> &CompiledFuncti
 public func boxClosure(_ closure: Closure) -> &Closure {
     let boxed = closure
     return &boxed
+}
+
+/// Compare managed object identity without comparing or copying its contents.
+func sameReference[T](_ left: &T, _ right: &T) -> bool {
+    return unsafe { ((left as *const T) as usize) == ((right as *const T) as usize) }
 }
 
 impl Clone for Object {
@@ -266,10 +270,9 @@ impl Object {
 
     /// Whether two values are the same, as Monkey's `==` asks.
     ///
-    /// Only scalars compare by value; an array, hash or function compares as
-    /// unequal to everything, matching the reference implementation, where the
-    /// comparison falls through to a pointer test that a freshly built
-    /// aggregate never passes.
+    /// Scalars compare by value. Aggregates and functions compare by identity,
+    /// matching the reference implementation's pointer comparison: aliases are
+    /// equal, while independently created objects remain distinct.
     public func equals(&self, _ other: &Object) -> bool {
         match self {
             case .null => {
@@ -302,7 +305,36 @@ impl Object {
                     case _ => return false
                 }
             }
-            case _ => return false
+            case .array(lhs) => {
+                match other {
+                    case .array(rhs) => return sameReference(*lhs, *rhs)
+                    case _ => return false
+                }
+            }
+            case .hash(lhs) => {
+                match other {
+                    case .hash(rhs) => return sameReference(*lhs, *rhs)
+                    case _ => return false
+                }
+            }
+            case .function(lhs) => {
+                match other {
+                    case .function(rhs) => return sameReference(*lhs, *rhs)
+                    case _ => return false
+                }
+            }
+            case .compiledFunction(lhs) => {
+                match other {
+                    case .compiledFunction(rhs) => return sameReference(*lhs, *rhs)
+                    case _ => return false
+                }
+            }
+            case .closure(lhs) => {
+                match other {
+                    case .closure(rhs) => return sameReference(*lhs, *rhs)
+                    case _ => return false
+                }
+            }
         }
     }
 
