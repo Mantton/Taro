@@ -1135,8 +1135,6 @@ pub enum AssocContext {
     Impl(NodeID),
 }
 
-impl AssocContext {}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UseTreeContext {
     Import(NodeID),

@@ -353,38 +353,6 @@ impl<'arena> GlobalContext<'arena> {
         self.with_type_database(id.package, |db| db.conformance_records.get(&id).cloned())
     }
 
-    pub fn conformance_records_for_interface_head(
-        self,
-        package: PackageIndex,
-        interface_id: DefinitionID,
-        head: TypeHead,
-    ) -> Vec<ConformanceRecord<'arena>> {
-        self.with_type_database(package, |db| {
-            db.conformance_by_interface_head
-                .get(&(interface_id, head))
-                .into_iter()
-                .flat_map(|ids| ids.iter())
-                .filter_map(|id| db.conformance_records.get(id).cloned())
-                .collect()
-        })
-    }
-
-    pub fn conformance_record_entries_for_interface_head(
-        self,
-        package: PackageIndex,
-        interface_id: DefinitionID,
-        head: TypeHead,
-    ) -> Vec<(ConformanceRecordId, ConformanceRecord<'arena>)> {
-        self.with_type_database(package, |db| {
-            db.conformance_by_interface_head
-                .get(&(interface_id, head))
-                .into_iter()
-                .flat_map(|ids| ids.iter())
-                .filter_map(|id| db.conformance_records.get(id).map(|record| (*id, *record)))
-                .collect()
-        })
-    }
-
     pub fn conformance_records_for_interface(
         self,
         package: PackageIndex,
@@ -393,21 +361,6 @@ impl<'arena> GlobalContext<'arena> {
         self.with_type_database(package, |db| {
             db.conformance_by_interface
                 .get(&interface_id)
-                .into_iter()
-                .flat_map(|ids| ids.iter())
-                .filter_map(|id| db.conformance_records.get(id).cloned())
-                .collect()
-        })
-    }
-
-    pub fn conformance_records_for_head(
-        self,
-        package: PackageIndex,
-        head: TypeHead,
-    ) -> Vec<ConformanceRecord<'arena>> {
-        self.with_type_database(package, |db| {
-            db.conformance_by_head
-                .get(&head)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
                 .filter_map(|id| db.conformance_records.get(id).cloned())
@@ -1990,19 +1943,6 @@ impl<'arena> CompilerInterners<'arena> {
         List::from_interned_slice(ik)
     }
 
-    pub fn intern_ty_list_slice(&self, items: &[Ty<'arena>]) -> TyList<'arena> {
-        let list = self
-            .type_lists
-            .intern_ref(items, || {
-                let owned = items.to_vec();
-                let stored = self.arenas.type_lists.alloc(owned);
-                InternedInSet(stored)
-            })
-            .0;
-
-        List::from_interned_slice(list)
-    }
-
     pub fn intern_generic_args(
         &self,
         items: Vec<GenericArgument<'arena>>,
@@ -2264,24 +2204,6 @@ impl<'arena> GlobalContext<'arena> {
                 .and_then(|properties| properties.get(&(interface_id, name)))
                 .cloned()
                 .unwrap_or_default()
-        })
-    }
-
-    pub fn lookup_interface_computed_properties_by_name(
-        self,
-        head: TypeHead,
-        name: Symbol,
-    ) -> Vec<(DefinitionID, ComputedPropertyEntry<'arena>)> {
-        self.collect_from_databases(|db| {
-            db.type_head_to_interface_properties
-                .get(&head)
-                .into_iter()
-                .flat_map(|properties| properties.iter())
-                .filter(|((_, candidate_name), _)| *candidate_name == name)
-                .flat_map(|((interface_id, _), entries)| {
-                    entries.iter().copied().map(|entry| (*interface_id, entry))
-                })
-                .collect::<Vec<_>>()
         })
     }
 }

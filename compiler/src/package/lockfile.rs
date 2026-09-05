@@ -53,27 +53,8 @@ impl LockFile {
         for package in &mut self.package {
             package.requests.sort();
             package.requests.dedup();
-            package.deps = package
-                .deps
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
         }
         self
-    }
-
-    pub fn find_git_request(
-        &self,
-        name: &str,
-        canonical_url: &str,
-        requested: &str,
-    ) -> Option<&LockPackage> {
-        self.package.iter().find(|entry| {
-            entry.source_type == LockSourceType::Git
-                && entry.name == name
-                && entry.url.as_deref() == Some(canonical_url)
-                && entry.requests.iter().any(|request| request == requested)
-        })
     }
 
     pub fn find_git_requests(

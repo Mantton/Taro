@@ -3258,11 +3258,8 @@ fn convert_ast_literal(
 }
 
 mod escape {
-    /// Errors and warnings that can occur during string unescaping. They mostly
-    /// relate to malformed escape sequences, but there are a few that are about
-    /// other problems.
+    /// Errors in rune and string literal contents.
     #[derive(Debug, PartialEq, Eq)]
-    #[allow(unused)]
     pub enum EscapeError {
         /// Expected 1 char, but 0 were found.
         ZeroChars,
@@ -3275,8 +3272,6 @@ mod escape {
         InvalidEscape,
         /// Raw '\r' encountered.
         BareCarriageReturn,
-        /// Raw '\r' encountered in raw string.
-        BareCarriageReturnInRawString,
         /// Unescaped character that was expected to be escaped (e.g. raw '\t').
         EscapeOnlyChar,
 
@@ -3303,37 +3298,23 @@ mod escape {
         LoneSurrogateUnicodeEscape,
         /// Out of bounds unicode character code, e.g. '\u{FFFFFF}'.
         OutOfRangeUnicodeEscape,
-
-        /// Unicode escape code in byte literal.
-        UnicodeEscapeInByte,
-        /// Non-ascii character in byte literal, byte string literal, or raw byte string literal.
-        NonAsciiCharInByte,
-
-        // `\0` in a C string literal.
-        NulInCStr,
-
-        /// After a line ending with '\', the next line contains whitespace
-        /// characters that are not skipped.
-        UnskippedWhitespaceWarning,
-
-        /// After a line ending with '\', multiple lines are skipped.
-        MultipleSkippedLinesWarning,
-    }
-
-    impl EscapeError {
-        /// Returns true for actual errors, as opposed to warnings.
-        pub fn _is_fatal(&self) -> bool {
-            !matches!(
-                self,
-                EscapeError::UnskippedWhitespaceWarning | EscapeError::MultipleSkippedLinesWarning
-            )
-        }
     }
 
     /// Takes a contents of a char literal (without quotes), and returns an
     /// unescaped char or an error.
     pub fn unescape_char(src: &str) -> Result<char, EscapeError> {
-        unescape_char_or_byte(&mut src.chars(), Mode::Char)
+        let mut chars = src.chars();
+        let c = chars.next().ok_or(EscapeError::ZeroChars)?;
+        let result = match c {
+            '\\' => scan_escape(&mut chars),
+            '\n' | '\t' | '\'' => Err(EscapeError::EscapeOnlyChar),
+            '\r' => Err(EscapeError::BareCarriageReturn),
+            _ => Ok(c),
+        }?;
+        if chars.next().is_some() {
+            return Err(EscapeError::MoreThanOneChar);
+        }
+        Ok(result)
     }
 
     /// Takes a contents of a string literal (without quotes), and returns the
@@ -3343,88 +3324,16 @@ mod escape {
         let mut chars = src.chars();
         while let Some(c) = chars.next() {
             let c = match c {
-                '\\' => scan_escape(&mut chars, Mode::Str)?,
+                '\\' => scan_escape(&mut chars)?,
                 '\r' => return Err(EscapeError::BareCarriageReturn),
-                _ => ascii_check(c, Mode::Str.allow_unicode_chars())?,
+                _ => c,
             };
             out.push(c);
         }
         Ok(out)
     }
 
-    /// What kind of literal do we parse.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    #[allow(unused)]
-    pub enum Mode {
-        Char,
-
-        Byte,
-
-        Str,
-        RawStr,
-
-        ByteStr,
-        RawByteStr,
-
-        CStr,
-        RawCStr,
-    }
-
-    #[allow(unused)]
-    impl Mode {
-        pub fn in_double_quotes(self) -> bool {
-            use Mode::*;
-            match self {
-                Str | RawStr | ByteStr | RawByteStr | CStr | RawCStr => true,
-                Char | Byte => false,
-            }
-        }
-
-        /// Are `\x80`..`\xff` allowed?
-        fn allow_high_bytes(self) -> bool {
-            use Mode::*;
-            match self {
-                Char | Str => false,
-                Byte | ByteStr | CStr => true,
-                RawStr | RawByteStr | RawCStr => unreachable!(),
-            }
-        }
-
-        /// Are unicode (non-ASCII) chars allowed?
-        #[inline]
-        fn allow_unicode_chars(self) -> bool {
-            use Mode::*;
-            match self {
-                Byte | ByteStr | RawByteStr => false,
-                Char | Str | RawStr | CStr | RawCStr => true,
-            }
-        }
-
-        /// Are unicode escapes (`\u`) allowed?
-        fn allow_unicode_escapes(self) -> bool {
-            use Mode::*;
-
-            match self {
-                Byte | ByteStr => false,
-                Char | Str | CStr => true,
-                RawByteStr | RawStr | RawCStr => unreachable!(),
-            }
-        }
-
-        pub fn prefix_noraw(self) -> &'static str {
-            use Mode::*;
-            match self {
-                Char | Str | RawStr => "",
-                Byte | ByteStr | RawByteStr => "b",
-                CStr | RawCStr => "c",
-            }
-        }
-    }
-
-    fn scan_escape<T: From<char> + From<u8>>(
-        chars: &mut std::str::Chars<'_>,
-        mode: Mode,
-    ) -> Result<T, EscapeError> {
+    fn scan_escape(chars: &mut std::str::Chars<'_>) -> Result<char, EscapeError> {
         // Previous character was '\\', unescape what follows.
         let res: char = match chars.next().ok_or(EscapeError::LoneSlash)? {
             '"' => '"',
@@ -3445,24 +3354,19 @@ mod escape {
 
                 let value = (hi * 16 + lo) as u8;
 
-                return if !mode.allow_high_bytes() && !value.is_ascii() {
+                return if !value.is_ascii() {
                     Err(EscapeError::OutOfRangeHexEscape)
                 } else {
-                    // This may be a high byte, but that will only happen if `T` is
-                    // `MixedUnit`, because of the `allow_high_bytes` check above.
-                    Ok(T::from(value))
+                    Ok(char::from(value))
                 };
             }
-            'u' => return scan_unicode(chars, mode.allow_unicode_escapes()).map(T::from),
+            'u' => return scan_unicode(chars),
             _ => return Err(EscapeError::InvalidEscape),
         };
-        Ok(T::from(res))
+        Ok(res)
     }
 
-    fn scan_unicode(
-        chars: &mut std::str::Chars<'_>,
-        allow_unicode_escapes: bool,
-    ) -> Result<char, EscapeError> {
+    fn scan_unicode(chars: &mut std::str::Chars<'_>) -> Result<char, EscapeError> {
         // We've parsed '\u', now we have to parse '{..}'.
 
         if chars.next() != Some('{') {
@@ -3490,12 +3394,6 @@ mod escape {
                         return Err(EscapeError::OverlongUnicodeEscape);
                     }
 
-                    // Incorrect syntax has higher priority for error reporting
-                    // than unallowed value for a literal.
-                    if !allow_unicode_escapes {
-                        return Err(EscapeError::UnicodeEscapeInByte);
-                    }
-
                     break std::char::from_u32(value).ok_or({
                         if value > 0x10FFFF {
                             EscapeError::OutOfRangeUnicodeEscape
@@ -3518,36 +3416,11 @@ mod escape {
             };
         }
     }
-
-    #[inline]
-    fn ascii_check(c: char, allow_unicode_chars: bool) -> Result<char, EscapeError> {
-        if allow_unicode_chars || c.is_ascii() {
-            Ok(c)
-        } else {
-            Err(EscapeError::NonAsciiCharInByte)
-        }
-    }
-
-    fn unescape_char_or_byte(
-        chars: &mut std::str::Chars<'_>,
-        mode: Mode,
-    ) -> Result<char, EscapeError> {
-        let c = chars.next().ok_or(EscapeError::ZeroChars)?;
-        let res = match c {
-            '\\' => scan_escape(chars, mode),
-            '\n' | '\t' | '\'' => Err(EscapeError::EscapeOnlyChar),
-            '\r' => Err(EscapeError::BareCarriageReturn),
-            _ => ascii_check(c, mode.allow_unicode_chars()),
-        }?;
-        if chars.next().is_some() {
-            return Err(EscapeError::MoreThanOneChar);
-        }
-        Ok(res)
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::escape::{EscapeError, unescape_char, unescape_str};
     use crate::{
         PackageIndex,
         compile::{
@@ -3565,6 +3438,72 @@ mod tests {
         path::{Path, PathBuf},
         rc::Rc,
     };
+
+    #[test]
+    fn literal_escape_decoding_preserves_unicode_and_ascii_boundaries() {
+        for (source, expected) in [
+            ("é", 'é'),
+            (r"\0", '\0'),
+            (r"\n", '\n'),
+            (r"\r", '\r'),
+            (r"\t", '\t'),
+            (r"\\", '\\'),
+            (r"\'", '\''),
+            (r#"\""#, '"'),
+            (r"\x00", '\0'),
+            (r"\x7f", '\x7f'),
+            (r"\u{000000}", '\0'),
+            (r"\u{1_f9_80_}", '🦀'),
+            (r"\u{10ffff}", '\u{10ffff}'),
+        ] {
+            assert_eq!(unescape_char(source), Ok(expected), "{source}");
+            assert_eq!(unescape_str(source), Ok(expected.to_string()), "{source}");
+        }
+        assert_eq!(unescape_str(r"hello\n世界"), Ok("hello\n世界".into()));
+    }
+
+    #[test]
+    fn malformed_literal_escapes_preserve_diagnostics() {
+        use EscapeError::*;
+        for (source, expected) in [
+            ("\\", LoneSlash),
+            (r"\z", InvalidEscape),
+            (r"\x", TooShortHexEscape),
+            (r"\x1", TooShortHexEscape),
+            (r"\xx0", InvalidCharInHexEscape),
+            (r"\x0z", InvalidCharInHexEscape),
+            (r"\x80", OutOfRangeHexEscape),
+            (r"\xff", OutOfRangeHexEscape),
+            (r"\u1234", NoBraceInUnicodeEscape),
+            (r"\u{", UnclosedUnicodeEscape),
+            (r"\u{}", EmptyUnicodeEscape),
+            (r"\u{_1}", LeadingUnderscoreUnicodeEscape),
+            (r"\u{1", UnclosedUnicodeEscape),
+            (r"\u{1z}", InvalidCharInUnicodeEscape),
+            (r"\u{0000000}", OverlongUnicodeEscape),
+            (r"\u{0000000z}", InvalidCharInUnicodeEscape),
+            (r"\u{d800}", LoneSurrogateUnicodeEscape),
+            (r"\u{dfff}", LoneSurrogateUnicodeEscape),
+            (r"\u{110000}", OutOfRangeUnicodeEscape),
+            ("\r", BareCarriageReturn),
+        ] {
+            assert_eq!(unescape_char(source).unwrap_err(), expected, "{source}");
+            assert_eq!(unescape_str(source).unwrap_err(), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn rune_literals_require_exactly_one_character() {
+        assert_eq!(unescape_char(""), Err(EscapeError::ZeroChars));
+        assert_eq!(unescape_str(""), Ok(String::new()));
+        for source in ["ab", "éa", r"\x01a", r"\u{1}a"] {
+            assert_eq!(unescape_char(source), Err(EscapeError::MoreThanOneChar));
+        }
+        for source in ["\n", "\t", "'"] {
+            assert_eq!(unescape_char(source), Err(EscapeError::EscapeOnlyChar));
+            assert_eq!(unescape_str(source), Ok(source.to_string()));
+        }
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

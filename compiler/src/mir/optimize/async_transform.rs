@@ -16,7 +16,7 @@ use crate::{
         resolve::models::DefinitionKind,
         tycheck::utils::generics::GenericsBuilder,
     },
-    span::{FileID, Span},
+    span::Span,
     thir::FieldIndex,
 };
 use rustc_hash::FxHashSet;
@@ -1952,9 +1952,4 @@ fn enum_variant_tuple_ty<'ctx>(
             Ty::new(TyKind::Tuple(list), gcx)
         }
     }
-}
-
-#[allow(dead_code)]
-fn synthetic_span() -> Span {
-    Span::empty(FileID::from_raw(0))
 }

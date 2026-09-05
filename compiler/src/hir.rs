@@ -133,42 +133,6 @@ impl Attribute {
         }
         None
     }
-
-    /// Extracts `@lang("Name")` item name.
-    /// Emits diagnostics for invalid `@lang` argument shape.
-    pub fn lang_item_name(&self, gcx: GlobalContext<'_>) -> Option<String> {
-        if self.as_known(gcx) != Some(KnownAttribute::Lang) {
-            return None;
-        }
-
-        let Some(args) = self.args.as_ref() else {
-            gcx.dcx().emit_error(
-                "@lang expects exactly one string literal argument".into(),
-                Some(self.span),
-            );
-            return None;
-        };
-
-        if args.items.len() != 1 {
-            gcx.dcx().emit_error(
-                "@lang expects exactly one string literal argument".into(),
-                Some(self.span),
-            );
-            return None;
-        }
-
-        match &args.items[0] {
-            AttributeArg::Literal {
-                value: Literal::String(value),
-                ..
-            } => Some(gcx.symbol_text(*value).to_string()),
-            _ => {
-                gcx.dcx()
-                    .emit_error("@lang expects a string literal".into(), Some(self.span));
-                None
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1413,94 +1377,6 @@ impl StdItem {
     /// Whether this interface is a marker-only interface (no methods to synthesize).
     pub fn is_marker_only(self) -> bool {
         matches!(self, Self::Copy | Self::Sendable | Self::Tuple)
-    }
-
-    /// Whether this interface is an operator interface.
-    pub fn is_operator(self) -> bool {
-        matches!(
-            self,
-            Self::Add
-                | Self::AddAssign
-                | Self::Sub
-                | Self::SubAssign
-                | Self::Mul
-                | Self::MulAssign
-                | Self::Div
-                | Self::DivAssign
-                | Self::Rem
-                | Self::RemAssign
-                | Self::Neg
-                | Self::Not
-                | Self::BitAnd
-                | Self::BitAndAssign
-                | Self::BitOr
-                | Self::BitOrAssign
-                | Self::BitXor
-                | Self::BitXorAssign
-                | Self::Shl
-                | Self::ShlAssign
-                | Self::Shr
-                | Self::ShrAssign
-                | Self::BitNot
-                | Self::PartialEq
-                | Self::PartialOrd
-        )
-    }
-
-    /// Returns the method name for this operator interface.
-    pub fn operator_method_name(self) -> Option<&'static str> {
-        match self {
-            Self::Add => Some("add"),
-            Self::AddAssign => Some("addAssign"),
-            Self::Sub => Some("sub"),
-            Self::SubAssign => Some("subAssign"),
-            Self::Mul => Some("mul"),
-            Self::MulAssign => Some("mulAssign"),
-            Self::Div => Some("div"),
-            Self::DivAssign => Some("divAssign"),
-            Self::Rem => Some("rem"),
-            Self::RemAssign => Some("remAssign"),
-            Self::Neg => Some("neg"),
-            Self::Not => Some("not"),
-            Self::BitAnd => Some("bitand"),
-            Self::BitAndAssign => Some("bitandAssign"),
-            Self::BitOr => Some("bitor"),
-            Self::BitOrAssign => Some("bitorAssign"),
-            Self::BitXor => Some("bitxor"),
-            Self::BitXorAssign => Some("bitxorAssign"),
-            Self::Shl => Some("shl"),
-            Self::ShlAssign => Some("shlAssign"),
-            Self::Shr => Some("shr"),
-            Self::ShrAssign => Some("shrAssign"),
-            Self::BitNot => Some("bitnot"),
-            Self::PartialEq => Some("eq"),
-            Self::PartialOrd => Some("cmp"),
-            _ => None,
-        }
-    }
-
-    /// Convert a binary operator to its corresponding operator interface.
-    /// Returns None for operators that don't map to an interface (e.g., boolean operators).
-    pub fn from_binary_operator(op: crate::ast::BinaryOperator) -> Option<Self> {
-        use crate::ast::BinaryOperator;
-        match op {
-            BinaryOperator::Add => Some(Self::Add),
-            BinaryOperator::Sub => Some(Self::Sub),
-            BinaryOperator::Mul => Some(Self::Mul),
-            BinaryOperator::Div => Some(Self::Div),
-            BinaryOperator::Rem => Some(Self::Rem),
-            BinaryOperator::BitAnd => Some(Self::BitAnd),
-            BinaryOperator::BitOr => Some(Self::BitOr),
-            BinaryOperator::BitXor => Some(Self::BitXor),
-            BinaryOperator::BitShl => Some(Self::Shl),
-            BinaryOperator::BitShr => Some(Self::Shr),
-            BinaryOperator::Eql | BinaryOperator::Neq => Some(Self::PartialEq),
-            BinaryOperator::Lt | BinaryOperator::Gt | BinaryOperator::Leq | BinaryOperator::Geq => {
-                Some(Self::PartialOrd)
-            }
-            // Boolean operators don't use interfaces - they're handled specially
-            BinaryOperator::BoolAnd | BinaryOperator::BoolOr => None,
-        }
     }
 
     /// Convert a unary operator to its corresponding operator interface.

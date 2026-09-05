@@ -1359,81 +1359,59 @@ pub fn identifier_from_wire(
     }
 }
 
-#[inline]
-pub fn mutability_to_wire(v: hir::Mutability) -> MutabilityWire {
-    match v {
-        hir::Mutability::Mutable => MutabilityWire::Mutable,
-        hir::Mutability::Immutable => MutabilityWire::Immutable,
-    }
+// List exact unit-variant mappings once while keeping both matches exhaustive.
+// Wire enum declarations above retain their serialized discriminant order.
+macro_rules! wire_enum_conversions {
+    ($to:ident, $from:ident, $native:path, $wire:ident, [$($variant:ident),+ $(,)?]) => {
+        #[inline]
+        pub fn $to(value: $native) -> $wire {
+            use $native as Native;
+            match value {
+                $(Native::$variant => $wire::$variant,)+
+            }
+        }
+
+        #[inline]
+        pub fn $from(value: &$wire) -> $native {
+            use $native as Native;
+            match value {
+                $($wire::$variant => Native::$variant,)+
+            }
+        }
+    };
 }
 
-#[inline]
-pub fn mutability_from_wire(v: &MutabilityWire) -> hir::Mutability {
-    match v {
-        MutabilityWire::Mutable => hir::Mutability::Mutable,
-        MutabilityWire::Immutable => hir::Mutability::Immutable,
-    }
-}
+wire_enum_conversions!(
+    mutability_to_wire,
+    mutability_from_wire,
+    hir::Mutability,
+    MutabilityWire,
+    [Mutable, Immutable,]
+);
 
-#[inline]
-pub fn int_ty_to_wire(v: IntTy) -> IntTyWire {
-    match v {
-        IntTy::ISize => IntTyWire::ISize,
-        IntTy::I8 => IntTyWire::I8,
-        IntTy::I16 => IntTyWire::I16,
-        IntTy::I32 => IntTyWire::I32,
-        IntTy::I64 => IntTyWire::I64,
-    }
-}
+wire_enum_conversions!(
+    int_ty_to_wire,
+    int_ty_from_wire,
+    IntTy,
+    IntTyWire,
+    [ISize, I8, I16, I32, I64,]
+);
 
-#[inline]
-pub fn int_ty_from_wire(v: &IntTyWire) -> IntTy {
-    match v {
-        IntTyWire::ISize => IntTy::ISize,
-        IntTyWire::I8 => IntTy::I8,
-        IntTyWire::I16 => IntTy::I16,
-        IntTyWire::I32 => IntTy::I32,
-        IntTyWire::I64 => IntTy::I64,
-    }
-}
+wire_enum_conversions!(
+    uint_ty_to_wire,
+    uint_ty_from_wire,
+    UIntTy,
+    UIntTyWire,
+    [USize, U8, U16, U32, U64,]
+);
 
-#[inline]
-pub fn uint_ty_to_wire(v: UIntTy) -> UIntTyWire {
-    match v {
-        UIntTy::USize => UIntTyWire::USize,
-        UIntTy::U8 => UIntTyWire::U8,
-        UIntTy::U16 => UIntTyWire::U16,
-        UIntTy::U32 => UIntTyWire::U32,
-        UIntTy::U64 => UIntTyWire::U64,
-    }
-}
-
-#[inline]
-pub fn uint_ty_from_wire(v: &UIntTyWire) -> UIntTy {
-    match v {
-        UIntTyWire::USize => UIntTy::USize,
-        UIntTyWire::U8 => UIntTy::U8,
-        UIntTyWire::U16 => UIntTy::U16,
-        UIntTyWire::U32 => UIntTy::U32,
-        UIntTyWire::U64 => UIntTy::U64,
-    }
-}
-
-#[inline]
-pub fn float_ty_to_wire(v: FloatTy) -> FloatTyWire {
-    match v {
-        FloatTy::F32 => FloatTyWire::F32,
-        FloatTy::F64 => FloatTyWire::F64,
-    }
-}
-
-#[inline]
-pub fn float_ty_from_wire(v: &FloatTyWire) -> FloatTy {
-    match v {
-        FloatTyWire::F32 => FloatTy::F32,
-        FloatTyWire::F64 => FloatTy::F64,
-    }
-}
+wire_enum_conversions!(
+    float_ty_to_wire,
+    float_ty_from_wire,
+    FloatTy,
+    FloatTyWire,
+    [F32, F64,]
+);
 
 #[inline]
 pub fn primary_type_to_wire(v: PrimaryType) -> PrimaryTypeWire {
@@ -1459,21 +1437,13 @@ pub fn primary_type_from_wire(v: &PrimaryTypeWire) -> PrimaryType {
     }
 }
 
-#[inline]
-pub fn variant_ctor_kind_to_wire(v: VariantCtorKind) -> VariantCtorKindWire {
-    match v {
-        VariantCtorKind::Function => VariantCtorKindWire::Function,
-        VariantCtorKind::Constant => VariantCtorKindWire::Constant,
-    }
-}
-
-#[inline]
-pub fn variant_ctor_kind_from_wire(v: &VariantCtorKindWire) -> VariantCtorKind {
-    match v {
-        VariantCtorKindWire::Function => VariantCtorKind::Function,
-        VariantCtorKindWire::Constant => VariantCtorKind::Constant,
-    }
-}
+wire_enum_conversions!(
+    variant_ctor_kind_to_wire,
+    variant_ctor_kind_from_wire,
+    VariantCtorKind,
+    VariantCtorKindWire,
+    [Function, Constant,]
+);
 
 #[inline]
 pub fn definition_kind_to_wire(v: DefinitionKind) -> DefinitionKindWire {
@@ -1537,191 +1507,93 @@ pub fn definition_kind_from_wire(v: &DefinitionKindWire) -> DefinitionKind {
     }
 }
 
-#[inline]
-pub fn std_item_to_wire(v: hir::StdItem) -> StdItemWire {
-    match v {
-        hir::StdItem::Optional => StdItemWire::Optional,
-        hir::StdItem::Result => StdItemWire::Result,
-        hir::StdItem::List => StdItemWire::List,
-        hir::StdItem::Set => StdItemWire::Set,
-        hir::StdItem::Dictionary => StdItemWire::Dictionary,
-        hir::StdItem::Range => StdItemWire::Range,
-        hir::StdItem::ClosedRange => StdItemWire::ClosedRange,
-        hir::StdItem::MaybeUninit => StdItemWire::MaybeUninit,
-        hir::StdItem::Span => StdItemWire::Span,
-        hir::StdItem::Benchmark => StdItemWire::Benchmark,
-        hir::StdItem::Copy => StdItemWire::Copy,
-        hir::StdItem::Clone => StdItemWire::Clone,
-        hir::StdItem::Sendable => StdItemWire::Sendable,
-        hir::StdItem::Hashable => StdItemWire::Hashable,
-        hir::StdItem::Equatable => StdItemWire::Equatable,
-        hir::StdItem::From => StdItemWire::From,
-        hir::StdItem::Iterator => StdItemWire::Iterator,
-        hir::StdItem::Iterable => StdItemWire::Iterable,
-        hir::StdItem::AsyncIterator => StdItemWire::AsyncIterator,
-        hir::StdItem::AsyncIterable => StdItemWire::AsyncIterable,
-        hir::StdItem::Fn => StdItemWire::Fn,
-        hir::StdItem::FnMut => StdItemWire::FnMut,
-        hir::StdItem::AsyncFn => StdItemWire::AsyncFn,
-        hir::StdItem::AsyncFnMut => StdItemWire::AsyncFnMut,
-        hir::StdItem::FnOnce => StdItemWire::FnOnce,
-        hir::StdItem::AsyncFnOnce => StdItemWire::AsyncFnOnce,
-        hir::StdItem::Tuple => StdItemWire::Tuple,
-        hir::StdItem::Add => StdItemWire::Add,
-        hir::StdItem::AddAssign => StdItemWire::AddAssign,
-        hir::StdItem::Sub => StdItemWire::Sub,
-        hir::StdItem::SubAssign => StdItemWire::SubAssign,
-        hir::StdItem::Mul => StdItemWire::Mul,
-        hir::StdItem::MulAssign => StdItemWire::MulAssign,
-        hir::StdItem::Div => StdItemWire::Div,
-        hir::StdItem::DivAssign => StdItemWire::DivAssign,
-        hir::StdItem::Rem => StdItemWire::Rem,
-        hir::StdItem::RemAssign => StdItemWire::RemAssign,
-        hir::StdItem::Neg => StdItemWire::Neg,
-        hir::StdItem::Not => StdItemWire::Not,
-        hir::StdItem::BitAnd => StdItemWire::BitAnd,
-        hir::StdItem::BitAndAssign => StdItemWire::BitAndAssign,
-        hir::StdItem::BitOr => StdItemWire::BitOr,
-        hir::StdItem::BitOrAssign => StdItemWire::BitOrAssign,
-        hir::StdItem::BitXor => StdItemWire::BitXor,
-        hir::StdItem::BitXorAssign => StdItemWire::BitXorAssign,
-        hir::StdItem::Shl => StdItemWire::Shl,
-        hir::StdItem::ShlAssign => StdItemWire::ShlAssign,
-        hir::StdItem::Shr => StdItemWire::Shr,
-        hir::StdItem::ShrAssign => StdItemWire::ShrAssign,
-        hir::StdItem::BitNot => StdItemWire::BitNot,
-        hir::StdItem::PartialEq => StdItemWire::PartialEq,
-        hir::StdItem::PartialOrd => StdItemWire::PartialOrd,
-        hir::StdItem::OptionalSomeVariant => StdItemWire::OptionalSomeVariant,
-        hir::StdItem::OptionalSomeCtor => StdItemWire::OptionalSomeCtor,
-        hir::StdItem::OptionalNoneVariant => StdItemWire::OptionalNoneVariant,
-        hir::StdItem::OptionalNoneCtor => StdItemWire::OptionalNoneCtor,
-        hir::StdItem::ResultOkVariant => StdItemWire::ResultOkVariant,
-        hir::StdItem::ResultOkCtor => StdItemWire::ResultOkCtor,
-        hir::StdItem::ResultErrVariant => StdItemWire::ResultErrVariant,
-        hir::StdItem::ResultErrCtor => StdItemWire::ResultErrCtor,
-        hir::StdItem::Task => StdItemWire::Task,
-        hir::StdItem::PanicPayload => StdItemWire::PanicPayload,
-        hir::StdItem::Make => StdItemWire::Make,
-    }
-}
+wire_enum_conversions!(
+    std_item_to_wire,
+    std_item_from_wire,
+    hir::StdItem,
+    StdItemWire,
+    [
+        Optional,
+        Result,
+        List,
+        Set,
+        Dictionary,
+        Range,
+        ClosedRange,
+        MaybeUninit,
+        Span,
+        Benchmark,
+        Copy,
+        Clone,
+        Sendable,
+        Hashable,
+        Equatable,
+        From,
+        Iterator,
+        Iterable,
+        AsyncIterator,
+        AsyncIterable,
+        Fn,
+        FnMut,
+        AsyncFn,
+        AsyncFnMut,
+        FnOnce,
+        AsyncFnOnce,
+        Tuple,
+        Add,
+        AddAssign,
+        Sub,
+        SubAssign,
+        Mul,
+        MulAssign,
+        Div,
+        DivAssign,
+        Rem,
+        RemAssign,
+        Neg,
+        Not,
+        BitAnd,
+        BitAndAssign,
+        BitOr,
+        BitOrAssign,
+        BitXor,
+        BitXorAssign,
+        Shl,
+        ShlAssign,
+        Shr,
+        ShrAssign,
+        BitNot,
+        PartialEq,
+        PartialOrd,
+        OptionalSomeVariant,
+        OptionalSomeCtor,
+        OptionalNoneVariant,
+        OptionalNoneCtor,
+        ResultOkVariant,
+        ResultOkCtor,
+        ResultErrVariant,
+        ResultErrCtor,
+        Task,
+        PanicPayload,
+        Make,
+    ]
+);
 
-#[inline]
-pub fn std_item_from_wire(v: &StdItemWire) -> hir::StdItem {
-    match v {
-        StdItemWire::Optional => hir::StdItem::Optional,
-        StdItemWire::Result => hir::StdItem::Result,
-        StdItemWire::List => hir::StdItem::List,
-        StdItemWire::Set => hir::StdItem::Set,
-        StdItemWire::Dictionary => hir::StdItem::Dictionary,
-        StdItemWire::Range => hir::StdItem::Range,
-        StdItemWire::ClosedRange => hir::StdItem::ClosedRange,
-        StdItemWire::MaybeUninit => hir::StdItem::MaybeUninit,
-        StdItemWire::Span => hir::StdItem::Span,
-        StdItemWire::Benchmark => hir::StdItem::Benchmark,
-        StdItemWire::Copy => hir::StdItem::Copy,
-        StdItemWire::Clone => hir::StdItem::Clone,
-        StdItemWire::Sendable => hir::StdItem::Sendable,
-        StdItemWire::Hashable => hir::StdItem::Hashable,
-        StdItemWire::Equatable => hir::StdItem::Equatable,
-        StdItemWire::From => hir::StdItem::From,
-        StdItemWire::Iterator => hir::StdItem::Iterator,
-        StdItemWire::Iterable => hir::StdItem::Iterable,
-        StdItemWire::AsyncIterator => hir::StdItem::AsyncIterator,
-        StdItemWire::AsyncIterable => hir::StdItem::AsyncIterable,
-        StdItemWire::Fn => hir::StdItem::Fn,
-        StdItemWire::FnMut => hir::StdItem::FnMut,
-        StdItemWire::AsyncFn => hir::StdItem::AsyncFn,
-        StdItemWire::AsyncFnMut => hir::StdItem::AsyncFnMut,
-        StdItemWire::FnOnce => hir::StdItem::FnOnce,
-        StdItemWire::AsyncFnOnce => hir::StdItem::AsyncFnOnce,
-        StdItemWire::Tuple => hir::StdItem::Tuple,
-        StdItemWire::Add => hir::StdItem::Add,
-        StdItemWire::AddAssign => hir::StdItem::AddAssign,
-        StdItemWire::Sub => hir::StdItem::Sub,
-        StdItemWire::SubAssign => hir::StdItem::SubAssign,
-        StdItemWire::Mul => hir::StdItem::Mul,
-        StdItemWire::MulAssign => hir::StdItem::MulAssign,
-        StdItemWire::Div => hir::StdItem::Div,
-        StdItemWire::DivAssign => hir::StdItem::DivAssign,
-        StdItemWire::Rem => hir::StdItem::Rem,
-        StdItemWire::RemAssign => hir::StdItem::RemAssign,
-        StdItemWire::Neg => hir::StdItem::Neg,
-        StdItemWire::Not => hir::StdItem::Not,
-        StdItemWire::BitAnd => hir::StdItem::BitAnd,
-        StdItemWire::BitAndAssign => hir::StdItem::BitAndAssign,
-        StdItemWire::BitOr => hir::StdItem::BitOr,
-        StdItemWire::BitOrAssign => hir::StdItem::BitOrAssign,
-        StdItemWire::BitXor => hir::StdItem::BitXor,
-        StdItemWire::BitXorAssign => hir::StdItem::BitXorAssign,
-        StdItemWire::Shl => hir::StdItem::Shl,
-        StdItemWire::ShlAssign => hir::StdItem::ShlAssign,
-        StdItemWire::Shr => hir::StdItem::Shr,
-        StdItemWire::ShrAssign => hir::StdItem::ShrAssign,
-        StdItemWire::BitNot => hir::StdItem::BitNot,
-        StdItemWire::PartialEq => hir::StdItem::PartialEq,
-        StdItemWire::PartialOrd => hir::StdItem::PartialOrd,
-        StdItemWire::OptionalSomeVariant => hir::StdItem::OptionalSomeVariant,
-        StdItemWire::OptionalSomeCtor => hir::StdItem::OptionalSomeCtor,
-        StdItemWire::OptionalNoneVariant => hir::StdItem::OptionalNoneVariant,
-        StdItemWire::OptionalNoneCtor => hir::StdItem::OptionalNoneCtor,
-        StdItemWire::ResultOkVariant => hir::StdItem::ResultOkVariant,
-        StdItemWire::ResultOkCtor => hir::StdItem::ResultOkCtor,
-        StdItemWire::ResultErrVariant => hir::StdItem::ResultErrVariant,
-        StdItemWire::ResultErrCtor => hir::StdItem::ResultErrCtor,
-        StdItemWire::Task => hir::StdItem::Task,
-        StdItemWire::PanicPayload => hir::StdItem::PanicPayload,
-        StdItemWire::Make => hir::StdItem::Make,
-    }
-}
+wire_enum_conversions!(
+    abi_to_wire,
+    abi_from_wire,
+    hir::Abi,
+    AbiWire,
+    [C, Blocking, Runtime, Intrinsic,]
+);
 
-#[inline]
-pub fn abi_to_wire(v: hir::Abi) -> AbiWire {
-    match v {
-        hir::Abi::C => AbiWire::C,
-        hir::Abi::Blocking => AbiWire::Blocking,
-        hir::Abi::Runtime => AbiWire::Runtime,
-        hir::Abi::Intrinsic => AbiWire::Intrinsic,
-    }
-}
-
-#[inline]
-pub fn abi_from_wire(v: &AbiWire) -> hir::Abi {
-    match v {
-        AbiWire::C => hir::Abi::C,
-        AbiWire::Blocking => hir::Abi::Blocking,
-        AbiWire::Runtime => hir::Abi::Runtime,
-        AbiWire::Intrinsic => hir::Abi::Intrinsic,
-    }
-}
-
-#[inline]
-pub fn int_suffix_to_wire(v: IntegerTypeSuffix) -> IntegerTypeSuffixWire {
-    match v {
-        IntegerTypeSuffix::I8 => IntegerTypeSuffixWire::I8,
-        IntegerTypeSuffix::I16 => IntegerTypeSuffixWire::I16,
-        IntegerTypeSuffix::I32 => IntegerTypeSuffixWire::I32,
-        IntegerTypeSuffix::I64 => IntegerTypeSuffixWire::I64,
-        IntegerTypeSuffix::U8 => IntegerTypeSuffixWire::U8,
-        IntegerTypeSuffix::U16 => IntegerTypeSuffixWire::U16,
-        IntegerTypeSuffix::U32 => IntegerTypeSuffixWire::U32,
-        IntegerTypeSuffix::U64 => IntegerTypeSuffixWire::U64,
-    }
-}
-
-#[inline]
-pub fn int_suffix_from_wire(v: &IntegerTypeSuffixWire) -> IntegerTypeSuffix {
-    match v {
-        IntegerTypeSuffixWire::I8 => IntegerTypeSuffix::I8,
-        IntegerTypeSuffixWire::I16 => IntegerTypeSuffix::I16,
-        IntegerTypeSuffixWire::I32 => IntegerTypeSuffix::I32,
-        IntegerTypeSuffixWire::I64 => IntegerTypeSuffix::I64,
-        IntegerTypeSuffixWire::U8 => IntegerTypeSuffix::U8,
-        IntegerTypeSuffixWire::U16 => IntegerTypeSuffix::U16,
-        IntegerTypeSuffixWire::U32 => IntegerTypeSuffix::U32,
-        IntegerTypeSuffixWire::U64 => IntegerTypeSuffix::U64,
-    }
-}
+wire_enum_conversions!(
+    int_suffix_to_wire,
+    int_suffix_from_wire,
+    IntegerTypeSuffix,
+    IntegerTypeSuffixWire,
+    [I8, I16, I32, I64, U8, U16, U32, U64,]
+);
 
 #[inline]
 pub fn operator_kind_to_wire(v: hir::OperatorKind) -> OperatorKindWire {
@@ -1956,49 +1828,21 @@ pub fn infer_ty_from_wire(v: &InferTyWire) -> InferTy {
     }
 }
 
-#[inline]
-pub fn alias_kind_to_wire(v: AliasKind) -> AliasKindWire {
-    match v {
-        AliasKind::Inherent => AliasKindWire::Inherent,
-        AliasKind::Weak => AliasKindWire::Weak,
-        AliasKind::Projection => AliasKindWire::Projection,
-        AliasKind::Opaque => AliasKindWire::Opaque,
-    }
-}
+wire_enum_conversions!(
+    alias_kind_to_wire,
+    alias_kind_from_wire,
+    AliasKind,
+    AliasKindWire,
+    [Inherent, Weak, Projection, Opaque,]
+);
 
-#[inline]
-pub fn alias_kind_from_wire(v: &AliasKindWire) -> AliasKind {
-    match v {
-        AliasKindWire::Inherent => AliasKind::Inherent,
-        AliasKindWire::Weak => AliasKind::Weak,
-        AliasKindWire::Projection => AliasKind::Projection,
-        AliasKindWire::Opaque => AliasKind::Opaque,
-    }
-}
-
-#[inline]
-pub fn closure_kind_to_wire(v: ClosureKind) -> ClosureKindWire {
-    match v {
-        ClosureKind::Fn => ClosureKindWire::Fn,
-        ClosureKind::FnMut => ClosureKindWire::FnMut,
-        ClosureKind::FnOnce => ClosureKindWire::FnOnce,
-        ClosureKind::AsyncFn => ClosureKindWire::AsyncFn,
-        ClosureKind::AsyncFnMut => ClosureKindWire::AsyncFnMut,
-        ClosureKind::AsyncFnOnce => ClosureKindWire::AsyncFnOnce,
-    }
-}
-
-#[inline]
-pub fn closure_kind_from_wire(v: &ClosureKindWire) -> ClosureKind {
-    match v {
-        ClosureKindWire::Fn => ClosureKind::Fn,
-        ClosureKindWire::FnMut => ClosureKind::FnMut,
-        ClosureKindWire::FnOnce => ClosureKind::FnOnce,
-        ClosureKindWire::AsyncFn => ClosureKind::AsyncFn,
-        ClosureKindWire::AsyncFnMut => ClosureKind::AsyncFnMut,
-        ClosureKindWire::AsyncFnOnce => ClosureKind::AsyncFnOnce,
-    }
-}
+wire_enum_conversions!(
+    closure_kind_to_wire,
+    closure_kind_from_wire,
+    ClosureKind,
+    ClosureKindWire,
+    [Fn, FnMut, FnOnce, AsyncFn, AsyncFnMut, AsyncFnOnce,]
+);
 
 #[inline]
 pub fn capture_kind_to_wire(v: CaptureKind) -> CaptureKindWire {
@@ -2018,23 +1862,13 @@ pub fn capture_kind_from_wire(v: &CaptureKindWire) -> CaptureKind {
     }
 }
 
-#[inline]
-pub fn capture_access_kind_to_wire(v: CaptureAccessKind) -> CaptureAccessKindWire {
-    match v {
-        CaptureAccessKind::Read => CaptureAccessKindWire::Read,
-        CaptureAccessKind::Mutate => CaptureAccessKindWire::Mutate,
-        CaptureAccessKind::Move => CaptureAccessKindWire::Move,
-    }
-}
-
-#[inline]
-pub fn capture_access_kind_from_wire(v: &CaptureAccessKindWire) -> CaptureAccessKind {
-    match v {
-        CaptureAccessKindWire::Read => CaptureAccessKind::Read,
-        CaptureAccessKindWire::Mutate => CaptureAccessKind::Mutate,
-        CaptureAccessKindWire::Move => CaptureAccessKind::Move,
-    }
-}
+wire_enum_conversions!(
+    capture_access_kind_to_wire,
+    capture_access_kind_from_wire,
+    CaptureAccessKind,
+    CaptureAccessKindWire,
+    [Read, Mutate, Move,]
+);
 
 #[inline]
 pub fn adt_def_to_wire(v: AdtDef) -> AdtDefWire {
@@ -3472,105 +3306,39 @@ pub fn synthetic_definition_from_wire<'a>(
     )
 }
 
-#[inline]
-pub fn local_kind_to_wire(v: mir::LocalKind) -> LocalKindWire {
-    match v {
-        mir::LocalKind::Param => LocalKindWire::Param,
-        mir::LocalKind::User => LocalKindWire::User,
-        mir::LocalKind::Temp => LocalKindWire::Temp,
-        mir::LocalKind::Return => LocalKindWire::Return,
-    }
-}
+wire_enum_conversions!(
+    local_kind_to_wire,
+    local_kind_from_wire,
+    mir::LocalKind,
+    LocalKindWire,
+    [Param, User, Temp, Return,]
+);
 
-#[inline]
-pub fn local_kind_from_wire(v: &LocalKindWire) -> mir::LocalKind {
-    match v {
-        LocalKindWire::Param => mir::LocalKind::Param,
-        LocalKindWire::User => mir::LocalKind::User,
-        LocalKindWire::Temp => mir::LocalKind::Temp,
-        LocalKindWire::Return => mir::LocalKind::Return,
-    }
-}
+wire_enum_conversions!(
+    mir_phase_to_wire,
+    mir_phase_from_wire,
+    mir::MirPhase,
+    MirPhaseWire,
+    [Built, CfgClean, Lowered,]
+);
 
-#[inline]
-pub fn mir_phase_to_wire(v: mir::MirPhase) -> MirPhaseWire {
-    match v {
-        mir::MirPhase::Built => MirPhaseWire::Built,
-        mir::MirPhase::CfgClean => MirPhaseWire::CfgClean,
-        mir::MirPhase::Lowered => MirPhaseWire::Lowered,
-    }
-}
+wire_enum_conversions!(
+    unary_op_to_wire,
+    unary_op_from_wire,
+    mir::UnaryOperator,
+    UnaryOperatorWire,
+    [LogicalNot, Negate, BitwiseNot,]
+);
 
-#[inline]
-pub fn mir_phase_from_wire(v: &MirPhaseWire) -> mir::MirPhase {
-    match v {
-        MirPhaseWire::Built => mir::MirPhase::Built,
-        MirPhaseWire::CfgClean => mir::MirPhase::CfgClean,
-        MirPhaseWire::Lowered => mir::MirPhase::Lowered,
-    }
-}
-
-#[inline]
-pub fn unary_op_to_wire(v: mir::UnaryOperator) -> UnaryOperatorWire {
-    match v {
-        mir::UnaryOperator::LogicalNot => UnaryOperatorWire::LogicalNot,
-        mir::UnaryOperator::Negate => UnaryOperatorWire::Negate,
-        mir::UnaryOperator::BitwiseNot => UnaryOperatorWire::BitwiseNot,
-    }
-}
-
-#[inline]
-pub fn unary_op_from_wire(v: &UnaryOperatorWire) -> mir::UnaryOperator {
-    match v {
-        UnaryOperatorWire::LogicalNot => mir::UnaryOperator::LogicalNot,
-        UnaryOperatorWire::Negate => mir::UnaryOperator::Negate,
-        UnaryOperatorWire::BitwiseNot => mir::UnaryOperator::BitwiseNot,
-    }
-}
-
-#[inline]
-pub fn binary_op_to_wire(v: mir::BinaryOperator) -> BinaryOperatorWire {
-    match v {
-        mir::BinaryOperator::Add => BinaryOperatorWire::Add,
-        mir::BinaryOperator::Sub => BinaryOperatorWire::Sub,
-        mir::BinaryOperator::Mul => BinaryOperatorWire::Mul,
-        mir::BinaryOperator::Div => BinaryOperatorWire::Div,
-        mir::BinaryOperator::Rem => BinaryOperatorWire::Rem,
-        mir::BinaryOperator::BitAnd => BinaryOperatorWire::BitAnd,
-        mir::BinaryOperator::BitOr => BinaryOperatorWire::BitOr,
-        mir::BinaryOperator::BitXor => BinaryOperatorWire::BitXor,
-        mir::BinaryOperator::BitShl => BinaryOperatorWire::BitShl,
-        mir::BinaryOperator::BitShr => BinaryOperatorWire::BitShr,
-        mir::BinaryOperator::Eql => BinaryOperatorWire::Eql,
-        mir::BinaryOperator::Lt => BinaryOperatorWire::Lt,
-        mir::BinaryOperator::Gt => BinaryOperatorWire::Gt,
-        mir::BinaryOperator::Leq => BinaryOperatorWire::Leq,
-        mir::BinaryOperator::Geq => BinaryOperatorWire::Geq,
-        mir::BinaryOperator::Neq => BinaryOperatorWire::Neq,
-    }
-}
-
-#[inline]
-pub fn binary_op_from_wire(v: &BinaryOperatorWire) -> mir::BinaryOperator {
-    match v {
-        BinaryOperatorWire::Add => mir::BinaryOperator::Add,
-        BinaryOperatorWire::Sub => mir::BinaryOperator::Sub,
-        BinaryOperatorWire::Mul => mir::BinaryOperator::Mul,
-        BinaryOperatorWire::Div => mir::BinaryOperator::Div,
-        BinaryOperatorWire::Rem => mir::BinaryOperator::Rem,
-        BinaryOperatorWire::BitAnd => mir::BinaryOperator::BitAnd,
-        BinaryOperatorWire::BitOr => mir::BinaryOperator::BitOr,
-        BinaryOperatorWire::BitXor => mir::BinaryOperator::BitXor,
-        BinaryOperatorWire::BitShl => mir::BinaryOperator::BitShl,
-        BinaryOperatorWire::BitShr => mir::BinaryOperator::BitShr,
-        BinaryOperatorWire::Eql => mir::BinaryOperator::Eql,
-        BinaryOperatorWire::Lt => mir::BinaryOperator::Lt,
-        BinaryOperatorWire::Gt => mir::BinaryOperator::Gt,
-        BinaryOperatorWire::Leq => mir::BinaryOperator::Leq,
-        BinaryOperatorWire::Geq => mir::BinaryOperator::Geq,
-        BinaryOperatorWire::Neq => mir::BinaryOperator::Neq,
-    }
-}
+wire_enum_conversions!(
+    binary_op_to_wire,
+    binary_op_from_wire,
+    mir::BinaryOperator,
+    BinaryOperatorWire,
+    [
+        Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, BitShl, BitShr, Eql, Lt, Gt, Leq, Geq, Neq,
+    ]
+);
 
 pub fn place_to_wire(v: &mir::Place<'_>) -> PlaceWire {
     PlaceWire {
