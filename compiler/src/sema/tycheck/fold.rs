@@ -10,7 +10,7 @@ use crate::{
 /// The transformer – you implement this once per pass.
 pub trait TypeFolder<'ctx> {
     fn gcx(&self) -> GlobalContext<'ctx>;
-    /// Called on every `Ty` that is *not* a leaf. You usually match on `ty.kind()`
+    /// Called on every `Ty`. You usually match on `ty.kind()`
     /// and reconstruct it with `self.fold_ty(...)` where needed.
     fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx>;
     /// Called on const values encountered inside types.
@@ -20,14 +20,6 @@ pub trait TypeFolder<'ctx> {
             kind: c.kind,
         }
     }
-
-    // Default rewrite for a generic argument.
-    // fn fold_generic_arg(&mut self, arg: GenericArgument<'ctx>) -> GenericArgument<'ctx> {
-    //     match arg {
-    //         GenericArgument::Type(t) => GenericArgument::Type(self.fold_ty(t)),
-    //         other @ GenericArgument::Const(_) => other,
-    //     }
-    // }
 }
 
 /// Blanket traversal: every container that can hold a `Ty` implements this.
@@ -87,7 +79,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         // Types with single Ty parameter
         Array { element, len } => {
             let new_element = element.fold_with(folder);
-            let new_len = fold_const(len, folder);
+            let new_len = len.fold_with(folder);
 
             if new_element == element && new_len == len {
                 None
@@ -150,51 +142,14 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         }
 
         BoxedExistential { interfaces } => {
-            let mut changed = false;
-            let mut rebuilt: Option<Vec<InterfaceReference<'ctx>>> = None;
-
-            for (idx, iface) in interfaces.iter().enumerate() {
-                let folded_arguments = fold_generic_args(gcx, iface.arguments, folder);
-                let (folded_bindings, bindings_changed) =
-                    fold_associated_type_bindings(gcx, iface.bindings, folder);
-                let iface_changed = iface.arguments != folded_arguments || bindings_changed;
-
-                let Some(buf) = rebuilt.as_mut() else {
-                    if !iface_changed {
-                        continue;
-                    }
-
-                    let mut buf = Vec::with_capacity(interfaces.len());
-                    buf.extend_from_slice(&interfaces[..idx]);
-                    buf.push(InterfaceReference {
-                        id: iface.id,
-                        arguments: folded_arguments,
-                        bindings: folded_bindings,
-                    });
-                    rebuilt = Some(buf);
-                    changed = true;
-                    continue;
-                };
-
-                if iface_changed {
-                    changed = true;
-                    buf.push(InterfaceReference {
-                        id: iface.id,
-                        arguments: folded_arguments,
-                        bindings: folded_bindings,
-                    });
-                } else {
-                    buf.push(*iface);
-                }
-            }
-
-            if changed {
-                let folded_refs = rebuilt.expect("rebuilt list exists when changed");
-                let list = gcx.store.arenas.global.alloc_slice_clone(&folded_refs);
-                Some(BoxedExistential { interfaces: list })
-            } else {
-                None
-            }
+            let folded = map_changed(interfaces, |iface| InterfaceReference {
+                id: iface.id,
+                arguments: fold_generic_args(gcx, iface.arguments, folder),
+                bindings: fold_associated_type_bindings(gcx, iface.bindings, folder),
+            })?;
+            Some(BoxedExistential {
+                interfaces: gcx.store.arenas.global.alloc_slice_clone(&folded),
+            })
         }
 
         // Alias type - fold generic args
@@ -243,8 +198,21 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     }
 }
 
-fn fold_const<'ctx, F: TypeFolder<'ctx> + ?Sized>(c: Const<'ctx>, folder: &mut F) -> Const<'ctx> {
-    folder.fold_const(c)
+/// Reuse unchanged slices; allocate only after the first changed element.
+fn map_changed<T: Copy + PartialEq>(items: &[T], mut fold: impl FnMut(T) -> T) -> Option<Vec<T>> {
+    let mut rebuilt: Option<Vec<T>> = None;
+    for (index, &item) in items.iter().enumerate() {
+        let folded = fold(item);
+        if let Some(buf) = rebuilt.as_mut() {
+            buf.push(folded);
+        } else if folded != item {
+            let mut buf = Vec::with_capacity(items.len());
+            buf.extend_from_slice(&items[..index]);
+            buf.push(folded);
+            rebuilt = Some(buf);
+        }
+    }
+    rebuilt
 }
 
 fn fold_generic_args<'ctx, F: TypeFolder<'ctx> + ?Sized>(
@@ -252,38 +220,11 @@ fn fold_generic_args<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     args: GenericArguments<'ctx>,
     folder: &mut F,
 ) -> GenericArguments<'ctx> {
-    if args.is_empty() {
-        return args;
-    }
-
-    let mut folded_args: Option<Vec<GenericArgument<'ctx>>> = None;
-    for (idx, arg) in args.iter().enumerate() {
-        let folded = match arg {
-            GenericArgument::Type(ty) => {
-                let folded_ty = ty.fold_with(folder);
-                GenericArgument::Type(folded_ty)
-            }
-            GenericArgument::Const(c) => {
-                let folded_const = fold_const(*c, folder);
-                GenericArgument::Const(folded_const)
-            }
-        };
-
-        if let Some(buf) = folded_args.as_mut() {
-            buf.push(folded);
-            continue;
-        }
-
-        if folded != *arg {
-            let mut buf = Vec::with_capacity(args.len());
-            buf.extend_from_slice(&args[..idx]);
-            buf.push(folded);
-            folded_args = Some(buf);
-        }
-    }
-
-    match folded_args {
-        Some(folded_args) => gcx.store.interners.intern_generic_args(folded_args),
+    match map_changed(&args, |arg| match arg {
+        GenericArgument::Type(ty) => GenericArgument::Type(ty.fold_with(folder)),
+        GenericArgument::Const(c) => GenericArgument::Const(c.fold_with(folder)),
+    }) {
+        Some(folded) => gcx.store.interners.intern_generic_args(folded),
         None => args,
     }
 }
@@ -293,28 +234,7 @@ fn fold_ty_list<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     items: TyList<'ctx>,
     folder: &mut F,
 ) -> TyList<'ctx> {
-    if items.is_empty() {
-        return items;
-    }
-
-    let mut folded: Option<Vec<Ty<'ctx>>> = None;
-    for (idx, ty) in items.iter().enumerate() {
-        let folded_ty = ty.fold_with(folder);
-
-        if let Some(buf) = folded.as_mut() {
-            buf.push(folded_ty);
-            continue;
-        }
-
-        if folded_ty != *ty {
-            let mut buf = Vec::with_capacity(items.len());
-            buf.extend_from_slice(&items[..idx]);
-            buf.push(folded_ty);
-            folded = Some(buf);
-        }
-    }
-
-    match folded {
+    match map_changed(&items, |ty| ty.fold_with(folder)) {
         Some(folded) => gcx.store.interners.intern_ty_list(folded),
         None => items,
     }
@@ -324,50 +244,13 @@ fn fold_associated_type_bindings<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     gcx: GlobalContext<'ctx>,
     bindings: &'ctx [AssociatedTypeBinding<'ctx>],
     folder: &mut F,
-) -> (&'ctx [AssociatedTypeBinding<'ctx>], bool) {
-    if bindings.is_empty() {
-        return (bindings, false);
-    }
-
-    let mut changed = false;
-    let mut rebuilt: Option<Vec<AssociatedTypeBinding<'ctx>>> = None;
-    for (idx, binding) in bindings.iter().enumerate() {
-        let folded_ty = binding.ty.fold_with(folder);
-        let binding_changed = folded_ty != binding.ty;
-
-        let Some(buf) = rebuilt.as_mut() else {
-            if !binding_changed {
-                continue;
-            }
-
-            let mut buf = Vec::with_capacity(bindings.len());
-            buf.extend_from_slice(&bindings[..idx]);
-            buf.push(AssociatedTypeBinding {
-                name: binding.name,
-                ty: folded_ty,
-            });
-            rebuilt = Some(buf);
-            changed = true;
-            continue;
-        };
-
-        if binding_changed {
-            changed = true;
-            buf.push(AssociatedTypeBinding {
-                name: binding.name,
-                ty: folded_ty,
-            });
-        } else {
-            buf.push(*binding);
-        }
-    }
-
-    if changed {
-        let folded_bindings = rebuilt.expect("rebuilt list exists when changed");
-        let folded_bindings = gcx.store.arenas.global.alloc_slice_clone(&folded_bindings);
-        (folded_bindings, true)
-    } else {
-        (bindings, false)
+) -> &'ctx [AssociatedTypeBinding<'ctx>] {
+    match map_changed(bindings, |binding| AssociatedTypeBinding {
+        name: binding.name,
+        ty: binding.ty.fold_with(folder),
+    }) {
+        Some(folded) => gcx.store.arenas.global.alloc_slice_clone(&folded),
+        None => bindings,
     }
 }
 

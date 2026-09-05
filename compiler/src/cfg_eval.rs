@@ -1,5 +1,17 @@
 use crate::{ast, cfg::TargetInfo, compile::context::GlobalContext};
 
+pub(crate) fn target_info(gcx: GlobalContext<'_>) -> TargetInfo {
+    let triple = gcx.store.target_layout.triple();
+    let mut target = TargetInfo::from_triple(triple.as_str().to_str().unwrap_or(""));
+    target.profile = match gcx.config.profile {
+        crate::compile::config::BuildProfile::Debug => "debug".to_string(),
+        crate::compile::config::BuildProfile::Release => "release".to_string(),
+    };
+    target.test_mode = gcx.config.harness_mode.is_test();
+    target.bench_mode = gcx.config.harness_mode.is_bench();
+    target
+}
+
 pub fn filter_package(package: &mut ast::Package, target: &TargetInfo, gcx: GlobalContext<'_>) {
     filter_module(&mut package.root, target, gcx);
 }
@@ -9,7 +21,7 @@ fn filter_module(module: &mut ast::Module, target: &TargetInfo, gcx: GlobalConte
         filter_file(file, target, gcx);
     }
 
-    retain_mut(&mut module.submodules, |submodule| {
+    module.submodules.retain_mut(|submodule| {
         if let Some(decl) = &submodule.module_decl {
             if !should_include_attrs(&decl.attributes, target, gcx) {
                 return false;
@@ -29,7 +41,7 @@ fn filter_declarations(
     target: &TargetInfo,
     gcx: GlobalContext<'_>,
 ) {
-    retain_mut(decls, |decl| filter_declaration(decl, target, gcx));
+    decls.retain_mut(|decl| filter_declaration(decl, target, gcx));
 }
 
 fn filter_declaration(
@@ -65,9 +77,7 @@ fn filter_namespace_declarations(
     target: &TargetInfo,
     gcx: GlobalContext<'_>,
 ) {
-    retain_mut(decls, |decl| {
-        filter_namespace_declaration(decl, target, gcx)
-    });
+    decls.retain_mut(|decl| filter_namespace_declaration(decl, target, gcx));
 }
 
 fn filter_namespace_declaration(
@@ -97,9 +107,7 @@ fn filter_assoc_declarations(
     target: &TargetInfo,
     gcx: GlobalContext<'_>,
 ) {
-    retain_mut(decls, |decl| {
-        should_include_attrs(&decl.attributes, target, gcx)
-    });
+    decls.retain_mut(|decl| should_include_attrs(&decl.attributes, target, gcx));
 }
 
 fn filter_extern_declarations(
@@ -107,9 +115,7 @@ fn filter_extern_declarations(
     target: &TargetInfo,
     gcx: GlobalContext<'_>,
 ) {
-    retain_mut(decls, |decl| {
-        should_include_attrs(&decl.attributes, target, gcx)
-    });
+    decls.retain_mut(|decl| should_include_attrs(&decl.attributes, target, gcx));
 }
 
 pub fn should_include_attrs(
@@ -192,7 +198,11 @@ fn eval_cfg_attr(attr: &ast::Attribute, target: &TargetInfo, gcx: GlobalContext<
     true
 }
 
-fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo, gcx: GlobalContext<'_>) -> bool {
+pub(crate) fn eval_cfg_expr(
+    expr: &ast::CfgExpr,
+    target: &TargetInfo,
+    gcx: GlobalContext<'_>,
+) -> bool {
     match expr {
         ast::CfgExpr::Flag { name, .. } => {
             let name = gcx.symbol_text(name.symbol);
@@ -221,14 +231,4 @@ fn eval_cfg_expr(expr: &ast::CfgExpr, target: &TargetInfo, gcx: GlobalContext<'_
         ast::CfgExpr::All(items, _) => items.iter().all(|e| eval_cfg_expr(e, target, gcx)),
         ast::CfgExpr::Any(items, _) => items.iter().any(|e| eval_cfg_expr(e, target, gcx)),
     }
-}
-
-fn retain_mut<T>(items: &mut Vec<T>, mut keep: impl FnMut(&mut T) -> bool) {
-    let mut out = Vec::with_capacity(items.len());
-    for mut item in items.drain(..) {
-        if keep(&mut item) {
-            out.push(item);
-        }
-    }
-    *items = out;
 }

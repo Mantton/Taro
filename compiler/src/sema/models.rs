@@ -85,11 +85,6 @@ impl<'arena> Ty<'arena> {
         *self.0.0
     }
 
-    #[inline]
-    pub fn kind_ref(self) -> &'arena TyKind<'arena> {
-        self.0.0
-    }
-
     pub fn is_error(self) -> bool {
         matches!(self.kind(), TyKind::Error)
     }
@@ -133,10 +128,6 @@ impl<'arena> Ty<'arena> {
             }
         }
         visit(self)
-    }
-
-    pub fn is_fn(self) -> bool {
-        matches!(self.kind(), TyKind::FnPointer { .. })
     }
 
     pub fn is_pointer(self) -> bool {
@@ -1283,11 +1274,6 @@ impl MethodImplementation {
             MethodImplementation::Concrete(id) | MethodImplementation::Default(id) => Some(id),
             MethodImplementation::Synthetic(_, id) => id,
         }
-    }
-
-    /// Returns true if this is a synthetic implementation.
-    pub fn is_synthetic(self) -> bool {
-        matches!(self, MethodImplementation::Synthetic(..))
     }
 }
 

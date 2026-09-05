@@ -93,6 +93,29 @@ pub fn instantiate_constraint_with_args<'ctx>(
     folder.fold_constraint(constraint)
 }
 
+/// Substitute type and const arguments without normalizing associated projections.
+pub fn instantiate_generic_args<'ctx>(
+    gcx: GlobalContext<'ctx>,
+    template: GenericArguments<'ctx>,
+    args: GenericArguments<'ctx>,
+) -> GenericArguments<'ctx> {
+    if template.is_empty() || args.is_empty() {
+        return template;
+    }
+    let substituted = template
+        .iter()
+        .map(|arg| match arg {
+            GenericArgument::Type(ty) => {
+                GenericArgument::Type(instantiate_ty_with_args(gcx, *ty, args))
+            }
+            GenericArgument::Const(c) => {
+                GenericArgument::Const(instantiate_const_with_args(gcx, *c, args))
+            }
+        })
+        .collect();
+    gcx.store.interners.intern_generic_args(substituted)
+}
+
 pub fn instantiate_interface_ref_with_args<'ctx>(
     gcx: GlobalContext<'ctx>,
     interface: InterfaceReference<'ctx>,
@@ -100,20 +123,6 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
 ) -> InterfaceReference<'ctx> {
     if args.is_empty() {
         return interface;
-    }
-
-    let mut new_args = Vec::with_capacity(interface.arguments.len());
-    for arg in interface.arguments.iter() {
-        match arg {
-            GenericArgument::Type(ty) => {
-                let substituted = instantiate_ty_with_args(gcx, *ty, args);
-                new_args.push(GenericArgument::Type(substituted));
-            }
-            GenericArgument::Const(c) => {
-                let substituted = instantiate_const_with_args(gcx, *c, args);
-                new_args.push(GenericArgument::Const(substituted));
-            }
-        }
     }
 
     let mut new_bindings = Vec::with_capacity(interface.bindings.len());
@@ -125,10 +134,9 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
         });
     }
 
-    let interned = gcx.store.interners.intern_generic_args(new_args);
     InterfaceReference {
         id: interface.id,
-        arguments: interned,
+        arguments: instantiate_generic_args(gcx, interface.arguments, args),
         bindings: gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
     }
 }

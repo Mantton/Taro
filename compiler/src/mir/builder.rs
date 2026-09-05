@@ -4,7 +4,6 @@ use crate::{
     mir::{
         self, BasicBlockData, BasicBlockId, BlockAnd, BlockAndExtension, Body, LocalDecl, LocalId,
         LocalKind, Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
-        pretty::PrettyPrintMir,
     },
     sema::models::{AdtKind, Constraint, EnumVariantKind, LabeledFunctionSignature, Ty, TyKind},
     span::{Span, Symbol},
@@ -505,20 +504,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 target: destination,
             },
         );
-    }
-
-    pub fn print_mir_body(&self) {
-        let pretty = PrettyPrintMir {
-            body: &self.body,
-            gcx: self.gcx,
-        };
-        println!("{}", pretty);
-    }
-
-    /// Check if a type has callable trait bounds
-    /// in the current function's constraints.
-    pub fn has_fn_trait_bound(&self, ty: Ty<'ctx>) -> bool {
-        self.get_callable_trait_info(ty).is_some()
     }
 
     fn callable_trait_kind_for_interface(

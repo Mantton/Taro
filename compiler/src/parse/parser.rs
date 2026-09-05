@@ -710,7 +710,6 @@ impl Parser {
 
         let (getter_decl, setter_decl) = self.parse_computed_property_accessors(
             identifier,
-            &ty,
             visibility,
             accessor_bodies_required,
         )?;
@@ -741,7 +740,6 @@ impl Parser {
     fn parse_computed_property_accessors(
         &mut self,
         property_identifier: Identifier,
-        property_ty: &Box<Type>,
         visibility: Visibility,
         accessor_bodies_required: bool,
     ) -> R<(AssociatedDeclaration, Option<AssociatedDeclaration>)> {
@@ -765,8 +763,7 @@ impl Parser {
                 if getter.is_some() {
                     return Err(self.err_at_current(ParserError::DuplicateComputedPropertyAccessor));
                 }
-                getter = Some(self.parse_computed_property_getter(
-                    property_ty,
+                getter = Some(self.parse_computed_property_accessor(
                     getter_ident,
                     visibility,
                     accessor_bodies_required,
@@ -775,8 +772,7 @@ impl Parser {
                 if setter.is_some() {
                     return Err(self.err_at_current(ParserError::DuplicateComputedPropertyAccessor));
                 }
-                setter = Some(self.parse_computed_property_setter(
-                    property_ty,
+                setter = Some(self.parse_computed_property_accessor(
                     setter_ident,
                     visibility,
                     accessor_bodies_required,
@@ -798,29 +794,48 @@ impl Parser {
         Ok((getter, setter))
     }
 
-    fn parse_computed_property_getter(
+    fn parse_computed_property_accessor(
         &mut self,
-        _property_ty: &Type,
         hidden_name: Identifier,
         visibility: Visibility,
         body_required: bool,
     ) -> R<AssociatedDeclaration> {
         let lo = self.lo_span();
-        let get_ident = self.parse_identifier()?;
-        debug_assert!(self.symbol_eq(get_ident.symbol, "get"));
+        let accessor = self.parse_identifier()?;
+        let is_setter = self.symbol_eq(accessor.symbol, "set");
+        debug_assert!(is_setter || self.symbol_eq(accessor.symbol, "get"));
 
         let inputs = self.parse_function_parameters()?;
-        if inputs.len() != 1 || !self.is_valid_computed_property_getter_input(&inputs[0]) {
-            return Err(Spanned::new(
-                ParserError::InvalidComputedPropertyGetterSignature,
-                get_ident.span,
-            ));
+        let signature_valid = if is_setter {
+            self.is_valid_computed_property_setter_inputs(&inputs)
+        } else {
+            inputs.len() == 1 && self.is_valid_computed_property_getter_input(&inputs[0])
+        };
+        if !signature_valid {
+            let error = if is_setter {
+                ParserError::InvalidComputedPropertySetterSignature
+            } else {
+                ParserError::InvalidComputedPropertyGetterSignature
+            };
+            return Err(Spanned::new(error, accessor.span));
         }
 
         let is_async = self.eat(Token::Async);
+        if is_setter && is_async {
+            return Err(Spanned::new(
+                ParserError::AsyncComputedPropertySetterNotAllowed,
+                accessor.span,
+            ));
+        }
 
         if self.eat(Token::RArrow) {
             let _ = self.parse_type()?;
+            if is_setter {
+                return Err(Spanned::new(
+                    ParserError::InvalidComputedPropertySetterSignature,
+                    accessor.span,
+                ));
+            }
         }
 
         let block = if self.matches(Token::LBrace) {
@@ -832,7 +847,7 @@ impl Parser {
         };
 
         let signature = FunctionSignature {
-            span: get_ident.span.to(self.hi_span()),
+            span: accessor.span.to(self.hi_span()),
             prototype: FunctionPrototype {
                 inputs,
                 output: None,
@@ -848,78 +863,6 @@ impl Parser {
             block,
             is_unsafe: false,
             is_async,
-            abi: None,
-        };
-
-        Ok(Declaration {
-            id: self.next_id(),
-            span: lo.to(self.hi_span()),
-            identifier: hidden_name,
-            kind: AssociatedDeclarationKind::Function(function),
-            visibility,
-            attributes: vec![],
-        })
-    }
-
-    fn parse_computed_property_setter(
-        &mut self,
-        _property_ty: &Type,
-        hidden_name: Identifier,
-        visibility: Visibility,
-        body_required: bool,
-    ) -> R<AssociatedDeclaration> {
-        let lo = self.lo_span();
-        let set_ident = self.parse_identifier()?;
-        debug_assert!(self.symbol_eq(set_ident.symbol, "set"));
-
-        let inputs = self.parse_function_parameters()?;
-        if !self.is_valid_computed_property_setter_inputs(&inputs) {
-            return Err(Spanned::new(
-                ParserError::InvalidComputedPropertySetterSignature,
-                set_ident.span,
-            ));
-        }
-
-        if self.eat(Token::Async) {
-            return Err(Spanned::new(
-                ParserError::AsyncComputedPropertySetterNotAllowed,
-                set_ident.span,
-            ));
-        }
-
-        if self.eat(Token::RArrow) {
-            let _ = self.parse_type()?;
-            return Err(Spanned::new(
-                ParserError::InvalidComputedPropertySetterSignature,
-                set_ident.span,
-            ));
-        }
-
-        let block = if self.matches(Token::LBrace) {
-            Some(self.parse_block()?)
-        } else if body_required {
-            return Err(self.err_at_current(ParserError::FunctionBodyRequired));
-        } else {
-            None
-        };
-
-        let signature = FunctionSignature {
-            span: set_ident.span.to(self.hi_span()),
-            prototype: FunctionPrototype {
-                inputs,
-                output: None,
-            },
-        };
-
-        let function = Function {
-            generics: Generics {
-                type_parameters: None,
-                where_clause: None,
-            },
-            signature,
-            block,
-            is_unsafe: false,
-            is_async: false,
             abi: None,
         };
 

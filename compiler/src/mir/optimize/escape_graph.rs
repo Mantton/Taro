@@ -20,10 +20,8 @@ use crate::{
         param_escape_effect_for_symbol,
     },
     sema::{
-        models::{
-            AdtKind, CaptureKind, EnumVariantKind, GenericArgument, GenericArguments, Ty, TyKind,
-        },
-        tycheck::utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
+        models::{AdtKind, CaptureKind, EnumVariantKind, Ty, TyKind},
+        tycheck::utils::instantiate::{instantiate_generic_args, instantiate_ty_with_args},
     },
     specialize::{Instance, InstanceKind, resolve_instance},
 };
@@ -1262,30 +1260,8 @@ fn resolve_direct_callee<'ctx>(
     let ConstantKind::Function(definition, arguments, _) = constant.value else {
         return None;
     };
-    let arguments = substitute_generic_arguments(gcx, arguments, caller.args());
+    let arguments = instantiate_generic_args(gcx, arguments, caller.args());
     Some(resolve_instance(gcx, definition, arguments))
-}
-
-fn substitute_generic_arguments<'ctx>(
-    gcx: Gcx<'ctx>,
-    arguments: GenericArguments<'ctx>,
-    substitutions: GenericArguments<'ctx>,
-) -> GenericArguments<'ctx> {
-    if arguments.is_empty() || substitutions.is_empty() {
-        return arguments;
-    }
-    let resolved = arguments
-        .iter()
-        .map(|argument| match argument {
-            GenericArgument::Type(ty) => {
-                GenericArgument::Type(instantiate_ty_with_args(gcx, *ty, substitutions))
-            }
-            GenericArgument::Const(value) => {
-                GenericArgument::Const(instantiate_const_with_args(gcx, *value, substitutions))
-            }
-        })
-        .collect();
-    gcx.store.interners.intern_generic_args(resolved)
 }
 
 fn try_shared_body<'ctx>(gcx: Gcx<'ctx>, instance: Instance<'ctx>) -> Option<&'ctx Body<'ctx>> {

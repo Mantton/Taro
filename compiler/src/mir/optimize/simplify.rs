@@ -356,34 +356,14 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
 
     // Helper to mark an operand as used
     fn mark_operand_used(op: &Operand<'_>, used: &mut [bool]) {
-        match op {
-            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-                mark_place_used(place, used)
-            }
-            Operand::Constant(_) => {}
+        if let Some(place) = op.place() {
+            mark_place_used(place, used);
         }
     }
 
     // Helper to mark an rvalue as used
     fn mark_rvalue_used(rv: &Rvalue<'_>, used: &mut [bool]) {
-        match rv {
-            Rvalue::Use(op) => mark_operand_used(op, used),
-            Rvalue::UnaryOp { operand, .. } => mark_operand_used(operand, used),
-            Rvalue::BinaryOp { lhs, rhs, .. } => {
-                mark_operand_used(lhs, used);
-                mark_operand_used(rhs, used);
-            }
-            Rvalue::Cast { operand, .. } => mark_operand_used(operand, used),
-            Rvalue::Aggregate { fields, .. } => {
-                for field in fields.iter() {
-                    mark_operand_used(field, used);
-                }
-            }
-            Rvalue::Ref { place, .. } => mark_place_used(place, used),
-            Rvalue::Discriminant { place } => mark_place_used(place, used),
-            Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
-            Rvalue::Repeat { operand, .. } => mark_operand_used(operand, used),
-        }
+        rv.for_each_place(|place| mark_place_used(place, used));
     }
 
     // Collect all used locals from statements and terminators
@@ -469,178 +449,74 @@ pub fn eliminate_dead_locals(body: &mut Body<'_>) {
         }
     }
 
-    // Remap locals in places
-    fn remap_place<'ctx>(
-        place: &Place<'ctx>,
-        remap: &IndexVec<LocalId, Option<LocalId>>,
-    ) -> Place<'ctx> {
-        if let Some(new_local) = remap[place.local] {
-            Place {
-                local: new_local,
-                projection: place.projection.clone(),
-            }
-        } else {
-            panic!(
-                "used local {:?} must be remapped. Place: {:?}",
-                place.local, place
-            );
+    let remap_place = |place: &mut Place<'_>| {
+        place.local = remap[place.local].expect("used local must be remapped");
+    };
+    let remap_operand = |operand: &mut Operand<'_>| {
+        if let Some(place) = operand.place_mut() {
+            remap_place(place);
         }
-    }
+    };
 
-    fn remap_operand<'ctx>(
-        op: &Operand<'ctx>,
-        remap: &IndexVec<LocalId, Option<LocalId>>,
-    ) -> Operand<'ctx> {
-        match op {
-            Operand::Copy(place) => Operand::copy(remap_place(place, remap)),
-            Operand::Move(place) => Operand::move_(remap_place(place, remap)),
-            Operand::CopyWith(place, modifiers) => {
-                Operand::copy_with(remap_place(place, remap), *modifiers)
-            }
-            Operand::Constant(c) => Operand::Constant(c.clone()),
-        }
-    }
-
-    fn remap_rvalue<'ctx>(
-        rv: &Rvalue<'ctx>,
-        remap: &IndexVec<LocalId, Option<LocalId>>,
-    ) -> Rvalue<'ctx> {
-        match rv {
-            Rvalue::Use(op) => Rvalue::Use(remap_operand(op, remap)),
-            Rvalue::UnaryOp { op, operand } => Rvalue::UnaryOp {
-                op: *op,
-                operand: remap_operand(operand, remap),
-            },
-            Rvalue::BinaryOp { op, lhs, rhs } => Rvalue::BinaryOp {
-                op: *op,
-                lhs: remap_operand(lhs, remap),
-                rhs: remap_operand(rhs, remap),
-            },
-            Rvalue::Cast { operand, ty, kind } => Rvalue::Cast {
-                operand: remap_operand(operand, remap),
-                ty: *ty,
-                kind: *kind,
-            },
-            Rvalue::Aggregate { kind, fields } => Rvalue::Aggregate {
-                kind: kind.clone(),
-                fields: fields.iter().map(|f| remap_operand(f, remap)).collect(),
-            },
-            Rvalue::Ref { mutable, place } => Rvalue::Ref {
-                mutable: *mutable,
-                place: remap_place(place, remap),
-            },
-            Rvalue::Discriminant { place } => Rvalue::Discriminant {
-                place: remap_place(place, remap),
-            },
-            Rvalue::Alloc { ty } => Rvalue::Alloc { ty: *ty },
-            Rvalue::Zeroed { ty } => Rvalue::Zeroed { ty: *ty },
-            Rvalue::Repeat {
-                operand,
-                count,
-                element,
-            } => Rvalue::Repeat {
-                operand: remap_operand(operand, remap),
-                count: *count,
-                element: *element,
-            },
-        }
-    }
-
-    // Remap all statements and terminators
-    for block in body.basic_blocks.iter_mut() {
-        for stmt in block.statements.iter_mut() {
-            stmt.kind = match &stmt.kind {
-                StatementKind::SourceScope(scope) => StatementKind::SourceScope(*scope),
-                StatementKind::StorageLive(local) => remap[*local]
-                    .map(StatementKind::StorageLive)
-                    .unwrap_or(StatementKind::Nop),
-                StatementKind::SetInitialized(local) => remap[*local]
-                    .map(StatementKind::SetInitialized)
-                    .unwrap_or(StatementKind::Nop),
+    for block in &mut body.basic_blocks {
+        for stmt in &mut block.statements {
+            match &mut stmt.kind {
+                StatementKind::StorageLive(local) | StatementKind::SetInitialized(local) => {
+                    if let Some(new_local) = remap[*local] {
+                        *local = new_local;
+                    } else {
+                        stmt.kind = StatementKind::Nop;
+                    }
+                }
                 StatementKind::Assign(dest, rv) => {
                     if let Some(new_local) = remap[dest.local] {
-                        StatementKind::Assign(
-                            Place {
-                                local: new_local,
-                                projection: dest.projection.clone(),
-                            },
-                            remap_rvalue(rv, &remap),
-                        )
+                        dest.local = new_local;
+                        rv.for_each_place_mut(remap_place);
                     } else {
-                        StatementKind::Nop
+                        stmt.kind = StatementKind::Nop;
                     }
                 }
-                StatementKind::SetDiscriminant {
-                    place,
-                    variant_index,
-                } => {
+                StatementKind::SetDiscriminant { place, .. } => {
                     if let Some(new_local) = remap[place.local] {
-                        StatementKind::SetDiscriminant {
-                            place: Place {
-                                local: new_local,
-                                projection: place.projection.clone(),
-                            },
-                            variant_index: *variant_index,
-                        }
+                        place.local = new_local;
                     } else {
-                        StatementKind::Nop
+                        stmt.kind = StatementKind::Nop;
                     }
                 }
-                StatementKind::KeepAlive(operand) => {
-                    StatementKind::KeepAlive(remap_operand(operand, &remap))
-                }
-                StatementKind::GcSafepoint(kind) => StatementKind::GcSafepoint(*kind),
-                StatementKind::Nop => StatementKind::Nop,
-            };
+                StatementKind::KeepAlive(operand) => remap_operand(operand),
+                StatementKind::SourceScope(_)
+                | StatementKind::GcSafepoint(_)
+                | StatementKind::Nop => {}
+            }
         }
 
-        if let Some(term) = block.terminator.as_mut() {
-            term.kind = match &term.kind {
+        if let Some(term) = &mut block.terminator {
+            match &mut term.kind {
                 TerminatorKind::Call {
                     func,
                     args,
-                    devirt_hint: _,
                     destination,
-                    target,
-                    unwind,
-                } => TerminatorKind::Call {
-                    func: remap_operand(func, &remap),
-                    args: args.iter().map(|a| remap_operand(a, &remap)).collect(),
-                    devirt_hint: None,
-                    destination: remap_place(destination, &remap),
-                    target: *target,
-                    unwind: *unwind,
-                },
-                TerminatorKind::SwitchInt {
-                    discr,
-                    targets,
-                    otherwise,
-                } => TerminatorKind::SwitchInt {
-                    discr: remap_operand(discr, &remap),
-                    targets: targets.clone(),
-                    otherwise: *otherwise,
-                },
-                TerminatorKind::Goto { target } => TerminatorKind::Goto { target: *target },
-                TerminatorKind::Return => TerminatorKind::Return,
-                TerminatorKind::ResumeUnwind => TerminatorKind::ResumeUnwind,
-                TerminatorKind::Unreachable => TerminatorKind::Unreachable,
-                TerminatorKind::UnresolvedGoto => TerminatorKind::UnresolvedGoto,
+                    devirt_hint,
+                    ..
+                } => {
+                    remap_operand(func);
+                    args.iter_mut().for_each(remap_operand);
+                    remap_place(destination);
+                    *devirt_hint = None;
+                }
+                TerminatorKind::SwitchInt { discr, .. } => remap_operand(discr),
                 TerminatorKind::Yield {
-                    value,
-                    resume,
-                    resume_arg,
-                    cancel,
-                    cancel_complete,
-                    unwind,
-                } => TerminatorKind::Yield {
-                    value: remap_operand(value, &remap),
-                    resume: *resume,
-                    resume_arg: remap_place(resume_arg, &remap),
-                    cancel: *cancel,
-                    cancel_complete: *cancel_complete,
-                    unwind: *unwind,
-                },
-            };
+                    value, resume_arg, ..
+                } => {
+                    remap_operand(value);
+                    remap_place(resume_arg);
+                }
+                TerminatorKind::Goto { .. }
+                | TerminatorKind::Return
+                | TerminatorKind::ResumeUnwind
+                | TerminatorKind::Unreachable
+                | TerminatorKind::UnresolvedGoto => {}
+            }
         }
     }
 
@@ -656,21 +532,12 @@ pub fn merge_consecutive_safepoints(body: &mut Body<'_>) {
     use crate::mir::StatementKind;
 
     for block in body.basic_blocks.iter_mut() {
-        let mut new_statements = Vec::with_capacity(block.statements.len());
         let mut prev_was_safepoint = false;
-
-        for stmt in block.statements.drain(..) {
+        block.statements.retain(|stmt| {
             let is_safepoint = matches!(stmt.kind, StatementKind::GcSafepoint(_));
-
-            if is_safepoint && prev_was_safepoint {
-                // Skip consecutive safepoint
-                continue;
-            }
-
+            let keep = !is_safepoint || !prev_was_safepoint;
             prev_was_safepoint = is_safepoint;
-            new_statements.push(stmt);
-        }
-
-        block.statements = new_statements;
+            keep
+        });
     }
 }

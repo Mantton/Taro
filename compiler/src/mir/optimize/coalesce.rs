@@ -562,27 +562,11 @@ fn record_operand_use_count(op: &Operand<'_>, use_counts: &mut [usize]) {
 }
 
 fn record_rvalue_use_counts(rv: &Rvalue<'_>, use_counts: &mut [usize]) {
-    match rv {
-        Rvalue::Use(op)
-        | Rvalue::UnaryOp { operand: op, .. }
-        | Rvalue::Cast { operand: op, .. }
-        | Rvalue::Repeat { operand: op, .. } => record_operand_use_count(op, use_counts),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            record_operand_use_count(lhs, use_counts);
-            record_operand_use_count(rhs, use_counts);
+    rv.for_each_place(|place| {
+        if place.projection.is_empty() {
+            use_counts[place.local.index()] += 1;
         }
-        Rvalue::Aggregate { fields, .. } => {
-            for f in fields {
-                record_operand_use_count(f, use_counts);
-            }
-        }
-        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
-            if place.projection.is_empty() {
-                use_counts[place.local.index()] += 1;
-            }
-        }
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
-    }
+    });
 }
 
 fn record_terminator_use_counts(term: &TerminatorKind<'_>, use_counts: &mut [usize]) {
@@ -631,33 +615,16 @@ fn record_rvalue_uses(
     address_taken: &mut [bool],
     place_used: &mut [bool],
 ) {
+    rv.for_each_operand(|op| {
+        record_operand_use(op, block, stmt_index, use_sites, use_counts, place_used)
+    });
     match rv {
-        Rvalue::Use(op)
-        | Rvalue::UnaryOp { operand: op, .. }
-        | Rvalue::Cast { operand: op, .. }
-        | Rvalue::Repeat { operand: op, .. } => {
-            record_operand_use(op, block, stmt_index, use_sites, use_counts, place_used)
-        }
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            record_operand_use(lhs, block, stmt_index, use_sites, use_counts, place_used);
-            record_operand_use(rhs, block, stmt_index, use_sites, use_counts, place_used);
-        }
         Rvalue::Ref { place, .. } => {
             address_taken[place.local.index()] = true;
             place_used[place.local.index()] = true;
         }
-        Rvalue::Discriminant { place } => {
-            place_used[place.local.index()] = true;
-            if !place.projection.is_empty() {
-                place_used[place.local.index()] = true;
-            }
-        }
-        Rvalue::Aggregate { fields, .. } => {
-            for f in fields {
-                record_operand_use(f, block, stmt_index, use_sites, use_counts, place_used);
-            }
-        }
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
+        Rvalue::Discriminant { place } => place_used[place.local.index()] = true,
+        _ => {}
     }
 }
 
@@ -723,25 +690,7 @@ fn replace_terminator_operands<'ctx>(
 }
 
 fn replace_rvalue_operands<'ctx>(rv: &mut Rvalue<'ctx>, replace_map: &[Option<Replacement<'ctx>>]) {
-    match rv {
-        Rvalue::Use(op)
-        | Rvalue::UnaryOp { operand: op, .. }
-        | Rvalue::Cast { operand: op, .. }
-        | Rvalue::Repeat { operand: op, .. } => replace_operand(op, replace_map),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            replace_operand(lhs, replace_map);
-            replace_operand(rhs, replace_map);
-        }
-        Rvalue::Aggregate { fields, .. } => {
-            for f in fields {
-                replace_operand(f, replace_map);
-            }
-        }
-        Rvalue::Ref { .. }
-        | Rvalue::Discriminant { .. }
-        | Rvalue::Alloc { .. }
-        | Rvalue::Zeroed { .. } => {}
-    }
+    rv.for_each_operand_mut(|op| replace_operand(op, replace_map));
 }
 
 fn replace_operand<'ctx>(op: &mut Operand<'ctx>, replace_map: &[Option<Replacement<'ctx>>]) {

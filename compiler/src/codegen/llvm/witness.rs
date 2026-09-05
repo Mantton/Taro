@@ -201,7 +201,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let instantiated = if extension_args.is_empty() {
             iface
         } else {
-            crate::sema::impl_engine::ref_ops::substitute_interface_ref(
+            crate::sema::tycheck::utils::instantiate::instantiate_interface_ref_with_args(
                 self.gcx,
                 iface,
                 extension_args,
@@ -763,22 +763,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         unwind_target: Option<BasicBlock<'llvm>>,
         stack_map: Option<(crate::span::Span, &FxHashSet<mir::LocalId>)>,
     ) -> CompileResult<bool> {
-        macro_rules! fallback {
-            () => {{
-                crate::mir::optimize::devirtualize::bump_codegen_fallback();
-                return Ok(false);
-            }};
-        }
-
         let receiver = match args.first() {
             Some(receiver) => receiver,
-            None => fallback!(),
+            None => return Ok(false),
         };
 
         let impl_instance = self.instance_for_call(hint.impl_def_id, hint.impl_args);
         let impl_def_id = match impl_instance.kind() {
             InstanceKind::Item(def_id) => def_id,
-            InstanceKind::Virtual(_) => fallback!(),
+            InstanceKind::Virtual(_) => return Ok(false),
         };
 
         let synthetic_func = Operand::Constant(mir::Constant {
@@ -793,15 +786,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let receiver_ty = self.operand_ty(body, receiver);
         let Some(receiver_val) = self.eval_operand(body, locals, receiver)? else {
-            fallback!();
+            return Ok(false);
         };
         let Some(data_ptr) = self.extract_existential_data_ptr(receiver_ty, receiver_val) else {
-            fallback!();
+            return Ok(false);
         };
 
         let sig = self.gcx.get_signature(impl_def_id);
         if sig.inputs.is_empty() || args.len() != sig.inputs.len() || fn_abi.args.is_empty() {
-            fallback!();
+            return Ok(false);
         }
 
         let resolved_input_tys: Vec<_> = sig
@@ -820,7 +813,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let self_abi = fn_abi.args[0];
 
         let self_value = match self_abi.mode {
-            abi::PassMode::Ignore => fallback!(),
+            abi::PassMode::Ignore => return Ok(false),
             abi::PassMode::Direct => {
                 let self_is_ref_like = matches!(
                     self_input_ty.kind(),
@@ -833,7 +826,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         .lower_ty(self_input_ty)
                         .or_else(|| self.lower_ty(self_abi.ty))
                     else {
-                        fallback!();
+                        return Ok(false);
                     };
                     let loaded =
                         match self
@@ -841,7 +834,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                             .build_load(load_ty, data_ptr, "devirt_self_load")
                         {
                             Ok(v) => v,
-                            Err(_) => fallback!(),
+                            Err(_) => return Ok(false),
                         };
                     loaded
                 }
@@ -857,7 +850,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             0
         };
         let Some(slot) = lowered_args.get_mut(self_slot) else {
-            fallback!();
+            return Ok(false);
         };
         *slot = self_value;
 
@@ -872,7 +865,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             "devirt_call",
         )?;
         self.store_direct_call_result(body, locals, destination, &fn_abi, call_site)?;
-        crate::mir::optimize::devirtualize::bump_codegen_used();
         Ok(true)
     }
 

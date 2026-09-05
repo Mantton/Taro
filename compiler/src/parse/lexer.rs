@@ -989,7 +989,7 @@ impl Lexer {
                     base = Base::Binary;
                     self.next_char(); // eat base char
 
-                    let res = self.eat_decimal_digits();
+                    let res = self.eat_digits(Self::is_digit);
 
                     if !res {
                         return Err(LexerError::InvalidIntegerLiteral);
@@ -999,7 +999,7 @@ impl Lexer {
                     base = Base::Octal;
                     self.next_char();
 
-                    let res = self.eat_decimal_digits();
+                    let res = self.eat_digits(Self::is_digit);
 
                     if !res {
                         return Err(LexerError::InvalidIntegerLiteral);
@@ -1009,7 +1009,7 @@ impl Lexer {
                     base = Base::Hexadecimal;
                     self.next_char();
 
-                    let res = self.eat_hex_digits();
+                    let res = self.eat_digits(Self::is_hex_char);
 
                     if !res {
                         return Err(LexerError::InvalidIntegerLiteral);
@@ -1017,7 +1017,7 @@ impl Lexer {
                 }
                 Some(c) => match c {
                     '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '_' => {
-                        self.eat_decimal_digits();
+                        self.eat_digits(Self::is_digit);
                     }
                     '.' | 'e' | 'E' => {
                         // these will be handled in the next half
@@ -1043,7 +1043,7 @@ impl Lexer {
                 }
             }
         } else {
-            self.eat_decimal_digits();
+            self.eat_digits(Self::is_digit);
         }
 
         match self.first() {
@@ -1055,7 +1055,7 @@ impl Lexer {
                     let mut empty = false;
 
                     if self.first() != None && Lexer::is_digit(self.first().unwrap()) {
-                        self.eat_decimal_digits();
+                        self.eat_digits(Self::is_digit);
 
                         match self.first() {
                             Some('e') | Some('E') => {
@@ -1134,49 +1134,25 @@ impl Lexer {
         Ok(Some(suffix))
     }
 
-    fn eat_decimal_digits(&mut self) -> bool {
+    fn eat_digits(&mut self, is_digit: fn(char) -> bool) -> bool {
         let mut has_digits = false;
-
-        loop {
-            match self.first() {
-                Some(c) if c == '_' => {
-                    self.next_char();
-                }
-                Some(c) if Lexer::is_digit(c) => {
-                    has_digits = true;
-                    self.next_char();
-                }
-                _ => break,
+        while let Some(c) = self.first() {
+            if is_digit(c) {
+                has_digits = true;
+            } else if c != '_' {
+                break;
             }
+            self.next_char();
         }
-
         has_digits
     }
 
-    fn eat_hex_digits(&mut self) -> bool {
-        let mut has_digits = false;
-
-        loop {
-            match self.first() {
-                Some(c) if c == '_' => {
-                    self.next_char();
-                }
-                Some(c) if Lexer::is_hex_char(c) => {
-                    has_digits = true;
-                    self.next_char();
-                }
-                _ => break,
-            }
-        }
-
-        has_digits
-    }
     fn eat_float_exponents(&mut self) -> bool {
         if self.eat('-') || self.eat('+') {
             // sign already consumed
         }
 
-        self.eat_decimal_digits()
+        self.eat_digits(Self::is_digit)
     }
 }
 

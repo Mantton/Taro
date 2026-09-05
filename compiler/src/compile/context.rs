@@ -212,17 +212,6 @@ impl<'arena> GlobalContext<'arena> {
         database.def_to_canon_constraints.remove(&id);
     }
 
-    pub fn cache_constraints(
-        self,
-        id: DefinitionID,
-        constraints: Vec<crate::span::Spanned<Constraint<'arena>>>,
-    ) {
-        let mut cache = self.context.store.type_databases.borrow_mut();
-        let package_index = id.package();
-        let database = cache.entry(package_index).or_insert_with(Default::default);
-        database.def_to_constraints.insert(id, constraints);
-    }
-
     pub fn constraints_of(self, id: DefinitionID) -> Vec<crate::span::Spanned<Constraint<'arena>>> {
         self.with_type_database(id.package(), |db| {
             db.def_to_constraints.get(&id).cloned().unwrap_or_default()
@@ -659,29 +648,8 @@ impl<'arena> GlobalContext<'arena> {
         })
     }
 
-    pub fn get_static_mutability(self, id: DefinitionID) -> hir::Mutability {
-        self.with_type_database(id.package(), |db| {
-            *db.def_to_static_mutability
-                .get(&id)
-                .expect("static mutability")
-        })
-    }
-
     pub fn try_get_static_initializer(self, id: DefinitionID) -> Option<Const<'arena>> {
         self.with_type_database(id.package(), |db| db.def_to_static_init.get(&id).cloned())
-    }
-
-    pub fn get_static_initializer(self, id: DefinitionID) -> Const<'arena> {
-        self.with_type_database(id.package(), |db| {
-            *db.def_to_static_init.get(&id).expect("static initializer")
-        })
-    }
-
-    #[inline]
-    pub fn get_const(self, id: DefinitionID) -> Const<'arena> {
-        self.with_type_database(id.package(), |db| {
-            *db.def_to_const.get(&id).expect("const value")
-        })
     }
 
     pub fn try_get_alias_type(self, id: DefinitionID) -> Option<Ty<'arena>> {
@@ -959,17 +927,6 @@ impl<'arena> GlobalContext<'arena> {
             .borrow()
             .get(&instance)
             .is_some_and(|cached| std::ptr::eq(*cached, body))
-    }
-
-    /// Returns the canonical, locally-cleaned MIR used for interprocedural
-    /// inlining. This representation is deliberately separate from final MIR:
-    /// an inliner must not see a body that has already been inlined and had
-    /// safepoints inserted merely because it came from metadata rather than the
-    /// current compilation session.
-    pub fn get_inline_mir_body(self, id: DefinitionID) -> &'arena mir::Body<'arena> {
-        let packages = self.context.store.inline_mir_packages.borrow();
-        let package = packages.get(&id.package()).expect("inline MIR package");
-        *package.functions.get(&id).expect("inline MIR body")
     }
 
     pub fn resolution_output(self, pkg: PackageIndex) -> &'arena ResolutionOutput<'arena> {
@@ -1752,16 +1709,6 @@ impl<'arena> GlobalContext<'arena> {
         }
     }
 
-    pub fn definition_has_known_attribute(
-        self,
-        id: DefinitionID,
-        attr: hir::KnownAttribute,
-    ) -> bool {
-        self.attributes_of(id)
-            .iter()
-            .any(|item| item.as_known(self) == Some(attr))
-    }
-
     pub fn definition_is_unsafe(self, id: DefinitionID) -> bool {
         self.with_type_database(id.package(), |db| db.def_to_unsafe.contains(&id))
     }
@@ -2248,17 +2195,6 @@ impl<'arena> GlobalContext<'arena> {
     )> {
         self.with_session_type_database(|db| {
             db.synthetic_methods.iter().map(|(k, v)| (*k, *v)).collect()
-        })
-    }
-
-    /// Get a specific registered synthetic method info.
-    pub fn get_synthetic_method(
-        self,
-        type_head: TypeHead,
-        method_id: DefinitionID,
-    ) -> Option<crate::sema::tycheck::derive::SyntheticMethodInfo<'arena>> {
-        self.with_session_type_database(|db| {
-            db.synthetic_methods.get(&(type_head, method_id)).cloned()
         })
     }
 

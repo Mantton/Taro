@@ -9,7 +9,10 @@ use crate::{
         resolve::models::DefinitionKind,
         tycheck::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
-            utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
+            utils::instantiate::{
+                instantiate_const_with_args, instantiate_interface_ref_with_args,
+                instantiate_ty_with_args,
+            },
         },
     },
 };
@@ -92,46 +95,6 @@ pub fn interface_ref_with_self<'ctx>(
     }
 }
 
-pub fn substitute_interface_ref<'ctx>(
-    gcx: Gcx<'ctx>,
-    template: InterfaceReference<'ctx>,
-    args: GenericArguments<'ctx>,
-) -> InterfaceReference<'ctx> {
-    if args.is_empty() {
-        return template;
-    }
-
-    let mut new_args = Vec::with_capacity(template.arguments.len());
-    for arg in template.arguments.iter().copied() {
-        match arg {
-            GenericArgument::Type(ty) => {
-                new_args.push(GenericArgument::Type(instantiate_ty_with_args(
-                    gcx, ty, args,
-                )));
-            }
-            GenericArgument::Const(c) => {
-                new_args.push(GenericArgument::Const(instantiate_const_with_args(
-                    gcx, c, args,
-                )));
-            }
-        }
-    }
-
-    let mut new_bindings = Vec::with_capacity(template.bindings.len());
-    for binding in template.bindings {
-        new_bindings.push(AssociatedTypeBinding {
-            name: binding.name,
-            ty: instantiate_ty_with_args(gcx, binding.ty, args),
-        });
-    }
-
-    InterfaceReference {
-        id: template.id,
-        arguments: gcx.store.interners.intern_generic_args(new_args),
-        bindings: gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
-    }
-}
-
 pub fn collect_interface_with_superfaces<'ctx>(
     gcx: Gcx<'ctx>,
     root: InterfaceReference<'ctx>,
@@ -150,7 +113,8 @@ pub fn collect_interface_with_superfaces<'ctx>(
         };
 
         for superface in &def.superfaces {
-            let iface = substitute_interface_ref(gcx, superface.value, current.arguments);
+            let iface =
+                instantiate_interface_ref_with_args(gcx, superface.value, current.arguments);
             if seen.insert(iface) {
                 out.push(iface);
                 queue.push_back(iface);
@@ -171,7 +135,7 @@ pub fn direct_superfaces<'ctx>(
 
     def.superfaces
         .iter()
-        .map(|superface| substitute_interface_ref(gcx, superface.value, iface.arguments))
+        .map(|superface| instantiate_interface_ref_with_args(gcx, superface.value, iface.arguments))
         .collect()
 }
 

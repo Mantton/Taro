@@ -140,8 +140,6 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
     }
 }
 
-// Reuse helper functions from liveness/mod if exported, or duplicate.
-// Ideally should be shared.
 use crate::mir::{LocalId, Operand, Place, Rvalue};
 use rustc_hash::FxHashSet;
 
@@ -157,24 +155,7 @@ fn use_operand(op: &Operand, live: &mut FxHashSet<LocalId>) {
 }
 
 fn use_rvalue(rv: &Rvalue, live: &mut FxHashSet<LocalId>) {
-    match rv {
-        Rvalue::Use(op) => use_operand(op, live),
-        Rvalue::UnaryOp { operand, .. } => use_operand(operand, live),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            use_operand(lhs, live);
-            use_operand(rhs, live);
-        }
-        Rvalue::Cast { operand, .. } => use_operand(operand, live),
-        Rvalue::Ref { place, .. } => use_place(place, live),
-        Rvalue::Discriminant { place } => use_place(place, live),
-        Rvalue::Aggregate { fields, .. } => {
-            for f in fields {
-                use_operand(f, live);
-            }
-        }
-        Rvalue::Repeat { operand, .. } => use_operand(operand, live),
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
-    }
+    rv.for_each_place(|place| use_place(place, live));
 }
 
 fn rvalue_has_side_effects(rv: &Rvalue) -> bool {

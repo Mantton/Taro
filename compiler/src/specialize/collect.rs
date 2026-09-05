@@ -2,7 +2,7 @@ use crate::{
     compile::context::GlobalContext,
     hir::{self, DefinitionID},
     mir::Body,
-    sema::models::{GenericArgument, GenericArguments},
+    sema::{models::GenericArguments, tycheck::utils::instantiate::instantiate_generic_args},
     specialize::{Instance, resolve_instance},
 };
 use rustc_hash::FxHashSet;
@@ -99,7 +99,7 @@ impl<'ctx> Collector<'ctx> {
             // Only process if there are generic arguments
             if !call_args.is_empty() {
                 // Substitute parent's types into the call's arguments
-                let concrete_args = self.substitute_args(parent, call_args);
+                let concrete_args = instantiate_generic_args(self.gcx, call_args, parent.args());
 
                 // Compute the instantiation key
                 let instance = self.compute_instance(callee_id, concrete_args);
@@ -124,55 +124,6 @@ impl<'ctx> Collector<'ctx> {
             self.gcx.get_signature(def_id).abi,
             Some(hir::Abi::Intrinsic)
         )
-    }
-
-    /// Substitute parent's concrete types into child's generic arguments.
-    fn substitute_args(
-        &self,
-        parent: Instance<'ctx>,
-        call_args: GenericArguments<'ctx>,
-    ) -> GenericArguments<'ctx> {
-        let parent_args = parent.args();
-
-        if parent_args.is_empty() {
-            // Parent has no substitutions, call args are already concrete
-            call_args
-        } else {
-            // Perform substitution
-            self.substitute_with_args(call_args, parent_args)
-        }
-    }
-
-    /// Substitute generic arguments using parent's substitution.
-    fn substitute_with_args(
-        &self,
-        args: GenericArguments<'ctx>,
-        subst: GenericArguments<'ctx>,
-    ) -> GenericArguments<'ctx> {
-        if subst.is_empty() {
-            return args;
-        }
-
-        let substituted: Vec<_> = args
-            .iter()
-            .map(|arg| match arg {
-                GenericArgument::Type(ty) => {
-                    let new_ty = crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args(
-                        self.gcx, *ty, subst,
-                    );
-                    GenericArgument::Type(new_ty)
-                }
-                GenericArgument::Const(c) => {
-                    let new_c =
-                        crate::sema::tycheck::utils::instantiate::instantiate_const_with_args(
-                            self.gcx, *c, subst,
-                        );
-                    GenericArgument::Const(new_c)
-                }
-            })
-            .collect();
-
-        self.gcx.store.interners.intern_generic_args(substituted)
     }
 
     fn compute_instance(

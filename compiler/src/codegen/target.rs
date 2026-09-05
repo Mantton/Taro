@@ -132,11 +132,6 @@ impl TargetLayout {
         })
     }
 
-    /// Initialize for the host machine.
-    pub fn for_host(dcx: &DiagCtx) -> CompileResult<Self> {
-        Self::new(dcx, None, BuildProfile::Debug)
-    }
-
     /// Get the underlying LLVM TargetData for precise layout queries.
     #[inline]
     pub fn target_data(&self) -> TargetData {

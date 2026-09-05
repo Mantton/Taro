@@ -4010,10 +4010,6 @@ pub fn mir_body_from_wire<'a>(
     }
 }
 
-pub fn mir_package_to_wire(v: &mir::MirPackage<'_>) -> MirPackageWire {
-    mir_package_to_wire_filtered(v, |_, _| true)
-}
-
 pub fn mir_package_to_wire_filtered(
     v: &mir::MirPackage<'_>,
     mut include: impl FnMut(DefinitionID, &mir::Body<'_>) -> bool,

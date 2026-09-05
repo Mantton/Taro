@@ -1,5 +1,5 @@
 use crate::{
-    ast_lowering, cfg, cfg_eval, codegen,
+    ast_lowering, cfg_eval, codegen,
     codegen::artifact::ModuleArtifact,
     compile::{
         config::{Config, ModuleArtifactKind},
@@ -559,13 +559,7 @@ impl<'state> Compiler<'state> {
         };
         timings.push_elapsed("parse.tokenize", phase_started_at);
 
-        let mut target = cfg::TargetInfo::from_triple(triple_str);
-        target.profile = match self.context.config.profile {
-            crate::compile::config::BuildProfile::Debug => "debug".to_string(),
-            crate::compile::config::BuildProfile::Release => "release".to_string(),
-        };
-        target.test_mode = self.context.config.harness_mode.is_test();
-        target.bench_mode = self.context.config.harness_mode.is_bench();
+        let target = cfg_eval::target_info(self.context);
 
         let phase_started_at = Instant::now();
         let mut package = parse::parser::parse_package(package, &self.context.dcx)?;

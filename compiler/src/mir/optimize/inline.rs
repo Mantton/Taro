@@ -14,7 +14,7 @@ use crate::mir::{
 };
 use crate::sema::models::{ConstKind, GenericArgument, GenericArguments, Ty};
 use crate::sema::tycheck::utils::instantiate::{
-    instantiate_const_with_args, instantiate_ty_with_args,
+    instantiate_generic_args, instantiate_ty_with_args,
 };
 use crate::specialize::{InstanceKind, resolve_instance};
 use rustc_hash::FxHashSet;
@@ -871,7 +871,7 @@ fn remap_terminator<'ctx>(
                 .collect(),
             devirt_hint: devirt_hint.as_ref().map(|hint| crate::mir::DevirtHint {
                 impl_def_id: hint.impl_def_id,
-                impl_args: substitute_gen_args(gcx, hint.impl_args, gen_args),
+                impl_args: instantiate_generic_args(gcx, hint.impl_args, gen_args),
                 concrete_self_ty: instantiate_mono_ty(gcx, hint.concrete_self_ty, gen_args),
             }),
             destination: remap_place(gcx, destination, local_map, gen_args),
@@ -967,7 +967,7 @@ fn remap_constant<'ctx>(
         // Function constants keep their def_id but substitute their generic args
         ConstantKind::Function(def_id, fn_gen_args, sig) => {
             // Substitute the function's generic args with the inlined generic args
-            let substituted_args = substitute_gen_args(gcx, *fn_gen_args, gen_args);
+            let substituted_args = instantiate_generic_args(gcx, *fn_gen_args, gen_args);
             let substituted_sig = instantiate_mono_ty(gcx, *sig, gen_args);
             ConstantKind::Function(*def_id, substituted_args, substituted_sig)
         }
@@ -1019,33 +1019,6 @@ fn sema_const_value_to_mir(val: crate::sema::models::ConstValue) -> Option<Const
         ConstValue::Unit => ConstantKind::Unit,
         ConstValue::EnumUnitVariant(_) => return None,
     })
-}
-
-/// Substitute generic arguments within another set of generic arguments.
-fn substitute_gen_args<'ctx>(
-    gcx: Gcx<'ctx>,
-    args: GenericArguments<'ctx>,
-    substitution: GenericArguments<'ctx>,
-) -> GenericArguments<'ctx> {
-    use crate::sema::models::GenericArgument;
-
-    if args.is_empty() || substitution.is_empty() {
-        return args;
-    }
-
-    let new_args: Vec<_> = args
-        .iter()
-        .map(|arg| match arg {
-            GenericArgument::Type(ty) => {
-                GenericArgument::Type(instantiate_mono_ty(gcx, *ty, substitution))
-            }
-            GenericArgument::Const(c) => {
-                GenericArgument::Const(instantiate_const_with_args(gcx, *c, substitution))
-            }
-        })
-        .collect();
-
-    gcx.store.interners.intern_generic_args(new_args)
 }
 
 fn remap_rvalue<'ctx>(
@@ -1120,14 +1093,14 @@ fn remap_aggregate_kind<'ctx>(
         } => AggregateKind::Adt {
             def_id: *def_id,
             variant_index: *variant_index,
-            generic_args: substitute_gen_args(gcx, *adt_gen_args, gen_args),
+            generic_args: instantiate_generic_args(gcx, *adt_gen_args, gen_args),
         },
         AggregateKind::Closure {
             def_id,
             captured_generics,
         } => AggregateKind::Closure {
             def_id: *def_id,
-            captured_generics: substitute_gen_args(gcx, *captured_generics, gen_args),
+            captured_generics: instantiate_generic_args(gcx, *captured_generics, gen_args),
         },
     }
 }

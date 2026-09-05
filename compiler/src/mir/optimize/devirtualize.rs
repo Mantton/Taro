@@ -8,38 +8,6 @@ use crate::mir::{
 use crate::sema::models::{GenericArgument, GenericArguments, Ty, TyKind};
 use crate::specialize::{InstanceKind, resolve_instance};
 use index_vec::IndexVec;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static DEVIRT_CANDIDATES: AtomicU64 = AtomicU64::new(0);
-static DEVIRT_HINTS_EMITTED: AtomicU64 = AtomicU64::new(0);
-static DEVIRT_CODEGEN_USED: AtomicU64 = AtomicU64::new(0);
-static DEVIRT_CODEGEN_FALLBACK: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DevirtCounters {
-    pub candidates: u64,
-    pub hints_emitted: u64,
-    pub codegen_used: u64,
-    pub codegen_fallback: u64,
-}
-
-pub fn devirt_counters_snapshot() -> DevirtCounters {
-    DevirtCounters {
-        candidates: DEVIRT_CANDIDATES.load(Ordering::Relaxed),
-        hints_emitted: DEVIRT_HINTS_EMITTED.load(Ordering::Relaxed),
-        codegen_used: DEVIRT_CODEGEN_USED.load(Ordering::Relaxed),
-        codegen_fallback: DEVIRT_CODEGEN_FALLBACK.load(Ordering::Relaxed),
-    }
-}
-
-pub(crate) fn bump_codegen_used() {
-    DEVIRT_CODEGEN_USED.fetch_add(1, Ordering::Relaxed);
-}
-
-pub(crate) fn bump_codegen_fallback() {
-    DEVIRT_CODEGEN_FALLBACK.fetch_add(1, Ordering::Relaxed);
-}
-
 pub struct DevirtualizeStaticCalls;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,9 +118,6 @@ impl<'ctx> MirPass<'ctx> for DevirtualizeStaticCalls {
             } = &mut term.kind
             {
                 *devirt_hint = maybe_hint;
-                if devirt_hint.is_some() {
-                    DEVIRT_HINTS_EMITTED.fetch_add(1, Ordering::Relaxed);
-                }
                 if tracked_locals
                     .get(destination.local.index())
                     .copied()
@@ -185,7 +150,6 @@ fn maybe_build_devirt_hint<'ctx>(
     if !matches!(current_instance.kind(), InstanceKind::Virtual(_)) {
         return None;
     }
-    DEVIRT_CANDIDATES.fetch_add(1, Ordering::Relaxed);
 
     let receiver = args.first()?;
     let concrete_self_ty = operand_known_concrete_ty(body, state, receiver)?;

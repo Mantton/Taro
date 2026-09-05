@@ -153,64 +153,13 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
             }
         }
 
-        // 4. Apply propagation
-        // Helper functions
-        let remap_place = |place: &Place<'ctx>| -> Place<'ctx> {
-            let new_local = final_propagate[place.local.index()].unwrap_or(place.local);
-            Place {
-                local: new_local,
-                projection: place.projection.clone(),
-            }
+        // 4. Apply propagation to uses, preserving operand and projection metadata.
+        let remap_place = |place: &mut Place<'ctx>| {
+            place.local = final_propagate[place.local.index()].unwrap_or(place.local);
         };
-
-        let remap_operand = |op: &Operand<'ctx>| -> Operand<'ctx> {
-            match op {
-                Operand::Copy(p) => Operand::copy(remap_place(p)),
-                Operand::Move(p) => Operand::move_(remap_place(p)),
-                Operand::CopyWith(p, modifiers) => Operand::copy_with(remap_place(p), *modifiers),
-                Operand::Constant(c) => Operand::Constant(c.clone()),
-            }
-        };
-
-        let remap_rvalue = |rv: &Rvalue<'ctx>| -> Rvalue<'ctx> {
-            match rv {
-                Rvalue::Use(op) => Rvalue::Use(remap_operand(op)),
-                Rvalue::UnaryOp { op, operand } => Rvalue::UnaryOp {
-                    op: *op,
-                    operand: remap_operand(operand),
-                },
-                Rvalue::BinaryOp { op, lhs, rhs } => Rvalue::BinaryOp {
-                    op: *op,
-                    lhs: remap_operand(lhs),
-                    rhs: remap_operand(rhs),
-                },
-                Rvalue::Cast { operand, ty, kind } => Rvalue::Cast {
-                    operand: remap_operand(operand),
-                    ty: *ty,
-                    kind: *kind,
-                },
-                Rvalue::Aggregate { kind, fields } => Rvalue::Aggregate {
-                    kind: kind.clone(),
-                    fields: fields.iter().map(remap_operand).collect(),
-                },
-                Rvalue::Ref { mutable, place } => Rvalue::Ref {
-                    mutable: *mutable,
-                    place: remap_place(place),
-                },
-                Rvalue::Discriminant { place } => Rvalue::Discriminant {
-                    place: remap_place(place),
-                },
-                Rvalue::Repeat {
-                    operand,
-                    count,
-                    element,
-                } => Rvalue::Repeat {
-                    operand: remap_operand(operand),
-                    count: *count,
-                    element: *element,
-                },
-                Rvalue::Alloc { ty } => Rvalue::Alloc { ty: *ty },
-                Rvalue::Zeroed { ty } => Rvalue::Zeroed { ty: *ty },
+        let remap_operand = |operand: &mut Operand<'ctx>| {
+            if let Some(place) = operand.place_mut() {
+                remap_place(place);
             }
         };
 
@@ -218,27 +167,15 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
             for stmt in block.statements.iter_mut() {
                 match &mut stmt.kind {
                     StatementKind::Assign(dest, rv) => {
-                        // simplify.rs logic says: "Don't propagate the destination, only the rvalue sources"
-                        // But what if dest IS the variable being replaced?
-                        // If we replace `_a` with `_b`, then `_a = ...` becomes `_b = ...`?
-                        // NO. Propagating `_a -> _b` means `_a` is a copy OF `_b`.
-                        // It means everywhere `_a` is used, we use `_b`.
-                        // `_a = _b` is the definition. We keep that (DeadStoreElimination will remove it later if `_a` becomes unused).
-                        // If `_a` is assigned ELSEWHERE, then it's multiple assignment, which we filtered out.
-                        // So we generally DON'T remap definition sites (LHS of assign).
-                        // EXCEPT if it's `_a.field = ...`. `_a` is used as base. Then we remap.
+                        // A projected destination reads its base; a plain local is a definition.
                         if !dest.projection.is_empty() {
-                            // Remap local in dest
-                            *dest = remap_place(dest);
-                        } else {
-                            // Pure local assignment. Do not remap.
+                            remap_place(dest);
                         }
-
-                        *rv = remap_rvalue(rv);
+                        rv.for_each_place_mut(remap_place);
                     }
                     StatementKind::SetDiscriminant { .. } => {}
                     StatementKind::KeepAlive(operand) => {
-                        *operand = remap_operand(operand);
+                        remap_operand(operand);
                     }
                     _ => {}
                 }
@@ -251,19 +188,19 @@ impl<'ctx> MirPass<'ctx> for CopyPropagation {
                         destination,
                         ..
                     } => {
-                        *func = remap_operand(func);
-                        *args = args.iter().map(remap_operand).collect();
+                        remap_operand(func);
+                        args.iter_mut().for_each(remap_operand);
                         if !destination.projection.is_empty() {
-                            *destination = remap_place(destination);
+                            remap_place(destination);
                         }
                     }
-                    TerminatorKind::SwitchInt { discr, .. } => *discr = remap_operand(discr),
+                    TerminatorKind::SwitchInt { discr, .. } => remap_operand(discr),
                     TerminatorKind::Yield {
                         value, resume_arg, ..
                     } => {
-                        *value = remap_operand(value);
+                        remap_operand(value);
                         if !resume_arg.projection.is_empty() {
-                            *resume_arg = remap_place(resume_arg);
+                            remap_place(resume_arg);
                         }
                     }
                     _ => {}
@@ -333,27 +270,11 @@ fn record_rvalue_uses(
     uses: &mut [Vec<UseSite>],
     projection_use: &mut [bool],
 ) {
-    match rv {
-        Rvalue::Use(op)
-        | Rvalue::UnaryOp { operand: op, .. }
-        | Rvalue::Cast { operand: op, .. }
-        | Rvalue::Repeat { operand: op, .. } => record_operand_use(op, block, stmt_index, uses),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            record_operand_use(lhs, block, stmt_index, uses);
-            record_operand_use(rhs, block, stmt_index, uses);
+    rv.for_each_place(|place| record_place_use(place, block, stmt_index, uses));
+    if let Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } = rv {
+        if !place.projection.is_empty() {
+            projection_use[place.local.index()] = true;
         }
-        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
-            record_place_use(place, block, stmt_index, uses);
-            if !place.projection.is_empty() {
-                projection_use[place.local.index()] = true;
-            }
-        }
-        Rvalue::Aggregate { fields, .. } => {
-            for f in fields {
-                record_operand_use(f, block, stmt_index, uses);
-            }
-        }
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 

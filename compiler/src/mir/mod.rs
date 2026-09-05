@@ -367,8 +367,19 @@ impl<'ctx> Operand<'ctx> {
     }
 
     #[inline]
-    pub fn modifiers_or_default(&self) -> CopyModifiers {
-        self.as_copy().map(|(_, m)| m).unwrap_or_default()
+    pub fn place(&self) -> Option<&Place<'ctx>> {
+        match self {
+            Self::Copy(place) | Self::Move(place) | Self::CopyWith(place, _) => Some(place),
+            Self::Constant(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn place_mut(&mut self) -> Option<&mut Place<'ctx>> {
+        match self {
+            Self::Copy(place) | Self::Move(place) | Self::CopyWith(place, _) => Some(place),
+            Self::Constant(_) => None,
+        }
     }
 }
 
@@ -439,6 +450,67 @@ pub enum Rvalue<'ctx> {
     },
 }
 
+impl<'ctx> Rvalue<'ctx> {
+    pub fn for_each_operand(&self, mut visit: impl FnMut(&Operand<'ctx>)) {
+        match self {
+            Self::Use(operand)
+            | Self::UnaryOp { operand, .. }
+            | Self::Cast { operand, .. }
+            | Self::Repeat { operand, .. } => visit(operand),
+            Self::BinaryOp { lhs, rhs, .. } => {
+                visit(lhs);
+                visit(rhs);
+            }
+            Self::Aggregate { fields, .. } => fields.iter().for_each(visit),
+            Self::Ref { .. }
+            | Self::Discriminant { .. }
+            | Self::Alloc { .. }
+            | Self::Zeroed { .. } => {}
+        }
+    }
+
+    pub fn for_each_operand_mut(&mut self, mut visit: impl FnMut(&mut Operand<'ctx>)) {
+        match self {
+            Self::Use(operand)
+            | Self::UnaryOp { operand, .. }
+            | Self::Cast { operand, .. }
+            | Self::Repeat { operand, .. } => visit(operand),
+            Self::BinaryOp { lhs, rhs, .. } => {
+                visit(lhs);
+                visit(rhs);
+            }
+            Self::Aggregate { fields, .. } => fields.iter_mut().for_each(visit),
+            Self::Ref { .. }
+            | Self::Discriminant { .. }
+            | Self::Alloc { .. }
+            | Self::Zeroed { .. } => {}
+        }
+    }
+
+    /// Includes address-taking and discriminant places, which are not operands.
+    pub fn for_each_place(&self, mut visit: impl FnMut(&Place<'ctx>)) {
+        match self {
+            Self::Ref { place, .. } | Self::Discriminant { place } => visit(place),
+            _ => self.for_each_operand(|operand| {
+                if let Some(place) = operand.place() {
+                    visit(place);
+                }
+            }),
+        }
+    }
+
+    pub fn for_each_place_mut(&mut self, mut visit: impl FnMut(&mut Place<'ctx>)) {
+        match self {
+            Self::Ref { place, .. } | Self::Discriminant { place } => visit(place),
+            _ => self.for_each_operand_mut(|operand| {
+                if let Some(place) = operand.place_mut() {
+                    visit(place);
+                }
+            }),
+        }
+    }
+}
+
 pub fn for_each_function_constant_in_body<'ctx>(
     body: &Body<'ctx>,
     mut visit: impl FnMut(DefinitionID, GenericArguments<'ctx>),
@@ -482,32 +554,17 @@ fn for_each_function_constant_in_rvalue<'ctx>(
     rvalue: &Rvalue<'ctx>,
     visit: &mut impl FnMut(DefinitionID, GenericArguments<'ctx>),
 ) {
-    match rvalue {
-        Rvalue::Use(operand) => for_each_function_constant_in_operand(operand, visit),
-        Rvalue::UnaryOp { operand, .. } => for_each_function_constant_in_operand(operand, visit),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            for_each_function_constant_in_operand(lhs, visit);
-            for_each_function_constant_in_operand(rhs, visit);
-        }
-        Rvalue::Cast { operand, .. } => for_each_function_constant_in_operand(operand, visit),
-        Rvalue::Aggregate { kind, fields } => {
-            if let AggregateKind::Closure {
-                def_id,
-                captured_generics,
-            } = kind
-            {
-                visit(*def_id, *captured_generics);
-            }
-            for field in fields.iter() {
-                for_each_function_constant_in_operand(field, visit);
-            }
-        }
-        Rvalue::Repeat { operand, .. } => for_each_function_constant_in_operand(operand, visit),
-        Rvalue::Ref { .. }
-        | Rvalue::Discriminant { .. }
-        | Rvalue::Alloc { .. }
-        | Rvalue::Zeroed { .. } => {}
+    if let Rvalue::Aggregate {
+        kind: AggregateKind::Closure {
+            def_id,
+            captured_generics,
+        },
+        ..
+    } = rvalue
+    {
+        visit(*def_id, *captured_generics);
     }
+    rvalue.for_each_operand(|operand| for_each_function_constant_in_operand(operand, visit));
 }
 
 fn for_each_function_constant_in_operand<'ctx>(

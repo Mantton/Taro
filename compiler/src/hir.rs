@@ -1379,16 +1379,6 @@ impl StdItem {
         matches!(self, Self::Copy | Self::Sendable | Self::Tuple)
     }
 
-    /// Convert a unary operator to its corresponding operator interface.
-    pub fn from_unary_operator(op: crate::ast::UnaryOperator) -> Option<Self> {
-        use crate::ast::UnaryOperator;
-        match op {
-            UnaryOperator::Negate => Some(Self::Neg),
-            UnaryOperator::LogicalNot => Some(Self::Not),
-            UnaryOperator::BitwiseNot => Some(Self::BitNot),
-        }
-    }
-
     /// Convert an OperatorKind (from declarations) to its corresponding operator interface.
     /// Returns None for operators that don't map to an interface.
     pub fn from_operator_kind(kind: crate::ast::OperatorKind) -> Option<Self> {

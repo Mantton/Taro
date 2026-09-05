@@ -72,17 +72,6 @@ impl LockFile {
                     .all(|request| entry.requests.iter().any(|locked| locked == request))
         })
     }
-
-    pub fn find_git_candidates(&self, name: &str, canonical_url: &str) -> Vec<&LockPackage> {
-        self.package
-            .iter()
-            .filter(|entry| {
-                entry.source_type == LockSourceType::Git
-                    && entry.name == name
-                    && entry.url.as_deref() == Some(canonical_url)
-            })
-            .collect()
-    }
 }
 
 pub fn load(path: &Path) -> Result<Option<LockFile>, String> {

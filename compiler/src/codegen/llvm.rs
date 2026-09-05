@@ -287,15 +287,6 @@ fn has_llvm_bitcode_magic(bytes: &[u8]) -> bool {
     bytes.starts_with(b"BC\xc0\xde") || bytes.starts_with(b"\xde\xc0\x17\x0b")
 }
 
-/// Lower MIR for a package into a single LLVM module and cache its IR.
-pub fn emit_package<'gcx>(
-    package: &'gcx mir::MirPackage<'gcx>,
-    gcx: GlobalContext<'gcx>,
-) -> CompileResult<ModuleArtifact> {
-    let (artifact, _) = emit_package_with_timings(package, gcx)?;
-    Ok(artifact)
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CodegenPhaseTimings {
     pub module_setup: Duration,
@@ -312,6 +303,36 @@ pub struct CodegenPhaseTimings {
 pub fn emit_package_with_timings<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
     gcx: GlobalContext<'gcx>,
+) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
+    emit_with_entry(package, gcx, |emitter| emitter.emit_start_shim(package))
+}
+
+/// Lower MIR for a package and generate a test harness instead of a normal entry shim,
+/// returning fine-grained LLVM codegen phase timings.
+pub fn emit_test_package_with_timings<'gcx>(
+    package: &'gcx mir::MirPackage<'gcx>,
+    gcx: GlobalContext<'gcx>,
+    tests: &[crate::compile::test_collector::TestCase],
+) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
+    emit_with_entry(package, gcx, |emitter| emitter.emit_test_harness(tests))
+}
+
+/// Lower MIR for a package and generate a benchmark harness instead of a
+/// normal entry shim.
+pub fn emit_bench_package_with_timings<'gcx>(
+    package: &'gcx mir::MirPackage<'gcx>,
+    gcx: GlobalContext<'gcx>,
+    benchmarks: &[crate::compile::bench_collector::BenchmarkCase],
+) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
+    emit_with_entry(package, gcx, |emitter| {
+        emitter.emit_bench_harness(benchmarks)
+    })
+}
+
+fn emit_with_entry<'gcx>(
+    package: &'gcx mir::MirPackage<'gcx>,
+    gcx: GlobalContext<'gcx>,
+    emit_entry: impl FnOnce(&mut Emitter<'_, 'gcx>),
 ) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
     let mut timings = CodegenPhaseTimings::default();
 
@@ -338,7 +359,7 @@ pub fn emit_package_with_timings<'gcx>(
     emitter.emit_static_root_registration_ctor();
 
     let phase_started_at = Instant::now();
-    emitter.emit_start_shim(package);
+    emit_entry(&mut emitter);
     timings.emit_entry_or_harness = phase_started_at.elapsed();
 
     emitter.finalize_debug_info();
@@ -375,161 +396,6 @@ pub fn emit_package_with_timings<'gcx>(
     let artifact = emitter.emit_module_artifact()?;
     timings.emit_artifact = phase_started_at.elapsed();
 
-    gcx.cache_module_artifact(artifact.clone());
-    Ok((artifact, timings))
-}
-
-/// Lower MIR for a package and generate a test harness instead of a normal entry shim.
-pub fn emit_test_package<'gcx>(
-    package: &'gcx mir::MirPackage<'gcx>,
-    gcx: GlobalContext<'gcx>,
-    tests: &[crate::compile::test_collector::TestCase],
-) -> CompileResult<ModuleArtifact> {
-    let (artifact, _) = emit_test_package_with_timings(package, gcx, tests)?;
-    Ok(artifact)
-}
-
-/// Lower MIR for a package and generate a test harness instead of a normal entry shim,
-/// returning fine-grained LLVM codegen phase timings.
-pub fn emit_test_package_with_timings<'gcx>(
-    package: &'gcx mir::MirPackage<'gcx>,
-    gcx: GlobalContext<'gcx>,
-    tests: &[crate::compile::test_collector::TestCase],
-) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
-    let mut timings = CodegenPhaseTimings::default();
-
-    let phase_started_at = Instant::now();
-    let context = Context::create();
-    let module = context.create_module(&gcx.config.identifier);
-    let builder = context.create_builder();
-
-    let target_layout = &gcx.store.target_layout;
-    module.set_data_layout(&target_layout.data_layout());
-    module.set_triple(&target_layout.triple());
-    timings.module_setup = phase_started_at.elapsed();
-
-    let mut emitter = Emitter::new(&context, module, builder, gcx)?;
-    let phase_started_at = Instant::now();
-    emitter.declare_instances();
-    timings.declare_instances = phase_started_at.elapsed();
-
-    let phase_started_at = Instant::now();
-    emitter.lower_instances(package)?;
-    timings.lower_instances = phase_started_at.elapsed();
-
-    emitter.emit_static_root_registration_ctor();
-
-    let phase_started_at = Instant::now();
-    emitter.emit_test_harness(tests);
-    timings.emit_entry_or_harness = phase_started_at.elapsed();
-
-    emitter.finalize_debug_info();
-
-    let phase_started_at = Instant::now();
-    if let Err(e) = emitter.module.verify() {
-        let msg = format!("invalid LLVM module: {}", e.to_string());
-        gcx.dcx().emit_error(msg, None);
-        return Err(crate::error::ReportedError);
-    }
-    timings.verify = phase_started_at.elapsed();
-
-    let phase_started_at = Instant::now();
-    emitter.run_optimization_passes()?;
-    timings.optimize_ir = phase_started_at.elapsed();
-
-    let phase_started_at = Instant::now();
-    if let Err(e) = emitter.module.verify() {
-        let msg = format!("LLVM passes produced an invalid module: {}", e.to_string());
-        gcx.dcx().emit_error(msg, None);
-        return Err(crate::error::ReportedError);
-    }
-    timings.verify += phase_started_at.elapsed();
-
-    if gcx.config.debug.dump_llvm {
-        eprintln!("\n=== LLVM IR for {} ===", gcx.config.name);
-        let ir = emitter.module.print_to_string().to_string();
-        eprintln!("{ir}");
-        eprintln!("=== End LLVM Dump ===\n");
-    }
-
-    let phase_started_at = Instant::now();
-    let artifact = emitter.emit_module_artifact()?;
-    timings.emit_artifact = phase_started_at.elapsed();
-
-    gcx.cache_module_artifact(artifact.clone());
-    Ok((artifact, timings))
-}
-
-/// Lower MIR for a package and generate a benchmark harness instead of a
-/// normal entry shim.
-pub fn emit_bench_package_with_timings<'gcx>(
-    package: &'gcx mir::MirPackage<'gcx>,
-    gcx: GlobalContext<'gcx>,
-    benchmarks: &[crate::compile::bench_collector::BenchmarkCase],
-) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
-    let mut timings = CodegenPhaseTimings::default();
-
-    let phase_started_at = Instant::now();
-    let context = Context::create();
-    let module = context.create_module(&gcx.config.identifier);
-    let builder = context.create_builder();
-
-    let target_layout = &gcx.store.target_layout;
-    module.set_data_layout(&target_layout.data_layout());
-    module.set_triple(&target_layout.triple());
-    timings.module_setup = phase_started_at.elapsed();
-
-    let mut emitter = Emitter::new(&context, module, builder, gcx)?;
-    let phase_started_at = Instant::now();
-    emitter.declare_instances();
-    timings.declare_instances = phase_started_at.elapsed();
-
-    let phase_started_at = Instant::now();
-    emitter.lower_instances(package)?;
-    timings.lower_instances = phase_started_at.elapsed();
-
-    emitter.emit_static_root_registration_ctor();
-
-    let phase_started_at = Instant::now();
-    emitter.emit_bench_harness(benchmarks);
-    timings.emit_entry_or_harness = phase_started_at.elapsed();
-
-    emitter.finalize_debug_info();
-
-    let phase_started_at = Instant::now();
-    if let Err(error) = emitter.module.verify() {
-        gcx.dcx()
-            .emit_error(format!("invalid LLVM module: {}", error.to_string()), None);
-        return Err(crate::error::ReportedError);
-    }
-    timings.verify = phase_started_at.elapsed();
-
-    let phase_started_at = Instant::now();
-    emitter.run_optimization_passes()?;
-    timings.optimize_ir = phase_started_at.elapsed();
-
-    let phase_started_at = Instant::now();
-    if let Err(error) = emitter.module.verify() {
-        gcx.dcx().emit_error(
-            format!(
-                "LLVM passes produced an invalid module: {}",
-                error.to_string()
-            ),
-            None,
-        );
-        return Err(crate::error::ReportedError);
-    }
-    timings.verify += phase_started_at.elapsed();
-
-    if gcx.config.debug.dump_llvm {
-        eprintln!("\n=== LLVM IR for {} ===", gcx.config.name);
-        eprintln!("{}", emitter.module.print_to_string().to_string());
-        eprintln!("=== End LLVM Dump ===\n");
-    }
-
-    let phase_started_at = Instant::now();
-    let artifact = emitter.emit_module_artifact()?;
-    timings.emit_artifact = phase_started_at.elapsed();
     gcx.cache_module_artifact(artifact.clone());
     Ok((artifact, timings))
 }

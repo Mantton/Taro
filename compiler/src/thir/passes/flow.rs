@@ -552,16 +552,9 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         loop_depth: usize,
         check_initialization: bool,
     ) -> FlowResult {
-        let cond_result = self.analyze_expr(cond, initialized, loop_depth, check_initialization);
-        let mut result = FlowResult {
-            returns: cond_result.returns,
-            breaks: cond_result.breaks,
-            continues: cond_result.continues,
-            poisoned: cond_result.poisoned,
-            ..Default::default()
-        };
+        let mut result = self.analyze_expr(cond, initialized, loop_depth, check_initialization);
 
-        let Some(cond_state) = cond_result.normal else {
+        let Some(cond_state) = result.normal.take() else {
             if !result.poisoned {
                 self.warn_unreachable_expr(then_expr);
                 if let Some(else_expr) = else_expr {
@@ -583,12 +576,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         };
 
         let branch_result = merge_results(then_result, else_result);
-        result.normal = branch_result.normal;
-        result.returns = merge_exit_states(result.returns.take(), branch_result.returns);
-        result.breaks = merge_exit_states(result.breaks.take(), branch_result.breaks);
-        result.continues = merge_exit_states(result.continues.take(), branch_result.continues);
-        result.poisoned |= branch_result.poisoned;
-        result
+        merge_results(result, branch_result)
     }
 
     fn analyze_assign(
@@ -608,14 +596,9 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         let value_input = if target_local.is_some() {
             initialized.clone()
         } else {
-            let target_result =
-                self.analyze_expr(target, initialized, loop_depth, check_initialization);
-            result.returns = target_result.returns;
-            result.breaks = target_result.breaks;
-            result.continues = target_result.continues;
-            result.poisoned = target_result.poisoned;
+            result = self.analyze_expr(target, initialized, loop_depth, check_initialization);
 
-            let Some(target_state) = target_result.normal else {
+            let Some(target_state) = result.normal.take() else {
                 if !result.poisoned {
                     self.warn_unreachable_expr(value);
                 }
@@ -625,18 +608,15 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             target_state
         };
 
-        let value_result = self.analyze_expr(value, &value_input, loop_depth, check_initialization);
-        result.returns = merge_exit_states(result.returns.take(), value_result.returns);
-        result.breaks = merge_exit_states(result.breaks.take(), value_result.breaks);
-        result.continues = merge_exit_states(result.continues.take(), value_result.continues);
-        result.poisoned |= value_result.poisoned;
-        result.normal = value_result.normal.map(|mut state| {
+        let mut value_result =
+            self.analyze_expr(value, &value_input, loop_depth, check_initialization);
+        value_result.normal = value_result.normal.map(|mut state| {
             if let Some(local) = target_local {
                 state.insert(local);
             }
             state
         });
-        result
+        merge_results(result, value_result)
     }
 
     fn analyze_logical(
@@ -647,16 +627,9 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         loop_depth: usize,
         check_initialization: bool,
     ) -> FlowResult {
-        let lhs_result = self.analyze_expr(lhs, initialized, loop_depth, check_initialization);
-        let mut result = FlowResult {
-            returns: lhs_result.returns,
-            breaks: lhs_result.breaks,
-            continues: lhs_result.continues,
-            poisoned: lhs_result.poisoned,
-            ..Default::default()
-        };
+        let mut result = self.analyze_expr(lhs, initialized, loop_depth, check_initialization);
 
-        let Some(lhs_state) = lhs_result.normal else {
+        let Some(lhs_state) = result.normal.take() else {
             if !result.poisoned {
                 self.warn_unreachable_expr(rhs);
             }
@@ -666,12 +639,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         let rhs_result = self.analyze_expr(rhs, &lhs_state, loop_depth, check_initialization);
         let branch_result = merge_results(FlowResult::normal(lhs_state), rhs_result);
 
-        result.normal = branch_result.normal;
-        result.returns = merge_exit_states(result.returns.take(), branch_result.returns);
-        result.breaks = merge_exit_states(result.breaks.take(), branch_result.breaks);
-        result.continues = merge_exit_states(result.continues.take(), branch_result.continues);
-        result.poisoned |= branch_result.poisoned;
-        result
+        merge_results(result, branch_result)
     }
 
     fn analyze_call(
@@ -699,17 +667,10 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         loop_depth: usize,
         check_initialization: bool,
     ) -> FlowResult {
-        let scrutinee_result =
+        let mut result =
             self.analyze_expr(scrutinee, initialized, loop_depth, check_initialization);
-        let mut result = FlowResult {
-            returns: scrutinee_result.returns,
-            breaks: scrutinee_result.breaks,
-            continues: scrutinee_result.continues,
-            poisoned: scrutinee_result.poisoned,
-            ..Default::default()
-        };
 
-        let Some(scrutinee_state) = scrutinee_result.normal else {
+        let Some(scrutinee_state) = result.normal.take() else {
             return result;
         };
 
@@ -747,23 +708,16 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             }
 
             let body_input = if let Some(guard) = arm.guard {
-                let guard_result =
+                let mut guard_result =
                     self.analyze_expr(guard, &arm_state, loop_depth, check_initialization);
-                arm_result = merge_results(
-                    arm_result,
-                    FlowResult {
-                        normal: None,
-                        returns: guard_result.returns.clone(),
-                        breaks: guard_result.breaks.clone(),
-                        continues: guard_result.continues.clone(),
-                        poisoned: guard_result.poisoned,
-                    },
-                );
+                let guard_state = guard_result.normal.take();
+                let guard_poisoned = guard_result.poisoned;
+                arm_result = merge_results(arm_result, guard_result);
 
-                match guard_result.normal {
+                match guard_state {
                     Some(guard_state) => guard_state,
                     None => {
-                        if !guard_result.poisoned {
+                        if !guard_poisoned {
                             self.warn_unreachable_expr(arm.body);
                         }
                         continue;
@@ -783,12 +737,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             return result;
         }
 
-        result.normal = arm_result.normal;
-        result.returns = merge_exit_states(result.returns.take(), arm_result.returns);
-        result.breaks = merge_exit_states(result.breaks.take(), arm_result.breaks);
-        result.continues = merge_exit_states(result.continues.take(), arm_result.continues);
-        result.poisoned |= arm_result.poisoned;
-        result
+        merge_results(result, arm_result)
     }
 
     fn analyze_expr_sequence<I>(

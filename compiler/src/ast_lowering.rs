@@ -32,6 +32,7 @@ pub struct Actor<'a, 'c> {
     pub next_index: u32,
     pub node_mapping: FxHashMap<ast::NodeID, hir::NodeID>,
     optional_unwrap_replacement: Option<OptionalUnwrapReplacement>,
+    target: TargetInfo,
 }
 
 impl<'a, 'c> Actor<'a, 'c> {
@@ -42,6 +43,7 @@ impl<'a, 'c> Actor<'a, 'c> {
             next_index: 0,
             node_mapping: Default::default(),
             optional_unwrap_replacement: None,
+            target: crate::cfg_eval::target_info(context),
         }
     }
 
@@ -239,180 +241,11 @@ impl<'a, 'c> Actor<'a, 'c> {
             }
         }
 
-        for attr in attributes {
-            if self.context.symbol_eq(attr.identifier.symbol, "cfg") {
-                if !self.evaluate_cfg(attr) {
-                    return false;
-                }
-            }
-        }
-        true
+        crate::cfg_eval::should_include_attrs(attributes, &self.target, self.context)
     }
 
-    /// Evaluate a single @cfg attribute.
-    /// Returns true if the condition matches, false otherwise.
-    fn evaluate_cfg(&self, attr: &ast::Attribute) -> bool {
-        // New syntax: @cfg(os("macos") && ...)
-        if let Some(cfg_expr) = &attr.cfg_expr {
-            return self.evaluate_cfg_expr(cfg_expr);
-        }
-
-        // Legacy syntax: @cfg(target_os = "macos")
-        let Some(args) = &attr.args else {
-            // @cfg without arguments - treat as always true (or error?)
-            return true;
-        };
-
-        // Get target triple from context
-        let triple = self.context.store.target_layout.triple();
-        let triple_str = triple.as_str().to_str().unwrap_or("");
-
-        // Parse triple for OS and arch (format: arch-vendor-os or arch-vendor-os-env)
-        let parts: Vec<&str> = triple_str.split('-').collect();
-        let target_arch = parts.first().cloned().unwrap_or("");
-        let target_os = if parts.len() >= 3 { parts[2] } else { "" };
-
-        for arg in &args.items {
-            match arg {
-                ast::AttributeArg::KeyValue { key, value, .. } => {
-                    let key_text = self.context.symbol_text(key.symbol);
-                    let key_str = key_text.as_str();
-                    let value_str = match value {
-                        ast::Literal::String { value } => value.as_str(),
-                        _ => continue, // Skip non-string values for now
-                    };
-
-                    match key_str {
-                        "target_os" => {
-                            // Match common OS names
-                            let matches = match value_str {
-                                "macos" | "darwin" => {
-                                    target_os.contains("darwin") || target_os == "macos"
-                                }
-                                "linux" => target_os == "linux",
-                                "windows" => target_os.contains("windows") || target_os == "win32",
-                                _ => target_os == value_str,
-                            };
-                            if !matches {
-                                return false;
-                            }
-                        }
-                        "target_arch" => {
-                            // Match common arch names
-                            let matches = match value_str {
-                                "x86_64" | "amd64" => target_arch == "x86_64",
-                                "aarch64" | "arm64" => {
-                                    target_arch == "aarch64" || target_arch == "arm64"
-                                }
-                                "arm" => target_arch.starts_with("arm"),
-                                _ => target_arch == value_str,
-                            };
-                            if !matches {
-                                return false;
-                            }
-                        }
-                        "target_profile" => {
-                            let profile = match self.context.config.profile {
-                                crate::compile::config::BuildProfile::Debug => "debug",
-                                crate::compile::config::BuildProfile::Release => "release",
-                            };
-
-                            if profile != value_str {
-                                return false;
-                            }
-                        }
-                        _ => {
-                            return false;
-                        }
-                    }
-                }
-                ast::AttributeArg::Flag { key, .. } => {
-                    // @cfg(debug)
-                    let key_text = self.context.symbol_text(key.symbol);
-                    let key_str = key_text.as_str();
-                    match key_str {
-                        "debug" => {
-                            if !matches!(
-                                self.context.config.profile,
-                                crate::compile::config::BuildProfile::Debug
-                            ) {
-                                return false;
-                            }
-                        }
-                        "test" => {
-                            if !self.context.config.harness_mode.is_test() {
-                                return false;
-                            }
-                        }
-                        "bench" => {
-                            if !self.context.config.harness_mode.is_bench() {
-                                return false;
-                            }
-                        }
-                        _ => {
-                            // Unknown flag - treat as not matching
-                            return false;
-                        }
-                    }
-                }
-                ast::AttributeArg::Literal { .. } => {
-                    // `@cfg(...)` only supports known key/value and flag forms.
-                    return false;
-                }
-            }
-        }
-
-        true // All conditions passed
-    }
-
-    /// Evaluate a CfgExpr (from #cfg(...) expression) against target triple
     fn evaluate_cfg_expr(&self, expr: &ast::CfgExpr) -> bool {
-        // Get target triple from TargetLayout (which may be host or cross-compile target)
-        let triple = self.context.store.target_layout.triple();
-        let triple_str = triple.as_str().to_str().unwrap_or("");
-        let mut target = TargetInfo::from_triple(triple_str);
-        target.profile = match self.context.config.profile {
-            crate::compile::config::BuildProfile::Debug => "debug".to_string(),
-            crate::compile::config::BuildProfile::Release => "release".to_string(),
-        };
-        target.test_mode = self.context.config.harness_mode.is_test();
-        target.bench_mode = self.context.config.harness_mode.is_bench();
-        self.eval_cfg_expr_inner(expr, &target)
-    }
-
-    fn eval_cfg_expr_inner(&self, expr: &ast::CfgExpr, target: &TargetInfo) -> bool {
-        match expr {
-            ast::CfgExpr::Flag { name, .. } => {
-                let name = self.context.symbol_text(name.symbol);
-                match name.as_str() {
-                    "debug" => target.matches_profile("debug"),
-                    "test" => target.test_mode,
-                    "bench" => target.bench_mode,
-                    _ => false,
-                }
-            }
-            ast::CfgExpr::Predicate { name, value, .. } => {
-                let name_text = self.context.symbol_text(name.symbol);
-                let name_str = name_text.as_str();
-                let value_text = self.context.symbol_text(*value);
-                let value_str = value_text.as_str();
-
-                match name_str {
-                    "os" => target.matches_os(value_str),
-                    "arch" => target.matches_arch(value_str),
-                    "family" => target.matches_family(value_str),
-                    "profile" => target.matches_profile(value_str),
-                    _ => false, // Unknown predicate
-                }
-            }
-            ast::CfgExpr::Not(inner, _) => !self.eval_cfg_expr_inner(inner, target),
-            ast::CfgExpr::All(items, _) => {
-                items.iter().all(|e| self.eval_cfg_expr_inner(e, target))
-            }
-            ast::CfgExpr::Any(items, _) => {
-                items.iter().any(|e| self.eval_cfg_expr_inner(e, target))
-            }
-        }
+        crate::cfg_eval::eval_cfg_expr(expr, &self.target, self.context)
     }
 
     fn lower_extern_declaration(

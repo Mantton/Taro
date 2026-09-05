@@ -995,16 +995,6 @@ pub enum OperatorKind {
     Neq,
 }
 
-impl OperatorKind {
-    /// Returns true if this is a unary operator (Neg, Not, BitwiseNot).
-    pub fn is_unary(self) -> bool {
-        matches!(
-            self,
-            OperatorKind::Neg | OperatorKind::Not | OperatorKind::BitwiseNot
-        )
-    }
-}
-
 impl TryFrom<DeclarationKind> for AssociatedDeclarationKind {
     type Error = DeclarationKind;
 
