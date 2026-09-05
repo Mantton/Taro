@@ -436,6 +436,99 @@ pub fn write_package_metadata<'ctx>(
     Ok(path)
 }
 
+/// Shared cache/attached-artifact compatibility gates. Attached artifacts omit
+/// invocation-specific fingerprints, profile and frontend options.
+fn validate_and_decode_payload(
+    gcx: GlobalContext<'_>,
+    header: &MetadataHeader,
+    payload_bytes: &[u8],
+    mode: ReuseMode,
+    expected_fp: Option<&PackageFingerprintInput>,
+) -> Result<wire::MetadataPayloadWire, String> {
+    let config = gcx.config;
+    if header.compiler_revision != compiler_revision_stamp() {
+        return Err("metadata compiler revision mismatch".into());
+    }
+    if header.package_identifier != config.identifier.as_ref() {
+        return Err("metadata package identifier mismatch".into());
+    }
+    if header.package_index != config.index.raw() as u32 {
+        return Err("metadata package index mismatch".into());
+    }
+    if header.target_triple
+        != gcx
+            .store
+            .target_layout
+            .triple()
+            .as_str()
+            .to_string_lossy()
+            .as_ref()
+    {
+        return Err("metadata target mismatch".into());
+    }
+    if header.target_cpu != gcx.store.target_layout.cpu()
+        || header.target_features != gcx.store.target_layout.features()
+    {
+        return Err("metadata target CPU/features mismatch".into());
+    }
+    if expected_fp.is_some() && header.profile != profile_name(config.profile) {
+        return Err("metadata profile mismatch".into());
+    }
+    if header.optimization != optimization_name(config.codegen.optimization) {
+        return Err("metadata optimization mode mismatch".into());
+    }
+    if header.lto != lto_name(config.codegen.lto) {
+        return Err("metadata LTO mode mismatch".into());
+    }
+    if header.has_artifact_ref && header.artifact_kind != Some(config.codegen.artifact) {
+        return Err("metadata module artifact kind mismatch".into());
+    }
+    if let Some(expected_fp) = expected_fp {
+        if header.overflow_checks != config.overflow_checks
+            || header.no_std_prelude != config.no_std_prelude
+            || header.harness_mode != config.harness_mode
+        {
+            return Err("metadata compile option mismatch".into());
+        }
+        if header.package_fingerprint != expected_fp.package_fingerprint {
+            return Err("metadata package fingerprint mismatch".into());
+        }
+
+        if header.dependency_fingerprints.len() != expected_fp.dependencies.len() {
+            return Err("metadata dependency fingerprint count mismatch".into());
+        }
+
+        for (actual, expected) in header
+            .dependency_fingerprints
+            .iter()
+            .zip(expected_fp.dependencies.iter())
+        {
+            if actual.identifier != expected.identifier
+                || actual.fingerprint != expected.fingerprint
+            {
+                return Err("metadata dependency fingerprint mismatch".into());
+            }
+        }
+    }
+
+    let payload_checksum = blake3::hash(payload_bytes).to_hex().to_string();
+    if payload_checksum != header.payload_checksum_hex {
+        return Err("metadata payload checksum mismatch".into());
+    }
+
+    if !header.frontend_reusable {
+        return Err("metadata marked non-reusable".into());
+    }
+
+    validate_artifact_header(header)?;
+    validate_mode_capabilities(header, mode)?;
+    let payload: wire::MetadataPayloadWire = bincode::deserialize(payload_bytes)
+        .map_err(|error| format!("failed to decode metadata payload: {error}"))?;
+    validate_payload_capabilities(header, &payload)?;
+
+    Ok(payload)
+}
+
 pub fn try_load_package_metadata<'ctx>(
     gcx: GlobalContext<'ctx>,
     expected_fp: &PackageFingerprintInput,
@@ -460,93 +553,11 @@ pub fn try_load_package_metadata<'ctx>(
         }
     };
 
-    if header.compiler_revision != compiler_revision_stamp() {
-        return MetadataLoadStatus::Miss("metadata compiler revision mismatch".into());
-    }
-    if header.package_identifier != config.identifier.as_ref() {
-        return MetadataLoadStatus::Miss("metadata package identifier mismatch".into());
-    }
-    if header.package_index != config.index.raw() as u32 {
-        return MetadataLoadStatus::Miss("metadata package index mismatch".into());
-    }
-    if header.target_triple
-        != gcx
-            .store
-            .target_layout
-            .triple()
-            .as_str()
-            .to_string_lossy()
-            .as_ref()
-    {
-        return MetadataLoadStatus::Miss("metadata target mismatch".into());
-    }
-    if header.target_cpu != gcx.store.target_layout.cpu()
-        || header.target_features != gcx.store.target_layout.features()
-    {
-        return MetadataLoadStatus::Miss("metadata target CPU/features mismatch".into());
-    }
-    if header.profile != profile_name(config.profile) {
-        return MetadataLoadStatus::Miss("metadata profile mismatch".into());
-    }
-    if header.optimization != optimization_name(config.codegen.optimization) {
-        return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
-    }
-    if header.lto != lto_name(config.codegen.lto) {
-        return MetadataLoadStatus::Miss("metadata LTO mode mismatch".into());
-    }
-    if header.has_artifact_ref && header.artifact_kind != Some(config.codegen.artifact) {
-        return MetadataLoadStatus::Miss("metadata module artifact kind mismatch".into());
-    }
-    if header.overflow_checks != config.overflow_checks
-        || header.no_std_prelude != config.no_std_prelude
-        || header.harness_mode != config.harness_mode
-    {
-        return MetadataLoadStatus::Miss("metadata compile option mismatch".into());
-    }
-    if header.package_fingerprint != expected_fp.package_fingerprint {
-        return MetadataLoadStatus::Miss("metadata package fingerprint mismatch".into());
-    }
-
-    if header.dependency_fingerprints.len() != expected_fp.dependencies.len() {
-        return MetadataLoadStatus::Miss("metadata dependency fingerprint count mismatch".into());
-    }
-
-    for (actual, expected) in header
-        .dependency_fingerprints
-        .iter()
-        .zip(expected_fp.dependencies.iter())
-    {
-        if actual.identifier != expected.identifier || actual.fingerprint != expected.fingerprint {
-            return MetadataLoadStatus::Miss("metadata dependency fingerprint mismatch".into());
-        }
-    }
-
-    let payload_checksum = blake3::hash(&payload_bytes).to_hex().to_string();
-    if payload_checksum != header.payload_checksum_hex {
-        return MetadataLoadStatus::Miss("metadata payload checksum mismatch".into());
-    }
-
-    if !header.frontend_reusable {
-        return MetadataLoadStatus::Miss("metadata marked non-reusable".into());
-    }
-
-    if let Err(message) = validate_artifact_header(&header) {
-        return MetadataLoadStatus::Miss(message);
-    }
-    if let Err(message) = validate_mode_capabilities(&header, mode) {
-        return MetadataLoadStatus::Miss(message);
-    }
-
-    let payload: wire::MetadataPayloadWire = match bincode::deserialize(&payload_bytes) {
-        Ok(payload) => payload,
-        Err(e) => {
-            return MetadataLoadStatus::Miss(format!("failed to decode metadata payload: {e}"));
-        }
-    };
-
-    if let Err(message) = validate_payload_capabilities(&header, &payload) {
-        return MetadataLoadStatus::Miss(message);
-    }
+    let payload =
+        match validate_and_decode_payload(gcx, &header, &payload_bytes, mode, Some(expected_fp)) {
+            Ok(payload) => payload,
+            Err(message) => return MetadataLoadStatus::Miss(message),
+        };
 
     let artifact = if header.has_artifact_ref {
         let Some(kind) = header.artifact_kind else {
@@ -622,7 +633,6 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
     metadata_path: &Path,
     artifact_path: Option<&Path>,
 ) -> MetadataLoadStatus {
-    let config = gcx.config;
     let mut file = match fs::File::open(metadata_path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -647,67 +657,10 @@ pub fn try_load_package_metadata_from_paths<'ctx>(
         }
     };
 
-    if header.compiler_revision != compiler_revision_stamp() {
-        return MetadataLoadStatus::Miss("metadata compiler revision mismatch".into());
-    }
-    if header.package_identifier != config.identifier.as_ref() {
-        return MetadataLoadStatus::Miss("metadata package identifier mismatch".into());
-    }
-    if header.package_index != config.index.raw() as u32 {
-        return MetadataLoadStatus::Miss("metadata package index mismatch".into());
-    }
-    if header.target_triple
-        != gcx
-            .store
-            .target_layout
-            .triple()
-            .as_str()
-            .to_string_lossy()
-            .as_ref()
-    {
-        return MetadataLoadStatus::Miss("metadata target mismatch".into());
-    }
-    if header.target_cpu != gcx.store.target_layout.cpu()
-        || header.target_features != gcx.store.target_layout.features()
-    {
-        return MetadataLoadStatus::Miss("metadata target CPU/features mismatch".into());
-    }
-    if header.optimization != optimization_name(config.codegen.optimization) {
-        return MetadataLoadStatus::Miss("metadata optimization mode mismatch".into());
-    }
-    if header.lto != lto_name(config.codegen.lto) {
-        return MetadataLoadStatus::Miss("metadata LTO mode mismatch".into());
-    }
-    if header.has_artifact_ref && header.artifact_kind != Some(config.codegen.artifact) {
-        return MetadataLoadStatus::Miss("metadata module artifact kind mismatch".into());
-    }
-
-    let payload_checksum = blake3::hash(&payload_bytes).to_hex().to_string();
-    if payload_checksum != header.payload_checksum_hex {
-        return MetadataLoadStatus::Miss("metadata payload checksum mismatch".into());
-    }
-
-    if !header.frontend_reusable {
-        return MetadataLoadStatus::Miss("metadata marked non-reusable".into());
-    }
-
-    if let Err(message) = validate_artifact_header(&header) {
-        return MetadataLoadStatus::Miss(message);
-    }
-    if let Err(message) = validate_mode_capabilities(&header, mode) {
-        return MetadataLoadStatus::Miss(message);
-    }
-
-    let payload: wire::MetadataPayloadWire = match bincode::deserialize(&payload_bytes) {
+    let payload = match validate_and_decode_payload(gcx, &header, &payload_bytes, mode, None) {
         Ok(payload) => payload,
-        Err(e) => {
-            return MetadataLoadStatus::Miss(format!("failed to decode metadata payload: {e}"));
-        }
+        Err(message) => return MetadataLoadStatus::Miss(message),
     };
-
-    if let Err(message) = validate_payload_capabilities(&header, &payload) {
-        return MetadataLoadStatus::Miss(message);
-    }
 
     let artifact = match mode {
         ReuseMode::CodegenDependency | ReuseMode::CodegenRoot => {
@@ -1420,6 +1373,71 @@ mod tests {
             synthetic_definitions: vec![],
             emitted_instances: vec![],
         }
+    }
+
+    #[test]
+    fn attached_metadata_skips_invocation_options_but_keeps_integrity_gates() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let payload = bincode::serialize(&sample_payload()).unwrap();
+            let mut header = sample_header();
+            header.compiler_revision = compiler_revision_stamp();
+            header.package_identifier = gcx.config.identifier.to_string();
+            header.package_index = gcx.package_index().raw() as u32;
+            header.target_triple = gcx
+                .store
+                .target_layout
+                .triple()
+                .as_str()
+                .to_string_lossy()
+                .into_owned();
+            header.target_cpu = gcx.store.target_layout.cpu().into();
+            header.target_features = gcx.store.target_layout.features().into();
+            header.optimization = optimization_name(gcx.config.codegen.optimization).into();
+            header.lto = lto_name(gcx.config.codegen.lto).into();
+            header.artifact_kind = Some(gcx.config.codegen.artifact);
+            header.payload_checksum_hex = blake3::hash(&payload).to_hex().to_string();
+            header.profile = profile_name(gcx.config.profile).into();
+            header.overflow_checks = gcx.config.overflow_checks;
+            header.no_std_prelude = gcx.config.no_std_prelude;
+            header.harness_mode = gcx.config.harness_mode;
+            let fingerprint = PackageFingerprintInput {
+                package_fingerprint: header.package_fingerprint.clone(),
+                dependencies: vec![],
+            };
+            let decode = |header: &MetadataHeader, cached: bool| {
+                validate_and_decode_payload(
+                    gcx,
+                    header,
+                    &payload,
+                    ReuseMode::SemanticDependency,
+                    cached.then_some(&fingerprint),
+                )
+            };
+            assert!(decode(&header, true).is_ok());
+            assert!(decode(&header, false).is_ok());
+            let mut invocation = header.clone();
+            invocation.profile = "different-profile".into();
+            invocation.package_fingerprint = "different-source".into();
+            assert_eq!(
+                decode(&invocation, true).unwrap_err(),
+                "metadata profile mismatch"
+            );
+            assert!(decode(&invocation, false).is_ok());
+            for cached in [true, false] {
+                let mut corrupt = header.clone();
+                corrupt.payload_checksum_hex.clear();
+                assert_eq!(
+                    decode(&corrupt, cached).unwrap_err(),
+                    "metadata payload checksum mismatch"
+                );
+                let mut incompatible = header.clone();
+                incompatible.target_cpu = "different-cpu".into();
+                assert_eq!(
+                    decode(&incompatible, cached).unwrap_err(),
+                    "metadata target CPU/features mismatch"
+                );
+            }
+        });
     }
 
     #[test]
