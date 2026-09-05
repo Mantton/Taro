@@ -6,7 +6,6 @@ use crate::{
     specialize::{Instance, resolve_instance},
 };
 use rustc_hash::FxHashSet;
-use std::mem;
 
 /// Collects all function instantiations needed for a MIR package.
 ///
@@ -27,12 +26,6 @@ pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: Glob
 
     // 2. Worklist algorithm: visit each instance, discover calls
     while let Some(instance) = collector.worklist.pop() {
-        if collector.items.contains(&instance) {
-            continue;
-        }
-
-        collector.items.insert(instance);
-
         // Get the MIR body for this function.
         let def_id = instance.def_id();
 
@@ -51,8 +44,7 @@ pub fn collect_instances<'ctx>(package: &crate::mir::MirPackage<'ctx>, gcx: Glob
         collector.visit_body(instance, body);
     }
 
-    let instances = mem::take(&mut collector.items);
-    gcx.cache_specializations(gcx.package_index(), instances);
+    gcx.cache_specializations(gcx.package_index(), collector.items);
 }
 
 pub struct Collector<'ctx> {
@@ -64,6 +56,12 @@ pub struct Collector<'ctx> {
 }
 
 impl<'ctx> Collector<'ctx> {
+    fn enqueue(&mut self, instance: Instance<'ctx>) {
+        if self.items.insert(instance) {
+            self.worklist.push(instance);
+        }
+    }
+
     /// Find concrete entry points (roots of the reachability graph).
     fn find_roots(&mut self, package: &crate::mir::MirPackage<'ctx>) {
         // Add the entry point if it exists and is concrete
@@ -71,12 +69,12 @@ impl<'ctx> Collector<'ctx> {
             let generics = self.gcx.generics_of(entry_id);
             if generics.is_empty() {
                 let root = Instance::item(entry_id, GenericArguments::empty());
-                self.worklist.push(root);
+                self.enqueue(root);
             }
         }
 
         // Add all other concrete (non-generic) functions
-        for (&def_id, _) in &package.functions {
+        for &def_id in package.functions.keys() {
             // Nested closure bodies are instantiated from the closure value's
             // captured generics at use sites. Treating them as zero-arg roots
             // leaks raw parent type parameters into codegen.
@@ -86,9 +84,7 @@ impl<'ctx> Collector<'ctx> {
             let generics = self.gcx.generics_of(def_id);
             if generics.is_empty() {
                 let root = Instance::item(def_id, GenericArguments::empty());
-                if !self.items.contains(&root) {
-                    self.worklist.push(root);
-                }
+                self.enqueue(root);
             }
         }
     }
@@ -102,9 +98,9 @@ impl<'ctx> Collector<'ctx> {
                 let concrete_args = instantiate_generic_args(self.gcx, call_args, parent.args());
 
                 // Compute the instantiation key
-                let instance = self.compute_instance(callee_id, concrete_args);
-                if instance.is_item() && !self.items.contains(&instance) {
-                    self.worklist.push(instance);
+                let instance = resolve_instance(self.gcx, callee_id, concrete_args);
+                if instance.is_item() {
+                    self.enqueue(instance);
                 }
             }
         });
@@ -124,13 +120,5 @@ impl<'ctx> Collector<'ctx> {
             self.gcx.get_signature(def_id).abi,
             Some(hir::Abi::Intrinsic)
         )
-    }
-
-    fn compute_instance(
-        &self,
-        def_id: DefinitionID,
-        args: GenericArguments<'ctx>,
-    ) -> Instance<'ctx> {
-        resolve_instance(self.gcx, def_id, args)
     }
 }
