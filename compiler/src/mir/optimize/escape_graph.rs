@@ -213,9 +213,12 @@ impl EscapeGraph {
         }
 
         let (in_states, reachable) = graph.compute_flow_states(body, entry_state);
-        graph.add_flow_edges(gcx, body, mode, &in_states, &reachable)?;
-        graph.overlapping_allocations = graph.find_overlapping_allocations(body, &in_states);
-        graph.allocation_live_blocks = graph.find_allocation_live_blocks(body, &in_states);
+        let liveness = crate::mir::analysis::liveness::compute_liveness(body);
+        graph.add_flow_edges(gcx, body, mode, &in_states, &reachable, &liveness)?;
+        graph.overlapping_allocations =
+            graph.find_overlapping_allocations(body, &in_states, &liveness);
+        graph.allocation_live_blocks =
+            graph.find_allocation_live_blocks(body, &in_states, &liveness);
         Ok(graph)
     }
 
@@ -527,10 +530,8 @@ impl EscapeGraph {
         mode: AnalysisMode<'a, 'ctx>,
         in_states: &IndexVec<BasicBlockId, FlowState>,
         reachable: &IndexVec<BasicBlockId, bool>,
+        liveness: &crate::mir::analysis::liveness::LivenessResult,
     ) -> CompileResult<()> {
-        let async_liveness = matches!(mode, AnalysisMode::AsyncBridge)
-            .then(|| crate::mir::analysis::liveness::compute_liveness(body));
-
         for (block, data) in body.basic_blocks.iter_enumerated() {
             if !reachable[block] {
                 continue;
@@ -577,7 +578,7 @@ impl EscapeGraph {
                     if operand_may_carry_provenance(gcx, body, value, mode) {
                         self.add_operand_edge(self.heap, value, &state, 0);
                     }
-                    if let Some(liveness) = &async_liveness {
+                    if matches!(mode, AnalysisMode::AsyncBridge) {
                         for local in liveness.live_after_terminator(block) {
                             if local_may_carry_provenance(gcx, body, *local, mode) {
                                 for &source in &state[local.index()] {
@@ -623,8 +624,8 @@ impl EscapeGraph {
         &self,
         body: &Body<'_>,
         in_states: &IndexVec<BasicBlockId, FlowState>,
+        liveness: &crate::mir::analysis::liveness::LivenessResult,
     ) -> FxHashSet<AllocationSite> {
-        let liveness = crate::mir::analysis::liveness::compute_liveness(body);
         let mut overlapping = FxHashSet::default();
         for (block, data) in body.basic_blocks.iter_enumerated() {
             let mut state = in_states[block].clone();
@@ -659,8 +660,8 @@ impl EscapeGraph {
         &self,
         body: &Body<'_>,
         in_states: &IndexVec<BasicBlockId, FlowState>,
+        liveness: &crate::mir::analysis::liveness::LivenessResult,
     ) -> FxHashMap<AllocationSite, FxHashSet<BasicBlockId>> {
-        let liveness = crate::mir::analysis::liveness::compute_liveness(body);
         let mut reachable_cache: FxHashMap<usize, Vec<AllocationSite>> = FxHashMap::default();
         let mut blocks: FxHashMap<AllocationSite, FxHashSet<BasicBlockId>> = FxHashMap::default();
 

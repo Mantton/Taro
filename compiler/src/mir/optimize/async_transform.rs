@@ -6,7 +6,7 @@ use crate::{
         BasicBlockData, BasicBlockId, Body, CallUnwindAction, Constant, ConstantKind,
         CopyModifiers, LocalDecl, LocalId, LocalKind, Operand, Place, PlaceElem, Rvalue,
         SourceScopeId, Statement, StatementKind, Terminator, TerminatorKind,
-        analysis::liveness::compute_liveness,
+        analysis::liveness::compute_block_liveness,
     },
     sema::{
         models::{
@@ -253,7 +253,7 @@ fn build_frame_layout<'ctx>(
     yields: &[YieldSite<'ctx>],
 ) -> AsyncFrameLayout<'ctx> {
     let state_ty = gcx.types.uint;
-    let liveness = compute_liveness(body);
+    let liveness = compute_block_liveness(body);
     let start_locals = collect_async_state_locals(body, &liveness.live_in[body.start_block], None);
     let yield_locals: Vec<_> = yields
         .iter()
@@ -349,7 +349,7 @@ fn rewrite_resident_local_places<'ctx>(
                 | StatementKind::SetInitialized(_) => {}
                 StatementKind::Assign(destination, rvalue) => {
                     remap_resident_place(destination, &remaps);
-                    remap_resident_rvalue(rvalue, &remaps);
+                    rvalue.for_each_place_mut(|place| remap_resident_place(place, &remaps));
                 }
                 StatementKind::SetDiscriminant { place, .. } => {
                     remap_resident_place(place, &remaps);
@@ -413,28 +413,6 @@ fn remap_resident_operand<'ctx>(operand: &mut Operand<'ctx>, remaps: &[Option<Pl
             remap_resident_place(place, remaps);
         }
         Operand::Constant(_) => {}
-    }
-}
-
-fn remap_resident_rvalue<'ctx>(rvalue: &mut Rvalue<'ctx>, remaps: &[Option<Place<'ctx>>]) {
-    match rvalue {
-        Rvalue::Use(operand) | Rvalue::UnaryOp { operand, .. } | Rvalue::Cast { operand, .. } => {
-            remap_resident_operand(operand, remaps)
-        }
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            remap_resident_operand(lhs, remaps);
-            remap_resident_operand(rhs, remaps);
-        }
-        Rvalue::Aggregate { fields, .. } => {
-            for field in fields {
-                remap_resident_operand(field, remaps);
-            }
-        }
-        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => {
-            remap_resident_place(place, remaps);
-        }
-        Rvalue::Repeat { operand, .. } => remap_resident_operand(operand, remaps),
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
     }
 }
 

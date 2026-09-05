@@ -99,9 +99,15 @@ impl LivenessResult {
     }
 }
 
+/// Block boundary states for passes that do not need per-location or GC initialization data.
+pub struct BlockLiveness {
+    pub live_in: IndexVec<BasicBlockId, FxHashSet<LocalId>>,
+    pub live_out: IndexVec<BasicBlockId, FxHashSet<LocalId>>,
+}
+
 /// Compute liveness for the given body.
 /// Uses a backward dataflow analysis.
-pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
+pub fn compute_block_liveness(body: &Body<'_>) -> BlockLiveness {
     let preds = body.predecessors();
     let mut live_in = IndexVec::from(vec![FxHashSet::default(); body.basic_blocks.len()]);
     let mut live_out = IndexVec::from(vec![FxHashSet::default(); body.basic_blocks.len()]);
@@ -127,7 +133,7 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
 
         // Terminator
         if let Some(term) = &block.terminator {
-            transfer_terminator(body, &term.kind, &mut in_set);
+            transfer_terminator(body.return_local, &term.kind, &mut in_set);
         }
 
         // Statements
@@ -145,6 +151,12 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
         }
     }
 
+    BlockLiveness { live_in, live_out }
+}
+
+/// Retain per-location liveness and initialization for borrow and GC analysis.
+pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
+    let BlockLiveness { live_in, live_out } = compute_block_liveness(body);
     let mut statement_live = IndexVec::from(
         body.basic_blocks
             .iter()
@@ -160,7 +172,7 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
         let mut live = live_out[bb].clone();
         terminator_live[bb].after = live.clone();
         if let Some(term) = &block.terminator {
-            transfer_terminator(body, &term.kind, &mut live);
+            transfer_terminator(body.return_local, &term.kind, &mut live);
         }
         terminator_live[bb].before = live.clone();
         for (index, statement) in block.statements.iter().enumerate().rev() {
@@ -183,7 +195,11 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
     }
 }
 
-fn transfer_terminator(body: &Body<'_>, term: &TerminatorKind<'_>, live: &mut FxHashSet<LocalId>) {
+pub(crate) fn transfer_terminator(
+    return_local: LocalId,
+    term: &TerminatorKind<'_>,
+    live: &mut FxHashSet<LocalId>,
+) {
     match term {
         TerminatorKind::Call {
             func,
@@ -213,13 +229,13 @@ fn transfer_terminator(body: &Body<'_>, term: &TerminatorKind<'_>, live: &mut Fx
             use_operand(value, live);
         }
         TerminatorKind::Return => {
-            live.insert(body.return_local);
+            live.insert(return_local);
         }
         _ => {}
     }
 }
 
-fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHashSet<LocalId>) {
+pub(crate) fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHashSet<LocalId>) {
     match statement {
         StatementKind::StorageLive(local) => {
             live.remove(local);
@@ -446,25 +462,7 @@ fn terminator_initialization_edges(
 }
 
 fn apply_rvalue_moves(rvalue: &Rvalue<'_>, initialized: &mut FxHashSet<LocalId>) {
-    match rvalue {
-        Rvalue::Use(operand)
-        | Rvalue::UnaryOp { operand, .. }
-        | Rvalue::Cast { operand, .. }
-        | Rvalue::Repeat { operand, .. } => apply_operand_move(operand, initialized),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            apply_operand_move(lhs, initialized);
-            apply_operand_move(rhs, initialized);
-        }
-        Rvalue::Aggregate { fields, .. } => {
-            for field in fields {
-                apply_operand_move(field, initialized);
-            }
-        }
-        Rvalue::Ref { .. }
-        | Rvalue::Discriminant { .. }
-        | Rvalue::Alloc { .. }
-        | Rvalue::Zeroed { .. } => {}
-    }
+    rvalue.for_each_operand(|operand| apply_operand_move(operand, initialized));
 }
 
 fn apply_operand_move(operand: &Operand<'_>, initialized: &mut FxHashSet<LocalId>) {
@@ -493,24 +491,7 @@ fn use_operand(op: &Operand, live: &mut FxHashSet<LocalId>) {
 }
 
 fn use_rvalue(rv: &Rvalue, live: &mut FxHashSet<LocalId>) {
-    match rv {
-        Rvalue::Use(op) => use_operand(op, live),
-        Rvalue::UnaryOp { operand, .. } => use_operand(operand, live),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            use_operand(lhs, live);
-            use_operand(rhs, live);
-        }
-        Rvalue::Cast { operand, .. } => use_operand(operand, live),
-        Rvalue::Ref { place, .. } => use_place(place, live),
-        Rvalue::Discriminant { place } => use_place(place, live),
-        Rvalue::Aggregate { fields, .. } => {
-            for f in fields {
-                use_operand(f, live);
-            }
-        }
-        Rvalue::Repeat { operand, .. } => use_operand(operand, live),
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
-    }
+    rv.for_each_place(|place| use_place(place, live));
 }
 
 #[cfg(test)]

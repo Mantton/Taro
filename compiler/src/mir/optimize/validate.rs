@@ -1685,11 +1685,6 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
         let block = &body.basic_blocks[bb];
         let statements = &block.statements;
         let mut active_borrows = block_in_states.get(&bb).cloned().unwrap_or_default();
-        let live_before_terminator =
-            compute_live_before_terminator(body, block.terminator.as_ref(), &liveness.live_out[bb]);
-        let live_before_statements =
-            compute_live_before_statements(statements, live_before_terminator.clone());
-
         for (idx, stmt) in statements.iter().enumerate() {
             match &stmt.kind {
                 StatementKind::StorageLive(local) => {
@@ -1701,7 +1696,7 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                         gcx,
                         rvalue,
                         &active_borrows,
-                        &live_before_statements[idx],
+                        liveness.live_before_statement(bb, idx),
                         stmt.span,
                     )?;
 
@@ -1734,7 +1729,7 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                         gcx,
                         operand,
                         &active_borrows,
-                        &live_before_statements[idx],
+                        liveness.live_before_statement(bb, idx),
                         stmt.span,
                     )?;
                 }
@@ -1751,7 +1746,7 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                 gcx,
                 term,
                 &active_borrows,
-                &live_before_terminator,
+                liveness.live_before_terminator(bb),
                 term.span,
             )?;
 
@@ -1860,137 +1855,6 @@ fn merge_borrow_state(into: &mut BorrowState, from: &BorrowState) -> bool {
         }
     }
     changed
-}
-
-fn compute_live_before_terminator<'ctx>(
-    body: &Body<'ctx>,
-    terminator: Option<&crate::mir::Terminator<'ctx>>,
-    live_out: &FxHashSet<LocalId>,
-) -> FxHashSet<LocalId> {
-    let mut live = live_out.clone();
-    if let Some(term) = terminator {
-        apply_terminator_liveness(body, term, &mut live);
-    }
-    live
-}
-
-fn compute_live_before_statements<'ctx>(
-    statements: &[crate::mir::Statement<'ctx>],
-    live_before_terminator: FxHashSet<LocalId>,
-) -> Vec<FxHashSet<LocalId>> {
-    let mut current_live = live_before_terminator;
-    let mut result = vec![FxHashSet::default(); statements.len()];
-
-    for (idx, stmt) in statements.iter().enumerate().rev() {
-        apply_statement_liveness(stmt, &mut current_live);
-        result[idx] = current_live.clone();
-    }
-
-    result
-}
-
-fn apply_terminator_liveness<'ctx>(
-    body: &Body<'ctx>,
-    term: &crate::mir::Terminator<'ctx>,
-    live: &mut FxHashSet<LocalId>,
-) {
-    match &term.kind {
-        TerminatorKind::Call {
-            func,
-            args,
-            destination,
-            ..
-        } => {
-            live_use_operand(func, live);
-            for arg in args {
-                live_use_operand(arg, live);
-            }
-            if destination.projection.is_empty() {
-                live.remove(&destination.local);
-            } else {
-                live_use_place(destination, live);
-            }
-        }
-        TerminatorKind::SwitchInt { discr, .. } => live_use_operand(discr, live),
-        TerminatorKind::Yield {
-            value, resume_arg, ..
-        } => {
-            live_use_operand(value, live);
-            if resume_arg.projection.is_empty() {
-                live.remove(&resume_arg.local);
-            } else {
-                live_use_place(resume_arg, live);
-            }
-        }
-        TerminatorKind::Return => {
-            live.insert(body.return_local);
-        }
-        TerminatorKind::Goto { .. }
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => {}
-    }
-}
-
-fn apply_statement_liveness<'ctx>(
-    stmt: &crate::mir::Statement<'ctx>,
-    live: &mut FxHashSet<LocalId>,
-) {
-    match &stmt.kind {
-        StatementKind::SourceScope(_) => {}
-        StatementKind::StorageLive(local) => {
-            live.remove(local);
-        }
-        StatementKind::SetInitialized(_) => {}
-        StatementKind::Assign(dest, rvalue) => {
-            if dest.projection.is_empty() {
-                live.remove(&dest.local);
-            } else {
-                live_use_place(dest, live);
-            }
-            live_use_rvalue(rvalue, live);
-        }
-        StatementKind::SetDiscriminant { place, .. } => {
-            if !place.projection.is_empty() {
-                live_use_place(place, live);
-            }
-        }
-        StatementKind::KeepAlive(operand) => live_use_operand(operand, live),
-        StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
-    }
-}
-
-fn live_use_place<'ctx>(place: &Place<'ctx>, live: &mut FxHashSet<LocalId>) {
-    live.insert(place.local);
-}
-
-fn live_use_operand<'ctx>(op: &Operand<'ctx>, live: &mut FxHashSet<LocalId>) {
-    match op {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-            live_use_place(place, live);
-        }
-        Operand::Constant(_) => {}
-    }
-}
-
-fn live_use_rvalue<'ctx>(rvalue: &Rvalue<'ctx>, live: &mut FxHashSet<LocalId>) {
-    match rvalue {
-        Rvalue::Use(op) => live_use_operand(op, live),
-        Rvalue::UnaryOp { operand, .. } => live_use_operand(operand, live),
-        Rvalue::BinaryOp { lhs, rhs, .. } => {
-            live_use_operand(lhs, live);
-            live_use_operand(rhs, live);
-        }
-        Rvalue::Cast { operand, .. } => live_use_operand(operand, live),
-        Rvalue::Ref { place, .. } | Rvalue::Discriminant { place } => live_use_place(place, live),
-        Rvalue::Aggregate { fields, .. } => {
-            for field in fields {
-                live_use_operand(field, live);
-            }
-        }
-        Rvalue::Repeat { operand, .. } => live_use_operand(operand, live),
-        Rvalue::Alloc { .. } | Rvalue::Zeroed { .. } => {}
-    }
 }
 
 fn kill_borrower(borrower: LocalId, borrows: &mut BorrowState) {
@@ -2115,4 +1979,76 @@ fn check_operand_move_borrowed<'ctx>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod borrow_liveness_tests {
+    use super::*;
+    use crate::mir::{
+        BasicBlockData, Statement, Terminator,
+        test_support::{minimal_body, push_temp, with_test_gcx},
+    };
+
+    #[test]
+    fn borrowed_value_stays_live_when_call_replaces_its_borrower() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let source = push_temp(&mut body, gcx.types.int);
+            let sink = push_temp(&mut body, gcx.types.int);
+            let ref_ty = gcx.store.interners.intern_ty(TyKind::Reference(
+                gcx.types.int,
+                crate::hir::Mutability::Immutable,
+            ));
+            let borrower = push_temp(&mut body, ref_ty);
+            let fn_ty = gcx.store.interners.intern_ty(TyKind::FnPointer {
+                inputs: gcx.store.interners.intern_ty_list(vec![ref_ty]),
+                output: ref_ty,
+            });
+            let function = push_temp(&mut body, fn_ty);
+            let target = body.basic_blocks.push(BasicBlockData {
+                note: None,
+                statements: vec![],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                }),
+            });
+            let entry = &mut body.basic_blocks[body.start_block];
+            entry.statements = vec![
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(borrower),
+                        Rvalue::Ref {
+                            place: Place::from_local(source),
+                            mutable: false,
+                        },
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(sink),
+                        Rvalue::Use(Operand::Move(Place::from_local(source))),
+                    ),
+                    span,
+                },
+            ];
+            entry.terminator = Some(Terminator {
+                kind: TerminatorKind::Call {
+                    func: Operand::Copy(Place::from_local(function)),
+                    args: vec![Operand::Copy(Place::from_local(borrower))],
+                    destination: Place::from_local(borrower),
+                    target,
+                    unwind: CallUnwindAction::Terminate,
+                    devirt_hint: None,
+                },
+                span,
+            });
+            assert!(
+                validate_borrows(gcx, &body).is_err(),
+                "moving a source while its borrower is still a call argument must fail"
+            );
+        });
+    }
 }

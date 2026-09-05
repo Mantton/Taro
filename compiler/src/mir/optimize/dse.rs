@@ -1,7 +1,10 @@
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
-    mir::{Body, StatementKind, TerminatorKind, analysis::liveness::compute_liveness},
+    mir::{
+        Body, Rvalue, StatementKind,
+        analysis::liveness::{compute_block_liveness, transfer_statement, transfer_terminator},
+    },
 };
 
 use super::MirPass;
@@ -14,7 +17,7 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
     }
 
     fn run(&mut self, _gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-        let liveness = compute_liveness(body);
+        let liveness = compute_block_liveness(body);
         let mut address_taken = vec![false; body.locals.len()];
 
         for block in body.basic_blocks.iter() {
@@ -26,150 +29,40 @@ impl<'ctx> MirPass<'ctx> for DeadStoreElimination {
         }
 
         for (bb, data) in body.basic_blocks.iter_mut_enumerated() {
-            // Processing backwards naturally pairs with liveness
-            // But we need to check liveness AT EACH STATEMENT.
-            // Liveness result gives live_out.
-            // We can reconstruct the live set as we walk backwards.
-
             let mut live = liveness.live_out[bb].clone();
-
-            // Handle terminator uses first
             if let Some(term) = &data.terminator {
-                match &term.kind {
-                    TerminatorKind::Call {
-                        func,
-                        args,
-                        destination,
-                        ..
-                    } => {
-                        // Kill the destination before adding argument uses:
-                        // the call reads its arguments before writing the
-                        // destination, so a local that is both (e.g.
-                        // `x = f(x)`) must stay live above the call.
-                        if destination.projection.is_empty() {
-                            live.remove(&destination.local);
-                        } else {
-                            use_place(destination, &mut live);
-                        }
-                        use_operand(func, &mut live);
-                        for arg in args {
-                            use_operand(arg, &mut live);
-                        }
-                    }
-                    TerminatorKind::SwitchInt { discr, .. } => use_operand(discr, &mut live),
-                    TerminatorKind::Yield {
-                        value, resume_arg, ..
-                    } => {
-                        if resume_arg.projection.is_empty() {
-                            live.remove(&resume_arg.local);
-                        } else {
-                            use_place(resume_arg, &mut live);
-                        }
-                        use_operand(value, &mut live);
-                    }
-                    TerminatorKind::Return => {
-                        live.insert(body.return_local);
-                    }
-                    _ => {}
-                }
+                transfer_terminator(body.return_local, &term.kind, &mut live);
             }
 
-            // Iterate backwards and filter statements
-            // We can't drain/retain easily while updating state backwards.
-            // So we'll build a "keep" verification.
-
-            let len = data.statements.len();
-            let mut keep = vec![true; len];
-
-            for (idx, stmt) in data.statements.iter().enumerate().rev() {
-                match &stmt.kind {
-                    StatementKind::StorageLive(local) => {
-                        live.remove(local);
+            // Walk retained statements backwards; removed stores must not make
+            // their operands live. Calls are terminators, so rvalues are pure.
+            data.statements.reverse();
+            data.statements.retain(|statement| {
+                let destination = match &statement.kind {
+                    StatementKind::Assign(destination, _) => Some(destination),
+                    StatementKind::SetDiscriminant { place, .. } => Some(place),
+                    _ => None,
+                };
+                if let Some(destination) = destination {
+                    if destination.projection.is_empty()
+                        && !live.contains(&destination.local)
+                        && !address_taken[destination.local.index()]
+                    {
+                        return false;
                     }
-                    StatementKind::Assign(dest, rvalue) => {
-                        // Check if assignment is needed (destination is live)
-                        let needed = if dest.projection.is_empty() {
-                            live.contains(&dest.local) || address_taken[dest.local.index()]
-                        } else {
-                            true // Sideload/Partial write is always needed (or could check base local)
-                        };
-
-                        // Side effects?
-                        let side_effects = rvalue_has_side_effects(rvalue);
-
-                        if !needed && !side_effects {
-                            // Remove statement
-                            keep[idx] = false;
-                        } else {
-                            if dest.projection.is_empty() {
-                                live.remove(&dest.local);
-                            } else {
-                                use_place(&dest, &mut live);
-                            }
-                            use_rvalue(&rvalue, &mut live);
-                        }
-                    }
-                    StatementKind::SetDiscriminant { place, .. } => {
-                        let needed = if place.projection.is_empty() {
-                            live.contains(&place.local) || address_taken[place.local.index()]
-                        } else {
-                            true
-                        };
-
-                        if !needed {
-                            keep[idx] = false;
-                        } else {
-                            use_place(place, &mut live);
-                        }
-                    }
-                    StatementKind::KeepAlive(operand) => use_operand(operand, &mut live),
-                    _ => {}
                 }
-            }
-
-            // Compact statements
-            let mut i = 0;
-            data.statements.retain(|_| {
-                let k = keep[i];
-                i += 1;
-                k
+                if let StatementKind::SetDiscriminant { place, .. } = &statement.kind {
+                    // Tag publication conservatively preserves the value's payload.
+                    live.insert(place.local);
+                } else {
+                    transfer_statement(&statement.kind, &mut live);
+                }
+                true
             });
+            data.statements.reverse();
         }
 
         Ok(())
-    }
-}
-
-use crate::mir::{LocalId, Operand, Place, Rvalue};
-use rustc_hash::FxHashSet;
-
-fn use_place(place: &Place, live: &mut FxHashSet<LocalId>) {
-    live.insert(place.local);
-}
-
-fn use_operand(op: &Operand, live: &mut FxHashSet<LocalId>) {
-    match op {
-        Operand::Copy(p) | Operand::Move(p) | Operand::CopyWith(p, _) => use_place(p, live),
-        Operand::Constant(_) => {}
-    }
-}
-
-fn use_rvalue(rv: &Rvalue, live: &mut FxHashSet<LocalId>) {
-    rv.for_each_place(|place| use_place(place, live));
-}
-
-fn rvalue_has_side_effects(rv: &Rvalue) -> bool {
-    match rv {
-        Rvalue::Use(_)
-        | Rvalue::UnaryOp { .. }
-        | Rvalue::BinaryOp { .. }
-        | Rvalue::Cast { .. }
-        | Rvalue::Ref { .. }
-        | Rvalue::Discriminant { .. }
-        | Rvalue::Repeat { .. }
-        | Rvalue::Alloc { .. }
-        | Rvalue::Zeroed { .. } => false,
-        Rvalue::Aggregate { .. } => false, // Initializing aggregate has no side effects (unless allocation?)
     }
 }
 
