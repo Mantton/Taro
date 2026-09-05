@@ -1,0 +1,55 @@
+// Inlining must retain the conversion from an existential container to its data.
+interface Counter {
+    func value(&self) -> int64
+    func increment(&mut self)
+}
+
+struct Count { value: int64 }
+impl Counter for Count {
+    @inline
+    func value(&self) -> int64 { self.value }
+    @inline
+    func increment(&mut self) { self.value += 1 }
+}
+
+interface Total {
+    func total(self) -> int64
+}
+struct WideTotal {
+    a: int64
+    b: int64
+    c: int64
+    d: int64
+    e: int64
+}
+impl Total for WideTotal {
+    @inline
+    func total(self) -> int64 { self.a + self.b + self.c + self.d + self.e }
+}
+
+interface BorrowValue {
+    func valueRef(&self) -> &int64
+}
+impl BorrowValue for Count {
+    @inline
+    func valueRef(&self) -> &int64 { &self.value }
+}
+
+@noinline
+func escapedBorrow() -> &int64 {
+    let boxed: any BorrowValue = Count { value: 73 }
+    return boxed.valueRef()
+}
+
+func main() {
+    var counter: any Counter = Count { value: 41 }
+    assert(counter.value() == 41, "shared receiver must address concrete data")
+    counter.increment()
+    assert(counter.value() == 42, "mutable receiver must update concrete data")
+    let total: any Total = WideTotal { a: 1, b: 2, c: 3, d: 4, e: 5 }
+    assert(total.total() == 15, "owned wide receiver must load concrete data")
+    let borrowed = escapedBorrow()
+    std.runtime.collect()
+    assert(*borrowed == 73, "borrowed result must keep boxed data alive")
+    print("PASS: inline existential receivers\n")
+}

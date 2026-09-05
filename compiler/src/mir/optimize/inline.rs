@@ -12,10 +12,11 @@ use crate::mir::{
     LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue, SourceScopeData,
     SourceScopeId, Statement, StatementKind, Terminator, TerminatorKind,
 };
-use crate::sema::models::{GenericArguments, Ty};
+use crate::sema::models::{ConstKind, GenericArgument, GenericArguments, Ty};
 use crate::sema::tycheck::utils::instantiate::{
     instantiate_const_with_args, instantiate_ty_with_args,
 };
+use crate::specialize::{InstanceKind, resolve_instance};
 use rustc_hash::FxHashSet;
 
 /// Maximum depth of recursive inlining to prevent infinite expansion.
@@ -27,6 +28,7 @@ const SIZE_INLINE_THRESHOLD: usize = 20;
 const LOOP_CALLSITE_BONUS: usize = 20;
 const MAX_CONSTANT_CALLSITE_BONUS: usize = 15;
 const CONSTANT_ARGUMENT_BONUS: usize = 5;
+const LEAF_CALLSITE_BONUS: usize = 20;
 const MAX_HEURISTIC_INLINE_COST: usize =
     O3_INLINE_THRESHOLD + LOOP_CALLSITE_BONUS + MAX_CONSTANT_CALLSITE_BONUS;
 
@@ -97,11 +99,36 @@ impl Inline {
                 {
                     let source_scope = source_scope_at_block_end(block);
                     let logical_caller = body.source_scopes[source_scope].definition;
-                    let (callee_id, gen_args) = if let Some(hint) = devirt_hint {
-                        (hint.impl_def_id, hint.impl_args)
-                    } else {
-                        extract_callee(func)?
+                    // A devirtualization hint names a concrete implementation,
+                    // but its receiver still points to the existential container.
+                    // Codegen extracts the data pointer before making that call;
+                    // substituting the body here would bypass that conversion.
+                    if devirt_hint.is_some() {
+                        return None;
+                    }
+                    let (callee_id, gen_args) = extract_callee(func)?;
+                    // Instance resolution expects concrete arguments. Resolving
+                    // an impl while a method parameter still belongs to the
+                    // generic caller can substitute Self into that parameter.
+                    if gen_args.iter().any(|arg| match arg {
+                        GenericArgument::Type(ty) => {
+                            ty.needs_instantiation() || ty.contains_inference()
+                        }
+                        GenericArgument::Const(c) => {
+                            matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_))
+                                || c.ty.needs_instantiation()
+                                || c.ty.contains_inference()
+                        }
+                    }) {
+                        return None;
+                    }
+                    let instance = resolve_instance(gcx, callee_id, gen_args);
+                    let InstanceKind::Item(callee_id) = instance.kind() else {
+                        // A requirement's default body must not bypass a runtime
+                        // override, even when the requirement requests @inline.
+                        return None;
                     };
+                    let gen_args = instance.args();
 
                     if let Some((growth, forced, normal_eligible)) = self.should_inline(
                         gcx,
@@ -239,7 +266,15 @@ impl Inline {
             InlineProfitability::ExplicitOnly => false,
             InlineProfitability::SizeNeutral => growth == 0,
             InlineProfitability::Threshold(base_threshold) => {
-                cost <= base_threshold + loop_bonus + constant_bonus
+                // A bounded leaf loses its managed call/entry overhead and
+                // exposes reference loads and stores to scalar replacement.
+                // Keep size-oriented profiles on their existing thresholds.
+                let leaf_bonus = if base_threshold >= O1_O2_INLINE_THRESHOLD {
+                    leaf_callsite_bonus(callee)
+                } else {
+                    0
+                };
+                cost <= base_threshold + loop_bonus + constant_bonus + leaf_bonus
             }
         };
         if forced {
@@ -315,7 +350,7 @@ impl Inline {
                 local_map.push(mapped_return_local);
             } else {
                 // Substitute types in the local declaration
-                let substituted_ty = instantiate_mono_ty(gcx, local_decl.ty, gen_args);
+                let substituted_ty = instantiate_inline_local_ty(gcx, local_decl.ty, gen_args);
                 // After inlining, Param and Return locals become Temp in the caller.
                 // They're no longer actual function parameters/returns.
                 let inlined_kind = match local_decl.kind {
@@ -478,7 +513,7 @@ fn prepare_inline_return<'ctx>(
     }
 
     let return_local = caller.locals.push(LocalDecl {
-        ty: instantiate_mono_ty(gcx, callee_return.ty, gen_args),
+        ty: instantiate_inline_local_ty(gcx, callee_return.ty, gen_args),
         kind: LocalKind::Temp,
         mutable: true,
         name: callee_return.name,
@@ -514,7 +549,6 @@ fn prepare_inline_return<'ctx>(
 struct CallSite<'ctx> {
     caller_block: BasicBlockId,
     callee_id: DefinitionID,
-    #[allow(dead_code)]
     gen_args: GenericArguments<'ctx>,
     args: Vec<Operand<'ctx>>,
     destination: Place<'ctx>,
@@ -603,7 +637,26 @@ fn resolve_callee_body<'ctx>(gcx: Gcx<'ctx>, callee_id: DefinitionID) -> Option<
 /// this ordinary body. Dependency metadata uses the same upper bound as the
 /// inliner so a cold body never disappears only because its package was cached.
 pub(crate) fn is_heuristic_inline_candidate(gcx: Gcx<'_>, body: &Body<'_>) -> bool {
-    body_inline_cost(gcx, body) <= MAX_HEURISTIC_INLINE_COST
+    body_inline_cost(gcx, body) <= MAX_HEURISTIC_INLINE_COST + leaf_callsite_bonus(body)
+}
+
+fn leaf_callsite_bonus(body: &Body<'_>) -> usize {
+    if body.basic_blocks.len() != 1 {
+        return 0;
+    }
+    let block = &body.basic_blocks[body.start_block];
+    if !matches!(
+        block.terminator.as_ref().map(|term| &term.kind),
+        Some(TerminatorKind::Return)
+    ) || block.statements.iter().any(|statement| {
+        matches!(
+            statement.kind,
+            StatementKind::Assign(_, Rvalue::Alloc { .. }) | StatementKind::GcSafepoint(_)
+        )
+    }) {
+        return 0;
+    }
+    LEAF_CALLSITE_BONUS
 }
 
 fn body_inline_cost(gcx: Gcx<'_>, body: &Body<'_>) -> usize {
@@ -615,10 +668,10 @@ fn body_inline_cost(gcx: Gcx<'_>, body: &Body<'_>) -> usize {
                 StatementKind::SourceScope(_)
                 | StatementKind::StorageLive(_)
                 | StatementKind::SetInitialized(_)
-                | StatementKind::Assign(..)
                 | StatementKind::KeepAlive(_)
+                | StatementKind::Nop => 0,
+                StatementKind::Assign(..)
                 | StatementKind::GcSafepoint(_)
-                | StatementKind::Nop
                 | StatementKind::SetDiscriminant { .. } => 1,
             });
         }
@@ -658,7 +711,7 @@ fn call_is_panic(gcx: Gcx<'_>, func: &Operand<'_>) -> bool {
 fn block_is_cyclic(body: &Body<'_>, block: BasicBlockId) -> bool {
     let mut pending = Vec::new();
     if let Some(terminator) = &body.basic_blocks[block].terminator {
-        pending.extend(inline_successors(&terminator.kind));
+        pending.extend(terminator.kind.successors());
     }
     let mut visited = FxHashSet::default();
     while let Some(candidate) = pending.pop() {
@@ -669,46 +722,10 @@ fn block_is_cyclic(body: &Body<'_>, block: BasicBlockId) -> bool {
             continue;
         }
         if let Some(terminator) = &body.basic_blocks[candidate].terminator {
-            pending.extend(inline_successors(&terminator.kind));
+            pending.extend(terminator.kind.successors());
         }
     }
     false
-}
-
-fn inline_successors(kind: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
-    match kind {
-        TerminatorKind::Goto { target } => vec![*target],
-        TerminatorKind::SwitchInt {
-            targets, otherwise, ..
-        } => targets
-            .iter()
-            .map(|(_, target)| *target)
-            .chain(std::iter::once(*otherwise))
-            .collect(),
-        TerminatorKind::Call { target, unwind, .. } => {
-            let mut result = vec![*target];
-            if let CallUnwindAction::Cleanup(cleanup) = unwind {
-                result.push(*cleanup);
-            }
-            result
-        }
-        TerminatorKind::Yield {
-            resume,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let mut result = vec![*resume, *cancel];
-            if let CallUnwindAction::Cleanup(cleanup) = unwind {
-                result.push(*cleanup);
-            }
-            result
-        }
-        TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => Vec::new(),
-    }
 }
 
 /// True when `from` can reach `target` through canonical direct calls. Testing
@@ -913,7 +930,7 @@ fn remap_place_elem<'ctx>(
     match elem {
         PlaceElem::Field(idx, ty) => {
             // Substitute the type in field projections
-            PlaceElem::Field(*idx, instantiate_mono_ty(gcx, *ty, gen_args))
+            PlaceElem::Field(*idx, instantiate_inline_local_ty(gcx, *ty, gen_args))
         }
         // Other projections don't contain types that need substitution
         PlaceElem::Deref => PlaceElem::Deref,
@@ -1121,20 +1138,36 @@ fn instantiate_mono_ty<'ctx>(
     ty: Ty<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> Ty<'ctx> {
-    // Inlining happens before full monomorphization. Substituting a callee body
-    // into a generic caller may legitimately leave the caller's own type
-    // parameters in the remapped MIR, so post-monomorphization normalization is
-    // too strong here.
+    // Function constants also carry reusable signature templates. Substitute
+    // those without normalizing callee-owned projections in the caller's scope.
     instantiate_ty_with_args(gcx, ty, args)
+}
+
+fn instantiate_inline_local_ty<'ctx>(
+    gcx: Gcx<'ctx>,
+    ty: Ty<'ctx>,
+    args: GenericArguments<'ctx>,
+) -> Ty<'ctx> {
+    let ty = instantiate_ty_with_args(gcx, ty, args);
+    // Substitution can make an associated projection concrete (IntBox.Item).
+    // Normalize it before MIR folding/layout decisions, but leave types still
+    // belonging to a generic caller for its later specialization.
+    // Typed MIR has no inference variables. contains_inference() deliberately
+    // treats every alias as unresolved and would suppress this normalization.
+    if ty.needs_instantiation() {
+        ty
+    } else {
+        crate::sema::tycheck::utils::normalize_post_monomorphization(gcx, ty)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CallSite, FORCED_INLINE_GROWTH_LIMIT, Inline, InlineProfitability,
+        CallSite, FORCED_INLINE_GROWTH_LIMIT, Inline, InlineProfitability, LEAF_CALLSITE_BONUS,
         MAX_HEURISTIC_INLINE_COST, body_inline_cost, call_graph_reaches, call_site_priority,
-        inline_profitability_policy, is_heuristic_inline_candidate, prepare_inline_return,
-        remap_source_scopes, remap_statement, remap_terminator,
+        inline_profitability_policy, is_heuristic_inline_candidate, leaf_callsite_bonus,
+        prepare_inline_return, remap_source_scopes, remap_statement, remap_terminator,
     };
     use crate::PackageIndex;
     use crate::compile::config::{BuildProfile, OptLevel, OptimizationMode};
@@ -1204,26 +1237,84 @@ mod tests {
         test_support::with_test_gcx(|gcx| {
             let mut body = test_support::minimal_body(gcx);
             let span = body.locals[body.return_local].span;
+            let local = test_support::push_temp(&mut body, gcx.types.uint64);
+            let assignment = StatementKind::Assign(
+                Place::from_local(local),
+                Rvalue::Use(Operand::Constant(Constant {
+                    ty: gcx.types.uint64,
+                    value: ConstantKind::Integer(1),
+                })),
+            );
             while body_inline_cost(gcx, &body) <= 40 {
                 body.basic_blocks[body.start_block]
                     .statements
                     .push(Statement {
-                        kind: StatementKind::Nop,
+                        kind: assignment.clone(),
                         span,
                     });
             }
             assert!(body_inline_cost(gcx, &body) <= MAX_HEURISTIC_INLINE_COST);
             assert!(is_heuristic_inline_candidate(gcx, &body));
 
-            while body_inline_cost(gcx, &body) <= MAX_HEURISTIC_INLINE_COST {
+            while body_inline_cost(gcx, &body) <= MAX_HEURISTIC_INLINE_COST + LEAF_CALLSITE_BONUS {
                 body.basic_blocks[body.start_block]
                     .statements
                     .push(Statement {
-                        kind: StatementKind::Nop,
+                        kind: assignment.clone(),
                         span,
                     });
             }
             assert!(!is_heuristic_inline_candidate(gcx, &body));
+        });
+    }
+
+    #[test]
+    fn non_executable_markers_do_not_exhaust_the_inline_budget() {
+        test_support::with_test_gcx(|gcx| {
+            let mut body = test_support::minimal_body(gcx);
+            let local = test_support::push_temp(&mut body, gcx.types.uint64);
+            let span = body.locals[local].span;
+            let before = body_inline_cost(gcx, &body);
+            for _ in 0..128 {
+                for kind in [
+                    StatementKind::SourceScope(SourceScopeId::from_raw(0)),
+                    StatementKind::StorageLive(local),
+                    StatementKind::SetInitialized(local),
+                    StatementKind::KeepAlive(Operand::Copy(Place::from_local(local))),
+                    StatementKind::Nop,
+                ] {
+                    body.basic_blocks[body.start_block]
+                        .statements
+                        .push(Statement { kind, span });
+                }
+            }
+            assert_eq!(body_inline_cost(gcx, &body), before);
+            assert!(is_heuristic_inline_candidate(gcx, &body));
+        });
+    }
+
+    #[test]
+    fn leaf_allowance_excludes_collecting_and_cyclic_bodies() {
+        test_support::with_test_gcx(|gcx| {
+            let mut body = test_support::minimal_body(gcx);
+            assert_eq!(leaf_callsite_bonus(&body), LEAF_CALLSITE_BONUS);
+            let span = body.locals[body.return_local].span;
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::GcSafepoint(crate::mir::GcSafepointKind::Entry),
+                    span,
+                });
+            assert_eq!(leaf_callsite_bonus(&body), 0);
+            body.basic_blocks[body.start_block].statements.clear();
+            body.basic_blocks[body.start_block]
+                .terminator
+                .as_mut()
+                .unwrap()
+                .kind = TerminatorKind::Goto {
+                target: body.start_block,
+            };
+            assert_eq!(leaf_callsite_bonus(&body), 0);
         });
     }
 

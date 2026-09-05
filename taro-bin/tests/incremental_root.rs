@@ -110,6 +110,202 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn small_enum_abi_round_trips_through_cached_dependency() {
+    let dist = workspace_root().join("dist");
+    if !distribution_is_available(&dist) {
+        eprintln!("skipping enum ABI integration test: dist artifacts are unavailable");
+        return;
+    }
+    let project = TempProject::new();
+    fs::write(
+        project.0.join("dep/src/lib.tr"),
+        r#"
+public enum Small { case empty; case value(int64) }
+@noinline
+public func produce(_ value: int64) -> Result[int64, int64] {
+    if value < 0 { return .err(value) }
+    return .ok(value + 1)
+}
+@noinline
+public func consume(_ value: Result[int64, int64]) -> int64 {
+    match value {
+        case .ok(v) => return v * 2
+        case .err(e) => return e * 3
+    }
+}
+@noinline
+public func empty() -> Small { .empty }
+@noinline
+public func word(_ value: int64) -> Small { .value(value) }
+@noinline
+public func smallValue(_ value: Small) -> int64 {
+    match value {
+        case .empty => return 0
+        case .value(v) => return v
+    }
+}
+@noinline
+public func managed(_ value: int64) -> Result[&int64, int64] {
+    var stored = value
+    return .ok(&stored)
+}
+@noinline
+public func readManaged(_ value: Result[&int64, int64]) -> int64 {
+    std.runtime.collect()
+    match value {
+        case .ok(reference) => return *reference
+        case .err(error) => return error
+    }
+}
+"#,
+    )
+    .expect("enum dependency");
+    let source = r#"
+import dep.{produce, consume, empty, word, smallValue, managed, readManaged}
+func main() {
+    var sum: int64 = 0
+    var i: int64 = 0
+    while i < 100 {
+        sum += consume(produce(i)) + consume(produce(-1))
+        sum += smallValue(empty()) + smallValue(word(i))
+        i += 1
+    }
+    let reference = managed(42)
+    std.runtime.collect()
+    sum += readManaged(reference)
+    printf("%v\n", sum)
+}
+"#;
+    let source_path = project.0.join("src/main.tr");
+    let executable = project.0.join("enum-test");
+    for profile in ["0", "2"] {
+        for cached in [false, true] {
+            fs::write(&source_path, format!("{source}\n// {profile} {cached}\n"))
+                .expect("enum caller");
+            let output = run_taro(
+                &dist,
+                &[
+                    "build",
+                    &project.0.to_string_lossy(),
+                    "--release",
+                    "-O",
+                    profile,
+                    "--timings",
+                    "-o",
+                    &executable.to_string_lossy(),
+                ],
+            );
+            assert_success(&output);
+            if cached {
+                assert!(
+                    stderr(&output)
+                        .contains("Reusing (metadata+object) – github.com/example/root-cache-dep")
+                );
+            }
+            let result = Command::new(&executable)
+                .env("TARO_WORKERS", "1")
+                .env("TARO_GC_STRESS", "1")
+                .output()
+                .expect("execute enum test");
+            assert_success(&result);
+            assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "14792");
+        }
+    }
+}
+
+#[test]
+fn bounded_leaf_inlines_from_source_and_cached_dependency() {
+    let dist = workspace_root().join("dist");
+    if !distribution_is_available(&dist) {
+        eprintln!("skipping inline CLI integration test: dist artifacts are unavailable");
+        return;
+    }
+    let project = TempProject::new();
+    fs::write(
+        project.0.join("dep/src/lib.tr"),
+        r#"
+public func mix(_ a: &mut uint64, _ b: &mut uint64, _ c: &mut uint64, _ d: &mut uint64) {
+    *a += *b
+    *c += *d
+    *b = (*b << 13) | (*b >> 51)
+    *b ^= *a
+    *d = (*d << 16) | (*d >> 48)
+    *d ^= *c
+    *a = (*a << 32) | (*a >> 32)
+    *c += *b
+    *a += *d
+    *b = (*b << 17) | (*b >> 47)
+    *b ^= *c
+    *d = (*d << 21) | (*d >> 43)
+    *d ^= *a
+    *c = (*c << 32) | (*c >> 32)
+}
+@noinline
+public func barrier(_ value: uint64) -> uint64 { value }
+"#,
+    )
+    .expect("leaf dependency");
+    let source = r#"
+import dep.{mix, barrier}
+func main() {
+    var a = barrier(1_u64)
+    var b = 2_u64
+    var c = 3_u64
+    var d = 4_u64
+    mix(&mut a, &mut b, &mut c, &mut d)
+    printf("%v %v %v %v\n", a, b, c, d)
+}
+"#;
+    let source_path = project.0.join("src/main.tr");
+    fs::write(&source_path, source).expect("caller");
+    let path = project.0.to_string_lossy();
+    let executable = project.0.join("leaf-test");
+    let executable_path = executable.to_string_lossy();
+    for cached in [false, true] {
+        if cached {
+            // Recompile only the caller so its inliner must use hydrated MIR.
+            fs::write(&source_path, format!("{source}\n// rebuild caller\n"))
+                .expect("changed caller");
+        }
+        let output = run_taro(
+            &dist,
+            &[
+                "build",
+                &path,
+                "--release",
+                "-O2",
+                "--dump-llvm",
+                "--timings",
+                "-o",
+                &executable_path,
+            ],
+        );
+        assert_success(&output);
+        let log = stderr(&output);
+        if cached {
+            assert!(log.contains("Reusing (metadata+object) – github.com/example/root-cache-dep"));
+        }
+        let caller_ir = log.rsplit("=== LLVM IR for ").next().expect("caller IR");
+        assert!(caller_ir.contains("define "), "missing LLVM dump");
+        let calls = |name: &str| {
+            caller_ir.lines().any(|line| {
+                (line.contains("call ") || line.contains("invoke ")) && line.contains(name)
+            })
+        };
+        assert!(!calls("__mix__"), "leaf call survived (cached={cached})");
+        assert!(calls("__barrier__"), "@noinline call disappeared");
+        let result = Command::new(&executable)
+            .output()
+            .expect("execute leaf test");
+        assert_success(&result);
+        assert_eq!(
+            String::from_utf8_lossy(&result.stdout).trim(),
+            "12885164039 2147893258 70411693850624 562655657991"
+        );
+    }
+}
+
+#[test]
 fn root_and_script_commands_reuse_incremental_artifacts() {
     let dist = workspace_root().join("dist");
     if !distribution_is_available(&dist) {

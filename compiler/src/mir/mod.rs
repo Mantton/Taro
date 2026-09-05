@@ -14,6 +14,8 @@ pub mod package;
 pub mod pretty;
 #[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(test)]
+mod tests;
 
 index_vec::define_index_type! {
     pub struct LocalId = u32;
@@ -76,6 +78,19 @@ pub struct Body<'ctx> {
 }
 
 impl Body<'_> {
+    /// Incoming control-flow edges, preserving edge order and duplicate targets.
+    pub fn predecessors(&self) -> IndexVec<BasicBlockId, Vec<BasicBlockId>> {
+        let mut predecessors = IndexVec::from(vec![Vec::new(); self.basic_blocks.len()]);
+        for (block, data) in self.basic_blocks.iter_enumerated() {
+            if let Some(terminator) = &data.terminator {
+                for successor in terminator.kind.successors() {
+                    predecessors[successor].push(block);
+                }
+            }
+        }
+        predecessors
+    }
+
     pub fn initial_source_scopes(owner: DefinitionID) -> IndexVec<SourceScopeId, SourceScopeData> {
         let mut scopes: IndexVec<SourceScopeId, SourceScopeData> = IndexVec::new();
         let root: SourceScopeId = scopes.push(SourceScopeData {
@@ -245,6 +260,44 @@ pub enum TerminatorKind<'ctx> {
 }
 
 impl<'a> TerminatorKind<'a> {
+    /// Ordered control-flow edges, including cleanup and cancellation paths.
+    /// Keep duplicate switch targets: consumers decide whether to deduplicate.
+    /// `cancel_complete` names a later marker, not an immediate yield successor.
+    pub fn successors(&self) -> Vec<BasicBlockId> {
+        match self {
+            Self::Goto { target } => vec![*target],
+            Self::SwitchInt {
+                targets, otherwise, ..
+            } => targets
+                .iter()
+                .map(|(_, target)| *target)
+                .chain(std::iter::once(*otherwise))
+                .collect(),
+            Self::Call { target, unwind, .. } => {
+                let mut edges = vec![*target];
+                if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                    edges.push(*cleanup);
+                }
+                edges
+            }
+            Self::Yield {
+                resume,
+                cancel,
+                unwind,
+                ..
+            } => {
+                let mut edges = vec![*resume, *cancel];
+                if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                    edges.push(*cleanup);
+                }
+                edges
+            }
+            Self::Return | Self::ResumeUnwind | Self::Unreachable | Self::UnresolvedGoto => {
+                Vec::new()
+            }
+        }
+    }
+
     #[inline]
     pub fn if_(cond: Operand<'a>, t: BasicBlockId, e: BasicBlockId) -> TerminatorKind<'a> {
         TerminatorKind::SwitchInt {

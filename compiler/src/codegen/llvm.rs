@@ -1013,41 +1013,15 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
 
         let enum_ty = self.lower_ty(ty)?.into_struct_type();
-        let mut fields = Vec::with_capacity(if layout.payload_size == 0 {
-            1
-        } else if layout.payload_offset > layout.discr_size {
-            3
-        } else {
-            2
-        });
-        fields.push(
-            layout
-                .discr_ty
-                .const_int(variant_index as u64, false)
-                .as_basic_value_enum(),
-        );
-
-        if layout.payload_size > 0 {
-            let pad = layout.payload_offset.saturating_sub(layout.discr_size);
-            if pad > 0 {
-                fields.push(
-                    self.context
-                        .i8_type()
-                        .array_type(u32::try_from(pad).expect("enum padding fits u32"))
-                        .const_zero()
-                        .as_basic_value_enum(),
-                );
-            }
-            fields.push(
-                self.context
-                    .i8_type()
-                    .array_type(
-                        u32::try_from(layout.payload_size).expect("enum payload size fits u32"),
-                    )
-                    .const_zero()
-                    .as_basic_value_enum(),
-            );
-        }
+        let mut fields: Vec<_> = enum_ty
+            .get_field_types()
+            .into_iter()
+            .map(|field| field.const_zero())
+            .collect();
+        fields[0] = layout
+            .discr_ty
+            .const_int(variant_index as u64, false)
+            .as_basic_value_enum();
 
         Some(enum_ty.const_named_struct(&fields).as_basic_value_enum())
     }
@@ -8218,8 +8192,13 @@ fn discriminant_int_type<'llvm>(context: &'llvm Context, variant_count: usize) -
     }
 }
 
-/// The payload blob of an enum, as an array whose element width carries the
-/// alignment the widest variant needs.
+fn enum_payload_is_scalar(payload_size: u64, payload_align: u64) -> bool {
+    payload_size > 0 && payload_size <= payload_align && payload_align <= 8
+}
+
+/// The payload blob of an enum, with element width carrying the alignment the
+/// widest variant needs. A single element remains scalar so small enums can
+/// use the existing scalar-aggregate ABI rather than the array fallback.
 ///
 /// Sized up to a whole number of elements; the excess is padding a correctly
 /// aligned struct would have anyway.
@@ -8235,6 +8214,9 @@ fn enum_payload_field_ty<'llvm>(
         _ => (context.i8_type(), 1u64),
     };
     let count = payload_size.div_ceil(width);
+    if enum_payload_is_scalar(payload_size, payload_align) {
+        return element.into();
+    }
     element
         .array_type(u32::try_from(count).expect("enum payload fits u32"))
         .into()
@@ -8305,7 +8287,7 @@ fn enum_layout<'llvm, 'gcx>(
     let pad = payload_offset.saturating_sub(discr_size);
     let payload_field_index = if payload_size == 0 {
         None
-    } else if pad > 0 {
+    } else if pad > 0 && !enum_payload_is_scalar(payload_size, payload_align) {
         Some(2)
     } else {
         Some(1)
@@ -8578,6 +8560,23 @@ mod struct_layout_tests {
                 .expect("time")
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn scalar_enum_payload_preserves_layout_without_array_abi() {
+        let context = Context::create();
+        let data = inkwell::targets::TargetData::create("e-p:64:64-i64:64-n32:64-S128");
+        for width in [1, 2, 4, 8] {
+            let payload = super::enum_payload_field_ty(&context, width, width);
+            assert!(payload.is_int_type());
+            let value = context.struct_type(&[context.i8_type().into(), payload], false);
+            assert_eq!(data.offset_of_element(&value, 1), Some(width));
+            assert_eq!(data.get_store_size(&value), width * 2);
+            assert!(!super::llvm_type_contains_array(value.into()));
+        }
+        let large = super::enum_payload_field_ty(&context, 16, 8);
+        assert!(super::llvm_type_contains_array(large));
+        assert_eq!(data.get_store_size(&large), 16);
     }
 
     #[test]
@@ -9025,7 +9024,7 @@ fn lower_type<'llvm, 'gcx>(
                 }
 
                 let pad = layout.payload_offset.saturating_sub(layout.discr_size);
-                if pad > 0 {
+                if pad > 0 && !enum_payload_is_scalar(layout.payload_size, layout.payload_align) {
                     let pad_len = u32::try_from(pad).expect("enum padding fits u32");
                     fields.push(context.i8_type().array_type(pad_len).into());
                 }

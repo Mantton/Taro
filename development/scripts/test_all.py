@@ -469,7 +469,7 @@ def main() -> int:
         if args.skip_language_tests:
             print("SKIPPED: disabled via --skip-language-tests")
         else:
-            command = ["python3", str(language_tests_script)]
+            command = ["python3", str(language_tests_script), "--codegen-profile", "both"]
             if args.jobs is not None:
                 command.extend(["--jobs", str(args.jobs)])
             run_command(command, cwd=repo_root)

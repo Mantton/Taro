@@ -2,6 +2,8 @@
 valid/debug_codegen_globalisel.tr
 valid/ptr_int_casts.tr
 valid/optimizer_inline_contracts.tr
+valid/integer_overflow.tr
+valid/overflow_panic_runs_defer.tr
 
 # GC roots, descriptors, and stack allocation
 valid/gc_descriptor_roots.tr
@@ -40,3 +42,12 @@ valid/existentials.tr
 valid/optional_npo_layout.tr
 valid/repr_layouts.tr
 valid/witness_table_layout.tr
+valid/inline_existential_receivers.tr
+valid/inline_interface_default_override.tr
+valid/inline_associated_result.tr
+valid/derive.tr
+valid/associated_types.tr
+valid/generic_interface_metadata.tr
+valid/interface_default_self_existential.tr
+valid/interface_properties_cross_package.tr
+valid/interfaces.tr

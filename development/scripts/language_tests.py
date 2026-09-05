@@ -100,6 +100,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
       // TEST                      — run with `taro test` instead of `taro run`; passes if exit 0
       // BENCH                     — run a short `taro bench`; passes if exit 0
       // BENCH_RELEASE             — run the short benchmark in its default release/O2 profile
+      // OVERFLOW_CHECKS           — enable checked arithmetic in every codegen profile
       // ARGS: <values...>         — forward runtime args to `taro run` after `--`
       // STDIN: <JSON string>       — provide decoded text as the program's stdin
       // ENV: KEY=value …          — set environment variables for compile/run
@@ -116,6 +117,7 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "run_as_test": False,
         "run_as_bench": False,
         "bench_release": False,
+        "overflow_checks": False,
         "args": [],
         "stdin": None,
         "env": {},
@@ -139,6 +141,8 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
                     result["check_only"] = True
                 elif line.startswith("// TEST"):
                     result["run_as_test"] = True
+                elif line == "// OVERFLOW_CHECKS":
+                    result["overflow_checks"] = True
                 elif line.startswith("// BENCH_RELEASE"):
                     result["run_as_bench"] = True
                     result["bench_release"] = True
@@ -205,6 +209,7 @@ def run_test(
     opt_level: str | None,
 ) -> TestRunResult:
     """Runs a single test file and compares output."""
+    output_bin: Path | None = None
     try:
         # Construct output file path
         relative_path = file_path.relative_to(SOURCE_FILES_DIR)
@@ -276,8 +281,8 @@ def run_test(
             str(env.std_path),
         ]
 
-        # Add output flag only for run command (check/test handle their own output)
-        if command == "run":
+        # All executable modes use per-case temporary paths, including test/bench.
+        if command != "check":
             cmd.extend(["-o", str(output_bin)])
 
         # Add --target flag if specified in test file
@@ -292,6 +297,8 @@ def run_test(
             cmd.append("--debug")
         if opt_level is not None:
             cmd.append(f"-O{opt_level}")
+        if directives["overflow_checks"]:
+            cmd.append("--overflow-checks")
 
         if is_run_as_bench:
             # Keep the regression in the normal language suite without adding
@@ -448,6 +455,12 @@ def run_test(
 
     except Exception as e:
         return False, "Exception", {"error": str(e)}
+    finally:
+        # Keeping every linked binary and dSYM until the whole matrix finishes
+        # can consume many gigabytes. Diagnostics are already captured above.
+        if output_bin is not None:
+            output_bin.unlink(missing_ok=True)
+            shutil.rmtree(str(output_bin) + ".dSYM", ignore_errors=True)
 
 
 def load_test_manifest(manifest_path: Path) -> set[Path]:

@@ -472,7 +472,7 @@ impl EscapeGraph {
                     }
                 }
                 _ => {
-                    for successor in terminator_successors(&terminator.kind) {
+                    for successor in terminator.kind.successors() {
                         propagate_state(
                             successor,
                             &state,
@@ -1057,41 +1057,6 @@ fn propagate_state(
     }
 }
 
-fn terminator_successors(terminator: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
-    match terminator {
-        TerminatorKind::Goto { target } => vec![*target],
-        TerminatorKind::SwitchInt {
-            targets, otherwise, ..
-        } => targets
-            .iter()
-            .map(|(_, target)| *target)
-            .chain(std::iter::once(*otherwise))
-            .collect(),
-        TerminatorKind::Call { target, unwind, .. } => std::iter::once(*target)
-            .chain(match unwind {
-                CallUnwindAction::Cleanup(cleanup) => Some(*cleanup),
-                CallUnwindAction::Terminate => None,
-            })
-            .collect(),
-        TerminatorKind::Yield {
-            resume,
-            cancel,
-            unwind,
-            ..
-        } => std::iter::once(*resume)
-            .chain(std::iter::once(*cancel))
-            .chain(match unwind {
-                CallUnwindAction::Cleanup(cleanup) => Some(*cleanup),
-                CallUnwindAction::Terminate => None,
-            })
-            .collect(),
-        TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => Vec::new(),
-    }
-}
-
 fn ensure_instance_summaries<'ctx>(gcx: Gcx<'ctx>, root: Instance<'ctx>) -> CompileResult<()> {
     let call_graph = InstanceCallGraph::collect(gcx, root);
     if call_graph.instances.is_empty() {
@@ -1609,9 +1574,8 @@ mod heapify_rewrite {
     use crate::hir::Mutability;
     use crate::mir::optimize::MirPass;
     use crate::mir::{
-        BasicBlockData, BasicBlockId, Body, CallUnwindAction, CopyModifiers, LocalDecl, LocalId,
-        LocalKind, Operand, Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator,
-        TerminatorKind,
+        BasicBlockData, BasicBlockId, Body, CopyModifiers, LocalDecl, LocalId, LocalKind, Operand,
+        Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
     };
     use crate::sema::models::{Ty, TyKind};
     use index_vec::IndexVec;
@@ -1895,7 +1859,7 @@ mod heapify_rewrite {
         let mut out_sets: IndexVec<BasicBlockId, FxHashSet<LocalId>> =
             IndexVec::from(vec![FxHashSet::default(); body.basic_blocks.len()]);
 
-        let preds = build_predecessors(body);
+        let preds = body.predecessors();
         let succs = build_successors(body);
         let mut worklist: Vec<BasicBlockId> = body.basic_blocks.indices().collect();
 
@@ -1961,67 +1925,15 @@ mod heapify_rewrite {
         }
     }
 
-    fn build_predecessors(body: &Body<'_>) -> IndexVec<BasicBlockId, Vec<BasicBlockId>> {
-        let mut preds: IndexVec<BasicBlockId, Vec<BasicBlockId>> =
-            IndexVec::from(vec![Vec::new(); body.basic_blocks.len()]);
-        for (bb, data) in body.basic_blocks.iter_enumerated() {
-            if let Some(term) = &data.terminator {
-                for succ in terminator_successors(&term.kind) {
-                    preds[succ].push(bb);
-                }
-            }
-        }
-        preds
-    }
-
     fn build_successors(body: &Body<'_>) -> IndexVec<BasicBlockId, Vec<BasicBlockId>> {
         let mut succs: IndexVec<BasicBlockId, Vec<BasicBlockId>> =
             IndexVec::from(vec![Vec::new(); body.basic_blocks.len()]);
         for (bb, data) in body.basic_blocks.iter_enumerated() {
             if let Some(term) = &data.terminator {
-                succs[bb] = terminator_successors(&term.kind);
+                succs[bb] = term.kind.successors();
             }
         }
         succs
-    }
-
-    fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
-        match term {
-            TerminatorKind::Goto { target } => vec![*target],
-            TerminatorKind::SwitchInt {
-                targets, otherwise, ..
-            } => {
-                let mut out = Vec::with_capacity(targets.len() + 1);
-                for (_, bb) in targets {
-                    out.push(*bb);
-                }
-                out.push(*otherwise);
-                out
-            }
-            TerminatorKind::Call { target, unwind, .. } => {
-                let mut out = vec![*target];
-                if let crate::mir::CallUnwindAction::Cleanup(bb) = unwind {
-                    out.push(*bb);
-                }
-                out
-            }
-            TerminatorKind::Yield {
-                resume,
-                cancel,
-                unwind,
-                ..
-            } => {
-                let mut out = vec![*resume, *cancel];
-                if let CallUnwindAction::Cleanup(bb) = unwind {
-                    out.push(*bb);
-                }
-                out
-            }
-            TerminatorKind::Return
-            | TerminatorKind::ResumeUnwind
-            | TerminatorKind::Unreachable
-            | TerminatorKind::UnresolvedGoto => Vec::new(),
-        }
     }
 
     fn heapified_direct_deref_pointee_ty<'ctx>(

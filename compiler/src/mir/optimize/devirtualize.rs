@@ -2,8 +2,8 @@ use super::MirPass;
 use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::mir::{
-    BasicBlockId, Body, CallUnwindAction, CastKind, ConstantKind, DevirtHint, Operand, Place,
-    PlaceElem, Rvalue, StatementKind, TerminatorKind,
+    BasicBlockId, Body, CastKind, ConstantKind, DevirtHint, Operand, Place, PlaceElem, Rvalue,
+    StatementKind, TerminatorKind,
 };
 use crate::sema::models::{GenericArgument, GenericArguments, Ty, TyKind};
 use crate::specialize::{InstanceKind, resolve_instance};
@@ -93,7 +93,7 @@ impl<'ctx> MirPass<'ctx> for DevirtualizeStaticCalls {
             return Ok(());
         }
 
-        let preds = build_predecessors(body);
+        let preds = body.predecessors();
         let default_state = default_state_for_locals(&tracked_locals);
 
         let mut in_states: IndexVec<BasicBlockId, Vec<KnownConcreteExistentialState<'ctx>>> =
@@ -111,7 +111,7 @@ impl<'ctx> MirPass<'ctx> for DevirtualizeStaticCalls {
                 in_states[bb] = new_in;
                 out_states[bb] = new_out;
                 if let Some(term) = &body.basic_blocks[bb].terminator {
-                    for succ in terminator_successors(&term.kind) {
+                    for succ in term.kind.successors() {
                         worklist.push(succ);
                     }
                 }
@@ -451,59 +451,5 @@ fn is_concrete_existential_source_ty(ty: Ty<'_>) -> bool {
             !matches!(inner.kind(), TyKind::BoxedExistential { .. })
         }
         _ => true,
-    }
-}
-
-fn build_predecessors(body: &Body<'_>) -> IndexVec<BasicBlockId, Vec<BasicBlockId>> {
-    let mut preds: IndexVec<BasicBlockId, Vec<BasicBlockId>> =
-        IndexVec::from(vec![Vec::new(); body.basic_blocks.len()]);
-
-    for (bb, data) in body.basic_blocks.iter_enumerated() {
-        if let Some(term) = &data.terminator {
-            for succ in terminator_successors(&term.kind) {
-                preds[succ].push(bb);
-            }
-        }
-    }
-
-    preds
-}
-
-fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
-    match term {
-        TerminatorKind::Goto { target } => vec![*target],
-        TerminatorKind::SwitchInt {
-            targets, otherwise, ..
-        } => {
-            let mut out = Vec::with_capacity(targets.len() + 1);
-            for (_, bb) in targets {
-                out.push(*bb);
-            }
-            out.push(*otherwise);
-            out
-        }
-        TerminatorKind::Call { target, unwind, .. } => {
-            let mut out = vec![*target];
-            if let crate::mir::CallUnwindAction::Cleanup(bb) = unwind {
-                out.push(*bb);
-            }
-            out
-        }
-        TerminatorKind::Yield {
-            resume,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let mut out = vec![*resume, *cancel];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                out.push(*bb);
-            }
-            out
-        }
-        TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => Vec::new(),
     }
 }

@@ -1,4 +1,5 @@
 // TEST
+// OVERFLOW_CHECKS
 
 func checkedAdd(_ lhs: uint8, _ rhs: uint8) -> uint8 { lhs + rhs }
 func checkedSub(_ lhs: uint8, _ rhs: uint8) -> uint8 { lhs - rhs }

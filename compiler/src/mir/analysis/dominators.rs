@@ -1,4 +1,4 @@
-use crate::mir::{BasicBlockId, Body, CallUnwindAction, TerminatorKind};
+use crate::mir::{BasicBlockId, Body};
 use index_vec::IndexVec;
 use rustc_hash::FxHashSet;
 
@@ -13,16 +13,7 @@ impl Dominators {
 }
 
 pub fn compute_dominators(body: &Body<'_>) -> Dominators {
-    let mut preds: IndexVec<BasicBlockId, Vec<BasicBlockId>> =
-        IndexVec::from(vec![Vec::new(); body.basic_blocks.len()]);
-
-    for (bb, data) in body.basic_blocks.iter_enumerated() {
-        if let Some(term) = &data.terminator {
-            for succ in successors(&term.kind) {
-                preds[succ].push(bb);
-            }
-        }
-    }
+    let preds = body.predecessors();
 
     let mut all = FxHashSet::default();
     for bb in body.basic_blocks.indices() {
@@ -65,37 +56,4 @@ pub fn compute_dominators(body: &Body<'_>) -> Dominators {
     }
 
     Dominators { doms }
-}
-
-fn successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
-    match term {
-        TerminatorKind::Goto { target } => vec![*target],
-        TerminatorKind::SwitchInt {
-            targets, otherwise, ..
-        } => {
-            let mut s: Vec<_> = targets.iter().map(|(_, t)| *t).collect();
-            s.push(*otherwise);
-            s
-        }
-        TerminatorKind::Call { target, unwind, .. } => {
-            let mut succ = vec![*target];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                succ.push(*bb);
-            }
-            succ
-        }
-        TerminatorKind::Yield {
-            resume,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let mut succ = vec![*resume, *cancel];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                succ.push(*bb);
-            }
-            succ
-        }
-        _ => vec![],
-    }
 }

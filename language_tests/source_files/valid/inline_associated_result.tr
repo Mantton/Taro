@@ -1,0 +1,32 @@
+type Number = isize
+
+interface Provider {
+    type Value
+    func value(&self) -> Self.Value
+}
+
+struct IntProvider { number: Number }
+impl Provider for IntProvider {
+    type Value = Number
+    func value(&self) -> Number { self.number }
+}
+
+@inline
+func read[P: Provider](_ provider: P) -> P.Value {
+    let result: P.Value = provider.value()
+    result
+}
+
+@inline
+func readPair[P: Provider](_ provider: P) -> (P.Value, P.Value) {
+    let result: (P.Value, P.Value) = (provider.value(), provider.value())
+    result
+}
+
+func main() {
+    let provider = IntProvider { number: 42 }
+    assert(read(provider) == 42, "inlined associated result")
+    let pair = readPair(IntProvider { number: 42 })
+    assert(pair.0 + pair.1 == 84, "nested associated result")
+    print("PASS: inline associated result\n")
+}

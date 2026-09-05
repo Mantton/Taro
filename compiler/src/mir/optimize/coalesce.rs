@@ -3,8 +3,8 @@ use crate::{
     compile::context::Gcx,
     error::CompileResult,
     mir::{
-        BasicBlockId, Body, CallUnwindAction, Constant, LocalId, LocalKind, Operand, Place, Rvalue,
-        StatementKind, TerminatorKind,
+        BasicBlockId, Body, Constant, LocalId, LocalKind, Operand, Place, Rvalue, StatementKind,
+        TerminatorKind,
     },
 };
 use index_vec::IndexVec;
@@ -218,7 +218,7 @@ impl<'ctx> MirPass<'ctx> for CallDestinationCoalescing {
 
             if let Some(term) = &block.terminator {
                 record_terminator_use_counts(&term.kind, &mut use_counts);
-                for succ in terminator_successors(&term.kind) {
+                for succ in term.kind.successors() {
                     pred_counts[succ.index()] += 1;
                 }
             }
@@ -600,45 +600,6 @@ fn record_terminator_use_counts(term: &TerminatorKind<'_>, use_counts: &mut [usi
         | TerminatorKind::UnresolvedGoto
         | TerminatorKind::ResumeUnwind
         | TerminatorKind::Unreachable => {}
-    }
-}
-
-fn terminator_successors(term: &TerminatorKind<'_>) -> Vec<BasicBlockId> {
-    match term {
-        TerminatorKind::Goto { target } => vec![*target],
-        TerminatorKind::SwitchInt {
-            targets, otherwise, ..
-        } => {
-            let mut out = Vec::with_capacity(targets.len() + 1);
-            for (_, target) in targets {
-                out.push(*target);
-            }
-            out.push(*otherwise);
-            out
-        }
-        TerminatorKind::Call { target, unwind, .. } => {
-            let mut out = vec![*target];
-            if let crate::mir::CallUnwindAction::Cleanup(bb) = unwind {
-                out.push(*bb);
-            }
-            out
-        }
-        TerminatorKind::Yield {
-            resume,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let mut out = vec![*resume, *cancel];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                out.push(*bb);
-            }
-            out
-        }
-        TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => Vec::new(),
     }
 }
 

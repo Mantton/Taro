@@ -102,7 +102,7 @@ impl LivenessResult {
 /// Compute liveness for the given body.
 /// Uses a backward dataflow analysis.
 pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
-    let preds = build_predecessors(body);
+    let preds = body.predecessors();
     let mut live_in = IndexVec::from(vec![FxHashSet::default(); body.basic_blocks.len()]);
     let mut live_out = IndexVec::from(vec![FxHashSet::default(); body.basic_blocks.len()]);
     let mut worklist: Vec<BasicBlockId> = body.basic_blocks.indices().collect();
@@ -112,7 +112,7 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
         // Compute live_out = Union(live_in(succ))
         let mut out_set = FxHashSet::default();
         if let Some(term) = &body.basic_blocks[bb].terminator {
-            for succ in successors(&term.kind) {
+            for succ in term.kind.successors() {
                 for &local in &live_in[succ] {
                     out_set.insert(local);
                 }
@@ -137,11 +137,9 @@ pub fn compute_liveness(body: &Body<'_>) -> LivenessResult {
 
         if in_set != live_in[bb] {
             live_in[bb] = in_set;
-            if let Some(ps) = preds.get(&bb) {
-                for &p in ps {
-                    if !worklist.contains(&p) {
-                        worklist.push(p);
-                    }
+            for &p in &preds[bb] {
+                if !worklist.contains(&p) {
+                    worklist.push(p);
                 }
             }
         }
@@ -242,51 +240,6 @@ fn transfer_statement(statement: &StatementKind<'_>, live: &mut FxHashSet<LocalI
             }
         }
         StatementKind::SourceScope(_) | StatementKind::GcSafepoint(_) | StatementKind::Nop => {}
-    }
-}
-
-fn build_predecessors(body: &Body) -> std::collections::HashMap<BasicBlockId, Vec<BasicBlockId>> {
-    let mut preds = std::collections::HashMap::new();
-    for (bb, data) in body.basic_blocks.iter_enumerated() {
-        if let Some(term) = &data.terminator {
-            for succ in successors(&term.kind) {
-                preds.entry(succ).or_insert_with(Vec::new).push(bb);
-            }
-        }
-    }
-    preds
-}
-
-fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
-    match term {
-        TerminatorKind::Goto { target } => vec![*target],
-        TerminatorKind::SwitchInt {
-            targets, otherwise, ..
-        } => {
-            let mut s: Vec<_> = targets.iter().map(|(_, t)| *t).collect();
-            s.push(*otherwise);
-            s
-        }
-        TerminatorKind::Call { target, unwind, .. } => {
-            let mut succ = vec![*target];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                succ.push(*bb);
-            }
-            succ
-        }
-        TerminatorKind::Yield {
-            resume,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let mut succ = vec![*resume, *cancel];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                succ.push(*bb);
-            }
-            succ
-        }
-        _ => vec![],
     }
 }
 

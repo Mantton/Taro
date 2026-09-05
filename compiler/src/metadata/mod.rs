@@ -22,7 +22,8 @@ use std::{
 pub mod wire;
 
 const META_MAGIC: [u8; 8] = *b"TAROMETA";
-const META_FORMAT_VERSION: u32 = 29;
+// Reject cached MIR/artifacts from invalid receiver or generic inlining.
+const META_FORMAT_VERSION: u32 = 32;
 
 #[derive(Debug, Clone)]
 pub struct DependencyFingerprint {

@@ -1,0 +1,23 @@
+// A default method body is not the target when runtime dispatch finds an override.
+interface Value {
+    @inline
+    func value(&self) -> int32 { 1 }
+}
+struct DefaultValue {}
+impl Value for DefaultValue {}
+struct OverrideValue {}
+impl Value for OverrideValue {
+    func value(&self) -> int32 { 42 }
+}
+
+@noinline
+func dynamicValue(_ value: any Value) -> int32 { value.value() }
+
+func staticValue[T: Value](_ value: T) -> int32 { value.value() }
+
+func main() {
+    assert(dynamicValue(DefaultValue {}) == 1, "default dispatch")
+    assert(dynamicValue(OverrideValue {}) == 42, "dynamic override dispatch")
+    assert(staticValue(OverrideValue {}) == 42, "generic override dispatch")
+    print("PASS: inline interface default override\n")
+}

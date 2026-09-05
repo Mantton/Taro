@@ -627,7 +627,7 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                     }
                 }
                 _ => {
-                    for succ in successors(&term.kind) {
+                    for succ in term.kind.successors() {
                         propagate_bool_state(
                             &mut block_states,
                             &mut worklist,
@@ -716,43 +716,6 @@ fn propagate_bool_state(
 
 fn is_full_return_place<'ctx>(body: &Body<'ctx>, place: &Place<'ctx>) -> bool {
     place.local == body.return_local && place.projection.is_empty()
-}
-
-/// Get successors of a terminator.
-fn successors(term: &TerminatorKind) -> Vec<BasicBlockId> {
-    match term {
-        TerminatorKind::Goto { target } => vec![*target],
-        TerminatorKind::SwitchInt {
-            targets, otherwise, ..
-        } => {
-            let mut succs: Vec<_> = targets.iter().map(|(_, bb)| *bb).collect();
-            succs.push(*otherwise);
-            succs
-        }
-        TerminatorKind::Call { target, unwind, .. } => {
-            let mut succs = vec![*target];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                succs.push(*bb);
-            }
-            succs
-        }
-        TerminatorKind::Yield {
-            resume,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let mut succs = vec![*resume, *cancel];
-            if let CallUnwindAction::Cleanup(bb) = unwind {
-                succs.push(*bb);
-            }
-            succs
-        }
-        TerminatorKind::Return
-        | TerminatorKind::ResumeUnwind
-        | TerminatorKind::Unreachable
-        | TerminatorKind::UnresolvedGoto => vec![],
-    }
 }
 
 fn call_output_ty<'ctx>(
@@ -1377,7 +1340,7 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                     }
                 }
                 _ => {
-                    for succ in successors(&term.kind) {
+                    for succ in term.kind.successors() {
                         propagate_move_state(&mut block_states, &mut worklist, succ, &state);
                     }
                 }
@@ -1852,7 +1815,7 @@ pub fn validate_borrows<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResul
                     }
                 }
                 _ => {
-                    for succ in successors(&term.kind) {
+                    for succ in term.kind.successors() {
                         propagate_borrow_state(
                             &mut block_in_states,
                             &mut worklist,
