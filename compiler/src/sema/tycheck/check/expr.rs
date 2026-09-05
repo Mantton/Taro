@@ -1814,24 +1814,16 @@ impl<'ctx> Checker<'ctx> {
         parameter_expects_async: &[bool],
         arguments: &[hir::ExpressionArgument],
     ) -> Option<Vec<Option<ArgumentExpectation<'ctx>>>> {
-        let apply_args: Vec<ApplyArgument<'ctx>> = arguments
-            .iter()
-            .map(|arg| ApplyArgument {
-                id: arg.expression.id,
-                label: arg.label.map(|l| l.identifier),
-                ty: self.gcx().types.error,
-                span: arg.expression.span,
-            })
-            .collect();
-
-        if validate_arity(&signature, &apply_args).is_err() {
-            return None;
-        }
-
-        let positions = match match_arguments_to_parameters(&signature, &apply_args, false) {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
+        validate_arity(signature, arguments.len()).ok()?;
+        let positions = match_arguments_to_parameters(
+            &signature.inputs,
+            signature.is_variadic,
+            arguments
+                .iter()
+                .map(|arg| (arg.label.map(|label| label.identifier), arg.expression.span)),
+            false,
+        )
+        .ok()?;
 
         let mut expectations = vec![None; arguments.len()];
         for (param_idx, arg_indices) in positions.iter().enumerate() {

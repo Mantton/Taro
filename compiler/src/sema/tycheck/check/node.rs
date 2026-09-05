@@ -17,9 +17,10 @@ use crate::{
                 BindOverloadGoalData, CompilerCallContext, ConstraintSystem, DerefGoalData,
                 DisjunctionBranch, Goal, InferredStaticMemberGoalData, MemberGoalData,
                 MethodCallData, StructLiteralField, StructLiteralGoalData, TupleAccessGoalData,
-                UnOpGoalData, match_arguments_to_parameters, validate_arity,
+                UnOpGoalData,
             },
             utils::{
+                arguments::{match_arguments_to_parameters, validate_arity},
                 const_eval::eval_const_expression_with_type_results,
                 generics::{
                     GenericsBuilder, const_arg_ty_mismatches,

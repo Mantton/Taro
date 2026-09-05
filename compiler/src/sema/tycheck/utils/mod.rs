@@ -3,6 +3,7 @@ use crate::sema::{
     resolve::models::TypeHead,
 };
 
+pub(crate) mod arguments;
 pub mod autoderef;
 pub mod const_eval;
 pub mod generics;

@@ -10,9 +10,12 @@ use crate::{
             lower::{TypeLowerer, item::DefTyLoweringCtx},
             results::TypeCheckResults,
             solve::Adjustment,
-            utils::instantiate::{
-                instantiate_signature_with_args, instantiate_struct_definition_with_args,
-                instantiate_ty_with_args,
+            utils::{
+                arguments::match_arguments_to_parameters,
+                instantiate::{
+                    instantiate_signature_with_args, instantiate_struct_definition_with_args,
+                    instantiate_ty_with_args,
+                },
             },
         },
     },
@@ -218,86 +221,6 @@ impl<'ctx> FunctionLower<'ctx> {
         args
     }
 
-    fn match_arguments_to_parameters(
-        &self,
-        signature: &crate::sema::models::LabeledFunctionSignature<'ctx>,
-        param_offset: usize,
-        arguments: &[hir::ExpressionArgument],
-    ) -> Option<(Vec<Option<usize>>, Vec<usize>)> {
-        if signature.inputs.len() < param_offset {
-            return None;
-        }
-
-        let params = &signature.inputs[param_offset..];
-        let mut param_to_arg: Vec<Option<usize>> = vec![None; params.len()];
-        let mut variadic_args: Vec<usize> = Vec::new();
-        let mut used_args = vec![false; arguments.len()];
-
-        // First pass: match labeled arguments.
-        for (arg_idx, arg) in arguments.iter().enumerate() {
-            if let Some(label) = &arg.label {
-                let mut found = false;
-                for (param_idx, param) in params.iter().enumerate() {
-                    if param.label.as_ref() == Some(&label.identifier.symbol) {
-                        if param_to_arg[param_idx].is_some() {
-                            return None;
-                        }
-                        param_to_arg[param_idx] = Some(arg_idx);
-                        used_args[arg_idx] = true;
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    return None;
-                }
-            }
-        }
-
-        // Second pass: match positional arguments.
-        let mut param_idx = 0;
-        for (arg_idx, arg) in arguments.iter().enumerate() {
-            if used_args[arg_idx] || arg.label.is_some() {
-                continue;
-            }
-
-            while param_idx < params.len() && param_to_arg[param_idx].is_some() {
-                param_idx += 1;
-            }
-
-            while param_idx < params.len() {
-                let param = &params[param_idx];
-                if param.label.is_some() && param.default_provider.is_some() {
-                    param_idx += 1;
-                    while param_idx < params.len() && param_to_arg[param_idx].is_some() {
-                        param_idx += 1;
-                    }
-                    continue;
-                }
-                break;
-            }
-
-            if param_idx >= params.len() {
-                if signature.is_variadic {
-                    variadic_args.push(arg_idx);
-                    used_args[arg_idx] = true;
-                    continue;
-                }
-                return None;
-            }
-
-            if params[param_idx].label.is_some() {
-                return None;
-            }
-
-            param_to_arg[param_idx] = Some(arg_idx);
-            used_args[arg_idx] = true;
-            param_idx += 1;
-        }
-
-        Some((param_to_arg, variadic_args))
-    }
-
     fn lower_call_args_with_defaults(
         &mut self,
         signature: &crate::sema::models::LabeledFunctionSignature<'ctx>,
@@ -314,17 +237,28 @@ impl<'ctx> FunctionLower<'ctx> {
         };
 
         let param_offset = leading_args.len();
-        let (param_to_arg, variadic_args) =
-            self.match_arguments_to_parameters(&signature, param_offset, arguments)?;
-
-        let total_capacity = signature.inputs.len() + variadic_args.len();
-        let mut final_args = Vec::with_capacity(total_capacity);
+        let params = signature.inputs.get(param_offset..)?;
+        let positions = match_arguments_to_parameters(
+            params,
+            signature.is_variadic,
+            arguments
+                .iter()
+                .map(|arg| (arg.label.map(|label| label.identifier), arg.expression.span)),
+            false,
+        )
+        .ok()?;
+        let mut final_args =
+            Vec::with_capacity(signature.inputs.len().max(arguments.len() + param_offset));
         final_args.extend_from_slice(leading_args);
 
-        for (param_idx, arg_opt) in param_to_arg.iter().enumerate() {
+        for (param_idx, arg_indices) in positions.iter().enumerate() {
             let param = &signature.inputs[param_offset + param_idx];
-            if let Some(arg_idx) = arg_opt {
-                final_args.push(self.lower_expr(&arguments[*arg_idx].expression));
+            if !arg_indices.is_empty() {
+                final_args.extend(
+                    arg_indices
+                        .iter()
+                        .map(|&arg_idx| self.lower_expr(&arguments[arg_idx].expression)),
+                );
             } else if let Some(provider_id) = param.default_provider {
                 let inputs = self.gcx.store.interners.intern_ty_list(Vec::new());
                 let provider_ty = self.gcx.store.interners.intern_ty(TyKind::FnPointer {
@@ -357,10 +291,6 @@ impl<'ctx> FunctionLower<'ctx> {
                 }
                 return None;
             }
-        }
-
-        for arg_idx in variadic_args {
-            final_args.push(self.lower_expr(&arguments[arg_idx].expression));
         }
 
         Some(final_args)
