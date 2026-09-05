@@ -5,33 +5,38 @@ use crate::{
         ComputedProperty, ConformanceConstraint, Conformances, Constant, Declaration,
         DeclarationKind, Enum, EnumCase, Expression, ExpressionArgument, ExpressionField,
         ExpressionKind, FieldDefinition, ForStatement, Function, FunctionDeclaration,
-        FunctionDeclarationKind, FunctionParameter, FunctionPrototype, FunctionSignature,
-        GenericBound, GenericBounds, GenericRequirement, GenericRequirementList,
-        GenericWhereClause, Generics, Identifier, IfExpression, Impl, Interface, Label, Literal,
-        Local, MapPair, MatchArm, MatchExpression, ModuleDecl, Mutability, Namespace,
-        NamespaceDeclaration, NamespaceDeclarationKind, NodeID, Path, PathNode, PathSegment,
-        Pattern, PatternBindingCondition, PatternKind, PatternPath, RequiredTypeConstraint,
-        SelfKind, Statement, StatementKind, StaticVariable, Struct, StructLiteral, Type, TypeAlias,
-        TypeArgument, TypeArguments, TypeKind, TypeParameter, TypeParameterKind, TypeParameters,
-        UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem, UseTreePath, Variant, VariantKind,
-        Visibility, VisibilityLevel,
+        FunctionParameter, FunctionPrototype, FunctionSignature, GenericBound, GenericBounds,
+        GenericRequirement, GenericRequirementList, GenericWhereClause, Generics, Identifier,
+        IfExpression, Impl, Interface, Label, Literal, Local, MapPair, MatchArm, MatchExpression,
+        ModuleDecl, Mutability, Namespace, NamespaceDeclaration, NamespaceDeclarationKind, NodeID,
+        Path, PathNode, PathSegment, Pattern, PatternBindingCondition, PatternKind, PatternPath,
+        RequiredTypeConstraint, SelfKind, Statement, StatementKind, StaticVariable, Struct,
+        StructLiteral, Type, TypeAlias, TypeArgument, TypeArguments, TypeKind, TypeParameter,
+        TypeParameterKind, TypeParameters, UnaryOperator, UseTree, UseTreeKind, UseTreeNestedItem,
+        UseTreePath, Variant, VariantKind, Visibility, VisibilityLevel,
     },
     diagnostics::DiagCtx,
     error::ReportedError,
     parse::{Base, lexer, token::Token},
     span::{Position, Span, Spanned, Symbol},
 };
-use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc};
+use std::{cell::RefCell, fmt::Display, rc::Rc};
 
 type NextNode = Rc<RefCell<NodeTagger>>;
 #[derive(Debug, Default)]
 struct NodeTagger {
     next_index: u32,
+    #[cfg(test)]
+    allocations: usize,
 }
 impl NodeTagger {
     fn next(&mut self) -> NodeID {
         let id = NodeID::from_raw(self.next_index);
         self.next_index += 1;
+        #[cfg(test)]
+        {
+            self.allocations += 1;
+        }
         id
     }
 }
@@ -157,12 +162,20 @@ fn parse_file(
 }
 
 type R<V> = Result<V, Spanned<ParserError>>;
+#[derive(Clone, Copy)]
+struct ParserCheckpoint {
+    cursor: usize,
+    token_splits: usize,
+    errors: usize,
+    warnings: usize,
+    next_node: u32,
+}
+
 struct Parser {
     file: lexer::File,
     cursor: usize,
     restrictions: Restrictions,
-    anchors: VecDeque<usize>,
-    pending_associated_declarations: VecDeque<AssociatedDeclaration>,
+    token_splits: Vec<(usize, Spanned<Token>)>,
     next_index: NextNode,
     errors: Vec<Spanned<ParserError>>,
     warnings: Vec<Spanned<ParserError>>,
@@ -174,8 +187,7 @@ impl Parser {
             file,
             cursor: 0,
             restrictions: Restrictions::empty(),
-            anchors: VecDeque::new(),
-            pending_associated_declarations: VecDeque::new(),
+            token_splits: Vec::new(),
             errors: vec![],
             warnings: vec![],
             next_index: next,
@@ -241,14 +253,26 @@ impl Parser {
         self.cursor += 1;
     }
 
-    /// Save the current parser position for backtracking
-    fn checkpoint(&self) -> usize {
-        self.cursor
+    fn checkpoint(&self) -> ParserCheckpoint {
+        ParserCheckpoint {
+            cursor: self.cursor,
+            token_splits: self.token_splits.len(),
+            errors: self.errors.len(),
+            warnings: self.warnings.len(),
+            next_node: self.next_index.borrow().next_index,
+        }
     }
 
-    /// Restore the parser to a previously saved position
-    fn restore(&mut self, checkpoint: usize) {
-        self.cursor = checkpoint;
+    /// Speculation must restore token edits and diagnostics as well as the cursor.
+    fn restore(&mut self, checkpoint: ParserCheckpoint) {
+        for (index, original) in self.token_splits.drain(checkpoint.token_splits..).rev() {
+            self.file.tokens.remove(index + 1);
+            self.file.tokens[index] = original;
+        }
+        self.cursor = checkpoint.cursor;
+        self.errors.truncate(checkpoint.errors);
+        self.warnings.truncate(checkpoint.warnings);
+        self.next_index.borrow_mut().next_index = checkpoint.next_node;
     }
 
     fn matches(&self, token: Token) -> bool {
@@ -272,62 +296,19 @@ impl Parser {
         )
     }
 
-    fn split_question_token(&mut self) {
-        let Some(current) = self.current() else {
-            return;
-        };
-        if !matches!(current.value, Token::QuestionQuestion) {
-            return;
-        }
-        let span = current.span;
+    fn split_token(&mut self, token: Token) {
+        let original = self.file.tokens[self.cursor].clone();
+        let span = original.span;
         let mid = Position {
             line: span.start.line,
             offset: span.start.offset + 1,
         };
-        let first = Span {
-            start: span.start,
-            end: mid,
-            file: span.file,
-        };
-        let second = Span {
-            start: mid,
-            end: span.end,
-            file: span.file,
-        };
-
-        self.file.tokens[self.cursor] = Spanned::new(Token::Question, first);
-        self.file
-            .tokens
-            .insert(self.cursor + 1, Spanned::new(Token::Question, second));
-    }
-
-    fn split_amp_token(&mut self) {
-        let Some(current) = self.current() else {
-            return;
-        };
-        if !matches!(current.value, Token::AmpAmp) {
-            return;
-        }
-        let span = current.span;
-        let mid = Position {
-            line: span.start.line,
-            offset: span.start.offset + 1,
-        };
-        let first = Span {
-            start: span.start,
-            end: mid,
-            file: span.file,
-        };
-        let second = Span {
-            start: mid,
-            end: span.end,
-            file: span.file,
-        };
-
-        self.file.tokens[self.cursor] = Spanned::new(Token::Amp, first);
-        self.file
-            .tokens
-            .insert(self.cursor + 1, Spanned::new(Token::Amp, second));
+        self.token_splits.push((self.cursor, original));
+        self.file.tokens[self.cursor] = Spanned::new(token.clone(), Span { end: mid, ..span });
+        self.file.tokens.insert(
+            self.cursor + 1,
+            Spanned::new(token, Span { start: mid, ..span }),
+        );
     }
 
     fn eat_question(&mut self) -> bool {
@@ -337,7 +318,7 @@ impl Parser {
                 true
             }
             &Token::QuestionQuestion => {
-                self.split_question_token();
+                self.split_token(Token::Question);
                 self.bump();
                 true
             }
@@ -352,7 +333,7 @@ impl Parser {
                 true
             }
             &Token::AmpAmp => {
-                self.split_amp_token();
+                self.split_token(Token::Amp);
                 self.bump();
                 true
             }
@@ -557,9 +538,7 @@ impl Parser {
     }
 
     fn parse_top_level_item(&mut self) -> R<Option<TopLevelItem>> {
-        let start_span = self.lo_span();
-        let attributes = self.parse_attributes()?;
-        let visibility = self.parse_visibility()?;
+        let (start_span, attributes, visibility) = self.parse_declaration_header()?;
 
         if self.matches(Token::Mod) {
             self.expect(Token::Mod)?;
@@ -574,32 +553,38 @@ impl Parser {
             })));
         }
 
-        let fn_mode = FnParseMode { req_body: true };
-        let Some((identifier, kind)) = self.parse_declaration_kind(fn_mode)? else {
-            return Ok(None);
-        };
+        Ok(self
+            .parse_declaration_body(
+                start_span,
+                attributes,
+                visibility,
+                FnParseMode { req_body: true },
+            )?
+            .map(TopLevelItem::Decl))
+    }
 
-        let declaration = Declaration {
-            id: self.next_id(),
-            span: start_span.to(self.hi_span()),
-            identifier,
-            kind,
-            visibility,
-            attributes,
-        };
-
-        self.expect_semi()?;
-        Ok(Some(TopLevelItem::Decl(declaration)))
+    fn parse_declaration_header(&mut self) -> R<(Span, AttributeList, Visibility)> {
+        let start = self.lo_span();
+        let attributes = self.parse_attributes()?;
+        let visibility = self.parse_visibility()?;
+        Ok((start, attributes, visibility))
     }
 
     fn parse_declaration_internal(&mut self, fn_mode: FnParseMode) -> R<Option<Declaration>> {
-        let start_span = self.lo_span();
-        let attributes = self.parse_attributes()?;
-        let visibility = self.parse_visibility()?;
+        let (start, attributes, visibility) = self.parse_declaration_header()?;
+        self.parse_declaration_body(start, attributes, visibility, fn_mode)
+    }
+
+    fn parse_declaration_body(
+        &mut self,
+        start_span: Span,
+        attributes: AttributeList,
+        visibility: Visibility,
+        fn_mode: FnParseMode,
+    ) -> R<Option<Declaration>> {
         let Some((identifier, kind)) = self.parse_declaration_kind(fn_mode)? else {
             return Ok(None);
         };
-
         let declaration = Declaration {
             id: self.next_id(),
             span: start_span.to(self.hi_span()),
@@ -608,41 +593,59 @@ impl Parser {
             visibility,
             attributes,
         };
-
         self.expect_semi()?;
         Ok(Some(declaration))
     }
 
-    fn parse_declaration_list<T>(
+    fn convert_declaration<K: TryFrom<DeclarationKind>>(
         &mut self,
-        mut action: impl FnMut(&mut Parser) -> R<Option<T>>,
-    ) -> R<Vec<T>> {
-        self.expect(Token::LBrace)?;
-
-        let mut decls = vec![];
-
-        while (!self.matches(Token::RBrace) || !self.pending_associated_declarations.is_empty())
-            && !self.is_at_end()
-        {
-            // Skip ASI-inserted semicolons between declarations
-            while self.eat(Token::Semicolon) {}
-            if self.matches(Token::RBrace) && self.pending_associated_declarations.is_empty() {
-                break;
-            }
-            match action(self)? {
-                Some(decl) => decls.push(decl),
-                None => {
-                    return Err(self.err_at_current(ParserError::ExpectedDeclaration));
-                }
-            }
-
-            if self.matches(Token::RBrace) && self.pending_associated_declarations.is_empty() {
-                break;
+        declaration: Declaration,
+        error: ParserError,
+    ) -> Option<Declaration<K>> {
+        let Declaration {
+            id,
+            span,
+            identifier,
+            kind,
+            visibility,
+            attributes,
+        } = declaration;
+        match K::try_from(kind) {
+            Ok(kind) => Some(Declaration {
+                id,
+                span,
+                identifier,
+                kind,
+                visibility,
+                attributes,
+            }),
+            Err(_) => {
+                self.emit_error(error, span);
+                None
             }
         }
-        self.expect(Token::RBrace)?;
+    }
 
-        return Ok(decls);
+    fn parse_declaration_list<T, I: IntoIterator<Item = T>>(
+        &mut self,
+        mut action: impl FnMut(&mut Parser) -> R<I>,
+    ) -> R<Vec<T>> {
+        self.expect(Token::LBrace)?;
+        let mut decls = vec![];
+        while !self.matches(Token::RBrace) && !self.is_at_end() {
+            while self.eat(Token::Semicolon) {}
+            if self.matches(Token::RBrace) {
+                break;
+            }
+            let mut parsed = action(self)?.into_iter();
+            let first = parsed
+                .next()
+                .ok_or_else(|| self.err_at_current(ParserError::ExpectedDeclaration))?;
+            decls.push(first);
+            decls.extend(parsed);
+        }
+        self.expect(Token::RBrace)?;
+        Ok(decls)
     }
 }
 
@@ -650,50 +653,26 @@ impl Parser {
     fn parse_associated_declaration(
         &mut self,
         fn_mode: FnParseMode,
-    ) -> R<Option<AssociatedDeclaration>> {
-        if let Some(declaration) = self.pending_associated_declarations.pop_front() {
-            return Ok(Some(declaration));
-        }
-
-        let checkpoint = self.checkpoint();
-        let start_span = self.lo_span();
-        let attributes = self.parse_attributes()?;
-        let visibility = self.parse_visibility()?;
+    ) -> R<Vec<AssociatedDeclaration>> {
+        let (start_span, attributes, visibility) = self.parse_declaration_header()?;
         if self.matches(Token::Var) {
-            let declaration = self.parse_computed_property_associated(
+            let declarations = self.parse_computed_property_associated(
                 start_span,
                 attributes,
                 visibility,
                 fn_mode.req_body,
             )?;
             self.expect_semi()?;
-            return Ok(Some(declaration));
+            return Ok(declarations);
         }
-        self.restore(checkpoint);
-
-        let result = self.parse_declaration_internal(fn_mode)?;
-        let Some(result) = result else {
-            return Ok(None);
-        };
-
-        let kind = match AssociatedDeclarationKind::try_from(result.kind) {
-            Ok(kind) => kind,
-            Err(_) => {
-                self.emit_error(ParserError::DissallowedAssociatedDeclaration, result.span);
-                return Ok(None);
-            }
-        };
-
-        let declaration = Declaration {
-            id: result.id,
-            span: result.span,
-            identifier: result.identifier,
-            kind,
-            visibility: result.visibility,
-            attributes: result.attributes,
-        };
-
-        return Ok(Some(declaration));
+        let declaration =
+            self.parse_declaration_body(start_span, attributes, visibility, fn_mode)?;
+        Ok(declaration
+            .and_then(|decl| {
+                self.convert_declaration(decl, ParserError::DissallowedAssociatedDeclaration)
+            })
+            .into_iter()
+            .collect())
     }
 
     fn parse_computed_property_associated(
@@ -702,7 +681,7 @@ impl Parser {
         attributes: AttributeList,
         visibility: Visibility,
         accessor_bodies_required: bool,
-    ) -> R<AssociatedDeclaration> {
+    ) -> R<Vec<AssociatedDeclaration>> {
         self.expect(Token::Var)?;
         let identifier = self.parse_identifier()?;
         self.expect(Token::Colon)?;
@@ -729,12 +708,9 @@ impl Parser {
             attributes,
         };
 
-        self.pending_associated_declarations.push_back(getter_decl);
-        if let Some(setter_decl) = setter_decl {
-            self.pending_associated_declarations.push_back(setter_decl);
-        }
-
-        Ok(declaration)
+        let mut declarations = vec![declaration, getter_decl];
+        declarations.extend(setter_decl);
+        Ok(declarations)
     }
 
     fn parse_computed_property_accessors(
@@ -945,61 +921,17 @@ impl Parser {
     }
 
     fn parse_function_declaration(&mut self) -> R<Option<FunctionDeclaration>> {
-        let mode = FnParseMode { req_body: true };
-        let result = self.parse_declaration_internal(mode)?;
-
-        let Some(result) = result else {
-            return Ok(None);
-        };
-
-        let kind = match FunctionDeclarationKind::try_from(result.kind) {
-            Ok(kind) => kind,
-            Err(_) => {
-                self.emit_error(ParserError::DissallowedFunctionDeclaration, result.span);
-
-                return Ok(None);
-            }
-        };
-
-        let declaration = FunctionDeclaration {
-            id: result.id,
-            span: result.span,
-            identifier: result.identifier,
-            kind,
-            visibility: result.visibility,
-            attributes: result.attributes,
-        };
-
-        return Ok(Some(declaration));
+        let declaration = self.parse_declaration_internal(FnParseMode { req_body: true })?;
+        Ok(declaration.and_then(|decl| {
+            self.convert_declaration(decl, ParserError::DissallowedFunctionDeclaration)
+        }))
     }
 
     fn parse_namespace_declaration(&mut self) -> R<Option<NamespaceDeclaration>> {
-        let mode = FnParseMode { req_body: true };
-        let result = self.parse_declaration_internal(mode)?;
-
-        let Some(result) = result else {
-            return Ok(None);
-        };
-
-        let kind = match NamespaceDeclarationKind::try_from(result.kind) {
-            Ok(kind) => kind,
-            Err(_) => {
-                self.emit_error(ParserError::DissallowedNamespaceDeclaration, result.span);
-
-                return Ok(None);
-            }
-        };
-
-        let declaration = NamespaceDeclaration {
-            id: result.id,
-            span: result.span,
-            identifier: result.identifier,
-            kind,
-            visibility: result.visibility,
-            attributes: result.attributes,
-        };
-
-        return Ok(Some(declaration));
+        let declaration = self.parse_declaration_internal(FnParseMode { req_body: true })?;
+        Ok(declaration.and_then(|decl| {
+            self.convert_declaration(decl, ParserError::DissallowedNamespaceDeclaration)
+        }))
     }
 }
 
@@ -1113,45 +1045,23 @@ impl Parser {
             }));
         }
 
-        let mode = FnParseMode { req_body: false };
-        let result = self.parse_declaration_internal(mode)?;
-        let Some(result) = result else {
+        let declaration = self.parse_declaration_internal(FnParseMode { req_body: false })?;
+        let Some(mut declaration) = declaration.and_then(|decl| {
+            self.convert_declaration::<ast::ExternDeclarationKind>(
+                decl,
+                ParserError::DissallowedExternDeclaration,
+            )
+        }) else {
             return Ok(None);
         };
-
-        let kind = match ast::ExternDeclarationKind::try_from(result.kind) {
-            Ok(mut kind) => {
-                let ast::ExternDeclarationKind::Function(func) = &mut kind else {
-                    return Ok(Some(Declaration {
-                        id: result.id,
-                        span: result.span,
-                        identifier: result.identifier,
-                        kind,
-                        visibility: result.visibility,
-                        attributes: result.attributes,
-                    }));
-                };
-                if func.block.is_some() {
-                    self.emit_error(ParserError::ExternFunctionBodyNotAllowed, result.span);
-                    func.block = None;
-                }
-                func.abi = Some(_abi);
-                kind
+        if let ast::ExternDeclarationKind::Function(func) = &mut declaration.kind {
+            if func.block.is_some() {
+                self.emit_error(ParserError::ExternFunctionBodyNotAllowed, declaration.span);
+                func.block = None;
             }
-            Err(_) => {
-                self.emit_error(ParserError::DissallowedExternDeclaration, result.span);
-                return Ok(None);
-            }
-        };
-
-        Ok(Some(Declaration {
-            id: result.id,
-            span: result.span,
-            identifier: result.identifier,
-            kind,
-            visibility: result.visibility,
-            attributes: result.attributes,
-        }))
+            func.abi = Some(_abi);
+        }
+        Ok(Some(declaration))
     }
 }
 
@@ -2072,15 +1982,26 @@ impl Parser {
     }
 
     fn parse_tuple_type(&mut self) -> R<TypeKind> {
-        // Try to parse qualified access: (T as I).Member
-        if let Some(qualified) = self.try_parse_qualified_access()? {
-            return Ok(qualified);
-        }
-
-        let (elements, trailing) =
-            self.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
+        self.expect(Token::LParen)?;
+        let (elements, trailing) = if self.eat(Token::RParen) {
+            (Vec::new(), false)
+        } else {
+            let first = self.parse_type()?;
+            if self.eat(Token::As) {
+                let interface = self.parse_type()?;
+                self.expect(Token::RParen)?;
+                self.expect(Token::Dot)?;
+                let member = self.parse_identifier()?;
+                return Ok(TypeKind::QualifiedAccess {
+                    target: first,
+                    interface,
+                    member,
+                });
+            }
+            self.parse_delimiter_sequence_tail(Delimiter::Parenthesis, Token::Comma, first, |p| {
                 p.parse_type()
-            })?;
+            })?
+        };
 
         if self.matches(Token::RArrow) {
             self.expect(Token::RArrow)?;
@@ -2100,54 +2021,6 @@ impl Parser {
         }
 
         Ok(TypeKind::Tuple(elements))
-    }
-
-    /// Try to parse qualified type access: `(T as I).Member`
-    /// Returns None if this is not a qualified access (should be parsed as tuple/paren instead)
-    fn try_parse_qualified_access(&mut self) -> R<Option<TypeKind>> {
-        // Qualified access syntax: (T as I).Member
-        // We need to look ahead to see if this matches the pattern
-
-        // Save position for backtracking
-        let checkpoint = self.checkpoint();
-
-        // Expect opening paren
-        if !self.eat(Token::LParen) {
-            return Ok(None);
-        }
-
-        // Parse target type
-        let target = match self.parse_type() {
-            Ok(t) => t,
-            Err(_) => {
-                self.restore(checkpoint);
-                return Ok(None);
-            }
-        };
-
-        // Check for 'as' keyword
-        if !self.eat(Token::As) {
-            self.restore(checkpoint);
-            return Ok(None);
-        }
-
-        // Parse interface type
-        let interface = self.parse_type()?;
-
-        // Expect closing paren
-        self.expect(Token::RParen)?;
-
-        // Expect dot
-        self.expect(Token::Dot)?;
-
-        // Parse member identifier
-        let member = self.parse_identifier()?;
-
-        Ok(Some(TypeKind::QualifiedAccess {
-            target,
-            interface,
-            member,
-        }))
     }
 
     fn parse_collection_type(&mut self) -> R<TypeKind> {
@@ -2220,11 +2093,17 @@ impl Parser {
     }
 
     fn parse_optional_type_arguments(&mut self) -> R<Option<TypeArguments>> {
-        if self.matches(Token::LBracket) && self.can_parse_type_arguments() {
-            Ok(Some(self.parse_type_arguments()?))
-        } else {
-            Ok(None)
+        if !self.matches(Token::LBracket) {
+            return Ok(None);
         }
+        let checkpoint = self.checkpoint();
+        if let Ok(arguments) = self.parse_type_arguments() {
+            if is_generic_type_disambiguating_token(self.current_token()) {
+                return Ok(Some(arguments));
+            }
+        }
+        self.restore(checkpoint);
+        Ok(None)
     }
 }
 
@@ -2368,21 +2247,6 @@ impl Parser {
         };
 
         return Ok(kind);
-    }
-}
-
-impl Parser {
-    fn can_parse_type_arguments(&mut self) -> bool {
-        self.with_anchor(|p| {
-            let v = p.parse_type_arguments();
-
-            if v.is_err() {
-                return false;
-            }
-
-            let disambiguating = is_generic_type_disambiguating_token(p.current_token());
-            disambiguating
-        })
     }
 }
 
@@ -2821,22 +2685,25 @@ impl Parser {
             return Ok((Vec::new(), false));
         }
 
-        let mut proceed = true;
+        let first = action(self)?;
+        self.parse_delimiter_sequence_tail(delim, separator, first, action)
+    }
+
+    fn parse_delimiter_sequence_tail<T>(
+        &mut self,
+        delim: Delimiter,
+        separator: Token,
+        first: T,
+        mut action: impl FnMut(&mut Parser) -> R<T>,
+    ) -> R<(Vec<T>, bool)> {
+        let mut items = vec![first];
         let mut trailing = false;
-
-        let mut items = Vec::new();
-        while proceed {
-            // parse item
-            let item = action(self)?;
-            items.push(item);
-
-            proceed = self.eat(separator.clone());
-
-            // can proceed but cursor points to ending token, exit loop
-            if proceed && self.matches(delim.close()) {
+        while self.eat(separator.clone()) {
+            if self.matches(delim.close()) {
                 trailing = true;
                 break;
             }
+            items.push(action(self)?);
         }
 
         if self.matches(Token::Semicolon) {
@@ -2929,30 +2796,6 @@ impl Parser {
             proceed = self.eat(separator.clone());
         }
         Ok(items)
-    }
-}
-
-impl Parser {
-    fn drop_anchor(&mut self) {
-        self.anchors.push_back(self.cursor);
-    }
-
-    fn raise_anchor(&mut self) {
-        let v = self.anchors.pop_back();
-        if let Some(v) = v {
-            self.cursor = v;
-        }
-    }
-
-    fn with_anchor<T, F>(&mut self, mut action: F) -> T
-    where
-        F: FnMut(&mut Parser) -> T,
-    {
-        self.drop_anchor();
-        let result = action(self);
-        self.raise_anchor();
-
-        result
     }
 }
 
@@ -3582,7 +3425,6 @@ impl Parser {
         }
 
         let checkpoint = self.checkpoint();
-        let error_checkpoint = self.errors.len();
         let lo = self.lo_span();
         self.bump();
 
@@ -3595,7 +3437,6 @@ impl Parser {
             Ok(expr) => Ok(Some(expr)),
             Err(_) => {
                 self.restore(checkpoint);
-                self.errors.truncate(error_checkpoint);
                 Ok(None)
             }
         }
@@ -4018,7 +3859,6 @@ impl Parser {
 
     fn try_parse_match_arm_without_case(&mut self, lo: Span) -> R<Option<MatchArm>> {
         let checkpoint = self.checkpoint();
-        let error_checkpoint = self.errors.len();
         match self.parse_match_arm_body(lo) {
             Ok(arm) => {
                 self.emit_error(ParserError::ExpectedMatchArmCaseKeyword, lo);
@@ -4026,7 +3866,6 @@ impl Parser {
             }
             Err(_) => {
                 self.restore(checkpoint);
-                self.errors.truncate(error_checkpoint);
                 Ok(None)
             }
         }
@@ -4245,14 +4084,13 @@ impl Parser {
         })
     }
     fn parse_function_parameter(&mut self) -> R<FunctionParameter> {
-        if let Some(self_param) = self.parse_self_parameter()? {
-            return Ok(self_param);
-        }
-
         let lo = self.lo_span();
-
-        // @attribute label name: type
         let attributes = self.parse_attributes()?;
+        if self.matches_contextual_identifier("self")
+            || matches!(self.current_token(), Token::Amp | Token::AmpAmp)
+        {
+            return self.parse_self_parameter(lo, attributes);
+        }
 
         let mut underscore_label = false;
         let label = if matches!(self.current_token(), Token::Identifier { .. }) {
@@ -4310,29 +4148,17 @@ impl Parser {
         Ok(param)
     }
 
-    fn parse_self_parameter(&mut self) -> R<Option<FunctionParameter>> {
-        let lo = self.lo_span();
-        let attributes = self.parse_attributes()?;
-
-        let (kind, mutability, ident) = match self.current_token() {
-            Token::Identifier { .. } => {
-                let anchor = self.cursor;
-                let ident = self.parse_identifier()?;
-
-                if self.symbol_eq(ident.symbol, "self") {
-                    (SelfKind::Copy, Mutability::Immutable, ident)
-                } else {
-                    self.cursor = anchor;
-                    return Ok(None);
-                }
-            }
-            Token::Amp | Token::AmpAmp => {
-                self.expect_amp()?;
-                let mutability = self.parse_mutability();
-                (SelfKind::Reference, mutability, self.parse_self()?)
-            }
-            _ => return Ok(None),
+    fn parse_self_parameter(
+        &mut self,
+        lo: Span,
+        attributes: AttributeList,
+    ) -> R<FunctionParameter> {
+        let (kind, mutability) = if self.eat_amp() {
+            (SelfKind::Reference, self.parse_mutability())
+        } else {
+            (SelfKind::Copy, Mutability::Immutable)
         };
+        let ident = self.parse_self()?;
 
         let self_ty = Type {
             id: self.next_id(),
@@ -4349,7 +4175,7 @@ impl Parser {
             },
         };
 
-        Ok(Some(FunctionParameter {
+        Ok(FunctionParameter {
             id: self.next_id(),
             attributes,
             label: None,
@@ -4358,7 +4184,7 @@ impl Parser {
             default_value: None,
             is_variadic: false,
             span: lo.to(self.hi_span()),
-        }))
+        })
     }
 
     fn parse_self(&mut self) -> R<Identifier> {
@@ -4542,68 +4368,25 @@ impl Parser {
         self.parse_struct_literal(path, span)
     }
 
-    fn looks_like_struct_literal(&mut self) -> bool {
-        // pattern: { Key ...
-        if !self.next_matches(
-            1,
-            Token::Identifier {
-                value: String::new(),
-            },
-        ) {
-            // Note: We can't easily match Identifier with content without complex logic,
-            // but matches checks strict equality.
-            // Token::Identifier usually carries data.
-            // We need to check variant.
-            if let Some(tok) = self.next(1) {
-                if !matches!(tok, Token::Identifier { .. }) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        } else {
-            // next_matches expects exact match. Use manual check.
-            // unreachable because we check below
+    fn looks_like_struct_literal(&self) -> bool {
+        if !matches!(self.next(1), Some(Token::Identifier { .. })) {
+            return false;
         }
-
-        // pattern: { Key, ...
-        if self.next_matches(2, Token::Comma) {
-            return true;
-        }
-
-        // pattern: { Key: ...
-        if self.next_matches(2, Token::Colon) {
-            // pattern: { Key: Val, ...
-            // We can check lookahead 3 (Val) and 4 (Comma/RBrace)
-            // But simpler: if we see colon, it's either Label or Struct Field.
-            // If NO_STRUCT_LITERALS is on (e.g. if condition), Label is valid but weird (improper position).
-            // Struct Field is invalid.
-            // But detecting "Val, " strongly implies struct.
-
-            // Check if next(4) is comma (Idx 0={ 1=Key 2=: 3=Val 4=, )
-            if self.next_matches(4, Token::Comma) {
-                return true;
-            }
-
-            // Check for Literals at 3?
-            if let Some(tok) = self.next(3) {
-                match tok {
-                    Token::String { .. }
-                    | Token::FStringStart
-                    | Token::Integer { .. }
-                    | Token::Float { .. }
-                    | Token::True
-                    | Token::False
-                    | Token::Nil => {
-                        // Likely struct: { x: 1 } or { x: 1, }
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        false
+        self.next_matches(2, Token::Comma)
+            || (self.next_matches(2, Token::Colon)
+                && (self.next_matches(4, Token::Comma)
+                    || matches!(
+                        self.next(3),
+                        Some(
+                            Token::String { .. }
+                                | Token::FStringStart
+                                | Token::Integer { .. }
+                                | Token::Float { .. }
+                                | Token::True
+                                | Token::False
+                                | Token::Nil
+                        )
+                    )))
     }
 
     fn parse_struct_literal(&mut self, path: Path, span: Span) -> R<Box<Expression>> {
@@ -4944,6 +4727,56 @@ mod tests {
 
     #[derive(Default)]
     struct Symbols;
+
+    fn assert_nested_types_parse_once(open: &str, close: &str) {
+        let depth = 10;
+        let source = format!("{}int{}", open.repeat(depth), close.repeat(depth));
+        let file = Lexer::new(&source, crate::span::FileID::new(0))
+            .tokenize()
+            .unwrap();
+        let mut parser = Parser::new(file, NextNode::default());
+        parser.parse_type().unwrap();
+        let allocations = parser.next_index.borrow().allocations;
+        assert!(
+            allocations < 8 * (depth + 1),
+            "nested type performed {allocations} node allocations"
+        );
+    }
+
+    #[test]
+    fn nested_generic_types_parse_once() {
+        assert_nested_types_parse_once("Box[", "]");
+    }
+
+    #[test]
+    fn nested_parenthesized_types_parse_once() {
+        assert_nested_types_parse_once("(", ")");
+    }
+
+    #[test]
+    fn failed_type_lookahead_restores_compound_tokens() {
+        let file = Lexer::new("[Box[T??], &&U + value]", crate::span::FileID::new(0))
+            .tokenize()
+            .unwrap();
+        let original = format!("{:?}", file.tokens);
+        let mut parser = Parser::new(file, NextNode::default());
+        assert!(parser.parse_optional_type_arguments().unwrap().is_none());
+        assert_eq!(parser.cursor, 0);
+        assert_eq!(parser.next_index.borrow().next_index, 0);
+        assert_eq!(format!("{:?}", parser.file.tokens), original);
+    }
+
+    #[test]
+    fn preserves_ordinary_parameter_attributes() {
+        let declaration = parse_one_decl("func f(@marker value: int) {}");
+        let DeclarationKind::Function(function) = declaration.kind else {
+            panic!("expected function");
+        };
+        let param = &function.signature.prototype.inputs[0];
+        assert_eq!(param.attributes.len(), 1);
+        assert_eq!(param.attributes[0].identifier.symbol.as_str(), "marker");
+        assert_eq!(param.span.start.offset, 7);
+    }
 
     fn symbol_text(_symbols: &Symbols, symbol: impl AsRef<str>) -> String {
         symbol.as_ref().to_string()

@@ -277,7 +277,6 @@ impl Lexer {
 
         // ASI
         self.tokens = automatic_semicolon_insertion(self.tokens);
-        // println!("Tokens: {:#?}", self.tokens);
 
         Ok(File {
             id: self.file,
@@ -1296,65 +1295,38 @@ pub enum TokenCase {
 pub fn automatic_semicolon_insertion(tokens: Vec<Spanned<Token>>) -> Vec<Spanned<Token>> {
     use crate::span::{Span, Spanned};
 
-    if tokens.is_empty() {
-        return tokens;
-    }
-
     let mut out = Vec::with_capacity(tokens.len() + 8);
-    let len = tokens.len();
-    let mut i = 0usize;
-
-    while i < len {
-        let cur = tokens[i].clone();
-        let cur_can_end = can_end_statement(&cur.value);
-
-        // Find the next non-comment token.
-        let mut j = i + 1;
-        while j < len && is_comment(&tokens[j].value) {
-            j += 1;
-        }
-        let next_opt = tokens.get(j);
-
-        // Decide if we should insert a semicolon after `cur`.
-        let mut should_insert = false;
-        if cur_can_end {
-            match next_opt {
-                Some(next_spanned) => {
-                    let next_is_eof = is_eof(&next_spanned.value);
-                    let has_newline = next_spanned.span.start.line > cur.span.end.line;
-
-                    // Only consider inserting on newline or before EOF.
-                    if next_is_eof {
-                        should_insert = true;
-                    } else if has_newline {
-                        // Suppress insertion for operator-leading continuation lines.
-                        if !is_line_continuation_starter(&next_spanned.value) {
-                            should_insert = true;
-                        }
-                    }
+    // Walking backwards gives comment-skipping lookahead without cloning tokens.
+    let mut next: Option<(usize, bool, bool)> = None;
+    for token in tokens.into_iter().rev() {
+        let insert = can_end_statement(&token.value)
+            && match next {
+                None => true,
+                Some((line, eof, continuation)) => {
+                    eof || (line > token.span.end.line && !continuation)
                 }
-                None => {
-                    // No next token at all: be conservative and terminate the statement.
-                    should_insert = true;
-                }
-            }
-        }
-
-        out.push(cur.clone());
-
-        if should_insert {
-            let pos = cur.span.end;
-            let semi_span = Span {
-                start: pos,
-                end: pos,
-                file: cur.span.file,
             };
-            out.push(Spanned::new(Token::Semicolon, semi_span));
+        if insert {
+            let position = token.span.end;
+            out.push(Spanned::new(
+                Token::Semicolon,
+                Span {
+                    start: position,
+                    end: position,
+                    file: token.span.file,
+                },
+            ));
         }
-
-        i += 1;
+        if !is_comment(&token.value) {
+            next = Some((
+                token.span.start.line,
+                is_eof(&token.value),
+                is_line_continuation_starter(&token.value),
+            ));
+        }
+        out.push(token);
     }
-
+    out.reverse();
     out
 }
 
