@@ -69,11 +69,43 @@ impl std::fmt::Display for LayoutError {
     }
 }
 
+const INLINE_VISITED_CAPACITY: usize = 16;
+
+/// Most root layouts are small. Avoid a heap allocation for each of them while
+/// retaining hash-set lookup for large arrays and recursive reference graphs.
+#[derive(Default)]
+struct Visited {
+    inline: [(usize, usize); INLINE_VISITED_CAPACITY],
+    len: usize,
+    overflow: Option<HashSet<(usize, usize)>>,
+}
+
+impl Visited {
+    fn insert(&mut self, key: (usize, usize)) -> bool {
+        if let Some(overflow) = &mut self.overflow {
+            return overflow.insert(key);
+        }
+        if self.inline[..self.len].contains(&key) {
+            return false;
+        }
+        if self.len < INLINE_VISITED_CAPACITY {
+            self.inline[self.len] = key;
+            self.len += 1;
+        } else {
+            let mut overflow = HashSet::with_capacity(INLINE_VISITED_CAPACITY * 2);
+            overflow.extend(self.inline);
+            overflow.insert(key);
+            self.overflow = Some(overflow);
+        }
+        true
+    }
+}
+
 struct Evaluator<'a, F> {
     nodes: &'a [GcLayoutNode],
     mode: TraceMode,
     emit: F,
-    visited: HashSet<(usize, usize)>,
+    visited: Visited,
     visits: usize,
 }
 
@@ -232,7 +264,7 @@ pub(crate) unsafe fn trace_layout(
         nodes,
         mode,
         emit,
-        visited: HashSet::new(),
+        visited: Visited::default(),
         visits: 0,
     };
     unsafe { evaluator.visit(0, base as usize, limit, 0) }
@@ -241,6 +273,63 @@ pub(crate) unsafe fn trace_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visited_preserves_both_key_components_across_overflow() {
+        let mut visited = Visited::default();
+        let mut expected = HashSet::new();
+        // Include zero, equal addresses with different nodes, and equal nodes
+        // with different addresses. Revisit old keys after spilling, too.
+        for key in (0..(INLINE_VISITED_CAPACITY / 4 + 2))
+            .flat_map(|base| (0..4).map(move |node| (base, node)))
+        {
+            assert_eq!(visited.insert(key), expected.insert(key));
+            if expected.len() <= INLINE_VISITED_CAPACITY {
+                assert!(visited.overflow.is_none());
+            } else {
+                assert!(visited.overflow.is_some());
+            }
+            for old in &expected {
+                assert!(!visited.insert(*old));
+            }
+        }
+    }
+
+    #[test]
+    fn recursive_reference_cycle_survives_visited_overflow() {
+        let nodes = [
+            node(0, 0, 1, 2, GC_LAYOUT_AGGREGATE, 0),
+            node(0, 0, 0, 1, GC_LAYOUT_REFERENCE, 0),
+            node(8, 0, 0, 0, GC_LAYOUT_POINTER, 0),
+        ];
+        let payloads = [0_u64; 24];
+        let mut values: Vec<_> = payloads
+            .iter()
+            .map(|payload| RecursiveValue {
+                next: std::ptr::null(),
+                payload,
+            })
+            .collect();
+        for index in 0..values.len() {
+            values[index].next = &values[(index + 1) % values.len()];
+        }
+        let mut roots = Vec::new();
+        unsafe {
+            trace_layout(
+                values.as_ptr().cast(),
+                &nodes,
+                std::mem::size_of::<RecursiveValue>(),
+                TraceMode::Stack,
+                |root| roots.push(root),
+            )
+            .unwrap();
+        }
+        assert_eq!(roots.len(), values.len() * 2);
+        for value in &values {
+            assert!(roots.contains(&(value as *const RecursiveValue).cast()));
+            assert!(roots.contains(&value.payload.cast()));
+        }
+    }
 
     const fn node(
         offset: u64,

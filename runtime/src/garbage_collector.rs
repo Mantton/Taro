@@ -6,8 +6,8 @@
 //! coordinated through per-thread safepoints. Each mutator publishes roots
 //! from compiler PC maps before parking, all registered threads rendezvous
 //! before collection, and the global heap remains protected by a mutex. This
-//! keeps multithreaded mutation safe, but allocation and collection are still
-//! globally serialized.
+//! keeps multithreaded mutation safe. Warm small allocations use per-mutator
+//! cached spans without the heap mutex; refills and collection are serialized.
 //!
 //! # Overview
 //!
@@ -545,18 +545,6 @@ fn wait_for_gc_resume() {
     }
 }
 
-/// Cancel any in-progress GC and wake all threads blocked in
-/// `wait_for_gc_resume`. Called by the executor during `force_shutdown` so
-/// that a worker-thread panic does not leave background workers deadlocked
-/// indefinitely on the GC resume condvar.
-pub(crate) fn cancel_pending_collection() {
-    let _guard = GC_RESUME_LOCK.lock().unwrap();
-    if gc_requested(Ordering::Acquire) {
-        GC_POLL_FLAGS.fetch_and(!GC_REQUESTED_FLAG, Ordering::Release);
-        GC_RESUME_COND.notify_all();
-    }
-}
-
 pub(crate) fn ensure_thread_registered() {
     let should_park = CURRENT_THREAD_STATE.with(|slot| {
         let slot = slot.borrow();
@@ -722,12 +710,16 @@ fn initiate_collection() {
     // them now while this thread still owns all of its register state.
     publish_current_thread_roots();
     let threads = threads_for_collection(current_id);
+    let rendezvous = pause_started.elapsed();
 
     // Now all other threads are parked. Discovery and heap reclamation happen
     // during the pause, but native resource reclaimers must wait until the
     // world is running again. Even runtime-only reclaimers may take subsystem
     // locks or wake tasks.
-    let work = with_gc(|gc| gc.collect(&threads));
+    let work = with_gc(|gc| {
+        add_elapsed(&mut gc.stats.phases.rendezvous_ns, rendezvous);
+        gc.collect(&threads)
+    });
     let pause = pause_started.elapsed();
     with_gc(|gc| gc.record_pause(pause));
 
@@ -792,7 +784,8 @@ fn try_cached_small_allocation(
     desc: *const GcDesc,
     is_array: bool,
 ) -> Option<*mut u8> {
-    if allocation_requires_slow_path(GC_POLL_FLAGS.load(Ordering::Relaxed), gc_stress_enabled()) {
+    let flags = GC_POLL_FLAGS.load(Ordering::Acquire);
+    if flags != 0 && allocation_requires_slow_path(flags, gc_stress_enabled()) {
         return None;
     }
     CURRENT_THREAD_STATE.with(|slot| {
@@ -879,6 +872,7 @@ fn runtime_alloc_with_scan_size(
     let align = desc_alignment(desc).max(std::mem::size_of::<usize>());
     let alloc_size = align_up(size, align);
     if alloc_size > PAGE_SIZE {
+        ensure_thread_registered();
         let mut attempted_soft_limit_collection = prepare_for_allocation();
         let pages = pages_for_size(alloc_size);
         loop {
@@ -908,6 +902,10 @@ fn runtime_alloc_with_scan_size(
         {
             return ptr;
         }
+        // The cache probe already checks attached TLS and collection requests.
+        // Registration is needed only on a miss, including first use and
+        // detach/reattach, so warm object allocation takes one TLS borrow.
+        ensure_thread_registered();
         let attempted_soft_limit_collection = prepare_for_allocation();
         refill_cached_span(
             cache_slot,
@@ -924,8 +922,8 @@ fn runtime_alloc_with_scan_size(
 /// Returns null if size is 0 or desc is null.
 #[unsafe(no_mangle)]
 pub extern "C" fn __gc__alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
-    ensure_thread_registered();
     if size == 0 || desc.is_null() {
+        ensure_thread_registered();
         return std::ptr::null_mut();
     }
     runtime_alloc_with_scan_size(size, size, desc, false)
@@ -1594,6 +1592,22 @@ impl Span {
 
 const MAX_GC_PAUSE_SAMPLES: usize = 1024;
 
+/// Cumulative wall time in disjoint collection phases. Rendezvous includes the
+/// initiating thread's root publication and waiting for other threads; their
+/// overlapping publication work must not be added to it again.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GcPhaseTimes {
+    pub rendezvous_ns: u64,
+    pub mark_ns: u64,
+    pub weak_ns: u64,
+    pub sweep_ns: u64,
+    pub scavenge_ns: u64,
+}
+
+fn add_elapsed(total: &mut u64, elapsed: Duration) {
+    *total = total.saturating_add(elapsed.as_nanos().min(u64::MAX as u128) as u64);
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GcStatsSnapshot {
     pub collections: usize,
@@ -1611,6 +1625,8 @@ pub(crate) struct GcStatsSnapshot {
     pub released_bytes: usize,
     pub scavenged_bytes: usize,
     pub soft_limit_exceedances: usize,
+    pub phases: GcPhaseTimes,
+    pub total_pause_ns: u64,
     pause_samples: Vec<(usize, u64)>,
 }
 
@@ -1646,6 +1662,8 @@ struct GcStats {
     released_bytes: usize,
     scavenged_bytes: usize,
     soft_limit_exceedances: usize,
+    phases: GcPhaseTimes,
+    total_pause_ns: u64,
     pause_samples: VecDeque<(usize, u64)>,
 }
 
@@ -1662,10 +1680,14 @@ impl GcStats {
     }
 
     fn record_free(&mut self, size: usize) {
-        self.total_frees += 1;
-        self.total_freed_bytes = self.total_freed_bytes.saturating_add(size);
-        self.live_objects = self.live_objects.saturating_sub(1);
-        self.live_bytes = self.live_bytes.saturating_sub(size);
+        self.record_frees(1, size);
+    }
+
+    fn record_frees(&mut self, count: usize, bytes: usize) {
+        self.total_frees = self.total_frees.saturating_add(count);
+        self.total_freed_bytes = self.total_freed_bytes.saturating_add(bytes);
+        self.live_objects = self.live_objects.saturating_sub(count);
+        self.live_bytes = self.live_bytes.saturating_sub(bytes);
     }
 
     fn record_collection(
@@ -1687,6 +1709,7 @@ impl GcStats {
     }
 
     fn record_pause(&mut self, pause: Duration) {
+        add_elapsed(&mut self.total_pause_ns, pause);
         if self.pause_samples.len() == MAX_GC_PAUSE_SAMPLES {
             let _ = self.pause_samples.pop_front();
         }
@@ -1711,6 +1734,8 @@ impl GcStats {
             released_bytes: self.released_bytes,
             scavenged_bytes: self.scavenged_bytes,
             soft_limit_exceedances: self.soft_limit_exceedances,
+            phases: self.phases,
+            total_pause_ns: self.total_pause_ns,
             pause_samples: self.pause_samples.iter().copied().collect(),
         }
     }
@@ -2331,15 +2356,23 @@ impl Gc {
             self.spans.iter().flatten().all(|span| !span.checked_out),
             "collection began while a mutator owned an allocation span"
         );
+        let phase_started = Instant::now();
         let mut manual_roots = std::mem::take(&mut self.manual_roots);
         let static_roots = std::mem::take(&mut self.static_roots);
         manual_roots.extend(self.persistent_roots.keys().copied());
         self.mark_roots(manual_roots.into_iter(), &static_roots, threads);
         self.static_roots = static_roots;
+        add_elapsed(&mut self.stats.phases.mark_ns, phase_started.elapsed());
+        let phase_started = Instant::now();
         self.process_weak_cells();
+        add_elapsed(&mut self.stats.phases.weak_ns, phase_started.elapsed());
+        let phase_started = Instant::now();
         let (freed, reclaimers, cleanup_handles) = self.sweep();
+        add_elapsed(&mut self.stats.phases.sweep_ns, phase_started.elapsed());
+        let phase_started = Instant::now();
         let released_bytes = self.release_empty_segments();
         let scavenged_bytes = self.scavenge_free_pages();
+        add_elapsed(&mut self.stats.phases.scavenge_ns, phase_started.elapsed());
         self.stats.released_bytes = self.stats.released_bytes.saturating_add(released_bytes);
         self.stats.scavenged_bytes = self.stats.scavenged_bytes.saturating_add(scavenged_bytes);
         let (free_runs, free_pages) = self.free_page_stats();
@@ -2543,6 +2576,25 @@ impl Gc {
                 }
                 bitset_set(&mut span.mark_map, 0, false);
                 self.spans[span_id] = Some(span);
+                continue;
+            }
+
+            // An entirely dead span needs no reusable slot metadata: the Span
+            // itself is about to be dropped. Weak cells have already been
+            // processed, and all mutator caches were returned before marking.
+            // Keep per-object discovery whenever native/language cleanup work
+            // exists, even if its owner belongs to a different span.
+            if self.reclaimers.is_empty()
+                && self.cleanup_tokens_by_owner.is_empty()
+                && span.mark_map.iter().all(|word| *word == 0)
+            {
+                let objects = span.allocated.load(Ordering::Relaxed);
+                let bytes = objects.saturating_mul(span.object_size);
+                self.stats.record_frees(objects, bytes);
+                freed.objects += objects;
+                freed.bytes = freed.bytes.saturating_add(bytes);
+                self.free_span_pages(&span);
+                self.free_span_id(span_id);
                 continue;
             }
 
@@ -2931,13 +2983,13 @@ mod tests {
         GC_REQUESTED_FLAG, Gc, GcConfig, GcDesc, GcStats, MAX_GC_PAUSE_SAMPLES, PAGE_SIZE,
         SEGMENT_SIZE, Segment, THREAD_REGISTRY, allocation_requires_slow_path, atomic_bitset_get,
         current_thread_gc_mutex_acquisitions, ensure_thread_registered, fully_free_os_page_range,
-        next_heap_goal, os_page_size, parse_gc_memory_limit, parse_gc_percent,
+        gc_requested, next_heap_goal, os_page_size, parse_gc_memory_limit, parse_gc_percent,
         register_segment_arenas,
     };
     use crate::gc_layout::{GC_LAYOUT_POINTER, GcLayoutNode};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     static POINTER_NODES: [GcLayoutNode; 1] = [GcLayoutNode {
         offset: 0,
@@ -2977,6 +3029,24 @@ mod tests {
     fn count_finalization(data: usize) {
         let count = unsafe { &*(data as *const AtomicUsize) };
         count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[test]
+    fn cumulative_pause_time_survives_sample_eviction() {
+        let mut stats = GcStats::default();
+        for collection in 1..=MAX_GC_PAUSE_SAMPLES + 3 {
+            stats.collections = collection;
+            stats.record_pause(Duration::from_nanos(7));
+        }
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.pause_nanos_since(0).len(), MAX_GC_PAUSE_SAMPLES);
+        assert_eq!(
+            snapshot.total_pause_ns,
+            (MAX_GC_PAUSE_SAMPLES as u64 + 3) * 7
+        );
+        stats.total_pause_ns = u64::MAX - 1;
+        stats.record_pause(Duration::from_nanos(7));
+        assert_eq!(stats.snapshot().total_pause_ns, u64::MAX);
     }
 
     #[test]
@@ -3070,6 +3140,24 @@ mod tests {
     }
 
     #[test]
+    fn allocation_registers_and_reattaches_before_refill() {
+        std::thread::spawn(|| {
+            for size in [8, PAGE_SIZE + 1, 8] {
+                let ptr = __gc__alloc(size, &BYTE_DESC);
+                assert!(!ptr.is_null());
+                assert!(CURRENT_THREAD_STATE.with(|slot| {
+                    slot.borrow()
+                        .as_ref()
+                        .is_some_and(|current| current.attached)
+                }));
+                __gc__thread_detach();
+            }
+        })
+        .join()
+        .expect("allocation registration thread");
+    }
+
+    #[test]
     fn warm_small_allocations_do_not_acquire_the_global_gc_mutex() {
         __gc__thread_enter_managed();
         let mut observed_uninterrupted_fast_path = false;
@@ -3110,6 +3198,34 @@ mod tests {
     }
 
     #[test]
+    fn executor_shutdown_preserves_another_threads_collection_request() {
+        // Keep this mutator active so the collector cannot finish its request
+        // before we inspect the effect of shutting down an unrelated scheduler.
+        __gc__thread_enter_managed();
+        let collector = std::thread::spawn(|| {
+            __gc__collect();
+            __gc__thread_detach();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gc_requested(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let requested = gc_requested(Ordering::Acquire);
+        crate::executor::shutdown_idle_scheduler_for_gc_test();
+        let preserved = gc_requested(Ordering::Acquire);
+
+        // Release the held mutator before asserting, including on the old
+        // implementation where shutdown incorrectly cancelled the request.
+        __gc__thread_detach();
+        collector.join().expect("collector thread");
+        assert!(requested, "collector must request the managed mutator");
+        assert!(
+            preserved,
+            "executor shutdown must not resume another collector's world"
+        );
+    }
+
+    #[test]
     fn concurrent_cached_allocations_rendezvous_with_forced_gc() {
         const THREADS: usize = 4;
         const ALLOCATIONS: usize = 256;
@@ -3118,8 +3234,11 @@ mod tests {
             for thread_index in 0..THREADS {
                 let barrier = barrier.clone();
                 scope.spawn(move || {
-                    __gc__thread_enter_managed();
+                    // A native barrier cannot poll GC. Join it before entering
+                    // managed code so another test's collection cannot strand
+                    // some threads at the barrier and others at a safepoint.
                     barrier.wait();
+                    __gc__thread_enter_managed();
                     for index in 0..ALLOCATIONS {
                         let allocation = __gc__alloc(BYTE_DESC.size, &BYTE_DESC);
                         assert!(!allocation.is_null());
@@ -3138,18 +3257,21 @@ mod tests {
 
     #[test]
     fn reused_small_slots_are_zero_before_publication() {
-        let mut gc = Gc::new_with_config(GcConfig::default());
-        let desc = bytes_desc(16);
-        let stale = gc.alloc(16, &desc, false);
-        let keeper = gc.alloc(16, &desc, false);
-        unsafe { std::ptr::write_bytes(stale, 0xa5, 16) };
-        gc.add_root(keeper);
-        assert!(gc.collect(&[]).is_empty());
+        for size in [1_usize, 8, 9, 16, 24, 32] {
+            let mut gc = Gc::new_with_config(GcConfig::default());
+            let desc = bytes_desc(size);
+            let slot_size = size.max(8).next_power_of_two();
+            let stale = gc.alloc(size, &desc, false);
+            let keeper = gc.alloc(size, &desc, false);
+            unsafe { std::ptr::write_bytes(stale, 0xa5, slot_size) };
+            gc.add_root(keeper);
+            assert!(gc.collect(&[]).is_empty());
 
-        let reused = gc.alloc(16, &desc, false);
-        assert_eq!(reused, stale);
-        let bytes = unsafe { std::slice::from_raw_parts(reused, 16) };
-        assert!(bytes.iter().all(|byte| *byte == 0));
+            let reused = gc.alloc(size, &desc, false);
+            assert_eq!(reused, stale);
+            let bytes = unsafe { std::slice::from_raw_parts(reused, slot_size) };
+            assert!(bytes.iter().all(|byte| *byte == 0), "slot size {slot_size}");
+        }
     }
 
     #[test]
@@ -3165,6 +3287,64 @@ mod tests {
         assert_eq!(reused, stale);
         let bytes = unsafe { std::slice::from_raw_parts(reused, size) };
         assert!(bytes.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn dead_small_spans_preserve_accounting_interior_roots_and_zeroed_reuse() {
+        for has_pointers in [false, true] {
+            let mut gc = Gc::new_with_config(GcConfig::default());
+            let desc = if has_pointers {
+                pointer_desc()
+            } else {
+                bytes_desc(8)
+            };
+            // Fill one span, then leave a partially occupied second span.
+            let count = PAGE_SIZE / 8 + 3;
+            let objects: Vec<_> = (0..count).map(|_| gc.alloc(8, &desc, false)).collect();
+            let keeper = *objects.last().unwrap();
+            for dead in &objects[..count - 1] {
+                unsafe { std::ptr::write_bytes(*dead, 0xa5, 8) };
+            }
+            let interior = unsafe { keeper.add(4) };
+            gc.add_root(interior);
+            assert!(gc.collect(&[]).is_empty());
+            assert!(is_live(&gc, keeper));
+            assert!(objects[..count - 1].iter().all(|ptr| !is_live(&gc, *ptr)));
+            assert_eq!(gc.stats.live_objects, 1);
+            assert_eq!(gc.stats.live_bytes, 8);
+            assert_eq!(gc.stats.last_freed_objects, count - 1);
+            assert_eq!(gc.stats.total_freed_bytes, (count - 1) * 8);
+
+            // Marks must reset even when a span contains survivors, and free
+            // slots from a previous sweep must not be counted as new frees.
+            gc.add_root(interior);
+            assert!(gc.collect(&[]).is_empty());
+            assert_eq!(gc.stats.last_freed_objects, 0);
+            assert!(gc.collect(&[]).is_empty());
+            assert_eq!(gc.stats.last_freed_objects, 1);
+            assert_eq!(gc.stats.total_frees, count);
+            assert_eq!(gc.stats.total_freed_bytes, count * 8);
+            assert_eq!(gc.stats.live_objects, 0);
+            assert_eq!(gc.stats.live_bytes, 0);
+            assert!(gc.spans.iter().all(Option::is_none));
+            assert!(gc.collect(&[]).is_empty());
+            assert_eq!(gc.stats.last_freed_objects, 0);
+            assert_eq!(gc.stats.total_frees, count);
+
+            // Reuse pages and span IDs in a different class and scan lane.
+            let reused_desc = if has_pointers {
+                bytes_desc(16)
+            } else {
+                pointer_desc()
+            };
+            let reused = gc.alloc(16, &reused_desc, !has_pointers);
+            assert!(is_live(&gc, reused));
+            let bytes = unsafe { std::slice::from_raw_parts(reused, 16) };
+            assert!(bytes.iter().all(|byte| *byte == 0));
+            gc.add_root(reused);
+            assert!(gc.collect(&[]).is_empty());
+            assert_eq!(gc.stats.live_bytes, 16);
+        }
     }
 
     #[test]
@@ -3365,6 +3545,39 @@ mod tests {
 
         gc.add_root(frame);
         assert!(gc.collect(&[]).is_empty());
+    }
+
+    #[test]
+    fn cleanup_is_discovered_when_its_entire_owner_span_dies() {
+        let mut gc = Gc::new_with_config(GcConfig::default());
+        let owner_desc = bytes_desc(8);
+        let frame_desc = bytes_desc(32);
+        let owner = gc.alloc(8, &owner_desc, false);
+        let neighbor = gc.alloc(8, &owner_desc, false);
+        // Keep the cleanup frame in a different size-class span, so no object
+        // in the owner's span survives to force ordinary per-slot sweeping.
+        let frame = gc.alloc(32, &frame_desc, false);
+        let handle = 0x1234usize as *mut u8;
+        assert!(matches!(
+            gc.register_cleanup(owner, frame, handle),
+            CleanupRegistration::Registered(_)
+        ));
+        gc.add_root(frame);
+        let work = gc.collect(&[]);
+        assert_eq!(work.cleanup_handles, vec![handle as usize]);
+        assert!(work.reclaimers.is_empty());
+        assert!(!is_live(&gc, owner));
+        assert!(!is_live(&gc, neighbor));
+        assert!(is_live(&gc, frame));
+        assert!(gc.cleanups.is_empty());
+        assert!(gc.cleanup_tokens_by_owner.is_empty());
+        assert_eq!(gc.stats.last_freed_objects, 2);
+
+        let reused = gc.alloc(8, &owner_desc, false);
+        assert_eq!(reused, owner);
+        gc.add_root(frame);
+        assert!(gc.collect(&[]).is_empty());
+        assert_eq!(gc.stats.last_freed_objects, 1);
     }
 
     #[test]

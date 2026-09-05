@@ -2630,11 +2630,9 @@ impl Scheduler {
         if self.shutdown.swap(true, Ordering::AcqRel) {
             return;
         }
-        // Unblock any thread waiting for a GC cycle to complete. Without this,
-        // a worker-thread panic can leave other threads deadlocked forever in
-        // wait_for_gc_resume since no collector will ever finish the GC and
-        // clear GC_REQUESTED.
-        crate::garbage_collector::cancel_pending_collection();
+        // Only the collector may resume the world. WorkerRuntimeGuard detaches
+        // exiting workers, including during panic unwinding, so a concurrent
+        // collector can finish without cancelling its request here.
         if let Some(pool) = self.blocking_pool.get() {
             pool.state.shutdown();
         }
@@ -3037,6 +3035,22 @@ fn format_diagnostics_report(
             pause_p95,
             pause_p99,
             pause_max,
+        );
+        let _ = writeln!(
+            output,
+            "  gc_phase_ns rendezvous={} mark={} weak={} sweep={} scavenge={} pause_total={}",
+            gc.phases
+                .rendezvous_ns
+                .saturating_sub(gc_baseline.phases.rendezvous_ns),
+            gc.phases.mark_ns.saturating_sub(gc_baseline.phases.mark_ns),
+            gc.phases.weak_ns.saturating_sub(gc_baseline.phases.weak_ns),
+            gc.phases
+                .sweep_ns
+                .saturating_sub(gc_baseline.phases.sweep_ns),
+            gc.phases
+                .scavenge_ns
+                .saturating_sub(gc_baseline.phases.scavenge_ns),
+            gc.total_pause_ns.saturating_sub(gc_baseline.total_pause_ns),
         );
         let _ = writeln!(
             output,
@@ -3999,6 +4013,11 @@ pub extern "C" fn __rt__executor_abort_rootless() {
 }
 
 #[cfg(test)]
+pub(crate) fn shutdown_idle_scheduler_for_gc_test() {
+    Scheduler::new(false, 1).force_shutdown();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::task::{__rt__async_create, __rt__async_run_root, TaskMobility};
@@ -4124,9 +4143,45 @@ mod tests {
         assert!(report.contains("tasks created=1 polls=2 completed=1"));
         assert!(report.contains("queues enqueues=2 global=0 worker=2"));
         assert!(report.contains("gc_pause_ns count=0 p50=0 p95=0 p99=0 max=0"));
+        assert!(
+            report.contains(
+                "gc_phase_ns rendezvous=0 mark=0 weak=0 sweep=0 scavenge=0 pause_total=0"
+            )
+        );
         assert!(report.contains("cleanups queued=0 executed=0 cancelled=0 panicked=0"));
         assert!(report.contains("runtime trace: workers=3 events=1 capacity=4 dropped=0"));
         assert!(report.contains("event=task_complete task=7"));
+    }
+
+    #[test]
+    fn runtime_report_gc_phases_are_session_deltas() {
+        let diagnostics = RuntimeDiagnostics::new(RuntimeDiagnosticsConfig {
+            stats: true,
+            ..RuntimeDiagnosticsConfig::default()
+        });
+        let mut baseline = GcStatsSnapshot::default();
+        baseline.phases.mark_ns = 100;
+        baseline.phases.sweep_ns = 200;
+        baseline.total_pause_ns = 400;
+        let mut current = baseline.clone();
+        current.phases.mark_ns += 7;
+        current.phases.sweep_ns += 11;
+        current.total_pause_ns += 20;
+        let report = format_diagnostics_report(
+            1,
+            &diagnostics,
+            &RuntimeStatsSnapshot::default(),
+            &current,
+            &baseline,
+            &crate::cleanup::CleanupStatsSnapshot::default(),
+            &crate::cleanup::CleanupStatsSnapshot::default(),
+            (0, 0, 0, 0, 0),
+        );
+        assert!(
+            report.contains(
+                "gc_phase_ns rendezvous=0 mark=7 weak=0 sweep=11 scavenge=0 pause_total=20"
+            )
+        );
     }
 
     #[test]
