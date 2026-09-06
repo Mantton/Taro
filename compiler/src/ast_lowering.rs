@@ -1649,38 +1649,7 @@ impl Actor<'_, '_> {
             },
             ast::ExpressionKind::Break { label } => hir::ExpressionKind::Break { label },
             ast::ExpressionKind::Continue { label } => hir::ExpressionKind::Continue { label },
-            ast::ExpressionKind::Call(node, args) => {
-                let callee_state = self
-                    .resolutions
-                    .expression_resolutions
-                    .get(&node.id)
-                    .cloned();
-                let callee = self.lower_expression(node);
-                let args = self.lower_expression_arguments(args);
-
-                let treat_as_method =
-                    matches!(
-                        callee_state,
-                        None | Some(ExpressionResolutionState::DeferredAssociatedValue)
-                    ) && matches!(callee.kind, hir::ExpressionKind::Member { .. });
-
-                if treat_as_method {
-                    let hir::ExpressionKind::Member { target, name } = callee.kind else {
-                        unreachable!()
-                    };
-
-                    hir::ExpressionKind::MethodCall {
-                        receiver: target,
-                        name,
-                        arguments: args,
-                    }
-                } else {
-                    hir::ExpressionKind::Call {
-                        callee,
-                        arguments: args,
-                    }
-                }
-            }
+            ast::ExpressionKind::Call(node, args) => self.lower_call(node, args),
             ast::ExpressionKind::Reference(node, mutability) => {
                 hir::ExpressionKind::Reference(self.lower_expression(node), mutability)
             }
@@ -2505,6 +2474,42 @@ impl Actor<'_, '_> {
         kind
     }
 
+    fn lower_call(
+        &mut self,
+        node: Box<ast::Expression>,
+        args: Vec<ast::ExpressionArgument>,
+    ) -> hir::ExpressionKind {
+        let callee_state = self
+            .resolutions
+            .expression_resolutions
+            .get(&node.id)
+            .cloned();
+        let callee = self.lower_expression(node);
+        let args = self.lower_expression_arguments(args);
+
+        let treat_as_method = matches!(
+            callee_state,
+            None | Some(ExpressionResolutionState::DeferredAssociatedValue)
+        ) && matches!(callee.kind, hir::ExpressionKind::Member { .. });
+
+        if treat_as_method {
+            let hir::ExpressionKind::Member { target, name } = callee.kind else {
+                unreachable!()
+            };
+
+            hir::ExpressionKind::MethodCall {
+                receiver: target,
+                name,
+                arguments: args,
+            }
+        } else {
+            hir::ExpressionKind::Call {
+                callee,
+                arguments: args,
+            }
+        }
+    }
+
     fn lower_pipe_expression(
         &mut self,
         lhs: Box<ast::Expression>,
@@ -2512,75 +2517,30 @@ impl Actor<'_, '_> {
         span: Span,
     ) -> Box<hir::Expression> {
         let lhs_span = lhs.span;
-
-        match *rhs {
+        let (callee, mut args) = match *rhs {
             ast::Expression {
-                kind: ast::ExpressionKind::Call(callee, mut args),
+                kind: ast::ExpressionKind::Call(callee, args),
                 ..
-            } => {
-                let mut lhs_slot = Some(lhs);
-
-                for arg in args.iter_mut() {
-                    if lhs_slot.is_some()
-                        && matches!(arg.expression.kind, ast::ExpressionKind::Wildcard)
-                    {
-                        arg.expression = lhs_slot.take().unwrap();
-                        break;
-                    }
-                }
-
-                if let Some(expr) = lhs_slot {
-                    args.insert(
-                        0,
-                        ast::ExpressionArgument {
-                            label: None,
-                            expression: expr,
-                            span: lhs_span,
-                        },
-                    );
-                }
-
-                let callee_state = self
-                    .resolutions
-                    .expression_resolutions
-                    .get(&callee.id)
-                    .cloned();
-                let kind = match callee.kind {
-                    ast::ExpressionKind::Member { target, name }
-                        if matches!(
-                            callee_state,
-                            None | Some(ExpressionResolutionState::DeferredAssociatedValue)
-                        ) =>
-                    {
-                        hir::ExpressionKind::MethodCall {
-                            receiver: self.lower_expression(target),
-                            name,
-                            arguments: self.lower_expression_arguments(args),
-                        }
-                    }
-                    _ => hir::ExpressionKind::Call {
-                        callee: self.lower_expression(callee),
-                        arguments: self.lower_expression_arguments(args),
-                    },
-                };
-
-                self.mk_expression(kind, span)
-            }
-            rhs_expr => {
-                let args = vec![ast::ExpressionArgument {
+            } => (callee, args),
+            rhs => (Box::new(rhs), Vec::new()),
+        };
+        if let Some(arg) = args
+            .iter_mut()
+            .find(|arg| matches!(arg.expression.kind, ast::ExpressionKind::Wildcard))
+        {
+            arg.expression = lhs;
+        } else {
+            args.insert(
+                0,
+                ast::ExpressionArgument {
                     label: None,
                     expression: lhs,
                     span: lhs_span,
-                }];
-
-                let kind = hir::ExpressionKind::Call {
-                    callee: self.lower_expression(Box::new(rhs_expr)),
-                    arguments: self.lower_expression_arguments(args),
-                };
-
-                self.mk_expression(kind, span)
-            }
+                },
+            );
         }
+        let kind = self.lower_call(callee, args);
+        self.mk_expression(kind, span)
     }
 }
 

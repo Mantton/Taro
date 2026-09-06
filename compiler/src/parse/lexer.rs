@@ -228,10 +228,7 @@ pub struct Lexer {
 
 impl Lexer {
     pub fn new(source: &str, file: FileID) -> Lexer {
-        Self::new_with_position(source, file, Position { line: 0, offset: 0 })
-    }
-
-    pub fn new_with_position(source: &str, file: FileID, position: Position) -> Lexer {
+        let position = Position { line: 0, offset: 0 };
         let source: Vec<char> = source.chars().collect();
         Lexer {
             anchor: position,
@@ -726,10 +723,10 @@ impl Lexer {
                     let expr_start = self.position();
                     self.push_token_with_span(Token::FStringExprStart, marker_start, expr_start);
 
-                    let expr_source = self.scan_fstring_interpolation_source()?;
-                    let expr_tokens =
-                        self.lex_fstring_expression_tokens(&expr_source, expr_start)?;
-                    self.tokens.extend(expr_tokens);
+                    let anchor = self.anchor;
+                    let result = self.lex_fstring_interpolation();
+                    self.anchor = anchor;
+                    result?;
 
                     let close_start = self.position();
                     if !self.eat('}') {
@@ -770,140 +767,68 @@ impl Lexer {
         Ok(())
     }
 
-    fn scan_fstring_interpolation_source(&mut self) -> Result<String, LexerError> {
-        let mut source = String::new();
+    fn lex_fstring_interpolation(&mut self) -> Result<(), LexerError> {
+        let start = self.cursor;
+        let line = self.line;
         let mut brace_depth = 0usize;
-
         loop {
-            let Some(ch) = self.first() else {
-                return Err(LexerError::UnterminatedFStringInterpolation);
-            };
-
-            match ch {
-                '\n' => return Err(LexerError::UnterminatedFStringInterpolation),
-                '{' => {
-                    brace_depth += 1;
-                    source.push(ch);
-                    self.next_char();
-                }
-                '}' => {
-                    if brace_depth == 0 {
-                        if source.trim().is_empty() {
-                            return Err(LexerError::EmptyFStringInterpolation);
-                        }
-                        return Ok(source);
+            match self.first() {
+                None | Some('\n') => return Err(LexerError::UnterminatedFStringInterpolation),
+                Some('}') if brace_depth == 0 => {
+                    if self.source[start..self.cursor]
+                        .iter()
+                        .all(|c| c.is_whitespace())
+                    {
+                        return Err(LexerError::EmptyFStringInterpolation);
                     }
-                    brace_depth -= 1;
-                    source.push(ch);
-                    self.next_char();
-                }
-                '"' | '\'' | '`' => {
-                    source.push(ch);
-                    self.next_char();
-                    self.consume_fstring_quoted_segment(ch, &mut source)?;
-                }
-                '/' if self.second() == Some('/') => {
-                    source.push('/');
-                    source.push('/');
-                    self.next_char();
-                    self.next_char();
-                    while let Some(c) = self.first() {
-                        if c == '\n' {
-                            return Err(LexerError::UnterminatedFStringInterpolation);
-                        }
-                        source.push(c);
-                        self.next_char();
+                    // The previous standalone lexer removed its trailing semicolon,
+                    // including an explicit one. Preserve that accepted syntax.
+                    if matches!(
+                        self.tokens.last().map(|token| &token.value),
+                        Some(Token::Semicolon)
+                    ) {
+                        self.tokens.pop();
                     }
-                    return Err(LexerError::UnterminatedFStringInterpolation);
-                }
-                '/' if self.second() == Some('*') => {
-                    source.push('/');
-                    source.push('*');
-                    self.next_char();
-                    self.next_char();
-                    loop {
-                        let Some(c) = self.first() else {
-                            return Err(LexerError::UnterminatedFStringInterpolation);
-                        };
-                        if c == '\n' {
-                            return Err(LexerError::UnterminatedFStringInterpolation);
-                        }
-                        if c == '*' && self.second() == Some('/') {
-                            source.push('*');
-                            source.push('/');
-                            self.next_char();
-                            self.next_char();
-                            break;
-                        }
-                        source.push(c);
-                        self.next_char();
-                    }
-                }
-                _ => {
-                    source.push(ch);
-                    self.next_char();
-                }
-            }
-        }
-    }
-
-    fn consume_fstring_quoted_segment(
-        &mut self,
-        delimiter: char,
-        out: &mut String,
-    ) -> Result<(), LexerError> {
-        loop {
-            let Some(ch) = self.first() else {
-                return Err(LexerError::UnterminatedFStringInterpolation);
-            };
-
-            match ch {
-                '\n' => return Err(LexerError::UnterminatedFStringInterpolation),
-                '\\' => {
-                    out.push('\\');
-                    self.next_char();
-                    let Some(escaped) = self.first() else {
-                        return Err(LexerError::UnterminatedFStringInterpolation);
-                    };
-                    if escaped == '\n' {
-                        return Err(LexerError::UnterminatedFStringInterpolation);
-                    }
-                    out.push(escaped);
-                    self.next_char();
-                }
-                _ if ch == delimiter => {
-                    out.push(ch);
-                    self.next_char();
                     return Ok(());
                 }
-                _ => {
-                    out.push(ch);
-                    self.next_char();
+                _ => {}
+            }
+            self.anchor = self.position();
+            let token_start = self.cursor;
+            let token = self.next_token();
+            if self.line != line {
+                // A string, rune, escaped identifier or comment may consume
+                // the newline. Interpolation diagnostics end at that newline,
+                // just as they do when it appears between tokens.
+                let newline = self.source[token_start..self.cursor.min(self.source.len())]
+                    .iter()
+                    .position(|ch| *ch == '\n')
+                    .expect("token crossed a newline");
+                self.cursor = token_start + newline;
+                self.line = line;
+                self.offset = self.anchor.offset + newline;
+                return Err(LexerError::UnterminatedFStringInterpolation);
+            }
+            let token = token.map_err(|error| match error {
+                LexerError::UnterminatedStringLiteral
+                | LexerError::UnterminatedRuneLiteral
+                | LexerError::UnterminatedEscapedIdentifier
+                | LexerError::UnterminatedMultilineComment
+                | LexerError::StringLiteralMustBeSingleLine => {
+                    LexerError::UnterminatedFStringInterpolation
                 }
+                other => other,
+            })?;
+            if let TokenCase::Valid(token) = token {
+                match token {
+                    Token::LBrace => brace_depth += 1,
+                    Token::RBrace => brace_depth -= 1,
+                    _ => {}
+                }
+                self.tokens
+                    .push(Spanned::new(token, self.span_from_anchor()));
             }
         }
-    }
-
-    fn lex_fstring_expression_tokens(
-        &self,
-        source: &str,
-        start: Position,
-    ) -> Result<Vec<Spanned<Token>>, LexerError> {
-        let lexer = Lexer::new_with_position(source, self.file, start);
-        let file = lexer.tokenize().map_err(|err| err.value)?;
-        let mut tokens = file.tokens;
-
-        if matches!(tokens.last().map(|token| &token.value), Some(Token::EOF)) {
-            let _ = tokens.pop();
-        }
-        if matches!(
-            tokens.last().map(|token| &token.value),
-            Some(Token::Semicolon)
-        ) {
-            let _ = tokens.pop();
-        }
-
-        Ok(tokens)
     }
 }
 
@@ -1031,9 +956,7 @@ impl Lexer {
                     }
                 },
                 None => {
-                    // `0` at end of input. Reachable when a source has no
-                    // trailing content, such as an f-string interpolation
-                    // re-lexed on its own.
+                    // `0` at end of a source without trailing content.
                     return Ok(Token::Integer {
                         value: content(self).into(),
                         base,
@@ -1642,8 +1565,6 @@ mod tests {
 
     #[test]
     fn test_literals_fstring_zero_at_end_of_interpolation() {
-        // An interpolation is re-lexed on its own, so a trailing `0` lands at
-        // end of input.
         let input = r#"f"{a + 0}""#;
         let tokens = tokenize(input);
         assert_eq!(
@@ -1714,6 +1635,76 @@ mod tests {
                 Token::EOF,
             ]
         );
+    }
+
+    #[test]
+    fn test_fstring_nested_interpolation_uses_normal_lexing() {
+        let tokens = tokenize(r#"f"{f"{"}"}"}""#);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::FStringStart,
+                Token::FStringExprStart,
+                Token::FStringStart,
+                Token::FStringExprStart,
+                Token::String { value: "}".into() },
+                Token::FStringExprEnd,
+                Token::FStringEnd,
+                Token::FStringExprEnd,
+                Token::FStringEnd,
+                Token::Semicolon,
+                Token::EOF,
+            ]
+        );
+    }
+
+    #[test]
+    fn fstring_interpolation_tokens_preserve_original_source_spans() {
+        let input = r#"f"{'{' /* } */ + `}` }""#;
+        let file = Lexer::new(input, FileID::from_raw(0)).tokenize().unwrap();
+        for (snippet, token) in [
+            ("'{'", Token::Rune { value: "{".into() }),
+            ("+", Token::Plus),
+            ("`}`", Token::Identifier { value: "}".into() }),
+        ] {
+            let actual = file.tokens.iter().find(|item| item.value == token).unwrap();
+            let offset = input.find(snippet).unwrap();
+            assert_eq!(actual.span.start, Position { line: 0, offset });
+            assert_eq!(
+                actual.span.end,
+                Position {
+                    line: 0,
+                    offset: offset + snippet.len()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn fstring_interpolation_newline_error_stops_before_newline() {
+        for input in [
+            "f\"{\"unterminated\n}\"",
+            "f\"{/* unterminated\n}\"",
+            "f\"{`unterminated\n}\"",
+            "f\"{'\n'}\"",
+        ] {
+            let error = Lexer::new(input, FileID::from_raw(0))
+                .tokenize()
+                .err()
+                .unwrap();
+            assert!(matches!(
+                error.value,
+                LexerError::UnterminatedFStringInterpolation
+            ));
+            assert_eq!(error.span.start, Position { line: 0, offset: 0 });
+            assert_eq!(
+                error.span.end,
+                Position {
+                    line: 0,
+                    offset: input.find('\n').unwrap()
+                }
+            );
+        }
     }
 
     #[test]

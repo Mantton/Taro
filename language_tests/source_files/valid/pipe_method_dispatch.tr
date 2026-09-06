@@ -1,0 +1,26 @@
+// Piping to a member applies the same receiver rules as ordinary call syntax.
+struct Adder {
+    base: int32
+}
+
+impl Adder {
+    func add(&self, _ value: int32) -> int32 { self.base + value }
+    func combine(&self, _ left: int32, _ right: int32) -> int32 {
+        self.base + left * 10 + right
+    }
+}
+
+func addOne(_ value: int32) -> int32 { value + 1 }
+func identity[T](_ value: T) -> T { value }
+
+func main() {
+    let adder = Adder { base: 40 }
+    assert(adder.add(2) == 42, "ordinary method")
+    assert((2 |> adder.add()) == 42, "pipe call method")
+    assert((2 |> adder.add) == 42, "pipe method")
+    assert((2 |> adder.combine(1, _)) == 52, "pipe placeholder")
+    assert((1 |> adder.combine(2)) == 52, "pipe prepends argument")
+    assert((1 |> addOne |> adder.add) == 42, "free and member chain")
+    assert((3 |> identity[int32]) == 3, "specialized generic callable")
+    print("PASS: pipe method dispatch\n")
+}

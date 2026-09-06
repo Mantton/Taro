@@ -1,0 +1,7 @@
+func main() {
+    let nested = f"{f"{"}"}"}"
+    assert(nested == "}", "quoted braces in a nested interpolation")
+    let percent = f"100% {f"{5}%"}"
+    assert(percent == "100% 5%", "nested formatting must escape each literal percent once")
+    print("PASS: nested f-string interpolation\n")
+}

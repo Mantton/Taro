@@ -3900,23 +3900,26 @@ impl Parser {
         let lo = self.lo_span();
         self.expect(Token::FStringStart)?;
 
-        let mut plain_text = String::new();
-        let mut sprintf_format = String::new();
-        let mut has_interpolation = false;
+        let mut text = String::new();
         let mut arguments: Vec<ExpressionArgument> = vec![];
 
         while !self.matches(Token::FStringEnd) && !self.is_at_end() {
             match self.current_token() {
                 Token::FStringText { value } => {
-                    plain_text.push_str(value);
-                    sprintf_format.push_str(&Self::escape_percent_for_sprintf(value));
+                    if arguments.is_empty() {
+                        text.push_str(value);
+                    } else {
+                        text.push_str(&Self::escape_percent_for_sprintf(value));
+                    }
                     self.bump();
                 }
                 Token::FStringExprStart => {
-                    has_interpolation = true;
+                    if arguments.is_empty() {
+                        text = Self::escape_percent_for_sprintf(&text);
+                    }
                     self.bump(); // consume FStringExprStart
 
-                    sprintf_format.push_str("%v");
+                    text.push_str("%v");
                     let expression = self.parse_expression()?;
                     let span = expression.span;
                     arguments.push(ExpressionArgument {
@@ -3934,27 +3937,26 @@ impl Parser {
         self.expect(Token::FStringEnd)?;
         let span = lo.to(self.hi_span());
 
-        if !has_interpolation {
+        if arguments.is_empty() {
             return Ok(self.build_expr(
-                ExpressionKind::Literal(Literal::String { value: plain_text }),
+                ExpressionKind::Literal(Literal::String { value: text }),
                 span,
             ));
         }
 
         let format_expr = self.build_expr(
-            ExpressionKind::Literal(Literal::String {
-                value: sprintf_format,
-            }),
+            ExpressionKind::Literal(Literal::String { value: text }),
             span,
         );
         let format_span = format_expr.span;
-        let mut call_args = Vec::with_capacity(arguments.len() + 1);
-        call_args.push(ExpressionArgument {
-            label: None,
-            expression: format_expr,
-            span: format_span,
-        });
-        call_args.extend(arguments);
+        arguments.insert(
+            0,
+            ExpressionArgument {
+                label: None,
+                expression: format_expr,
+                span: format_span,
+            },
+        );
 
         let std_identifier = Identifier {
             symbol: self.intern_symbol("std"),
@@ -3973,7 +3975,7 @@ impl Parser {
             span,
         );
 
-        Ok(self.build_expr(ExpressionKind::Call(callee, call_args), span))
+        Ok(self.build_expr(ExpressionKind::Call(callee, arguments), span))
     }
 
     fn parse_literal(&mut self) -> R<Box<Expression>> {
@@ -5551,6 +5553,23 @@ mod tests {
             }
             _ => panic!("expected format literal"),
         }
+    }
+
+    #[test]
+    fn fstring_percent_escaping_preserves_literal_and_interpolated_segments() {
+        let literal = parse_expr_str(r#"f"100% {{done}} %%""#);
+        assert!(
+            matches!(&literal.kind, ExpressionKind::Literal(Literal::String { value })
+            if value == "100% {done} %%")
+        );
+        let call = parse_expr_str(r#"f"100% {first} %% {second}%""#);
+        let ExpressionKind::Call(_, args) = &call.kind else {
+            panic!("expected format call")
+        };
+        assert_eq!(args.len(), 3);
+        assert!(matches!(&args[0].expression.kind,
+            ExpressionKind::Literal(Literal::String { value })
+            if value == "100%% %v %%%% %v%%"));
     }
 
     #[test]
