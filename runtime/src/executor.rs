@@ -1278,10 +1278,25 @@ impl Scheduler {
             drained.push(task_id);
         }
         drop(remote);
+        if drained.is_empty() {
+            return;
+        }
 
         for task_id in drained.into_iter().rev() {
             local.push(task_id);
         }
+
+        // Remote work only becomes stealable here. Peers may have parked
+        // before it was published, even when its owner received an enqueue
+        // wake. Leave one task for this worker and wake at most one peer per
+        // remaining task. Unpark tokens also cover peers about to park.
+        let peer_count = local.len().saturating_sub(1).min(self.worker_count - 1);
+        for offset in 1..=peer_count {
+            self.unpark_worker((worker_id + offset) % self.worker_count);
+        }
+        self.stats
+            .worker_unparks
+            .fetch_add(peer_count as u64, Ordering::Relaxed);
     }
 
     fn steal_batch_and_pop<S>(&self, stealer: &S, local: &Worker<TaskToken>) -> Option<TaskToken>
@@ -4889,106 +4904,88 @@ mod tests {
         assert!(timers.latest[task_index].is_none());
     }
 
-    fn note_max(counter: &AtomicUsize, candidate: usize) {
-        let mut current = counter.load(Ordering::Relaxed);
-        while current < candidate {
-            match counter.compare_exchange_weak(
-                current,
-                candidate,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(observed) => current = observed,
-            }
-        }
+    #[derive(Default)]
+    struct OverlapState {
+        in_flight: usize,
+        max_in_flight: usize,
+        threads: HashSet<thread::ThreadId>,
+        open: bool,
     }
 
-    #[derive(Clone)]
-    struct OneShotRecorder {
-        in_flight: Arc<AtomicUsize>,
-        max_in_flight: Arc<AtomicUsize>,
-        threads: Arc<Mutex<HashSet<String>>>,
+    #[derive(Default)]
+    struct OverlapRecorder {
+        state: Mutex<OverlapState>,
+        ready: Condvar,
     }
 
-    impl OneShotRecorder {
-        fn enter(&self) {
-            let thread_name = thread::current()
-                .name()
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("{:?}", thread::current().id()));
-            self.threads.lock().unwrap().insert(thread_name);
-            let in_flight = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
-            note_max(&self.max_in_flight, in_flight);
+    unsafe extern "C-unwind" fn overlap_poll(frame: *mut u8, _ctx: *mut u8, _out: *mut u8) -> u8 {
+        let recorder = unsafe { &*(frame as *const Arc<OverlapRecorder>) };
+        // A native wait must publish roots so a concurrent collection cannot
+        // prevent the other worker from entering its poll callback.
+        crate::garbage_collector::__rt__gc_enter_blocking();
+        let mut state = recorder.state.lock().unwrap();
+        state.threads.insert(thread::current().id());
+        state.in_flight += 1;
+        state.max_in_flight = state.max_in_flight.max(state.in_flight);
+        if state.in_flight > 1 {
+            state.open = true;
+            recorder.ready.notify_all();
         }
-
-        fn exit(&self) {
-            self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        let (mut state, timeout) = recorder
+            .ready
+            .wait_timeout_while(state, StdDuration::from_secs(5), |state| !state.open)
+            .unwrap();
+        if timeout.timed_out() {
+            // Let every task finish and the scheduler join before the test
+            // reports missing overlap, rather than deadlocking on a regression.
+            state.open = true;
+            recorder.ready.notify_all();
         }
-
-        fn max_in_flight(&self) -> usize {
-            self.max_in_flight.load(Ordering::Acquire)
-        }
-
-        fn thread_count(&self) -> usize {
-            self.threads.lock().unwrap().len()
-        }
-    }
-
-    struct OneShotFrame {
-        recorder: OneShotRecorder,
-        sleep: StdDuration,
-    }
-
-    unsafe extern "C-unwind" fn one_shot_poll(frame: *mut u8, _ctx: *mut u8, _out: *mut u8) -> u8 {
-        let frame = unsafe { &mut *(frame as *mut OneShotFrame) };
-        frame.recorder.enter();
-        thread::sleep(frame.sleep);
-        frame.recorder.exit();
+        state.in_flight -= 1;
+        drop(state);
+        crate::garbage_collector::__rt__gc_exit_blocking();
         1
     }
 
-    unsafe extern "C" fn one_shot_drop(frame: *mut u8) {
-        let _ = unsafe { Box::from_raw(frame as *mut OneShotFrame) };
+    unsafe extern "C" fn overlap_drop(frame: *mut u8) {
+        let _ = unsafe { Box::from_raw(frame as *mut Arc<OverlapRecorder>) };
     }
 
-    fn run_one_shot_scheduler(task_count: usize, sleep: StdDuration) -> (usize, usize, u64) {
+    #[test]
+    fn movable_work_overlaps_and_steals_from_victim_queue() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let scheduler = Scheduler::new(false, 4);
-        let recorder = OneShotRecorder {
-            in_flight: Arc::new(AtomicUsize::new(0)),
-            max_in_flight: Arc::new(AtomicUsize::new(0)),
-            threads: Arc::new(Mutex::new(HashSet::new())),
-        };
+        let recorder = Arc::new(OverlapRecorder::default());
 
-        for _ in 0..task_count {
-            let frame = Box::new(OneShotFrame {
-                recorder: recorder.clone(),
-                sleep,
-            });
+        for _ in 0..4 {
             let handle = __rt__async_create(
-                Box::into_raw(frame) as *mut u8,
-                one_shot_poll as *const () as *const u8,
-                one_shot_drop as *const () as *const u8,
+                Box::into_raw(Box::new(Arc::clone(&recorder))) as *mut u8,
+                overlap_poll as *const () as *const u8,
+                overlap_drop as *const () as *const u8,
                 TaskMobility::Movable as u8,
             );
             let _ = scheduler.add_task(handle, ptr::null_mut(), None, 0, Some(0), false);
         }
 
         let local = scheduler.start();
+        // Exercise lazy rootless startup after the background workers have
+        // parked: tasks are still in worker 0's remote queue at this point.
+        let deadline = Instant::now() + StdDuration::from_secs(5);
+        while scheduler.idle_workers.load(Ordering::Acquire) < 3 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        if scheduler.idle_workers.load(Ordering::Acquire) < 3 {
+            scheduler.force_shutdown();
+            scheduler.join_background_threads();
+            panic!("background workers did not reach idle startup state");
+        }
         Arc::clone(&scheduler).worker_loop(0, local);
         scheduler.join_background_threads();
-        (
-            recorder.max_in_flight(),
-            recorder.thread_count(),
-            scheduler.stats.steals.load(Ordering::Relaxed),
-        )
-    }
 
-    #[test]
-    fn movable_work_executes_with_overlap() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
-        let (max_in_flight, thread_count, _steals) =
-            run_one_shot_scheduler(128, StdDuration::from_millis(8));
+        let state = recorder.state.lock().unwrap();
+        let max_in_flight = state.max_in_flight;
+        let thread_count = state.threads.len();
+        let steals = scheduler.stats.steals.load(Ordering::Relaxed);
         assert!(
             max_in_flight > 1,
             "expected concurrent overlap across workers, observed max in-flight {max_in_flight}"
@@ -4997,13 +4994,6 @@ mod tests {
             thread_count > 1,
             "expected work to run on multiple workers, observed {thread_count} worker thread(s)"
         );
-    }
-
-    #[test]
-    fn victim_queue_steals_happen() {
-        let _guard = TEST_ENV_LOCK.lock().unwrap();
-        let (_max_in_flight, _thread_count, steals) =
-            run_one_shot_scheduler(128, StdDuration::from_millis(8));
         assert!(
             steals > 0,
             "expected at least one victim-queue steal, observed {steals}"
