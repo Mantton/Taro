@@ -1,4 +1,4 @@
-import std.mem.{MutableSpan, growBuffer, maxBufferCapacity, setBufferLen}
+import std.mem.{MutableSpan, growBuffer, maxBufferCapacity}
 import std.panic.panic
 import std.rune.{runeEncode, runeLenUtf8}
 
@@ -88,7 +88,6 @@ impl Builder {
         self.reserve(nextLen)
         self.buffer.add(self.length).write(value)
         self.length = nextLen
-        setBufferLen[uint8](self.buffer, self.length)
     }
 
     /// Appends one Unicode scalar encoded as UTF-8.
@@ -100,7 +99,6 @@ impl Builder {
         var destination = MutableSpan[uint8].from(self.buffer.add(self.length), width)
         let _ = runeEncode(value, &mut destination)
         self.length = nextLen
-        setBufferLen[uint8](self.buffer, self.length)
     }
 
     /// Appends all bytes from `value`.
@@ -123,15 +121,11 @@ impl Builder {
         self.reserve(nextLen)
         stringData(value).add(start).readBytes(self.buffer.add(self.length), count)
         self.length = nextLen
-        setBufferLen[uint8](self.buffer, self.length)
     }
 
     /// Removes all content while retaining allocated capacity for reuse.
     public func clear(&mut self) {
         self.length = 0
-        if self.capacity > 0 {
-            setBufferLen[uint8](self.buffer, 0)
-        }
     }
 
     /// Consumes the builder and returns its accumulated bytes as a string.

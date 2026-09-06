@@ -780,7 +780,6 @@ fn try_cached_small_allocation(
     cache_slot: usize,
     class_size: usize,
     payload_size: usize,
-    scan_size: usize,
     desc: *const GcDesc,
     is_array: bool,
 ) -> Option<*mut u8> {
@@ -799,7 +798,7 @@ fn try_cached_small_allocation(
         // exclusively owns the span, and collection cannot start until this
         // thread flushes the cache and publishes its safepoint state.
         let span = unsafe { &*cached.span };
-        let ptr = span.alloc_small(payload_size, scan_size, desc, is_array)?;
+        let ptr = span.alloc_small(payload_size, desc, is_array)?;
         current.cache.record_allocation(class_size);
         Some(ptr)
     })
@@ -863,12 +862,7 @@ fn refill_cached_span(
     });
 }
 
-fn runtime_alloc_with_scan_size(
-    size: usize,
-    scan_size: usize,
-    desc: *const GcDesc,
-    is_array: bool,
-) -> *mut u8 {
+fn runtime_alloc(size: usize, desc: *const GcDesc, is_array: bool) -> *mut u8 {
     let align = desc_alignment(desc).max(std::mem::size_of::<usize>());
     let alloc_size = align_up(size, align);
     if alloc_size > PAGE_SIZE {
@@ -882,7 +876,7 @@ fn runtime_alloc_with_scan_size(
                 {
                     None
                 } else {
-                    Some(gc.alloc_with_scan_size(size, scan_size, desc, is_array))
+                    Some(gc.alloc(size, desc, is_array))
                 }
             });
             if let Some(allocation) = allocation {
@@ -897,8 +891,7 @@ fn runtime_alloc_with_scan_size(
     let lane = span_lane(desc_has_pointers(desc));
     let cache_slot = class_index * 2 + lane;
     loop {
-        if let Some(ptr) =
-            try_cached_small_allocation(cache_slot, class_size, size, scan_size, desc, is_array)
+        if let Some(ptr) = try_cached_small_allocation(cache_slot, class_size, size, desc, is_array)
         {
             return ptr;
         }
@@ -926,7 +919,7 @@ pub extern "C" fn __gc__alloc(size: usize, desc: *const GcDesc) -> *mut u8 {
         ensure_thread_registered();
         return std::ptr::null_mut();
     }
-    runtime_alloc_with_scan_size(size, size, desc, false)
+    runtime_alloc(size, desc, false)
 }
 
 /// Allocate a GC-managed buffer for dynamic arrays/strings.
@@ -946,10 +939,6 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
         Some(n) => n,
         None => return std::ptr::null_mut(),
     };
-    let scan_size = match elem_size.checked_mul(len) {
-        Some(n) => n,
-        None => return std::ptr::null_mut(),
-    };
     if total == 0 {
         return std::ptr::null_mut();
     }
@@ -959,8 +948,7 @@ pub extern "C" fn __gc__makebuf(desc: *const GcDesc, len: usize, cap: usize) -> 
     // a lock round-trip on the hottest operation a collection type has.
     // Unwritten slots are zero and vacated ones are cleared by the owner, so
     // scanning the whole allocation finds exactly the same pointers.
-    let _ = scan_size;
-    runtime_alloc_with_scan_size(total, total, desc, true)
+    runtime_alloc(total, desc, true)
 }
 
 #[unsafe(no_mangle)]
@@ -1038,16 +1026,11 @@ pub extern "C" fn __gc__grow_buf(
         Some(n) => n,
         None => return std::ptr::null_mut(),
     };
-    let scan_size = match elem_size.checked_mul(old_len) {
-        Some(n) => n,
-        None => return std::ptr::null_mut(),
-    };
 
     // Allocate new buffer
     // As in `__gc__makebuf`: the whole allocation is scanned, so the live
     // length never has to be published back to the collector.
-    let _ = scan_size;
-    let new_ptr = runtime_alloc_with_scan_size(new_total, new_total, desc, true);
+    let new_ptr = runtime_alloc(new_total, desc, true);
     if new_ptr.is_null() {
         return std::ptr::null_mut();
     }
@@ -1394,9 +1377,6 @@ struct Span {
     descs: Vec<AtomicPtr<GcDesc>>,
     // Requested payload bytes for each slot.
     sizes: Vec<AtomicUsize>,
-    // Bytes the marker should trace. Array buffers may allocate more capacity
-    // than their initialized length.
-    scan_sizes: Vec<AtomicUsize>,
 
     // A checked-out mutator exclusively owns this free list. The collector may
     // access it only after every cache is flushed by the safepoint handshake.
@@ -1461,11 +1441,6 @@ impl Span {
             } else {
                 Vec::new()
             },
-            scan_sizes: if has_pointers {
-                (0..object_count).map(|_| AtomicUsize::new(0)).collect()
-            } else {
-                Vec::new()
-            },
             free_list: UnsafeCell::new(free_list),
             allocated: AtomicUsize::new(0),
             in_class_list: false,
@@ -1480,7 +1455,6 @@ impl Span {
         start_page: usize,
         page_count: usize,
         payload_size: usize,
-        scan_size: usize,
         desc: *const GcDesc,
         has_pointers: bool,
         is_array: bool,
@@ -1508,11 +1482,6 @@ impl Span {
         } else {
             Vec::new()
         };
-        let scan_sizes = if has_pointers {
-            vec![AtomicUsize::new(scan_size.min(payload_size))]
-        } else {
-            Vec::new()
-        };
         atomic_bitset_set(&alloc_map, 0, true, Ordering::Release);
         Self {
             base,
@@ -1528,7 +1497,6 @@ impl Span {
             array_map,
             descs,
             sizes,
-            scan_sizes,
             free_list: UnsafeCell::new(Vec::new()),
             allocated: AtomicUsize::new(1),
             in_class_list: false,
@@ -1545,7 +1513,6 @@ impl Span {
     fn alloc_small(
         &self,
         payload_size: usize,
-        scan_size: usize,
         desc: *const GcDesc,
         is_array: bool,
     ) -> Option<*mut u8> {
@@ -1565,7 +1532,6 @@ impl Span {
         if self.has_pointers {
             self.descs[index].store(desc.cast_mut(), Ordering::Relaxed);
             self.sizes[index].store(payload_size, Ordering::Relaxed);
-            self.scan_sizes[index].store(scan_size.min(payload_size), Ordering::Relaxed);
             atomic_bitset_set(&self.array_map, index, is_array, Ordering::Relaxed);
         }
         atomic_bitset_set(&self.alloc_map, index, true, Ordering::Release);
@@ -1579,7 +1545,6 @@ impl Span {
         if self.has_pointers {
             self.descs[index].store(std::ptr::null_mut(), Ordering::Relaxed);
             self.sizes[index].store(0, Ordering::Relaxed);
-            self.scan_sizes[index].store(0, Ordering::Relaxed);
             atomic_bitset_set(&self.array_map, index, false, Ordering::Relaxed);
         }
         // SAFETY: sweep runs stop-the-world after checked-out spans return.
@@ -1886,44 +1851,18 @@ impl Gc {
 
     // Route small allocations to size-class spans; large allocations get a span.
     // payload_size is the requested size, alloc_size is rounded up for alignment.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn alloc(&mut self, size: usize, desc: *const GcDesc, is_array: bool) -> *mut u8 {
-        self.alloc_with_scan_size(size, size, desc, is_array)
-    }
-
-    fn alloc_with_scan_size(
-        &mut self,
-        size: usize,
-        scan_size: usize,
-        desc: *const GcDesc,
-        is_array: bool,
-    ) -> *mut u8 {
         // Compute allocation size with alignment and choose the scan lane.
         let payload_size = size;
-        let scan_size = scan_size.min(payload_size);
         let align = desc_alignment(desc).max(std::mem::size_of::<usize>());
         let alloc_size = align_up(payload_size, align);
         let has_pointers = desc_has_pointers(desc);
 
         // Small allocations go through size-class spans; large ones get whole pages.
         let (ptr, alloc_bytes) = if alloc_size > PAGE_SIZE {
-            self.alloc_large(
-                payload_size,
-                scan_size,
-                alloc_size,
-                desc,
-                has_pointers,
-                is_array,
-            )
+            self.alloc_large(payload_size, alloc_size, desc, has_pointers, is_array)
         } else {
-            self.alloc_small(
-                payload_size,
-                scan_size,
-                alloc_size,
-                desc,
-                has_pointers,
-                is_array,
-            )
+            self.alloc_small(payload_size, alloc_size, desc, has_pointers, is_array)
         };
 
         self.after_alloc(alloc_bytes);
@@ -1934,7 +1873,6 @@ impl Gc {
     fn alloc_small(
         &mut self,
         payload_size: usize,
-        scan_size: usize,
         alloc_size: usize,
         desc: *const GcDesc,
         has_pointers: bool,
@@ -1947,7 +1885,7 @@ impl Gc {
         let span_id = self.take_span_for_class(class_index, lane);
         let span = self.spans[span_id].as_mut().expect("span exists");
         let ptr = span
-            .alloc_small(payload_size, scan_size, desc, is_array)
+            .alloc_small(payload_size, desc, is_array)
             .expect("span has free slot");
         if span.has_free() && !span.in_class_list {
             self.class_spans[class_index][lane].push(span_id);
@@ -1960,7 +1898,6 @@ impl Gc {
     fn alloc_large(
         &mut self,
         payload_size: usize,
-        scan_size: usize,
         alloc_size: usize,
         desc: *const GcDesc,
         has_pointers: bool,
@@ -1982,7 +1919,6 @@ impl Gc {
             start_page,
             pages,
             payload_size,
-            scan_size,
             desc,
             has_pointers,
             is_array,
@@ -2338,9 +2274,7 @@ impl Gc {
             return false;
         };
         let base = unsafe { span.base.add(object_index * span.object_size) };
-        let limit = span.scan_sizes[object_index]
-            .load(Ordering::Relaxed)
-            .min(span.sizes[object_index].load(Ordering::Relaxed));
+        let limit = span.sizes[object_index].load(Ordering::Relaxed);
         let mut found = false;
         trace_desc_or_abort(desc, base, limit, TraceMode::Heap, |candidate| {
             if self.object_base(candidate) == Some(target) {
@@ -2497,23 +2431,20 @@ impl Gc {
         }
 
         let payload_size = span.sizes[object_index].load(Ordering::Relaxed);
-        let scan_size = span.scan_sizes[object_index]
-            .load(Ordering::Relaxed)
-            .min(payload_size);
         let base = unsafe { span.base.add(object_index * span.object_size) };
         let elem_size = desc.size;
         let is_array = atomic_bitset_get(&span.array_map, object_index, Ordering::Relaxed);
 
         if is_array && elem_size != 0 {
             // Arrays/slices: apply field offsets for each element.
-            let count = scan_size / elem_size;
+            let count = payload_size / elem_size;
             for index in 0..count {
                 let elem_base = unsafe { base.add(index * elem_size) };
                 self.push_pointer_fields(elem_base, elem_size, desc, stack);
             }
         } else {
             // Single object: trace pointer fields once.
-            self.push_pointer_fields(base, scan_size, desc, stack);
+            self.push_pointer_fields(base, payload_size, desc, stack);
         }
     }
 
@@ -2564,7 +2495,6 @@ impl Gc {
                     if span.has_pointers && !span.descs.is_empty() {
                         span.descs[0].store(std::ptr::null_mut(), Ordering::Relaxed);
                         span.sizes[0].store(0, Ordering::Relaxed);
-                        span.scan_sizes[0].store(0, Ordering::Relaxed);
                     }
                     span.allocated.store(0, Ordering::Relaxed);
                     self.stats.record_free(total_bytes);
@@ -2765,7 +2695,7 @@ pub(crate) fn with_gc<R>(f: impl FnOnce(&mut Gc) -> R) -> R {
 pub(crate) fn create_weak_cell(target: *const u8) -> *mut u8 {
     ensure_thread_registered();
     let desc = crate::weak::cell_desc();
-    let cell = runtime_alloc_with_scan_size(desc.size, desc.size, desc, false);
+    let cell = runtime_alloc(desc.size, desc, false);
     unsafe { crate::weak::initialize_cell(cell, target) };
     with_gc(|gc| gc.register_weak_cell(cell, target));
     cell
@@ -3713,31 +3643,51 @@ mod tests {
     }
 
     #[test]
-    fn buffer_scan_size_limits_traced_elements() {
-        // A buffer allocated with a scan size shorter than its payload traces
-        // only that prefix. Nothing sets a scan size after the fact any more,
-        // but the allocation-time limit is still how large objects are handled.
+    fn buffer_tracing_stops_at_payload_before_allocator_padding() {
         let mut gc = Gc::new();
         let leaf_desc = bytes_desc(8);
         let pointer_desc = pointer_desc();
         let elem_size = std::mem::size_of::<*mut u8>();
         let inside = gc.alloc(8, &leaf_desc, false);
-        let outside = gc.alloc(8, &leaf_desc, false);
-        let buffer = gc.alloc_with_scan_size(elem_size * 2, elem_size, &pointer_desc, true);
-
+        let padding = gc.alloc(8, &leaf_desc, false);
+        // Three pointer slots round up to a four-slot size class. Bytes in
+        // allocator padding must not extend the requested buffer capacity.
+        let buffer = gc.alloc(elem_size * 3, &pointer_desc, true);
+        let (span, _) = gc.find_object(buffer).unwrap();
+        assert!(gc.spans[span].as_ref().unwrap().object_size >= elem_size * 4);
         unsafe {
             (buffer as *mut *mut u8).write(inside);
-            (buffer as *mut *mut u8).add(1).write(outside);
+            (buffer as *mut *mut u8).add(3).write(padding);
         }
-
-        // Collected twice: an object allocated since the last cycle survives
-        // its first one, so the second is what shows the scan limit.
         gc.add_root(buffer);
         gc.collect(&[]);
         gc.add_root(buffer);
         gc.collect(&[]);
         assert!(is_live(&gc, inside));
-        assert!(!is_live(&gc, outside));
+        assert!(!is_live(&gc, padding));
+    }
+
+    #[test]
+    fn buffers_trace_full_capacity_in_small_and_large_spans() {
+        for capacity in [2, PAGE_SIZE] {
+            let mut gc = Gc::new();
+            let leaf_desc = bytes_desc(8);
+            let pointer_desc = pointer_desc();
+            let elem_size = std::mem::size_of::<*mut u8>();
+            let first = gc.alloc(8, &leaf_desc, false);
+            let last = gc.alloc(8, &leaf_desc, false);
+            let buffer = gc.alloc(elem_size * capacity, &pointer_desc, true);
+            unsafe {
+                (buffer as *mut *mut u8).write(first);
+                (buffer as *mut *mut u8).add(capacity - 1).write(last);
+            }
+            gc.add_root(buffer);
+            gc.collect(&[]);
+            gc.add_root(buffer);
+            gc.collect(&[]);
+            assert!(is_live(&gc, first));
+            assert!(is_live(&gc, last));
+        }
     }
 
     #[test]
@@ -3751,7 +3701,7 @@ mod tests {
         let elem_size = std::mem::size_of::<*mut u8>();
         let child = gc.alloc(8, &leaf_desc, false);
         let capacity = elem_size * 4;
-        let buffer = gc.alloc_with_scan_size(capacity, capacity, &pointer_desc, true);
+        let buffer = gc.alloc(capacity, &pointer_desc, true);
 
         // Written past the first slot, to show the whole capacity is traced.
         unsafe {

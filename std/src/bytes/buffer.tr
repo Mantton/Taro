@@ -1,7 +1,7 @@
 import std.collections.{List, __list_from_raw_parts}
 import std.io.{Error, Reader, Writer}
 import std.marker.Sendable
-import std.mem.{MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity, setBufferLen}
+import std.mem.{MutableSpan, Span, growBuffer, makeBuffer, maxBufferCapacity}
 import std.result.Result
 
 const BUFFER_INITIAL_CAPACITY: usize = 64
@@ -71,7 +71,6 @@ impl Buffer {
         let storage = makeBuffer[uint8](0, len)
         let source = unsafe { bytes.at(0) as *const uint8 }
         source.copyToNonoverlapping(storage, len)
-        setBufferLen[uint8](storage, len)
         return Buffer {
             buffer: storage,
             readStart: 0,
@@ -90,7 +89,6 @@ impl Buffer {
 
         let storage = makeBuffer[uint8](0, len)
         std.string.stringData(value).copyToNonoverlapping(storage, len)
-        setBufferLen[uint8](storage, len)
         return Buffer {
             buffer: storage,
             readStart: 0,
@@ -151,9 +149,6 @@ impl Buffer {
     public func reset(&mut self) {
         self.readStart = 0
         self.writeEnd = 0
-        if self.capacityValue > 0 {
-            setBufferLen[uint8](self.buffer, 0)
-        }
     }
 
     /// Append one byte.
@@ -218,7 +213,6 @@ impl Buffer {
         }
         self.readStart = 0
         self.writeEnd = unread
-        setBufferLen[uint8](self.buffer, unread)
     }
 
     func ensureWritable(&mut self, _ additional: usize) -> Result[(), Error] {
@@ -315,7 +309,6 @@ impl Writer for Buffer {
         let target = self.buffer.add(self.writeEnd)
         source.copyTo(target, count)
         self.writeEnd += count
-        setBufferLen[uint8](self.buffer, self.writeEnd)
         return .ok(count)
     }
 
