@@ -317,7 +317,7 @@ let samePoint = Point.new(x: 10, y: 20)
 The shorthand participates in normal overload resolution. Generic types include
 their type arguments before the call, for example `Box[int32](42)`.
 
-### Computed Properties (impl-only, v1)
+### Computed Properties
 
 Computed properties use explicit `get`/`set` accessor blocks and are accessed
 with field-like syntax.

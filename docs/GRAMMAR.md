@@ -222,7 +222,6 @@ It does not introduce a module. The following constraints apply:
                        ::= <function_declaration>
                          | <constant_declaration>
                          | <type_alias_declaration>
-                         | <operator_declaration>
                          | <interface_property_declaration>
 
 <interface_property_declaration>
@@ -272,27 +271,14 @@ It does not introduce a module. The following constraints apply:
 <function_parameters>  ::= <function_parameter> { ',' <function_parameter> } [ ',' ]
 
 <function_parameter>   ::= { <attribute> } [ <label> ] <identifier> ':'
-                           [ '...' ] <type> [ '=' <expression> ]
+                           <type> [ '...' ] [ '=' <expression> ]
                          | <self_parameter>
 
-<self_parameter>       ::= [ '&' [ 'const' ] ] 'self'
+<self_parameter>       ::= [ '&' [ 'const' | 'mut' ] ] 'self'
 ```
 
-### Operator Declaration
-
-```ebnf
-<operator_declaration> ::= 'operator' <operator_kind> <generics>
-                           <function_signature> [ <block> ]
-
-<operator_kind>        ::= '+' | '-' | '*' | '/' | '%'
-                         | '<<' | '>>' | '&' | '|' | '^'
-                         | '!' | '~'
-                         | '+=' | '-=' | '*=' | '/=' | '%='
-                         | '<<=' | '>>=' | '&=' | '|=' | '^='
-                         | '&&' | '||'
-                         | '<' | '>' | '<=' | '>=' | '==' | '!='
-                         | '[' ']' | '[' ']' '='   /* index, index_assign */
-```
+`operator` is reserved and has no declaration form. Operator overloading uses
+standard-library interfaces; see [Operator Overloading](guide/syntax/declarations.md#operator-overloading).
 
 ### Static Variable and Constant Declarations
 
@@ -540,9 +526,9 @@ It does not introduce a module. The following constraints apply:
 12. Bit shift: `<<`, `>>`
 13. Term: `+`, `-`
 14. Factor: `*`, `/`, `%`
-15. Cast: `as`
-16. Prefix: `!`, `-`, `~`, `&`, `*`
-17. Postfix: `.`, `()`, `[]`, `?`, `?.`
+15. Cast / Type Assertion: `as`, `as?`, `is`
+16. Prefix: `!`, `-`, `~`, `&`, `*`, `await`
+17. Postfix: `.`, `()`, `[]`, `!`, `?.`
 18. Primary
 
 ```ebnf
