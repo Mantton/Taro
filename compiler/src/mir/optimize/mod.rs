@@ -267,6 +267,24 @@ mod tests {
     }
 
     #[test]
+    fn guarded_match_initialization_uses_the_exhaustiveness_report() {
+        let diagnostics = analyze_script_mir_diagnostics(
+            r#"
+func select(_ flag: bool, _ enabled: bool) -> int32 {
+    var result: int32
+    match flag {
+        case true if enabled => { result = 1 }
+        case true => { result = 2 }
+        case false => { result = 3 }
+    }
+    result
+}
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
     fn real_mir_pipeline_preserves_structure_across_all_passes() {
         let diagnostics = analyze_script_mir_diagnostics(
             r#"

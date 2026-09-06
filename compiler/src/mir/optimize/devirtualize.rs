@@ -2,8 +2,8 @@ use super::MirPass;
 use crate::compile::context::Gcx;
 use crate::error::CompileResult;
 use crate::mir::{
-    BasicBlockId, Body, CastKind, ConstantKind, DevirtHint, Operand, Place, PlaceElem, Rvalue,
-    StatementKind, TerminatorKind,
+    BasicBlockId, Body, CastKind, ConstantKind, DevirtHint, Operand, Rvalue, StatementKind,
+    TerminatorKind,
 };
 use crate::sema::models::{GenericArgument, GenericArguments, Ty, TyKind};
 use crate::specialize::{InstanceKind, resolve_instance};
@@ -72,7 +72,7 @@ impl<'ctx> MirPass<'ctx> for DevirtualizeStaticCalls {
         let mut worklist: Vec<BasicBlockId> = body.basic_blocks.indices().collect();
         while let Some(bb) = worklist.pop() {
             let new_in = join_predecessor_states(body, bb, &preds, &out_states, &default_state);
-            let new_out = transfer_block(body, bb, new_in.clone(), &tracked_locals);
+            let new_out = transfer_block(gcx, body, bb, new_in.clone(), &tracked_locals);
 
             let changed = new_in != in_states[bb] || new_out != out_states[bb];
             if changed {
@@ -90,11 +90,8 @@ impl<'ctx> MirPass<'ctx> for DevirtualizeStaticCalls {
         let block_ids: Vec<BasicBlockId> = body.basic_blocks.indices().collect();
         for bb in block_ids {
             let mut state = in_states[bb].clone();
-            {
-                let statements = body.basic_blocks[bb].statements.clone();
-                for stmt in &statements {
-                    apply_statement_transfer(body, stmt, &tracked_locals, &mut state);
-                }
+            for stmt in &body.basic_blocks[bb].statements {
+                apply_statement_transfer(gcx, body, stmt, &tracked_locals, &mut state);
             }
 
             let maybe_hint = body.basic_blocks[bb]
@@ -111,20 +108,8 @@ impl<'ctx> MirPass<'ctx> for DevirtualizeStaticCalls {
                 continue;
             };
 
-            if let TerminatorKind::Call {
-                destination,
-                devirt_hint,
-                ..
-            } = &mut term.kind
-            {
+            if let TerminatorKind::Call { devirt_hint, .. } = &mut term.kind {
                 *devirt_hint = maybe_hint;
-                if tracked_locals
-                    .get(destination.local.index())
-                    .copied()
-                    .unwrap_or(false)
-                {
-                    state[destination.local.index()] = KnownConcreteExistentialState::Unknown;
-                }
             }
         }
 
@@ -152,7 +137,7 @@ fn maybe_build_devirt_hint<'ctx>(
     }
 
     let receiver = args.first()?;
-    let concrete_self_ty = operand_known_concrete_ty(body, state, receiver)?;
+    let concrete_self_ty = operand_known_concrete_ty(gcx, body, state, receiver)?;
 
     let substituted_args = substitute_self_arg(gcx, def_id, call_args, concrete_self_ty)?;
     let resolved = resolve_instance(gcx, def_id, substituted_args);
@@ -231,6 +216,7 @@ fn join_predecessor_states<'ctx>(
 }
 
 fn transfer_block<'ctx>(
+    gcx: Gcx<'ctx>,
     body: &Body<'ctx>,
     bb: BasicBlockId,
     mut state: Vec<KnownConcreteExistentialState<'ctx>>,
@@ -238,7 +224,7 @@ fn transfer_block<'ctx>(
 ) -> Vec<KnownConcreteExistentialState<'ctx>> {
     let block = &body.basic_blocks[bb];
     for stmt in &block.statements {
-        apply_statement_transfer(body, stmt, tracked_locals, &mut state);
+        apply_statement_transfer(gcx, body, stmt, tracked_locals, &mut state);
     }
     if let Some(term) = &block.terminator {
         apply_terminator_transfer(tracked_locals, &mut state, &term.kind);
@@ -247,6 +233,7 @@ fn transfer_block<'ctx>(
 }
 
 fn apply_statement_transfer<'ctx>(
+    gcx: Gcx<'ctx>,
     body: &Body<'ctx>,
     stmt: &crate::mir::Statement<'ctx>,
     tracked_locals: &[bool],
@@ -274,7 +261,7 @@ fn apply_statement_transfer<'ctx>(
             operand,
             kind: CastKind::BoxExistential,
             ..
-        } => operand_concrete_or_tracked(body, state, operand)
+        } => operand_concrete_or_tracked(gcx, body, state, operand)
             .map(KnownConcreteExistentialState::Known)
             .unwrap_or(KnownConcreteExistentialState::Unknown),
         Rvalue::Cast {
@@ -321,15 +308,16 @@ fn apply_terminator_transfer<'ctx>(
 }
 
 fn operand_concrete_or_tracked<'ctx>(
+    gcx: Gcx<'ctx>,
     body: &Body<'ctx>,
     state: &[KnownConcreteExistentialState<'ctx>],
     operand: &Operand<'ctx>,
 ) -> Option<Ty<'ctx>> {
-    if let Some(known) = operand_known_concrete_ty(body, state, operand) {
+    if let Some(known) = operand_known_concrete_ty(gcx, body, state, operand) {
         return Some(known);
     }
 
-    let ty = operand_ty(body, operand);
+    let ty = body.operand_ty(gcx, operand);
     if is_concrete_existential_source_ty(ty) {
         Some(ty)
     } else {
@@ -338,6 +326,7 @@ fn operand_concrete_or_tracked<'ctx>(
 }
 
 fn operand_known_concrete_ty<'ctx>(
+    gcx: Gcx<'ctx>,
     body: &Body<'ctx>,
     state: &[KnownConcreteExistentialState<'ctx>],
     operand: &Operand<'ctx>,
@@ -348,7 +337,7 @@ fn operand_known_concrete_ty<'ctx>(
         KnownConcreteExistentialState::Unknown | KnownConcreteExistentialState::Untracked => None,
     }
     .or_else(|| {
-        let ty = operand_ty(body, operand);
+        let ty = body.operand_ty(gcx, operand);
         is_concrete_existential_source_ty(ty).then_some(ty)
     })
 }
@@ -370,32 +359,6 @@ fn operand_local<'ctx>(operand: &Operand<'ctx>) -> Option<crate::mir::LocalId> {
         }
         _ => None,
     }
-}
-
-fn operand_ty<'ctx>(body: &Body<'ctx>, operand: &Operand<'ctx>) -> Ty<'ctx> {
-    match operand {
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-            place_ty(body, place)
-        }
-        Operand::Constant(c) => c.ty,
-    }
-}
-
-fn place_ty<'ctx>(body: &Body<'ctx>, place: &Place<'ctx>) -> Ty<'ctx> {
-    let mut ty = body.locals[place.local].ty;
-    for projection in &place.projection {
-        match projection {
-            PlaceElem::Deref => {
-                ty = match ty.kind() {
-                    TyKind::Reference(inner, _) | TyKind::Pointer(inner, _) => inner,
-                    _ => ty,
-                };
-            }
-            PlaceElem::Field(_, field_ty) => ty = *field_ty,
-            PlaceElem::VariantDowncast { .. } => {}
-        }
-    }
-    ty
 }
 
 fn is_tracked_ty(ty: Ty<'_>) -> bool {

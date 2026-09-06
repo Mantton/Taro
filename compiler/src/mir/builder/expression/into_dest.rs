@@ -128,9 +128,9 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 }
                 join_block.unit()
             }
-            ExprKind::Match {
-                scrutinee, arms, ..
-            } => self.lower_match_expr(destination, block, expr_id, *scrutinee, arms),
+            ExprKind::Match { scrutinee, .. } => {
+                self.lower_match_expr(destination, block, expr_id, *scrutinee)
+            }
             ExprKind::Return { value } => {
                 let place = Place::from_local(self.body.return_local);
                 if let Some(&value) = value.as_ref() {
@@ -398,7 +398,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     _ => true,
                 });
 
-                let rvalue = unpack!(block = self.as_local_rvalue(block, expr_id));
+                let rvalue = unpack!(block = self.as_rvalue(block, expr_id));
                 self.push_assign(block, destination, rvalue, expr.span);
                 block.unit()
             }
@@ -622,7 +622,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         } else if is_async {
             unpack!(block = self.async_callable_operand(block, callee, callee_ty))
         } else {
-            unpack!(block = self.as_local_operand(block, callee))
+            unpack!(block = self.as_operand(block, callee))
         };
 
         let closure_self_arg: Option<Operand<'ctx>> =
@@ -877,7 +877,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: spawn lowering expects exactly one thunk argument");
         };
 
-        let task_ty = self.place_ty(&destination);
+        let task_ty = self.body.place_ty(self.gcx, &destination);
         let TyKind::Adt(def, task_args) = task_ty.kind() else {
             panic!("ICE: spawn destination must be Task[T]");
         };
@@ -1140,7 +1140,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: sleep lowering expects exactly one duration argument");
         };
 
-        let destination_ty = self.place_ty(&destination);
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
         assert_eq!(
             destination_ty,
             self.gcx.async_handle_ty(),
@@ -1268,7 +1268,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: task result lowering expects exactly one task argument");
         };
 
-        let destination_ty = self.place_ty(&destination);
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
         assert_eq!(
             destination_ty,
             self.gcx.async_handle_ty(),
@@ -1317,7 +1317,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: awaited task result lowering expects exactly one task argument");
         };
 
-        let destination_ty = self.place_ty(&destination);
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
         let TyKind::Adt(result_def, result_args) = destination_ty.kind() else {
             panic!("ICE: awaited task result destination must be Result[T, E]");
         };
@@ -1795,7 +1795,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: task group next lowering expects exactly one group id argument");
         };
 
-        let destination_ty = self.place_ty(&destination);
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
         assert_eq!(
             destination_ty,
             self.gcx.async_handle_ty(),
@@ -1837,7 +1837,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: awaited task group next lowering expects exactly one group id argument");
         };
 
-        let destination_ty = self.place_ty(&destination);
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
         let TyKind::Adt(optional_def, optional_args) = destination_ty.kind() else {
             panic!("ICE: awaited task group next destination must be Optional[T]");
         };
@@ -2200,7 +2200,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: async io wait lowering expects exactly one source id argument");
         };
 
-        let destination_ty = self.place_ty(&destination);
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
         assert_eq!(
             destination_ty,
             self.gcx.async_handle_ty(),
@@ -2335,7 +2335,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: task selection lowering expects exactly two task arguments");
         };
         assert_eq!(
-            self.place_ty(&destination),
+            self.body.place_ty(self.gcx, &destination),
             self.gcx.async_handle_ty(),
             "ICE: task selection intrinsic must lower into an async handle destination"
         );
@@ -2382,7 +2382,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: task timeout lowering expects a task and duration");
         };
         assert_eq!(
-            self.place_ty(&destination),
+            self.body.place_ty(self.gcx, &destination),
             self.gcx.async_handle_ty(),
             "ICE: task timeout intrinsic must lower into an async handle destination"
         );
@@ -2432,7 +2432,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: blocking lowering expects exactly one closure argument");
         };
         assert_eq!(
-            self.place_ty(&destination),
+            self.body.place_ty(self.gcx, &destination),
             self.gcx.async_handle_ty(),
             "ICE: blocking intrinsic must lower into an async handle destination"
         );
@@ -2561,7 +2561,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             panic!("ICE: cleanup lowering expects owner, state, and callback arguments");
         };
         assert_eq!(
-            self.place_ty(&destination),
+            self.body.place_ty(self.gcx, &destination),
             self.gcx.types.uint,
             "ICE: cleanup intrinsic must lower into a usize token destination"
         );
@@ -2705,7 +2705,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let [] = args else {
             panic!("ICE: task is_cancelled lowering expects no arguments");
         };
-        let destination_ty = self.place_ty(&destination);
+        let destination_ty = self.body.place_ty(self.gcx, &destination);
         assert_eq!(
             destination_ty, self.gcx.types.bool,
             "ICE: task is_cancelled intrinsic must lower into a bool destination"
@@ -2866,7 +2866,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let [data_arg] = args else {
             panic!("ICE: panic_payload_message expects exactly one argument");
         };
-        let data_operand = unpack!(block = self.as_local_operand(block, *data_arg));
+        let data_operand = unpack!(block = self.as_operand(block, *data_arg));
         let msg_id = find_or_register_async_runtime_function(
             self.gcx,
             AsyncRuntimeFn::PanicPayloadMessage,
@@ -2902,7 +2902,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let [data_arg] = args else {
             panic!("ICE: panic_payload_rethrow expects exactly one argument");
         };
-        let data_operand = unpack!(block = self.as_local_operand(block, *data_arg));
+        let data_operand = unpack!(block = self.as_operand(block, *data_arg));
         let rethrow_id = find_or_register_async_runtime_function(
             self.gcx,
             AsyncRuntimeFn::PanicPayloadRethrow,
@@ -2965,7 +2965,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                     ),
                 }))
             }
-            _ => self.as_local_operand(block, callee),
+            _ => self.as_operand(block, callee),
         }
     }
 
@@ -2989,22 +2989,16 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         mut block: BasicBlockId,
         expr_id: ExprId,
         scrutinee: ExprId,
-        arms: &[thir::ArmId],
     ) -> BlockAnd<()> {
         let expr = &self.thir.exprs[expr_id];
         let scrutinee_place = unpack!(block = self.as_place(block, scrutinee));
 
-        let mut owned_tree = None;
-        let tree = match self.thir.match_trees.get(&expr_id) {
-            Some(tree) => tree,
-            None => {
-                let report = thir::match_tree::compile_match(self.gcx, self.thir, scrutinee, arms);
-                owned_tree = Some(report.tree);
-                owned_tree.as_ref().expect("match tree")
-            }
-        };
-        // Keep owned_tree alive for the duration of this function
-        let _keep_alive = &owned_tree;
+        let tree = &self
+            .thir
+            .match_reports
+            .get(&expr_id)
+            .expect("exhaustiveness compiles every match before MIR construction")
+            .tree;
 
         let mut var_places: FxHashMap<usize, Place<'ctx>> = FxHashMap::default();
         var_places.insert(tree.root_var.id, scrutinee_place.clone());

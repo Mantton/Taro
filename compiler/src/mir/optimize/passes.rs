@@ -7,12 +7,11 @@ use crate::compile::context::Gcx;
 use crate::error::{CompileResult, ReportedError};
 use crate::hir::DefinitionKind;
 use crate::mir::{
-    BasicBlockData, BasicBlockId, Body, LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place,
-    PlaceElem, Rvalue, Statement, StatementKind, TerminatorKind,
+    BasicBlockId, Body, LocalDecl, LocalId, LocalKind, MirPhase, Operand, Place, PlaceElem, Rvalue,
+    Statement, StatementKind, TerminatorKind,
 };
-use crate::sema::models::{AdtKind, EnumVariantKind, StructDefinition, Ty, TyKind};
+use crate::sema::models::{Ty, TyKind};
 use crate::sema::tycheck::utils::instantiate::instantiate_ty_with_args;
-use crate::thir::FieldIndex;
 use rustc_hash::FxHashSet;
 
 pub struct SimplifyCfg;
@@ -79,272 +78,136 @@ impl<'ctx> MirPass<'ctx> for LowerAggregates {
     }
 
     fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-        let mut new_blocks = body.basic_blocks.clone();
-
         for bb in body.basic_blocks.indices() {
-            let BasicBlockData {
-                statements,
-                terminator,
-                note,
-            } = body.basic_blocks[bb].clone();
-            let mut lowered: Vec<Statement> = Vec::with_capacity(statements.len());
+            let statements = std::mem::take(&mut body.basic_blocks[bb].statements);
+            let mut lowered = Vec::with_capacity(statements.len());
 
             for stmt in statements {
                 let span = stmt.span;
-                match stmt.kind {
-                    StatementKind::Assign(dest, Rvalue::Aggregate { kind, fields }) => {
-                        if matches!(kind, crate::mir::AggregateKind::Array { .. }) {
-                            lowered.push(Statement {
-                                kind: StatementKind::Assign(
-                                    dest,
-                                    Rvalue::Aggregate { kind, fields },
-                                ),
-                                span,
-                            });
-                            continue;
-                        }
-                        // Materialize operands into temps to preserve evaluation order.
-                        let field_ops: Vec<(FieldIndex, Operand)> =
-                            fields.into_iter_enumerated().collect();
-                        let mut ops_with_tys = Vec::with_capacity(field_ops.len());
-                        for (idx, operand) in field_ops.clone() {
-                            let ty = operand_ty(body, gcx, &operand);
-                            ops_with_tys.push((idx, operand, ty));
-                        }
+                let StatementKind::Assign(dest, Rvalue::Aggregate { kind, fields }) = stmt.kind
+                else {
+                    lowered.push(stmt);
+                    continue;
+                };
+                // LLVM lowers arrays directly, including empty arrays.
+                if matches!(kind, crate::mir::AggregateKind::Array { .. }) {
+                    lowered.push(Statement {
+                        kind: StatementKind::Assign(dest, Rvalue::Aggregate { kind, fields }),
+                        span,
+                    });
+                    continue;
+                }
 
-                        let mut temps: Vec<(LocalId, FieldIndex)> =
-                            Vec::with_capacity(ops_with_tys.len());
-                        for (idx, operand, ty) in &ops_with_tys {
-                            let temp_local = body.locals.push(LocalDecl {
-                                ty: *ty,
-                                kind: LocalKind::Temp,
-                                mutable: true,
-                                name: None,
-                                span,
-                            });
-                            body.escape_locals.push(false);
-                            lowered.push(Statement {
-                                kind: StatementKind::Assign(
-                                    Place::from_local(temp_local),
-                                    Rvalue::Use(operand.clone()),
-                                ),
-                                span,
-                            });
-                            temps.push((temp_local, *idx));
-                        }
-
-                        let publishes_with_discriminant = matches!(
-                            &kind,
-                            crate::mir::AggregateKind::Adt { def_id, .. }
-                                if gcx.definition_kind(*def_id) == DefinitionKind::Enum
-                        );
-                        match kind {
-                            crate::mir::AggregateKind::Tuple => {
-                                let dest_ty = place_ty(body, gcx, &dest);
-                                for (i, (temp_local, idx)) in temps.into_iter().enumerate() {
-                                    let mut proj = dest.projection.clone();
-                                    let field_ty = match dest_ty.kind() {
-                                        TyKind::Tuple(items) => {
-                                            items.get(i).cloned().unwrap_or(dest_ty)
-                                        }
-                                        _ => dest_ty,
-                                    };
-                                    proj.push(PlaceElem::Field(idx, field_ty));
-                                    let place = Place {
-                                        local: dest.local,
-                                        projection: proj,
-                                    };
-                                    lowered.push(Statement {
-                                        kind: StatementKind::Assign(
-                                            place,
-                                            Rvalue::Use(aggregate_field_operand(
-                                                gcx,
-                                                body.owner,
-                                                body.locals[temp_local].ty,
-                                                temp_local,
-                                            )),
-                                        ),
-                                        span,
-                                    });
-                                }
-                            }
-                            crate::mir::AggregateKind::Array { element, .. } => {
-                                for (temp_local, idx) in temps.into_iter() {
-                                    let mut proj = dest.projection.clone();
-                                    proj.push(PlaceElem::Field(idx, element));
-                                    let place = Place {
-                                        local: dest.local,
-                                        projection: proj,
-                                    };
-                                    lowered.push(Statement {
-                                        kind: StatementKind::Assign(
-                                            place,
-                                            Rvalue::Use(aggregate_field_operand(
-                                                gcx,
-                                                body.owner,
-                                                body.locals[temp_local].ty,
-                                                temp_local,
-                                            )),
-                                        ),
-                                        span,
-                                    });
-                                }
-                            }
-                            crate::mir::AggregateKind::Adt {
-                                def_id,
-                                variant_index,
-                                generic_args,
-                            } => {
-                                let kind = gcx.definition_kind(def_id);
-                                match kind {
-                                    DefinitionKind::Struct => {
-                                        let StructDefinition { fields, .. } =
-                                            *gcx.get_struct_definition(def_id);
-                                        for ((temp_local, idx), field) in
-                                            temps.into_iter().zip(fields.iter())
-                                        {
-                                            let mut proj = dest.projection.clone();
-                                            let field_ty = instantiate_ty_with_args(
-                                                gcx,
-                                                field.ty,
-                                                generic_args,
-                                            );
-                                            proj.push(PlaceElem::Field(idx, field_ty));
-                                            let place = Place {
-                                                local: dest.local,
-                                                projection: proj,
-                                            };
-                                            lowered.push(Statement {
-                                                kind: StatementKind::Assign(
-                                                    place,
-                                                    Rvalue::Use(aggregate_field_operand(
-                                                        gcx,
-                                                        body.owner,
-                                                        body.locals[temp_local].ty,
-                                                        temp_local,
-                                                    )),
-                                                ),
-                                                span,
-                                            });
-                                        }
-                                    }
-                                    DefinitionKind::Enum => {
-                                        let Some(variant_index) = variant_index else {
-                                            unreachable!();
-                                        };
-                                        let variant_data =
-                                            gcx.enum_variant_by_index(def_id, variant_index);
-
-                                        for ((temp_local, idx), (_, _, ty)) in
-                                            temps.into_iter().zip(ops_with_tys.iter())
-                                        {
-                                            let mut proj = dest.projection.clone();
-                                            proj.push(PlaceElem::VariantDowncast {
-                                                name: variant_data.name,
-                                                index: variant_index,
-                                            });
-                                            proj.push(PlaceElem::Field(idx, *ty));
-                                            let place = Place {
-                                                local: dest.local,
-                                                projection: proj,
-                                            };
-                                            lowered.push(Statement {
-                                                kind: StatementKind::Assign(
-                                                    place,
-                                                    Rvalue::Use(aggregate_field_operand(
-                                                        gcx,
-                                                        body.owner,
-                                                        body.locals[temp_local].ty,
-                                                        temp_local,
-                                                    )),
-                                                ),
-                                                span,
-                                            });
-                                        }
-
-                                        // Publish the discriminator only after
-                                        // the selected payload is completely
-                                        // initialized. A tag-aware collector
-                                        // must never observe a live tag paired
-                                        // with stale payload storage.
-                                        lowered.push(Statement {
-                                            kind: StatementKind::SetDiscriminant {
-                                                place: dest.clone(),
-                                                variant_index,
-                                            },
-                                            span,
-                                        });
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            }
-                            crate::mir::AggregateKind::Closure {
-                                def_id,
-                                captured_generics,
-                            } => {
-                                // Lower closure aggregate - each capture becomes a field assignment
-                                let captures_info = gcx.get_closure_captures(def_id);
-                                let capture_tys: Vec<Ty<'ctx>> = captures_info
-                                    .as_ref()
-                                    .map(|c| {
-                                        c.captures
-                                            .iter()
-                                            .map(|capture| {
-                                                instantiate_ty_with_args(
-                                                    gcx,
-                                                    capture.ty,
-                                                    captured_generics,
-                                                )
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
-
-                                for ((temp_local, idx), field_ty) in
-                                    temps.into_iter().zip(capture_tys.iter())
-                                {
-                                    let mut proj = dest.projection.clone();
-                                    proj.push(PlaceElem::Field(idx, *field_ty));
-                                    let place = Place {
-                                        local: dest.local,
-                                        projection: proj,
-                                    };
-                                    lowered.push(Statement {
-                                        kind: StatementKind::Assign(
-                                            place,
-                                            Rvalue::Use(aggregate_field_operand(
-                                                gcx,
-                                                body.owner,
-                                                body.locals[temp_local].ty,
-                                                temp_local,
-                                            )),
-                                        ),
-                                        span,
-                                    });
-                                }
-                            }
-                        }
-                        if dest.projection.is_empty() && !publishes_with_discriminant {
-                            // All field-producing calls ran before lowering.
-                            // The stores above are contiguous and cannot
-                            // safepoint, so this is the first location where a
-                            // whole-local GC descriptor is safe to evaluate.
-                            lowered.push(Statement {
-                                kind: StatementKind::SetInitialized(dest.local),
-                                span,
-                            });
-                        }
+                let mut field_base = dest.clone();
+                let mut variant_index = None;
+                let field_tys: Vec<_> = match kind {
+                    crate::mir::AggregateKind::Tuple => {
+                        let TyKind::Tuple(items) = body.place_ty(gcx, &dest).kind() else {
+                            panic!("tuple aggregate must have a tuple destination");
+                        };
+                        items.to_vec()
                     }
-                    _ => lowered.push(stmt),
+                    crate::mir::AggregateKind::Adt {
+                        def_id,
+                        variant_index: variant,
+                        generic_args,
+                    } => match gcx.definition_kind(def_id) {
+                        DefinitionKind::Struct => gcx
+                            .get_struct_definition(def_id)
+                            .fields
+                            .iter()
+                            .map(|field| instantiate_ty_with_args(gcx, field.ty, generic_args))
+                            .collect(),
+                        DefinitionKind::Enum => {
+                            let index = variant.expect("enum aggregate variant");
+                            let variant = gcx.enum_variant_by_index(def_id, index);
+                            field_base.projection.push(PlaceElem::VariantDowncast {
+                                name: variant.name,
+                                index,
+                            });
+                            variant_index = Some(index);
+                            fields
+                                .iter()
+                                .map(|operand| body.operand_ty(gcx, operand))
+                                .collect()
+                        }
+                        _ => unreachable!("aggregate must be a struct or enum"),
+                    },
+                    crate::mir::AggregateKind::Closure {
+                        def_id,
+                        captured_generics,
+                    } => gcx
+                        .get_closure_captures(def_id)
+                        .map(|info| {
+                            info.captures
+                                .iter()
+                                .map(|capture| {
+                                    instantiate_ty_with_args(gcx, capture.ty, captured_generics)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    crate::mir::AggregateKind::Array { .. } => unreachable!(),
+                };
+                assert_eq!(fields.len(), field_tys.len(), "aggregate field count");
+
+                // Read every operand before writing any destination field: the
+                // destination may overlap an input (for example a tuple swap).
+                let mut temps = Vec::with_capacity(fields.len());
+                for ((index, operand), field_ty) in fields.into_iter_enumerated().zip(field_tys) {
+                    let ty = body.operand_ty(gcx, &operand);
+                    let local = body.locals.push(LocalDecl {
+                        ty,
+                        kind: LocalKind::Temp,
+                        mutable: true,
+                        name: None,
+                        span,
+                    });
+                    body.escape_locals.push(false);
+                    lowered.push(Statement {
+                        kind: StatementKind::Assign(Place::from_local(local), Rvalue::Use(operand)),
+                        span,
+                    });
+                    temps.push((local, index, field_ty));
+                }
+                for (local, index, field_ty) in temps {
+                    let mut place = field_base.clone();
+                    place.projection.push(PlaceElem::Field(index, field_ty));
+                    lowered.push(Statement {
+                        kind: StatementKind::Assign(
+                            place,
+                            Rvalue::Use(aggregate_field_operand(
+                                gcx,
+                                body.owner,
+                                body.locals[local].ty,
+                                local,
+                            )),
+                        ),
+                        span,
+                    });
+                }
+
+                if let Some(variant_index) = variant_index {
+                    // Publish the tag only after all payload stores. A tag-aware
+                    // collector must never observe stale payload storage.
+                    lowered.push(Statement {
+                        kind: StatementKind::SetDiscriminant {
+                            place: dest,
+                            variant_index,
+                        },
+                        span,
+                    });
+                } else if dest.projection.is_empty() {
+                    // This safepoint-free store sequence has initialized the
+                    // whole local, even when the aggregate has no fields.
+                    lowered.push(Statement {
+                        kind: StatementKind::SetInitialized(dest.local),
+                        span,
+                    });
                 }
             }
-
-            new_blocks[bb].statements = lowered;
-            new_blocks[bb].terminator = terminator;
-            new_blocks[bb].note = note;
+            body.basic_blocks[bb].statements = lowered;
         }
-
-        body.basic_blocks = new_blocks;
         Ok(())
     }
 
@@ -406,10 +269,10 @@ impl<'ctx> MirPass<'ctx> for LowerExistentialBoxes {
     }
 
     fn run(&mut self, gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> CompileResult<()> {
-        let original = body.basic_blocks.clone();
         for block in body.basic_blocks.indices() {
-            let mut lowered = Vec::with_capacity(original[block].statements.len());
-            for statement in original[block].statements.iter().cloned() {
+            let statements = std::mem::take(&mut body.basic_blocks[block].statements);
+            let mut lowered = Vec::with_capacity(statements.len());
+            for statement in statements {
                 let StatementKind::Assign(
                     destination,
                     Rvalue::Cast {
@@ -422,7 +285,7 @@ impl<'ctx> MirPass<'ctx> for LowerExistentialBoxes {
                     lowered.push(statement);
                     continue;
                 };
-                let concrete = operand_ty(body, gcx, &operand);
+                let concrete = body.operand_ty(gcx, &operand);
                 let allocates = matches!(target.kind(), TyKind::BoxedExistential { .. })
                     && !matches!(concrete.kind(), TyKind::BoxedExistential { .. })
                     && matches!(
@@ -705,64 +568,6 @@ fn aggregate_field_operand<'ctx>(
     }
 }
 
-fn operand_ty<'a>(
-    body: &Body<'a>,
-    gcx: Gcx<'a>,
-    operand: &Operand<'a>,
-) -> crate::sema::models::Ty<'a> {
-    match operand {
-        Operand::Constant(c) => c.ty,
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-            place_ty(body, gcx, place)
-        }
-    }
-}
-
-fn place_ty<'a>(body: &Body<'a>, gcx: Gcx<'a>, place: &Place<'a>) -> crate::sema::models::Ty<'a> {
-    let mut ty = body.locals[place.local].ty;
-    for elem in &place.projection {
-        match elem {
-            PlaceElem::Deref => {
-                ty = ty
-                    .dereference()
-                    .unwrap_or_else(|| crate::sema::models::Ty::error(gcx));
-            }
-            PlaceElem::Field(_, field_ty) => ty = *field_ty,
-            PlaceElem::VariantDowncast { index, .. } => {
-                let def = match ty.kind() {
-                    TyKind::Adt(def, _) if def.kind == AdtKind::Enum => def,
-                    _ => return Ty::error(gcx),
-                };
-                ty = enum_variant_tuple_ty(gcx, def.id, *index);
-            }
-        }
-    }
-    ty
-}
-
-fn enum_variant_tuple_ty<'a>(
-    gcx: Gcx<'a>,
-    def_id: crate::hir::DefinitionID,
-    variant_index: crate::thir::VariantIndex,
-) -> Ty<'a> {
-    let def = gcx.get_enum_definition(def_id);
-    let variant = def
-        .variants
-        .get(variant_index.index())
-        .expect("enum variant index");
-    match variant.kind {
-        EnumVariantKind::Unit => gcx.types.void,
-        EnumVariantKind::Tuple(fields) => {
-            let mut tys = Vec::with_capacity(fields.len());
-            for field in fields {
-                tys.push(field.ty);
-            }
-            let list = gcx.store.interners.intern_ty_list(tys);
-            Ty::new(TyKind::Tuple(list), gcx)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -788,6 +593,146 @@ mod tests {
         span::{FileID, Span},
         thir::FieldIndex,
     };
+
+    #[test]
+    fn aggregate_lowering_reads_overlapping_fields_before_writing() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let ty = Ty::new(
+                TyKind::Tuple(gcx.store.interners.intern_ty_list(vec![gcx.types.int32; 2])),
+                gcx,
+            );
+            let local = push_temp(&mut body, ty);
+            let span = body.locals[local].span;
+            let field = |index| Place {
+                local,
+                projection: vec![PlaceElem::Field(
+                    FieldIndex::from_raw(index),
+                    gcx.types.int32,
+                )],
+            };
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(local),
+                        Rvalue::Aggregate {
+                            kind: AggregateKind::Tuple,
+                            fields: vec![
+                                Operand::Move(field(1)),
+                                Operand::CopyWith(
+                                    field(0),
+                                    crate::mir::CopyModifiers {
+                                        take: false,
+                                        init: true,
+                                    },
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        },
+                    ),
+                    span,
+                });
+
+            assert!(LowerAggregates.run(gcx, &mut body).is_ok());
+
+            let statements = &body.basic_blocks[body.start_block].statements;
+            assert_eq!(statements.len(), 5);
+            assert!(
+                matches!(&statements[0].kind, StatementKind::Assign(dest, Rvalue::Use(Operand::Move(source))) if dest.local != local && source == &field(1))
+            );
+            assert!(
+                matches!(&statements[1].kind, StatementKind::Assign(dest, Rvalue::Use(Operand::CopyWith(source, modifiers))) if dest.local != local && source == &field(0) && modifiers.init)
+            );
+            for (index, statement) in statements[2..4].iter().enumerate() {
+                assert!(
+                    matches!(&statement.kind, StatementKind::Assign(dest, Rvalue::Use(Operand::Copy(source))) if dest == &field(index as u32) && source.projection.is_empty())
+                );
+            }
+            assert!(matches!(statements[4].kind, StatementKind::SetInitialized(id) if id == local));
+        });
+    }
+
+    #[test]
+    fn enum_payload_aggregate_uses_instantiated_field_types() {
+        use crate::sema::models::{
+            AdtDef, AdtKind, EnumDefinition, EnumVariant, EnumVariantField, EnumVariantKind,
+        };
+        use crate::thir::VariantIndex;
+
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let enum_id = DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(10));
+            let adt_def = AdtDef {
+                kind: AdtKind::Enum,
+                id: enum_id,
+            };
+            let parameter = Ty::new(
+                TyKind::Parameter(GenericParameter {
+                    index: 0,
+                    name: gcx.intern_symbol("T"),
+                }),
+                gcx,
+            );
+            let name = gcx.intern_symbol("Some");
+            let fields = gcx
+                .store
+                .arenas
+                .global
+                .alloc_slice_copy(&[EnumVariantField {
+                    label: None,
+                    ty: parameter,
+                }]);
+            let variants = gcx.store.arenas.global.alloc_slice_copy(&[EnumVariant {
+                name,
+                def_id: enum_id,
+                ctor_def_id: enum_id,
+                kind: EnumVariantKind::Tuple(fields),
+                discriminant: 0,
+            }]);
+            gcx.cache_enum_definition(enum_id, EnumDefinition { adt_def, variants });
+            let args = gcx
+                .store
+                .interners
+                .intern_generic_args(vec![GenericArgument::Type(gcx.types.int32)]);
+            let destination = push_temp(&mut body, Ty::new(TyKind::Adt(adt_def, args), gcx));
+            let value = push_temp(&mut body, gcx.types.int32);
+            let span = body.locals[destination].span;
+            body.basic_blocks[body.start_block]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place {
+                            local: destination,
+                            projection: vec![PlaceElem::VariantDowncast {
+                                name,
+                                index: VariantIndex::from_raw(0),
+                            }],
+                        },
+                        Rvalue::Aggregate {
+                            kind: AggregateKind::Tuple,
+                            fields: vec![Operand::Copy(Place::from_local(value))]
+                                .into_iter()
+                                .collect(),
+                        },
+                    ),
+                    span,
+                });
+
+            assert!(LowerAggregates.run(gcx, &mut body).is_ok());
+
+            let StatementKind::Assign(destination, _) =
+                &body.basic_blocks[body.start_block].statements[1].kind
+            else {
+                panic!("expected payload field assignment");
+            };
+            assert_eq!(
+                destination.projection.last(),
+                Some(&PlaceElem::Field(FieldIndex::from_raw(0), gcx.types.int32))
+            );
+        });
+    }
 
     #[test]
     fn closure_aggregate_fields_use_captured_generic_arguments() {

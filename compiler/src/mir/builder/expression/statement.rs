@@ -14,7 +14,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
 
         match &expression.kind {
             ExprKind::Assign { target, value } => {
-                let rhs = unpack!(block = self.as_local_rvalue(block, *value));
+                let rhs = unpack!(block = self.as_rvalue(block, *value));
                 let lhs = unpack!(block = self.as_place(block, *target));
                 if self.is_task_ty(self.thir.exprs[*target].ty) {
                     block = self

@@ -10,8 +10,8 @@ use crate::{
     },
     sema::{
         models::{
-            AdtKind, EnumVariantKind, GenericArgument, GenericArguments, LabeledFunctionParameter,
-            LabeledFunctionSignature, Ty, TyKind,
+            GenericArgument, GenericArguments, LabeledFunctionParameter, LabeledFunctionSignature,
+            Ty, TyKind,
         },
         resolve::models::DefinitionKind,
         tycheck::utils::generics::GenericsBuilder,
@@ -217,7 +217,7 @@ fn materialize_await_futures<'ctx>(gcx: Gcx<'ctx>, body: &mut Body<'ctx>) -> Vec
         let future_place = if let Some((place, _)) = value.as_copy() {
             place.clone()
         } else {
-            let future_ty = operand_ty(body, gcx, &value);
+            let future_ty = body.operand_ty(gcx, &value);
             let temp = push_local(
                 body,
                 future_ty,
@@ -596,7 +596,7 @@ fn rewrite_yields<'ctx>(
         find_or_register_async_runtime_function(gcx, AsyncRuntimeFn::IsTaskCancelled, span);
     let is_cancelled_ty = gcx.get_type(is_cancelled_id);
     for (index, site) in yields.iter().enumerate() {
-        let ready_ty = place_ty(body, gcx, &site.resume_arg);
+        let ready_ty = body.place_ty(gcx, &site.resume_arg);
         let ready_is_never = matches!(ready_ty.kind(), TyKind::Never);
         let ready_storage_ty = if ready_ty == gcx.types.void || ready_is_never {
             gcx.types.uint8
@@ -1874,60 +1874,6 @@ pub(crate) fn find_std_function<'ctx>(
                 Some(span),
             );
             Err(ReportedError)
-        }
-    }
-}
-
-fn operand_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, operand: &Operand<'ctx>) -> Ty<'ctx> {
-    match operand {
-        Operand::Constant(constant) => constant.ty,
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-            place_ty(body, gcx, place)
-        }
-    }
-}
-
-fn place_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, place: &Place<'ctx>) -> Ty<'ctx> {
-    let mut ty = body.locals[place.local].ty;
-    for elem in &place.projection {
-        match elem {
-            PlaceElem::Deref => {
-                ty = ty.dereference().unwrap_or_else(|| Ty::error(gcx));
-            }
-            PlaceElem::Field(_, field_ty) => ty = *field_ty,
-            PlaceElem::VariantDowncast { index, .. } => {
-                let def = match ty.kind() {
-                    TyKind::Adt(def, _) if def.kind == AdtKind::Enum => def,
-                    _ => return Ty::error(gcx),
-                };
-                ty = enum_variant_tuple_ty(gcx, def.id, *index);
-            }
-        }
-    }
-    ty
-}
-
-fn enum_variant_tuple_ty<'ctx>(
-    gcx: Gcx<'ctx>,
-    def_id: DefinitionID,
-    variant_index: crate::thir::VariantIndex,
-) -> Ty<'ctx> {
-    let def = gcx.get_enum_definition(def_id);
-    let variant = def.variants.get(variant_index.index()).unwrap_or_else(|| {
-        panic!(
-            "ICE: variant index {} out of bounds for enum {:?}",
-            variant_index.index(),
-            def_id
-        )
-    });
-    match variant.kind {
-        EnumVariantKind::Unit => gcx.types.void,
-        EnumVariantKind::Tuple(fields) => {
-            let list = gcx
-                .store
-                .interners
-                .intern_ty_list(fields.iter().map(|field| field.ty).collect());
-            Ty::new(TyKind::Tuple(list), gcx)
         }
     }
 }

@@ -11,10 +11,6 @@ use crate::{
 };
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
-    pub fn as_local_rvalue(&mut self, block: BasicBlockId, expr: ExprId) -> BlockAnd<Rvalue<'ctx>> {
-        self.as_rvalue(block, expr)
-    }
-
     pub fn as_rvalue(
         &mut self,
         mut block: BasicBlockId,

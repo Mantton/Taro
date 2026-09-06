@@ -1,332 +1,130 @@
-use crate::mir::{BasicBlockId, Body, CallUnwindAction, LocalId, TerminatorKind};
+use crate::mir::{BasicBlockId, Body, LocalId, TerminatorKind};
 use index_vec::IndexVec;
-use rustc_hash::FxHashMap;
 
 /// Collapse chains of empty blocks that only `goto`.
 pub fn collapse_trivial_gotos(body: &mut Body<'_>) {
-    fn collapse_target(
-        body: &Body<'_>,
-        bb: BasicBlockId,
-        cache: &mut FxHashMap<BasicBlockId, BasicBlockId>,
-    ) -> BasicBlockId {
-        if let Some(&cached) = cache.get(&bb) {
-            return cached;
-        }
-        let mut cur = bb;
-        loop {
-            let block = &body.basic_blocks[cur];
-            match block.terminator.as_ref().map(|t| &t.kind) {
-                Some(TerminatorKind::Goto { target })
-                    if block.statements.is_empty() && *target != cur =>
-                {
-                    cur = *target;
-                    continue;
-                }
-                _ => break,
+    let mut targets: IndexVec<BasicBlockId, Option<BasicBlockId>> =
+        IndexVec::from(vec![None; body.basic_blocks.len()]);
+    let mut path = Vec::new();
+    for block in body.basic_blocks.indices() {
+        let mut current = block;
+        let target = loop {
+            if let Some(target) = targets[current] {
+                break target;
             }
+            // A provisional self-target also detects cycles in the current
+            // path. Once resolved, every node points straight to its target.
+            targets[current] = Some(current);
+            path.push(current);
+            let data = &body.basic_blocks[current];
+            match data.terminator.as_ref().map(|term| &term.kind) {
+                Some(TerminatorKind::Goto { target }) if data.statements.is_empty() => {
+                    current = *target;
+                }
+                _ => break current,
+            }
+        };
+        for block in path.drain(..) {
+            targets[block] = Some(target);
         }
-        cache.insert(bb, cur);
-        cur
     }
 
-    let mut cache: FxHashMap<BasicBlockId, BasicBlockId> = FxHashMap::default();
-    for bb in body.basic_blocks.indices() {
-        let _ = collapse_target(body, bb, &mut cache);
-    }
-
-    for block in body.basic_blocks.iter_mut() {
-        if let Some(term) = block.terminator.as_mut() {
-            match &mut term.kind {
-                TerminatorKind::Goto { target } => *target = *cache.get(target).unwrap_or(target),
-                TerminatorKind::SwitchInt {
-                    targets, otherwise, ..
-                } => {
-                    *otherwise = *cache.get(otherwise).unwrap_or(otherwise);
-                    for (_, t) in targets {
-                        *t = *cache.get(t).unwrap_or(t);
-                    }
-                }
-                TerminatorKind::Call { target, unwind, .. } => {
-                    *target = *cache.get(target).unwrap_or(target);
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        *bb = *cache.get(bb).unwrap_or(bb);
-                    }
-                }
-                TerminatorKind::Yield {
-                    resume,
-                    cancel,
-                    cancel_complete,
-                    unwind,
-                    ..
-                } => {
-                    *resume = *cache.get(resume).unwrap_or(resume);
-                    *cancel = *cache.get(cancel).unwrap_or(cancel);
-                    *cancel_complete = *cache.get(cancel_complete).unwrap_or(cancel_complete);
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        *bb = *cache.get(bb).unwrap_or(bb);
-                    }
-                }
-                _ => {}
-            }
+    for block in &mut body.basic_blocks {
+        if let Some(term) = &mut block.terminator {
+            term.kind
+                .map_blocks(|target| targets[target].expect("resolved goto target"));
         }
     }
 }
 
-/// Merge linear chains of blocks where a block has a single successor via goto
-/// and that successor has only one predecessor. This handles non-empty blocks too.
+/// Merge a goto's target when the goto is its only incoming reference.
 pub fn merge_linear_blocks(body: &mut Body<'_>) {
-    // First, count predecessors for each block
     let mut pred_count = vec![0usize; body.basic_blocks.len()];
-
-    for block in body.basic_blocks.iter() {
+    for block in &body.basic_blocks {
         if let Some(term) = &block.terminator {
-            match &term.kind {
-                TerminatorKind::Goto { target } => {
-                    pred_count[target.index()] += 1;
-                }
-                TerminatorKind::SwitchInt {
-                    targets, otherwise, ..
-                } => {
-                    pred_count[otherwise.index()] += 1;
-                    for (_, t) in targets {
-                        pred_count[t.index()] += 1;
-                    }
-                }
-                TerminatorKind::Call { target, unwind, .. } => {
-                    pred_count[target.index()] += 1;
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        pred_count[bb.index()] += 1;
-                    }
-                }
-                TerminatorKind::Yield {
-                    resume,
-                    cancel,
-                    cancel_complete,
-                    unwind,
-                    ..
-                } => {
-                    pred_count[resume.index()] += 1;
-                    pred_count[cancel.index()] += 1;
-                    // This metadata edge pins the unique cancellation marker.
-                    // If it is merged into the preceding cleanup block, the
-                    // async transform can no longer rewrite cancellation into
-                    // a completed poll result.
-                    pred_count[cancel_complete.index()] += 1;
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        pred_count[bb.index()] += 1;
-                    }
-                }
-                _ => {}
+            for target in term.kind.successors() {
+                pred_count[target.index()] += 1;
+            }
+            if let TerminatorKind::Yield {
+                cancel_complete, ..
+            } = term.kind
+            {
+                // The cancellation marker must survive until async lowering,
+                // even if its cleanup path diverges.
+                pred_count[cancel_complete.index()] += 1;
             }
         }
     }
-
-    // Entry block has an implicit predecessor
     pred_count[body.start_block.index()] += 1;
 
-    // Find merge opportunities: block ends with goto, target has single pred
-    let mut merged = true;
-    while merged {
-        merged = false;
-
-        for bb_id in body.basic_blocks.indices() {
-            let block = &body.basic_blocks[bb_id];
-
-            // Check if this block ends with a goto
-            let (target, old_span) = match block.terminator.as_ref() {
-                Some(term) => match &term.kind {
-                    TerminatorKind::Goto { target } => (*target, term.span),
-                    _ => continue,
-                },
-                None => continue,
+    for block in body.basic_blocks.indices() {
+        loop {
+            let Some(term) = &body.basic_blocks[block].terminator else {
+                break;
             };
-
-            // Don't merge with self
-            if target == bb_id {
-                continue;
+            let TerminatorKind::Goto { target } = term.kind else {
+                break;
+            };
+            if target == block || pred_count[target.index()] != 1 {
+                break;
             }
-
-            // Target must have exactly one predecessor (this block)
-            if pred_count[target.index()] != 1 {
-                continue;
-            }
-
-            // Merge: append target's statements and terminator to this block
-            let target_block = body.basic_blocks[target].clone();
-            let current_block = &mut body.basic_blocks[bb_id];
-
-            current_block.statements.extend(target_block.statements);
-            current_block.terminator = target_block.terminator;
-            // Keep the note from the original block if it has one
-
-            // Mark target as merged (clear it and make unreachable)
-            body.basic_blocks[target].statements.clear();
-            body.basic_blocks[target].terminator = Some(crate::mir::Terminator {
-                kind: TerminatorKind::Unreachable,
-                span: old_span,
-            });
-
-            merged = true;
-            break; // Restart to recompute pred counts
-        }
-
-        if merged {
-            // Recompute pred counts
-            pred_count = vec![0usize; body.basic_blocks.len()];
-            for block in body.basic_blocks.iter() {
-                if let Some(term) = &block.terminator {
-                    match &term.kind {
-                        TerminatorKind::Goto { target } => {
-                            pred_count[target.index()] += 1;
-                        }
-                        TerminatorKind::SwitchInt {
-                            targets, otherwise, ..
-                        } => {
-                            pred_count[otherwise.index()] += 1;
-                            for (_, t) in targets {
-                                pred_count[t.index()] += 1;
-                            }
-                        }
-                        TerminatorKind::Call { target, unwind, .. } => {
-                            pred_count[target.index()] += 1;
-                            if let CallUnwindAction::Cleanup(bb) = unwind {
-                                pred_count[bb.index()] += 1;
-                            }
-                        }
-                        TerminatorKind::Yield {
-                            resume,
-                            cancel,
-                            cancel_complete,
-                            unwind,
-                            ..
-                        } => {
-                            pred_count[resume.index()] += 1;
-                            pred_count[cancel.index()] += 1;
-                            pred_count[cancel_complete.index()] += 1;
-                            if let CallUnwindAction::Cleanup(bb) = unwind {
-                                pred_count[bb.index()] += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            pred_count[body.start_block.index()] += 1;
+            let span = term.span;
+            let statements = std::mem::take(&mut body.basic_blocks[target].statements);
+            let terminator = body.basic_blocks[target]
+                .terminator
+                .replace(crate::mir::Terminator {
+                    kind: TerminatorKind::Unreachable,
+                    span,
+                });
+            body.basic_blocks[block].statements.extend(statements);
+            body.basic_blocks[block].terminator = terminator;
+            // Moving the target's outgoing references changes no other count.
+            // Only this goto disappears; rescanning the whole CFG is unnecessary.
+            pred_count[target.index()] = 0;
         }
     }
 }
 
-/// Remove unreachable blocks from the body.
+/// Remove unreachable blocks, retaining async cancellation marker references.
 pub fn prune_unreachable_blocks(body: &mut Body<'_>) {
     let mut reachable = vec![false; body.basic_blocks.len()];
     let mut stack = vec![body.start_block];
-
-    while let Some(bb) = stack.pop() {
-        if reachable[bb.index()] {
+    while let Some(block) = stack.pop() {
+        if std::mem::replace(&mut reachable[block.index()], true) {
             continue;
         }
-        reachable[bb.index()] = true;
-        if let Some(term) = &body.basic_blocks[bb].terminator {
-            match &term.kind {
-                TerminatorKind::Goto { target } => stack.push(*target),
-                TerminatorKind::SwitchInt {
-                    targets, otherwise, ..
-                } => {
-                    stack.push(*otherwise);
-                    for (_, t) in targets {
-                        stack.push(*t);
-                    }
-                }
-                TerminatorKind::Call { target, unwind, .. } => {
-                    stack.push(*target);
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        stack.push(*bb);
-                    }
-                }
-                TerminatorKind::Yield {
-                    resume,
-                    cancel,
-                    cancel_complete,
-                    unwind,
-                    ..
-                } => {
-                    stack.push(*resume);
-                    stack.push(*cancel);
-                    // `cancel_complete` is metadata for the async transform,
-                    // not necessarily reachable when a cleanup diverges. Keep
-                    // its marker block until that transform consumes it.
-                    stack.push(*cancel_complete);
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        stack.push(*bb);
-                    }
-                }
-                TerminatorKind::Return
-                | TerminatorKind::ResumeUnwind
-                | TerminatorKind::Unreachable
-                | TerminatorKind::UnresolvedGoto => {}
+        if let Some(term) = &body.basic_blocks[block].terminator {
+            stack.extend(term.kind.successors());
+            if let TerminatorKind::Yield {
+                cancel_complete, ..
+            } = term.kind
+            {
+                // This is metadata, not a CFG edge. The transform still needs
+                // the marker when a cleanup diverges before reaching it.
+                stack.push(cancel_complete);
             }
         }
     }
-
-    if reachable.iter().all(|&r| r) {
+    if reachable.iter().all(|&value| value) {
         return;
     }
 
     let mut remap: IndexVec<BasicBlockId, Option<BasicBlockId>> =
         IndexVec::from(vec![None; reachable.len()]);
-    let mut new_blocks = IndexVec::new();
-
-    for (old, data) in body.basic_blocks.iter_enumerated() {
+    let mut blocks = IndexVec::new();
+    for (old, data) in std::mem::take(&mut body.basic_blocks).into_iter_enumerated() {
         if reachable[old.index()] {
-            let new = new_blocks.push(data.clone());
-            remap[old] = Some(new);
+            remap[old] = Some(blocks.push(data));
         }
     }
-
-    let remap_bb = |bb: BasicBlockId| remap[bb].expect("reachable block must be remapped");
-
-    for block in new_blocks.iter_mut() {
-        if let Some(term) = block.terminator.as_mut() {
-            match &mut term.kind {
-                TerminatorKind::Goto { target } => *target = remap_bb(*target),
-                TerminatorKind::SwitchInt {
-                    targets, otherwise, ..
-                } => {
-                    *otherwise = remap_bb(*otherwise);
-                    for (_, t) in targets {
-                        *t = remap_bb(*t);
-                    }
-                }
-                TerminatorKind::Call { target, unwind, .. } => {
-                    *target = remap_bb(*target);
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        *bb = remap_bb(*bb);
-                    }
-                }
-                TerminatorKind::Yield {
-                    resume,
-                    cancel,
-                    cancel_complete,
-                    unwind,
-                    ..
-                } => {
-                    *resume = remap_bb(*resume);
-                    *cancel = remap_bb(*cancel);
-                    *cancel_complete = remap_bb(*cancel_complete);
-                    if let CallUnwindAction::Cleanup(bb) = unwind {
-                        *bb = remap_bb(*bb);
-                    }
-                }
-                TerminatorKind::Return
-                | TerminatorKind::ResumeUnwind
-                | TerminatorKind::Unreachable
-                | TerminatorKind::UnresolvedGoto => {}
-            }
+    let remap_block = |block: BasicBlockId| remap[block].expect("reachable block must be remapped");
+    for block in &mut blocks {
+        if let Some(term) = &mut block.terminator {
+            term.kind.map_blocks(remap_block);
         }
     }
-
-    body.start_block = remap_bb(body.start_block);
-    body.basic_blocks = new_blocks;
+    body.start_block = remap_block(body.start_block);
+    body.basic_blocks = blocks;
 }
 
 /// Eliminate unused locals from the body.
@@ -538,6 +336,128 @@ pub fn merge_consecutive_safepoints(body: &mut Body<'_>) {
             let keep = !is_safepoint || !prev_was_safepoint;
             prev_was_safepoint = is_safepoint;
             keep
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::mir::{
+        BasicBlockData, Operand, Place, Terminator, TerminatorKind,
+        optimize::{MirPass, passes::SimplifyCfg},
+        test_support::{minimal_body, with_test_gcx},
+    };
+
+    #[test]
+    fn cfg_cleanup_preserves_and_remaps_a_diverging_cancellation_marker() {
+        use crate::mir::{BasicBlockId, CallUnwindAction};
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let push = |body: &mut crate::mir::Body<'_>, kind| {
+                body.basic_blocks.push(BasicBlockData {
+                    note: None,
+                    statements: Vec::new(),
+                    terminator: Some(Terminator { kind, span }),
+                })
+            };
+            let _dead = push(&mut body, TerminatorKind::Unreachable);
+            let resume = push(&mut body, TerminatorKind::Return);
+            let cancel = push(&mut body, TerminatorKind::Unreachable);
+            let cancel_complete = push(&mut body, TerminatorKind::Return);
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::Yield {
+                    value: Operand::Copy(Place::from_local(body.return_local)),
+                    resume,
+                    resume_arg: Place::from_local(body.return_local),
+                    cancel,
+                    cancel_complete,
+                    unwind: CallUnwindAction::Cleanup(cancel),
+                },
+                span,
+            });
+
+            assert!(SimplifyCfg.run(gcx, &mut body).is_ok());
+
+            assert_eq!(body.basic_blocks.len(), 4);
+            let TerminatorKind::Yield {
+                resume,
+                cancel,
+                cancel_complete,
+                unwind,
+                ..
+            } = &body.basic_blocks[body.start_block]
+                .terminator
+                .as_ref()
+                .unwrap()
+                .kind
+            else {
+                panic!("expected yield");
+            };
+            assert_eq!(*resume, BasicBlockId::from_raw(1));
+            assert_eq!(*cancel, BasicBlockId::from_raw(2));
+            assert_eq!(*cancel_complete, BasicBlockId::from_raw(3));
+            assert_eq!(*unwind, CallUnwindAction::Cleanup(*cancel));
+            assert!(matches!(
+                body.basic_blocks[*cancel_complete]
+                    .terminator
+                    .as_ref()
+                    .unwrap()
+                    .kind,
+                TerminatorKind::Return
+            ));
+        });
+    }
+
+    #[test]
+    fn simplify_cfg_terminates_on_a_goto_cycle_with_multiple_entries() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let span = body.locals[body.return_local].span;
+            let first = body.basic_blocks.push(BasicBlockData {
+                note: None,
+                statements: Vec::new(),
+                terminator: None,
+            });
+            let second = body.basic_blocks.push(BasicBlockData {
+                note: None,
+                statements: Vec::new(),
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto { target: first },
+                    span,
+                }),
+            });
+            body.basic_blocks[first].terminator = Some(Terminator {
+                kind: TerminatorKind::Goto { target: second },
+                span,
+            });
+            body.basic_blocks[body.start_block].terminator = Some(Terminator {
+                kind: TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(Place::from_local(body.return_local)),
+                    targets: vec![(0, first)],
+                    otherwise: second,
+                },
+                span,
+            });
+
+            assert!(SimplifyCfg.run(gcx, &mut body).is_ok());
+
+            assert_eq!(body.basic_blocks.len(), 2);
+            let TerminatorKind::SwitchInt {
+                targets, otherwise, ..
+            } = &body.basic_blocks[body.start_block]
+                .terminator
+                .as_ref()
+                .unwrap()
+                .kind
+            else {
+                panic!("expected entry switch");
+            };
+            assert_eq!(targets[0].1, *otherwise);
+            assert!(
+                matches!(body.basic_blocks[*otherwise].terminator.as_ref().unwrap().kind,
+                TerminatorKind::Goto { target } if target == *otherwise)
+            );
         });
     }
 }

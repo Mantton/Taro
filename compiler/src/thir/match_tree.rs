@@ -25,7 +25,7 @@ pub struct MatchTree<'ctx> {
 #[derive(Clone, Debug)]
 pub struct Diagnostics {
     pub missing: bool,
-    pub reachable: Vec<ArmId>,
+    pub reachable: HashSet<ArmId>,
 }
 
 /// The result of compiling a pattern match expression.
@@ -159,7 +159,7 @@ pub fn compile_match<'ctx>(
             },
             diagnostics: Diagnostics {
                 missing: false,
-                reachable: Vec::new(),
+                reachable: HashSet::new(),
             },
         };
     }
@@ -176,7 +176,7 @@ pub fn compile_match<'ctx>(
                 },
                 diagnostics: Diagnostics {
                     missing: false,
-                    reachable: Vec::new(),
+                    reachable: HashSet::new(),
                 },
             };
         }
@@ -351,7 +351,7 @@ impl<'ctx> Compiler<'ctx> {
             gcx,
             diagnostics: Diagnostics {
                 missing: false,
-                reachable: Vec::new(),
+                reachable: HashSet::new(),
             },
             deref_vars: Vec::new(),
             deref_var_map: HashMap::new(),
@@ -382,7 +382,7 @@ impl<'ctx> Compiler<'ctx> {
 
         if rows.first().map_or(false, |c| c.columns.is_empty()) {
             let row = rows.remove(0);
-            self.diagnostics.reachable.push(row.body.arm);
+            self.diagnostics.reachable.insert(row.body.arm);
 
             // Create a body with the accumulated bindings
             let body = Body::with_bindings(row.body.arm, row.bindings);

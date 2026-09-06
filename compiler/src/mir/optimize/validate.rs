@@ -11,7 +11,7 @@ use crate::{
         AggregateKind, BasicBlockId, Body, CallUnwindAction, ConstantKind, LocalId, Operand, Place,
         PlaceElem, Rvalue, StatementKind, TerminatorKind, UnaryOperator,
     },
-    sema::models::{Const, ConstKind, ConstValue, EnumVariantKind, Ty, TyKind},
+    sema::models::{Const, ConstKind, ConstValue, Ty, TyKind},
     thir::FieldIndex,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -480,7 +480,7 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
 
         for stmt in &block.statements {
             if let StatementKind::Assign(destination, rvalue) = &stmt.kind {
-                let dest_ty = place_ty(body, gcx, destination);
+                let dest_ty = body.place_ty(gcx, destination);
                 if let Some(value_ty) = rvalue_ty(body, gcx, rvalue) {
                     if !types_compatible(&normalize_icx, &normalize_env, dest_ty, value_ty) {
                         gcx.dcx().emit_error(
@@ -527,7 +527,7 @@ pub fn validate_body_invariants<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> Comp
                     unwind,
                     ..
                 } => {
-                    let destination_ty = place_ty(body, gcx, destination);
+                    let destination_ty = body.place_ty(gcx, destination);
                     let call_output = call_output_ty(body, gcx, func);
 
                     if let Some(call_output) = call_output {
@@ -775,7 +775,7 @@ fn call_output_ty<'ctx>(
             }
         }
         Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-            match place_ty(body, gcx, place).kind() {
+            match body.place_ty(gcx, place).kind() {
                 TyKind::FnPointer { output, .. } => Some(normalize_if_possible(gcx, output)),
                 TyKind::Closure { kind, output, .. } => Some(
                     if matches!(
@@ -952,41 +952,12 @@ fn generic_args_compatible<'ctx>(
     }
 }
 
-fn operand_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, operand: &Operand<'ctx>) -> Ty<'ctx> {
-    match operand {
-        Operand::Constant(constant) => constant.ty,
-        Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-            place_ty(body, gcx, place)
-        }
-    }
-}
-
-fn place_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, place: &Place<'ctx>) -> Ty<'ctx> {
-    let mut ty = body.locals[place.local].ty;
-    for elem in &place.projection {
-        match elem {
-            PlaceElem::Deref => {
-                ty = ty.dereference().unwrap_or_else(|| Ty::error(gcx));
-            }
-            PlaceElem::Field(_, field_ty) => ty = *field_ty,
-            PlaceElem::VariantDowncast { index, .. } => {
-                let def = match ty.kind() {
-                    TyKind::Adt(def, _) if def.kind == crate::sema::models::AdtKind::Enum => def,
-                    _ => return Ty::error(gcx),
-                };
-                ty = enum_variant_tuple_ty(gcx, def.id, *index);
-            }
-        }
-    }
-    ty
-}
-
 fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> Option<Ty<'ctx>> {
     match rvalue {
-        Rvalue::Use(operand) => Some(operand_ty(body, gcx, operand)),
+        Rvalue::Use(operand) => Some(body.operand_ty(gcx, operand)),
         Rvalue::UnaryOp { op, operand } => Some(match op {
             UnaryOperator::LogicalNot => gcx.types.bool,
-            UnaryOperator::Negate | UnaryOperator::BitwiseNot => operand_ty(body, gcx, operand),
+            UnaryOperator::Negate | UnaryOperator::BitwiseNot => body.operand_ty(gcx, operand),
         }),
         Rvalue::BinaryOp { op, lhs, .. } => Some(match op {
             crate::mir::BinaryOperator::Eql
@@ -995,12 +966,12 @@ fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> 
             | crate::mir::BinaryOperator::Leq
             | crate::mir::BinaryOperator::Geq
             | crate::mir::BinaryOperator::Neq => gcx.types.bool,
-            _ => operand_ty(body, gcx, lhs),
+            _ => body.operand_ty(gcx, lhs),
         }),
         Rvalue::Cast { ty, .. } => Some(*ty),
         Rvalue::Ref { mutable, place } => Some(Ty::new(
             TyKind::Reference(
-                place_ty(body, gcx, place),
+                body.place_ty(gcx, place),
                 if *mutable {
                     Mutability::Mutable
                 } else {
@@ -1018,7 +989,7 @@ fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> 
                     gcx.store.interners.intern_ty_list(
                         fields
                             .iter()
-                            .map(|field| operand_ty(body, gcx, field))
+                            .map(|field| body.operand_ty(gcx, field))
                             .collect(),
                     ),
                 ),
@@ -1064,28 +1035,6 @@ fn rvalue_ty<'ctx>(body: &Body<'ctx>, gcx: Gcx<'ctx>, rvalue: &Rvalue<'ctx>) -> 
             },
             gcx,
         )),
-    }
-}
-
-fn enum_variant_tuple_ty<'ctx>(
-    gcx: Gcx<'ctx>,
-    def_id: crate::hir::DefinitionID,
-    variant_index: crate::thir::VariantIndex,
-) -> Ty<'ctx> {
-    let def = gcx.get_enum_definition(def_id);
-    let variant = def
-        .variants
-        .get(variant_index.index())
-        .expect("enum variant index");
-    match variant.kind {
-        EnumVariantKind::Unit => gcx.types.void,
-        EnumVariantKind::Tuple(fields) => {
-            let list = gcx
-                .store
-                .interners
-                .intern_ty_list(fields.iter().map(|field| field.ty).collect());
-            Ty::new(TyKind::Tuple(list), gcx)
-        }
     }
 }
 

@@ -5,7 +5,7 @@ use crate::{
         self, BasicBlockData, BasicBlockId, BlockAnd, BlockAndExtension, Body, LocalDecl, LocalId,
         LocalKind, Place, PlaceElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
     },
-    sema::models::{AdtKind, Constraint, EnumVariantKind, LabeledFunctionSignature, Ty, TyKind},
+    sema::models::{Constraint, LabeledFunctionSignature, Ty, TyKind},
     span::{Span, Symbol},
     thir,
 };
@@ -296,50 +296,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
             }),
             "all `UnresolvedGoto` terminators must be patched before finishing"
         );
-    }
-
-    fn place_ty(&self, place: &Place<'ctx>) -> Ty<'ctx> {
-        let mut ty = self.body.locals[place.local].ty;
-        for elem in &place.projection {
-            match elem {
-                mir::PlaceElem::Deref => match ty.dereference() {
-                    Some(inner) => ty = inner,
-                    None => return Ty::error(self.gcx),
-                },
-                mir::PlaceElem::Field(_, field_ty) => ty = *field_ty,
-                mir::PlaceElem::VariantDowncast { name: _, index } => {
-                    let def = match ty.kind() {
-                        TyKind::Adt(def, _) if def.kind == AdtKind::Enum => def,
-                        _ => return Ty::error(self.gcx),
-                    };
-                    ty = self.enum_variant_tuple_ty(def.id, *index);
-                }
-            }
-        }
-        ty
-    }
-
-    fn enum_variant_tuple_ty(
-        &self,
-        def_id: hir::DefinitionID,
-        variant_index: thir::VariantIndex,
-    ) -> Ty<'ctx> {
-        let def = self.gcx.get_enum_definition(def_id);
-        let variant = def
-            .variants
-            .get(variant_index.index())
-            .expect("enum variant index");
-        match variant.kind {
-            EnumVariantKind::Unit => self.gcx.types.void,
-            EnumVariantKind::Tuple(fields) => {
-                let mut tys = Vec::with_capacity(fields.len());
-                for field in fields {
-                    tys.push(field.ty);
-                }
-                let list = self.gcx.store.interners.intern_ty_list(tys);
-                Ty::new(TyKind::Tuple(list), self.gcx)
-            }
-        }
     }
 
     fn push_assign(

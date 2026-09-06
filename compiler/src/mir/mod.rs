@@ -77,7 +77,47 @@ pub struct Body<'ctx> {
     pub is_async: bool,
 }
 
-impl Body<'_> {
+impl<'ctx> Body<'ctx> {
+    /// Resolve a place in the body's generic context. Field projections carry
+    /// their instantiated type; enum downcasts recover the payload tuple from
+    /// the enum's arguments. Codegen applies its instance substitution afterward.
+    pub fn place_ty(
+        &self,
+        gcx: crate::compile::context::Gcx<'ctx>,
+        place: &Place<'ctx>,
+    ) -> Ty<'ctx> {
+        let mut ty = self.locals[place.local].ty;
+        for projection in &place.projection {
+            ty = match projection {
+                PlaceElem::Deref => ty.dereference().unwrap_or_else(|| Ty::error(gcx)),
+                PlaceElem::Field(_, field_ty) => *field_ty,
+                PlaceElem::VariantDowncast { index, .. } => {
+                    let crate::sema::models::TyKind::Adt(def, args) = ty.kind() else {
+                        return Ty::error(gcx);
+                    };
+                    if def.kind != crate::sema::models::AdtKind::Enum {
+                        return Ty::error(gcx);
+                    }
+                    enum_variant_tuple_ty(gcx, def.id, *index, args)
+                }
+            };
+        }
+        ty
+    }
+
+    pub fn operand_ty(
+        &self,
+        gcx: crate::compile::context::Gcx<'ctx>,
+        operand: &Operand<'ctx>,
+    ) -> Ty<'ctx> {
+        match operand {
+            Operand::Constant(constant) => constant.ty,
+            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
+                self.place_ty(gcx, place)
+            }
+        }
+    }
+
     /// Incoming control-flow edges, preserving edge order and duplicate targets.
     pub fn predecessors(&self) -> IndexVec<BasicBlockId, Vec<BasicBlockId>> {
         let mut predecessors = IndexVec::from(vec![Vec::new(); self.basic_blocks.len()]);
@@ -100,6 +140,35 @@ impl Body<'_> {
         });
         debug_assert_eq!(root.index(), 0);
         scopes
+    }
+}
+
+/// The selected enum payload, instantiated in the enum's generic context.
+pub(crate) fn enum_variant_tuple_ty<'ctx>(
+    gcx: crate::compile::context::Gcx<'ctx>,
+    def_id: DefinitionID,
+    variant_index: VariantIndex,
+    args: GenericArguments<'ctx>,
+) -> Ty<'ctx> {
+    use crate::sema::{
+        models::{EnumVariantKind, TyKind},
+        tycheck::utils::instantiate::instantiate_ty_with_args,
+    };
+
+    let variant = &gcx.get_enum_definition(def_id).variants[variant_index.index()];
+    match variant.kind {
+        EnumVariantKind::Unit => gcx.types.void,
+        EnumVariantKind::Tuple(fields) => Ty::new(
+            TyKind::Tuple(
+                gcx.store.interners.intern_ty_list(
+                    fields
+                        .iter()
+                        .map(|field| instantiate_ty_with_args(gcx, field.ty, args))
+                        .collect(),
+                ),
+            ),
+            gcx,
+        ),
     }
 }
 
@@ -295,6 +364,43 @@ impl<'a> TerminatorKind<'a> {
             Self::Return | Self::ResumeUnwind | Self::Unreachable | Self::UnresolvedGoto => {
                 Vec::new()
             }
+        }
+    }
+
+    /// Rewrite every stored block reference, including async cancellation
+    /// metadata. Unlike `successors`, this also visits `cancel_complete`.
+    pub fn map_blocks(&mut self, mut map: impl FnMut(BasicBlockId) -> BasicBlockId) {
+        match self {
+            Self::Goto { target } => *target = map(*target),
+            Self::SwitchInt {
+                targets, otherwise, ..
+            } => {
+                for (_, target) in targets {
+                    *target = map(*target);
+                }
+                *otherwise = map(*otherwise);
+            }
+            Self::Call { target, unwind, .. } => {
+                *target = map(*target);
+                if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                    *cleanup = map(*cleanup);
+                }
+            }
+            Self::Yield {
+                resume,
+                cancel,
+                cancel_complete,
+                unwind,
+                ..
+            } => {
+                *resume = map(*resume);
+                *cancel = map(*cancel);
+                *cancel_complete = map(*cancel_complete);
+                if let CallUnwindAction::Cleanup(cleanup) = unwind {
+                    *cleanup = map(*cleanup);
+                }
+            }
+            Self::Return | Self::ResumeUnwind | Self::Unreachable | Self::UnresolvedGoto => {}
         }
     }
 

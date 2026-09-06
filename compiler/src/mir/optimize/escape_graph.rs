@@ -883,14 +883,7 @@ fn concrete_place_ty<'a, 'ctx>(
     place: &Place<'ctx>,
     mode: AnalysisMode<'a, 'ctx>,
 ) -> Ty<'ctx> {
-    let mut ty = body.locals[place.local].ty;
-    for projection in &place.projection {
-        match projection {
-            PlaceElem::Deref => ty = ty.dereference().unwrap_or_else(|| Ty::error(gcx)),
-            PlaceElem::Field(_, field_ty) => ty = *field_ty,
-            PlaceElem::VariantDowncast { .. } => {}
-        }
-    }
+    let ty = body.place_ty(gcx, place);
     match mode {
         AnalysisMode::Instance { caller, .. } => instantiate_ty_with_args(gcx, ty, caller.args()),
         AnalysisMode::AsyncBridge => ty,
@@ -1416,7 +1409,7 @@ mod allocation_rewrite {
                         stack_object,
                         stack_reference,
                         *ty,
-                        place_ty(body, gcx, destination),
+                        body.place_ty(gcx, destination),
                     ),
                 );
             }
@@ -1520,26 +1513,6 @@ mod allocation_rewrite {
             data.statements = rewritten;
         }
         Ok(())
-    }
-
-    fn place_ty<'ctx>(
-        body: &Body<'ctx>,
-        gcx: Gcx<'ctx>,
-        place: &Place<'ctx>,
-    ) -> crate::sema::models::Ty<'ctx> {
-        let mut ty = body.locals[place.local].ty;
-        for projection in &place.projection {
-            match projection {
-                crate::mir::PlaceElem::Deref => {
-                    ty = ty
-                        .dereference()
-                        .unwrap_or_else(|| crate::sema::models::Ty::error(gcx));
-                }
-                crate::mir::PlaceElem::Field(_, field_ty) => ty = *field_ty,
-                crate::mir::PlaceElem::VariantDowncast { .. } => {}
-            }
-        }
-        ty
     }
 }
 

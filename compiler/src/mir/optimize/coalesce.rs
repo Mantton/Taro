@@ -85,7 +85,19 @@ impl<'ctx> MirPass<'ctx> for TempCoalescing {
                             place_used[place.local.index()] = true;
                         }
                     }
-                    _ => {}
+                    StatementKind::KeepAlive(operand) => record_operand_use(
+                        operand,
+                        bb,
+                        stmt_index,
+                        &mut use_sites,
+                        &mut use_counts,
+                        &mut place_used,
+                    ),
+                    StatementKind::SourceScope(_)
+                    | StatementKind::StorageLive(_)
+                    | StatementKind::SetInitialized(_)
+                    | StatementKind::GcSafepoint(_)
+                    | StatementKind::Nop => {}
                 }
             }
 
@@ -756,5 +768,66 @@ fn operand_mentions_local(op: &Operand<'_>, local: LocalId) -> bool {
             place.local == local
         }
         Operand::Constant(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TempCoalescing;
+    use crate::{
+        hir::Mutability,
+        mir::{
+            LocalKind, Operand, Place, Rvalue, Statement, StatementKind,
+            optimize::MirPass,
+            test_support::{minimal_body, push_temp, with_test_gcx},
+        },
+        sema::models::{Ty, TyKind},
+    };
+
+    #[test]
+    fn temp_coalescing_keeps_the_original_value_live_after_source_reassignment() {
+        with_test_gcx(|gcx| {
+            let mut body = minimal_body(gcx);
+            let ty = Ty::new(TyKind::Pointer(gcx.types.int32, Mutability::Immutable), gcx);
+            let source = push_temp(&mut body, ty);
+            body.locals[source].kind = LocalKind::User;
+            let snapshot = push_temp(&mut body, ty);
+            let sink = push_temp(&mut body, ty);
+            let span = body.locals[source].span;
+            body.basic_blocks[body.start_block].statements = vec![
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(snapshot),
+                        Rvalue::Use(Operand::Copy(Place::from_local(source))),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::from_local(sink),
+                        Rvalue::Use(Operand::Copy(Place::from_local(snapshot))),
+                    ),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Assign(Place::from_local(source), Rvalue::Zeroed { ty }),
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::KeepAlive(Operand::Copy(Place::from_local(snapshot))),
+                    span,
+                },
+            ];
+
+            assert!(TempCoalescing.run(gcx, &mut body).is_ok());
+
+            let statements = &body.basic_blocks[body.start_block].statements;
+            assert!(
+                matches!(&statements.last().unwrap().kind, StatementKind::KeepAlive(Operand::Copy(place)) if place.local == snapshot),
+                "keepAlive must retain the original pointer, not the reassigned source"
+            );
+            assert!(statements.iter().any(|statement| matches!(&statement.kind,
+                StatementKind::Assign(place, _) if place.local == snapshot)));
+        });
     }
 }

@@ -289,20 +289,7 @@ impl<'body, 'ctx> PrettyPrintMir<'body, 'ctx> {
         place: &Place<'ctx>,
         variant_index: VariantIndex,
     ) -> Option<crate::span::Symbol> {
-        let mut ty = self.body.locals[place.local].ty;
-        for elem in &place.projection {
-            match elem {
-                PlaceElem::Deref => {
-                    ty = ty
-                        .dereference()
-                        .unwrap_or_else(|| crate::sema::models::Ty::error(self.gcx));
-                }
-                PlaceElem::Field(_, field_ty) => {
-                    ty = *field_ty;
-                }
-                PlaceElem::VariantDowncast { .. } => {}
-            }
-        }
+        let ty = self.body.place_ty(self.gcx, place);
         match ty.kind() {
             crate::sema::models::TyKind::Adt(def, _)
                 if matches!(def.kind, crate::sema::models::AdtKind::Enum) =>

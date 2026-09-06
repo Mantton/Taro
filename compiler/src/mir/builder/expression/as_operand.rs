@@ -8,14 +8,6 @@ use crate::{
 };
 
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
-    pub fn as_local_operand(
-        &mut self,
-        block: BasicBlockId,
-        expression: ExprId,
-    ) -> BlockAnd<Operand<'ctx>> {
-        self.as_operand(block, expression)
-    }
-
     pub fn as_operand(
         &mut self,
         mut block: BasicBlockId,

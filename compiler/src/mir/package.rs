@@ -19,6 +19,7 @@ use crate::{
     thir,
 };
 use rustc_hash::FxHashMap;
+use std::collections::VecDeque;
 
 pub fn build_package<'ctx>(
     package: thir::ThirPackage<'ctx>,
@@ -33,7 +34,7 @@ pub fn build_package<'ctx>(
 
     // Phase 1: Build MIR for all functions and run local passes
     // Local passes (prune, simplify, validate) don't need other function bodies
-    let mut bodies: FxHashMap<DefinitionID, Body<'ctx>> = FxHashMap::default();
+    let mut pending = Vec::new();
 
     for (id, func) in package.functions {
         if func.body.is_none() {
@@ -44,43 +45,43 @@ pub fn build_package<'ctx>(
         // Run local passes (prune, simplify, validate)
         optimize::run_local_passes(gcx, &mut body)?;
 
-        bodies.insert(id, body);
+        pending.push((id, body));
     }
+
+    // The entry wrapper participates in the same canonical/global pipeline as
+    // every other function, including the poll/drop bodies queued below.
+    let entry = if let Some((entry_id, output_ty)) = async_entry {
+        let mut wrapper = build_async_entry_wrapper(gcx, entry_id, output_ty)?;
+        optimize::run_local_passes(gcx, &mut wrapper)?;
+        let wrapper_id = wrapper.owner;
+        pending.push((wrapper_id, wrapper));
+        Some(wrapper_id)
+    } else {
+        package.entry
+    };
 
     // Async lowering applies a conservative source-form bridge before frame
     // construction. Concrete constructor/poll/drop summaries are computed
     // later from shared MIR when their instances are requested by codegen.
-    let mut pending: Vec<_> = bodies.into_iter().collect();
     pending.sort_by_key(|(id, _)| *id);
-    let mut canonical_bodies = FxHashMap::default();
-    let mut cursor = 0usize;
-    while cursor < pending.len() {
-        let (id, mut body) = pending[cursor].clone();
-        cursor += 1;
+    let mut pending = VecDeque::from(pending);
+    let mut functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
+    while let Some((id, mut body)) = pending.pop_front() {
         optimize::lower_async_for_canonical_mir(gcx, &mut body)?;
-        canonical_bodies.insert(id, body);
+        functions.insert(id, gcx.store.arenas.mir_bodies.alloc(body));
 
         let mut queued: Vec<_> = gcx.take_queued_mir_bodies().into_iter().collect();
         queued.sort_by_key(|(queued_id, _)| *queued_id);
         for (queued_id, mut queued_body) in queued {
             optimize::run_local_passes(gcx, &mut queued_body)?;
-            pending.push((queued_id, queued_body));
+            pending.push_back((queued_id, queued_body));
         }
     }
 
     // Publish canonical inline MIR before any interprocedural pass runs. Final
     // MIR is stored separately below; this keeps source and metadata builds on
     // exactly the same inlining representation.
-    let mut functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
-    for (id, body) in canonical_bodies {
-        let alloc = gcx.store.arenas.mir_bodies.alloc(body);
-        functions.insert(id, alloc);
-    }
-
-    let mut pkg = MirPackage::default();
-    pkg.functions = functions;
-    pkg.entry = package.entry;
-    let pkg = gcx.store.alloc_mir_package(pkg);
+    let pkg = gcx.store.alloc_mir_package(MirPackage { functions, entry });
     gcx.store
         .inline_mir_packages
         .borrow_mut()
@@ -89,17 +90,8 @@ pub fn build_package<'ctx>(
     // Phase 2: Run shared global passes before instance placement/safepoints.
     // These passes need access to other function bodies
     let mut final_functions: FxHashMap<DefinitionID, &'ctx Body<'ctx>> = FxHashMap::default();
-    let pending: Vec<(DefinitionID, Body<'ctx>)> = pkg
-        .functions
-        .iter()
-        .map(|(&def_id, body)| (def_id, (**body).clone()))
-        .collect();
-    let mut cursor = 0usize;
-
-    while cursor < pending.len() {
-        let (def_id, mut body) = pending[cursor].clone();
-        cursor += 1;
-
+    for (&def_id, canonical) in &pkg.functions {
+        let mut body = (**canonical).clone();
         optimize::run_global_passes(gcx, &mut body)?;
 
         let alloc = gcx.store.arenas.mir_bodies.alloc(body);
@@ -111,24 +103,10 @@ pub fn build_package<'ctx>(
         );
     }
 
-    let final_entry = if let Some((entry_id, entry_output)) = async_entry {
-        let mut wrapper = build_async_entry_wrapper(gcx, entry_id, entry_output)?;
-        optimize::run_local_passes(gcx, &mut wrapper)?;
-        let wrapper_id = wrapper.owner;
-        let canonical = gcx.store.arenas.mir_bodies.alloc(wrapper.clone());
-        publish_inline_body(gcx, wrapper_id, canonical, Some(wrapper_id));
-        optimize::run_global_passes(gcx, &mut wrapper)?;
-        let alloc = gcx.store.arenas.mir_bodies.alloc(wrapper);
-        final_functions.insert(wrapper_id, alloc);
-        Some(wrapper_id)
-    } else {
-        package.entry
-    };
-
-    let mut final_pkg = MirPackage::default();
-    final_pkg.functions = final_functions;
-    final_pkg.entry = final_entry;
-    let final_pkg = gcx.store.alloc_mir_package(final_pkg);
+    let final_pkg = gcx.store.alloc_mir_package(MirPackage {
+        functions: final_functions,
+        entry,
+    });
 
     // Update the stored package with the fully optimized version
     gcx.store
@@ -149,29 +127,6 @@ pub fn build_package<'ctx>(
     }
 
     Ok(final_pkg)
-}
-
-fn publish_inline_body<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    def_id: DefinitionID,
-    body: &'ctx Body<'ctx>,
-    entry: Option<DefinitionID>,
-) {
-    let current = gcx
-        .store
-        .inline_mir_packages
-        .borrow()
-        .get(&gcx.package_index())
-        .copied();
-    let mut functions = current
-        .map(|package| package.functions.clone())
-        .unwrap_or_default();
-    functions.insert(def_id, body);
-    let package = gcx.store.alloc_mir_package(MirPackage { functions, entry });
-    gcx.store
-        .inline_mir_packages
-        .borrow_mut()
-        .insert(gcx.package_index(), package);
 }
 
 fn build_async_entry_wrapper<'ctx>(

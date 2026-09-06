@@ -7,8 +7,8 @@ use crate::{
     sema::models::{Ty, TyKind},
     span::{Span, Symbol},
     thir::{
-        self, ArmId, BlockId, ExprId, ExprKind, Pattern, PatternKind, StmtId, StmtKind,
-        ThirFunction, ThirPackage,
+        ArmId, BlockId, ExprId, ExprKind, Pattern, PatternKind, StmtId, StmtKind, ThirFunction,
+        ThirPackage,
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -525,6 +525,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             ExprKind::Match {
                 scrutinee, arms, ..
             } => self.analyze_match(
+                expr_id,
                 scrutinee,
                 arms,
                 initialized,
@@ -661,6 +662,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
 
     fn analyze_match(
         &mut self,
+        expr_id: ExprId,
         scrutinee: ExprId,
         arms: Vec<ArmId>,
         initialized: &InitSet,
@@ -674,7 +676,7 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
             return result;
         };
 
-        let mut reachable_arms: Option<FxHashSet<ArmId>> = None;
+        let mut reachable_arms = None;
         let mut missing = false;
         let scrutinee_ty = self.func.exprs[scrutinee].ty;
         let arms_have_type_errors = arms.iter().any(|arm_id| {
@@ -687,9 +689,13 @@ impl<'ctx, 'func> FunctionAnalyzer<'ctx, 'func> {
         if !matches!(scrutinee_ty.kind(), TyKind::Error | TyKind::Infer(_))
             && !arms_have_type_errors
         {
-            let report = thir::match_tree::compile_match(self.gcx, self.func, scrutinee, &arms);
+            let report = self
+                .func
+                .match_reports
+                .get(&expr_id)
+                .expect("exhaustiveness compiles every well-typed match before flow analysis");
             missing = report.diagnostics.missing;
-            reachable_arms = Some(report.diagnostics.reachable.into_iter().collect());
+            reachable_arms = Some(&report.diagnostics.reachable);
         }
 
         let mut arm_result = FlowResult::default();

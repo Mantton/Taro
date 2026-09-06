@@ -60,8 +60,7 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
 
         let result = compile_match(self.gcx, func, scrutinee, arms);
         let missing = result.missing_patterns(self.gcx);
-        let diagnostics = result.diagnostics.clone();
-        func.match_trees.insert(expr_id, result.tree);
+        let diagnostics = &result.diagnostics;
 
         if diagnostics.missing {
             let message = if missing.is_empty() {
@@ -78,13 +77,8 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
                 .emit(Diagnostic::new(message, Some(span), DiagnosticLevel::Error));
         }
 
-        let mut reachable = vec![false; func.arms.len()];
-        for arm_id in diagnostics.reachable {
-            reachable[arm_id.index()] = true;
-        }
-
         for arm_id in arms {
-            if !reachable[arm_id.index()] {
+            if !diagnostics.reachable.contains(arm_id) {
                 let arm = &func.arms[*arm_id];
                 self.gcx.dcx().emit(Diagnostic::new(
                     "unreachable match arm".to_string(),
@@ -93,5 +87,6 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
                 ));
             }
         }
+        func.match_reports.insert(expr_id, result);
     }
 }

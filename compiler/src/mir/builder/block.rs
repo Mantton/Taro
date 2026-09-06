@@ -20,7 +20,7 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
         let mut block = self
             .lower_block_statements(mir_block, statements)
             .into_block();
-        let dest_ty = self.place_ty(&destination);
+        let dest_ty = self.body.place_ty(self.gcx, &destination);
 
         if let Some(expr) = self.thir.blocks[thir_block].expr {
             block = if dest_ty == self.gcx.types.void {

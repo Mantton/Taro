@@ -348,7 +348,7 @@ fn synthesize_property_field_getter<'ctx>(
         blocks: builder.blocks,
         exprs: builder.exprs,
         arms: IndexVec::new(),
-        match_trees: FxHashMap::default(),
+        match_reports: FxHashMap::default(),
         is_async: false,
     })
 }
@@ -401,7 +401,7 @@ fn synthesize_property_field_setter<'ctx>(
         blocks: builder.blocks,
         exprs: builder.exprs,
         arms: IndexVec::new(),
-        match_trees: FxHashMap::default(),
+        match_reports: FxHashMap::default(),
         is_async: false,
     })
 }
@@ -658,7 +658,7 @@ fn synthesize_copy_clone<'ctx>(
         blocks: builder.blocks,
         exprs: builder.exprs,
         arms: IndexVec::new(),
-        match_trees: FxHashMap::default(),
+        match_reports: FxHashMap::default(),
         is_async: false,
     })
 }
@@ -749,7 +749,7 @@ fn synthesize_memberwise_clone<'ctx>(
             blocks: builder.blocks,
             exprs: builder.exprs,
             arms: IndexVec::new(),
-            match_trees: FxHashMap::default(),
+            match_reports: FxHashMap::default(),
             is_async: false,
         });
     }
@@ -859,7 +859,7 @@ fn synthesize_memberwise_hash<'ctx>(
             blocks: builder.blocks,
             exprs: builder.exprs,
             arms: IndexVec::new(),
-            match_trees: FxHashMap::default(),
+            match_reports: FxHashMap::default(),
             is_async: false,
         });
     }
@@ -969,7 +969,7 @@ fn synthesize_memberwise_equality<'ctx>(
             blocks: builder.blocks,
             exprs: builder.exprs,
             arms: IndexVec::new(),
-            match_trees: FxHashMap::default(),
+            match_reports: FxHashMap::default(),
             is_async: false,
         });
     }
@@ -1123,7 +1123,7 @@ fn synthesize_enum_hash<'ctx>(
         blocks: builder.blocks,
         exprs: builder.exprs,
         arms: builder.arms,
-        match_trees: FxHashMap::default(),
+        match_reports: FxHashMap::default(),
         is_async: false,
     })
 }
@@ -1308,7 +1308,7 @@ fn synthesize_enum_equality<'ctx>(
         blocks: builder.blocks,
         exprs: builder.exprs,
         arms: builder.arms,
-        match_trees: FxHashMap::default(),
+        match_reports: FxHashMap::default(),
         is_async: false,
     })
 }
@@ -1414,7 +1414,7 @@ fn synthesize_closure_call<'ctx>(
         blocks: builder.blocks,
         exprs: builder.exprs,
         arms: IndexVec::new(),
-        match_trees: FxHashMap::default(),
+        match_reports: FxHashMap::default(),
         is_async,
     })
 }
@@ -1581,7 +1581,7 @@ fn synthesize_enum_clone<'ctx>(
         blocks: builder.blocks,
         exprs: builder.exprs,
         arms: builder.arms,
-        match_trees: FxHashMap::default(),
+        match_reports: FxHashMap::default(),
         is_async: false,
     })
 }

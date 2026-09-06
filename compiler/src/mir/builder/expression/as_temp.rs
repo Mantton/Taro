@@ -6,14 +6,6 @@ use crate::{
 impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
     pub fn as_temp(
         &mut self,
-        block: BasicBlockId,
-        expression: thir::ExprId,
-    ) -> BlockAnd<mir::LocalId> {
-        self.as_temp_inner(block, expression)
-    }
-
-    fn as_temp_inner(
-        &mut self,
         mut block: BasicBlockId,
         expression: thir::ExprId,
     ) -> BlockAnd<mir::LocalId> {
