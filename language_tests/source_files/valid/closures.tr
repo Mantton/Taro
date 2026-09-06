@@ -2,29 +2,15 @@
 
 // --- Fn helpers ---
 
-func applyIntExplicit[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
+func applyFn[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
-func mapValueExplicit[T, F: Fn(T) -> T](_ value: T, _ f: F) -> T {
+func mapValue[T, F: Fn(T) -> T](_ value: T, _ f: F) -> T {
     f(value)
 }
 
-struct IntBoxExplicit {
-    value: int32
-}
-
-impl IntBoxExplicit {
-    func map[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
-        f(self.value)
-    }
-}
-
 func applyFnPtr(_ f: (int32) -> int32, _ x: int32) -> int32 {
-    f(x)
-}
-
-func applyFnSimple[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
     f(x)
 }
 
@@ -32,20 +18,7 @@ func applyOnceHierarchy[F: FnOnce(int32) -> int32](_ f: F, _ x: int32) -> int32 
     f(x)
 }
 
-func applyMutHierarchy[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
-    var f = f
-    f(x)
-}
-
-func applyFnHierarchy[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
-    f(x)
-}
-
-func applyHigher[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
-    f(x)
-}
-
-func apply2Higher[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     f(a, b)
 }
 
@@ -53,29 +26,15 @@ func applyZeroHigher[F: Fn() -> int32](_ f: F) -> int32 {
     f()
 }
 
-func applyZeroMutTwice[F: Fn() -> int32](_ f: F) -> int32 {
-    var f = f
-    let first = f()
-    let second = f()
-    first + second
-}
-
 func applyZeroOnce[F: FnOnce() -> int32](_ f: F) -> int32 {
     f()
 }
 
-func applyMutTwice[F: Fn(int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
-    var f = f
-    let first = f(a)
-    let second = f(b)
-    first + second
-}
-
-func apply2MutHierarchy[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
+func apply2MutHierarchy[F: FnMut(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
     var f = f
     let first = f(a, b)
     let second = f(b, a)
-    first + second
+    first * 100 + second
 }
 
 func apply2OnceHierarchy[F: FnOnce(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
@@ -86,23 +45,11 @@ func mapValHigher[F: Fn(int32) -> int32](_ value: int32, _ transform: F) -> int3
     transform(value)
 }
 
-func applyInferred[F: Fn(int32) -> int32](_ f: F, _ x: int32) -> int32 {
-    f(x)
-}
-
-func apply2Inferred[F: Fn(int32, int32) -> int32](_ f: F, _ a: int32, _ b: int32) -> int32 {
-    f(a, b)
-}
-
-func mapValInferred[T, F: Fn(T) -> T](_ value: T, _ f: F) -> T {
-    f(value)
-}
-
 func applyOutFn[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
     f(x)
 }
 
-func applyOutMut[T, Out, F: Fn(T) -> Out](_ x: T, _ f: F) -> Out {
+func applyOutMut[T, Out, F: FnMut(T) -> Out](_ x: T, _ f: F) -> Out {
     var f = f
     f(x)
 }
@@ -130,35 +77,17 @@ func applyZeroMut[F: FnMut() -> int32](_ f: F) -> int32 {
 
 // --- FnOnce helpers ---
 
-func consumeViaOnce[F: FnOnce() -> int32](_ f: F) -> int32 {
-    f()
-}
-
 func callTwice[F: Fn() -> int32](_ f: F) -> int32 {
     f() + f()
 }
 
 // --- Struct helpers ---
 
-struct ContainerInferred {
+struct ClosureBox {
     value: int32
 }
 
-impl ContainerInferred {
-    func map[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
-        f(self.value)
-    }
-
-    func transform[F: Fn(int32) -> int32, G: Fn(int32) -> int32](&self, _ f: F, _ g: G) -> int32 {
-        g(f(self.value))
-    }
-}
-
-struct ContainerMethod {
-    value: int32
-}
-
-impl ContainerMethod {
+impl ClosureBox {
     func map[F: Fn(int32) -> int32](&self, _ f: F) -> int32 {
         f(self.value)
     }
@@ -238,7 +167,7 @@ func consumeListMove(_ list: List[int32]) {
 
 func wrapAndConsume[T](_ value: T, _ check: (T) -> int32) -> int32 {
     let closure = || { check(value) }
-    return consumeViaOnce(closure)
+    return applyZeroOnce(closure)
 }
 
 func wrapCopyable[T: Copy](_ value: T, _ check: (T) -> int32) -> int32 {
@@ -293,13 +222,13 @@ func testClosureDeep() {
 }
 
 func testClosureExplicitParams() {
-    let result1 = applyIntExplicit(|x: int32| -> int32 { x * 2 }, 5)
+    let result1 = applyFn(|x: int32| -> int32 { x * 2 }, 5)
     std.assert(result1 == 10, "apply_int should work")
 
-    let result2 = mapValueExplicit(10, |x: int32| -> int32 { x + 5 })
+    let result2 = mapValue(10, |x: int32| -> int32 { x + 5 })
     std.assert(result2 == 15, "map_value should work")
 
-    let box = IntBoxExplicit { value: 20 }
+    let box = ClosureBox { value: 20 }
     let result3 = box.map(|x: int32| -> int32 { x / 2 })
     std.assert(result3 == 10, "IntBox.map should work")
 
@@ -312,13 +241,13 @@ func testClosureExplicitParams() {
 
     let base: int32 = 100
     let add_base = |x: int32| -> int32 { x + base }
-    let result5 = applyIntExplicit(add_base, 50)
+    let result5 = applyFn(add_base, 50)
     std.assert(result5 == 150, "capturing closure inference")
 
     let double = |x: int32| -> int32 { x * 2 }
     let triple = |x: int32| -> int32 { x * 3 }
-    let r6a = applyIntExplicit(double, 5)
-    let r6b = applyIntExplicit(triple, 5)
+    let r6a = applyFn(double, 5)
+    let r6b = applyFn(triple, 5)
     std.assert(r6a == 10, "double should work")
     std.assert(r6b == 15, "triple should work")
 }
@@ -336,11 +265,6 @@ func testClosureFnPtr() {
     std.assert(get_42() == 42, "get_42() should be 42")
 }
 
-func testClosureFnSimple() {
-    let result = applyFnSimple(|x: int32| -> int32 { x * 2 }, 5)
-    std.assert(result == 10, "should be 10")
-}
-
 func testClosureFnCopyCaptureSemantics() {
     var counter: int32 = 0
     let inc = || -> int32 { counter + 1 }
@@ -354,11 +278,11 @@ func testClosureFnCopyCaptureSemantics() {
 func testClosureHierarchy() {
     let multiplier: int32 = 2
 
-    let r1 = applyFnHierarchy(|x: int32| -> int32 { x * multiplier }, 5)
+    let r1 = applyFn(|x: int32| -> int32 { x * multiplier }, 5)
     std.assert(r1 == 10, "apply_fn should work with Fn closure")
 
-    let r2 = applyMutHierarchy(|x: int32| -> int32 { x * multiplier }, 5)
-    std.assert(r2 == 10, "apply_mut should accept Fn closure via hierarchy")
+    let r2 = applyMut(|x: int32| -> int32 { x * multiplier }, 5, 5)
+    std.assert(r2 == 20, "apply_mut should accept Fn closure via hierarchy")
 
     let r3 = applyOnceHierarchy(|x: int32| -> int32 { x * multiplier }, 5)
     std.assert(r3 == 10, "apply_once should accept Fn closure via hierarchy")
@@ -366,19 +290,12 @@ func testClosureHierarchy() {
     let r4 = applyOnceHierarchy(|x: int32| -> int32 { x + 1 }, 5)
     std.assert(r4 == 6, "non-capturing Fn closure in apply_once")
 
-    let r5 = applyMutHierarchy(|x: int32| -> int32 { x * 3 }, 4)
-    std.assert(r5 == 12, "non-capturing Fn closure in apply_mut")
+    let r5 = applyMut(|x: int32| -> int32 { x * 3 }, 4, 4)
+    std.assert(r5 == 24, "non-capturing Fn closure in apply_mut")
 }
 
 func testClosureHigherOrder() {
-    let doubled = applyHigher(|x: int32| -> int32 { x * 2 }, 5)
-    std.assert(doubled == 10, "apply double(5) should be 10")
-
-    let multiplier: int32 = 3
-    let tripled = applyHigher(|x: int32| -> int32 { x * multiplier }, 4)
-    std.assert(tripled == 12, "apply triple(4) should be 12")
-
-    let sum = apply2Higher(|a: int32, b: int32| -> int32 { a + b }, 10, 20)
+    let sum = apply2(|a: int32, b: int32| -> int32 { a + b }, 10, 20)
     std.assert(sum == 30, "apply2 sum(10, 20) should be 30")
 
     let result = mapValHigher(5, |x: int32| -> int32 { x + 10 })
@@ -387,29 +304,29 @@ func testClosureHigherOrder() {
 }
 
 func testClosureInferred() {
-    let doubled = applyInferred(|x| { x * 2 }, 5)
+    let doubled = applyFn(|x| { x * 2 }, 5)
     std.assert(doubled == 10, "apply with inferred param should work")
 
     let multiplier: int32 = 3
-    let tripled = applyInferred(|x| { x * multiplier }, 4)
+    let tripled = applyFn(|x| { x * multiplier }, 4)
     std.assert(tripled == 12, "capturing closure with inferred param")
 
-    let sum = apply2Inferred(|a, b| { a + b }, 10, 20)
+    let sum = apply2(|a, b| { a + b }, 10, 20)
     std.assert(sum == 30, "two-arg closure with inferred params")
 
-    let container = ContainerInferred { value: 10 }
+    let container = ClosureBox { value: 10 }
     let result = container.map(|x| { x + 5 })
     std.assert(result == 15, "method with inferred closure param")
 
     let chained = container.transform(|x| { x * 2 }, |x| { x + 1 })
     std.assert(chained == 21, "chained closures with inferred params")
 
-    let mixed = applyInferred(|x| -> int32 { x * 10 }, 5)
+    let mixed = applyFn(|x| -> int32 { x * 10 }, 5)
     std.assert(mixed == 50, "explicit return type, inferred param")
 
     let outer_val: int32 = 100
-    let nested = applyInferred(|x| {
-        let inner = applyInferred(|y| { y + outer_val }, x)
+    let nested = applyFn(|x| {
+        let inner = applyFn(|y| { y + outer_val }, x)
         inner * 2
     }, 5)
     std.assert(nested == 210, "nested closures with inferred params")
@@ -422,15 +339,19 @@ func testClosureGenericOutInference() {
     let is_even = applyOutFn(6 as int32, |x: int32| { x % 2 == 0 })
     std.assert(is_even, "Out should infer to bool")
 
-    let running = applyOutMut(3 as int32, |x: int32| { x + 1 })
-    std.assert(running == 4, "Fn Out inference should work")
+    var total: int32 = 0
+    let running = applyOutMut(3 as int32, |x: int32| {
+        total += x
+        total > 0
+    })
+    std.assert(running && total == 3, "FnMut Out inference and shared mutable capture should work")
 
     let once_result = applyOutOnce(9 as int32, |x: int32| { x + 1 })
-    std.assert(once_result == 10, "Fn Out inference should work")
+    std.assert(once_result == 10, "FnOnce Out inference should work")
 }
 
 func testClosureMethod() {
-    let container = ContainerMethod { value: 10 }
+    let container = ClosureBox { value: 10 }
 
     let doubled = container.map(|x: int32| -> int32 { x * 2 })
     std.assert(doubled == 20, "map double should be 20")
@@ -545,11 +466,11 @@ func testClosureShorthandStress() {
     let immediate_zero = applyZeroHigher((|| -> int32 { 123 }))
     std.assert(immediate_zero == 123, "immediate zero-arg closure should materialize a self place")
 
-    let zero_mut_sum = applyZeroMutTwice(|| -> int32 { 1 })
-    std.assert(zero_mut_sum == 2, "zero-arg Fn helper should call closure twice")
+    let zero_mut_sum = applyZeroMut(|| -> int32 { 1 })
+    std.assert(zero_mut_sum == 3, "zero-arg FnMut helper should call closure three times")
 
-    let mut_sum = applyMutTwice(|x: int32| -> int32 { x + 1 }, 3, 4)
-    std.assert(mut_sum == 9, "Fn helper should apply closure to each argument")
+    let mut_sum = applyMut(|x: int32| -> int32 { x + 1 }, 3, 4)
+    std.assert(mut_sum == 9, "FnMut helper should apply closure to each argument")
 
     var list = List[int32]()
     list.append(4)
@@ -559,10 +480,10 @@ func testClosureShorthandStress() {
         consumeListMove(list)
         len
     })
-    std.assert(once_len == 2, "Fn helper should accept non-Copy captured values by move")
+    std.assert(once_len == 2, "FnOnce helper should accept non-Copy captured values by move")
 
-    let pair_mut_sum = apply2MutHierarchy(|a: int32, b: int32| -> int32 { a + b }, 1, 2)
-    std.assert(pair_mut_sum == 6, "two-arg Fn shorthand should run twice and sum results")
+    let pair_mut_result = apply2MutHierarchy(|a: int32, b: int32| -> int32 { a * 10 + b }, 1, 2)
+    std.assert(pair_mut_result == 1221, "two-arg FnMut shorthand should preserve argument order on each call")
 
     var pair_list = List[int32]()
     pair_list.append(10)
@@ -571,7 +492,7 @@ func testClosureShorthandStress() {
         consumeListMove(pair_list)
         a + b + len
     }, 3, 4)
-    std.assert(pair_once == 8, "two-arg Fn shorthand should consume captured values correctly")
+    std.assert(pair_once == 8, "two-arg FnOnce shorthand should consume captured values correctly")
 }
 
 // --- FnMut dispatch tests ---
@@ -706,7 +627,7 @@ func testMoveClosureMoveOutIsFnOnce() {
         return len
     }
 
-    let len = consumeViaOnce(consume)
+    let len = applyZeroOnce(consume)
     assert(len == 2, "move closure that moves out of a capture should be FnOnce")
 }
 
@@ -718,7 +639,6 @@ func main() {
     testClosureDeep()
     testClosureExplicitParams()
     testClosureFnPtr()
-    testClosureFnSimple()
     testClosureFnCopyCaptureSemantics()
     testClosureHierarchy()
     testClosureHigherOrder()

@@ -95,7 +95,7 @@ func fingerprintGFMD(_ hash: uint64) -> uint8 {
     ((hash >> 57) as uint8) & (0x7f as uint8)
 }
 
-func hashKeyGFMD[Key: Hashable](_ key: &Key) -> uint64 {
+func hashKey[Key: Hashable](_ key: &Key) -> uint64 {
     var hasher = DefaultHasher.new()
     key.hash(into: &mut hasher)
     hasher.finish()
@@ -144,7 +144,7 @@ impl[Key: Hashable, Value] ProbeMapGFMD[Key, Value] {
             return .none
         }
 
-        let hash = hashKeyGFMD(&key)
+        let hash = hashKey(&key)
         let fp = fingerprintGFMD(hash)
         let mask = self.capacity - (1 as usize)
         let base = (hash as usize) & mask
@@ -200,12 +200,6 @@ func testGenericEqFalseMoveDictionaryShapeCheck() {
     let _ = map.get(10)
 }
 
-func hashKeyGEMC[Key: Hashable](_ key: &Key) -> uint64 {
-    var hasher = DefaultHasher.new()
-    key.hash(into: &mut hasher)
-    hasher.finish()
-}
-
 struct EqReproGEMC[Key: Hashable, Value] {
     keys: List[Key?]
     values: List[Value?]
@@ -228,7 +222,7 @@ impl[Key: Hashable, Value] EqReproGEMC[Key, Value] {
     }
 
     func get(&mut self, _ key: Key) -> Optional[&mut Value] {
-        let hash = hashKeyGEMC(&key)
+        let hash = hashKey(&key)
         var idx: usize = 0
         while idx < (1 as usize) {
             let keySlot: &mut Key? = self.keys.at(idx)
@@ -257,7 +251,12 @@ impl[Key: Hashable, Value] EqReproGEMC[Key, Value] {
 
 func testGenericEqMutContextNoMoveCheck() {
     var repro = EqReproGEMC[int32, int32].new(10, 11)
-    let _ = repro.get(10)
+    let hit: &mut int32 = repro.get(10).unwrap()
+    *hit += 1
+    let found: &mut int32 = repro.get(10).unwrap()
+    assert(*found == 12, "mutable lookup should return the stored value")
+    let missing: Optional[&mut int32] = repro.get(20)
+    assert(missing.isNone(), "mutable lookup should reject a different key")
 }
 
 func useGI[V](value: V) -> V { value }
@@ -280,7 +279,7 @@ func testGenericInference() {
     let x = "Hello, World.\n"
     let y = useGI(value: x)
     let z = exposeGI(y)
-    let _ = z
+    assert(z == "Hello, World.\n", "String inference chain failed")
 
     let a1 = fibonacciGI(4)
     assert(a1 == 3, "Fibonacci call failed")
@@ -361,23 +360,15 @@ impl Ord for ScoreGOC {
     }
 }
 
-func geqGOC[T: Ord](_ a: T, _ b: T) -> bool {
-    a >= b
-}
-
-func eqvGOC[T: PartialEq](_ a: T, _ b: T) -> bool {
-    a == b
-}
-
 func testGenericOperatorBoundsCustomCheck() {
     let a = ScoreGOC { value: 10 }
     let b = ScoreGOC { value: 7 }
 
-    let _ = geqGOC(a, b)
+    assert(geqGOB(a, b), "custom Ord bound should dispatch comparison")
 
     let a2 = ScoreGOC { value: 10 }
     let b2 = ScoreGOC { value: 7 }
-    let _ = eqvGOC(a2, b2)
+    assert(!equalsGOB(a2, b2), "custom PartialEq bound should dispatch equality")
 }
 
 func pickGO[V](value: V) -> V { value }
