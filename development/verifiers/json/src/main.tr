@@ -262,40 +262,7 @@ func classificationFor(_ filename: string) -> string? {
     return .none
 }
 
-func stringComesBefore(_ left: &string, _ right: &string) -> bool {
-    let shared = if left.byteLen() < right.byteLen() { left.byteLen() } else { right.byteLen() }
-    var index: usize = 0
-    while index < shared {
-        let lhs = left.byteAt(index)
-        let rhs = right.byteAt(index)
-        if lhs < rhs { return true }
-        if lhs > rhs { return false }
-        index += 1
-    }
-    return left.byteLen() < right.byteLen()
-}
-
-func sortStrings(_ values: &mut std.collections.List[string]) {
-    var index: usize = 1
-    while index < values.len() {
-        let value = match values.removeAt(index) {
-            case .some(item) => item
-            case .none => {
-                std.panic.panic("insertion-sort index must remain in bounds")
-            }
-        }
-        var destination = index
-        while destination > 0 && stringComesBefore(&value, values.at(destination - 1)) {
-            destination -= 1
-        }
-        if !values.insert(at: destination, value) {
-            std.panic.panic("insertion-sort destination must remain in bounds")
-        }
-        index += 1
-    }
-}
-
-func collectCorpusFiles(_ directoryPath: string) -> std.collections.List[string] {
+func runCorpus(_ directoryPath: string, _ matrix: string) {
     var directory = match std.fs.readDir(directoryPath) {
         case .ok(value) => value
         case .err(error) => {
@@ -303,7 +270,6 @@ func collectCorpusFiles(_ directoryPath: string) -> std.collections.List[string]
             std.process.exit(2)
         }
     }
-    var files = std.collections.List[string]()
     loop {
         match directory.next() {
             case .none => break
@@ -312,16 +278,15 @@ func collectCorpusFiles(_ directoryPath: string) -> std.collections.List[string]
                 std.process.exit(2)
             }
             case .some(.ok(entry)) => {
-                if !entry.isDirectory() && classificationFor(entry.name()).isSome() {
-                    files.append(entry.name())
+                if !entry.isDirectory() {
+                    match classificationFor(entry.name()) {
+                        case .some(classification) => runFile(directoryPath, entry.name(), classification, matrix)
+                        case .none => {}
+                    }
                 }
             }
         }
     }
-    // `string` deliberately lacks a locale-sensitive `Ord` conformance. Corpus
-    // filenames are raw bytes, so certification uses an explicit byte order.
-    sortStrings(&mut files)
-    return files
 }
 
 func loadInput(_ path: string) -> string {
@@ -353,11 +318,7 @@ func emitStreamingResult(
     )
 }
 
-func runFile(_ directoryPath: string, _ filename: string, _ matrix: string) {
-    let classification = match classificationFor(filename) {
-        case .some(value) => value
-        case .none => return
-    }
+func runFile(_ directoryPath: string, _ filename: string, _ classification: string, _ matrix: string) {
     let input = loadInput(std.path.join(directoryPath, filename))
     let profiles: [string; 2] = ["rfc", "safe"]
 
@@ -425,10 +386,6 @@ func main() {
         std.eprintln("json-certifier matrix must be full or documents")
         std.process.exit(2)
     }
-    let files = collectCorpusFiles(directoryPath)
-    var index: usize = 0
-    while index < files.len() {
-        runFile(directoryPath, *files.at(index), matrix)
-        index += 1
-    }
+    // Results are keyed by filename in the runner; reports use manifest order.
+    runCorpus(directoryPath, matrix)
 }

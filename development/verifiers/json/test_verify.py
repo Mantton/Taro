@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import io
 import json
@@ -16,6 +16,7 @@ from verify import (
     DOCUMENT_MODES,
     FULL_MODES,
     PROFILES,
+    PROTOCOL_VERSION,
     ClassificationRule,
     CorpusFile,
     CorpusInfo,
@@ -28,6 +29,7 @@ from verify import (
     load_corpus,
     load_registry,
     prepare_corpus,
+    parse_results,
     source_tree_digest,
     validate_matrix,
 )
@@ -314,6 +316,11 @@ class JsonVerifierTests(unittest.TestCase):
                     )
 
         summary = validate_matrix(results, corpus)
+        records = [{"version": PROTOCOL_VERSION, **asdict(result)} for result in reversed(results)]
+        for record in records:
+            record["class"] = record.pop("classification")
+        reordered = parse_results("\n".join(json.dumps(record) for record in records), corpus)
+        self.assertEqual(validate_matrix(reordered, corpus), summary)
         self.assertEqual(summary.row_count, 18)
         self.assertEqual(len(summary.safe_policy_deviations), 1)
         self.assertEqual(len(summary.implementation_decisions), 1)
