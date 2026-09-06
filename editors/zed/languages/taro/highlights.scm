@@ -22,7 +22,7 @@
 ; Function declarations
 (function_declaration
   name: (identifier) @function)
-(associated_function_declaration
+(method_declaration
   name: (identifier) @function)
 (extern_function
   name: (identifier) @function)
@@ -131,7 +131,6 @@
 "static" @keyword
 "namespace" @keyword
 "extern" @keyword
-"operator" @keyword
 
 ; Keywords — control flow
 "if" @keyword.control
@@ -141,8 +140,8 @@
 "for" @keyword.control
 "while" @keyword.control
 "loop" @keyword.control
-"break" @keyword.control
-"continue" @keyword.control
+(break_statement) @keyword.control
+(continue_statement) @keyword.control
 "return" @keyword.control
 "defer" @keyword.control
 "guard" @keyword.control
@@ -167,8 +166,6 @@
 "where" @keyword
 "any" @keyword
 "unsafe" @keyword
-"for" @keyword.control
-"readonly" @keyword
 
 ; Callable types (Fn, AsyncFn)
 (callable_type

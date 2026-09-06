@@ -66,4 +66,3 @@ node_modules
 
 # tree-sitter generated files
 tree-sitter-taro/src/
-tree-sitter-taro/tree-sitter.json

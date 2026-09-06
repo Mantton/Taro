@@ -170,7 +170,7 @@ attributes and regression directives.
 | `showcase/` and `examples/` | Substantial and minimal Taro programs |
 | `development/` | Build, test, benchmark, and verification tooling |
 | `docs/` | Language, compiler, runtime, and contributor references |
-| `editors/` and `tree-sitter-taro/` | Static editor integrations |
+| [`editors/`](editors/README.md) and `tree-sitter-taro/` | Static editor integrations |
 
 ## Contributing
 

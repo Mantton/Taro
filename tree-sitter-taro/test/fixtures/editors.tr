@@ -1,0 +1,19 @@
+/// A declaration with a field and methods.
+struct Counter {
+    value: int32
+}
+
+interface Readable {
+    func read(&self) -> int32
+}
+
+impl Readable for Counter {
+    func read(&self) -> int32 {
+        self.value
+    }
+}
+
+func main() {
+    let counter = Counter { value: 3 }
+    print(f"count {counter.read()}")
+}
