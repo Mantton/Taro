@@ -7948,6 +7948,7 @@ mod struct_layout_tests {
         llvm_optimization_pipeline, logical_to_physical_map, packed_field_order, place_operand,
         static_initializer_value_for_codegen, target_is_aarch64, write_llvm_bitcode,
     };
+    use crate::test_support::TempDir;
     use crate::{
         codegen::target::TargetLayout,
         compile::config::{BuildProfile, LtoMode, OptLevel, OptimizationMode},
@@ -7959,17 +7960,6 @@ mod struct_layout_tests {
     };
     use inkwell::{AddressSpace, attributes::AttributeLoc, context::Context, module::Module};
     use std::{fs, path::PathBuf};
-
-    fn temporary_bitcode_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "taro-{name}-{}-{}.bc",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ))
-    }
 
     #[test]
     fn scalar_enum_payload_preserves_layout_without_array_abi() {
@@ -7999,7 +7989,8 @@ mod struct_layout_tests {
         module.set_data_layout(&layout.data_layout());
         module.add_function("smoke", context.void_type().fn_type(&[], false), None);
 
-        let path = temporary_bitcode_path("round-trip");
+        let root = TempDir::new("round-trip");
+        let path = root.join("module.bc");
         write_llvm_bitcode(&module, &path).expect("bitcode write should succeed");
         let bytes = fs::read(&path).expect("bitcode should be readable");
         assert!(has_llvm_bitcode_magic(&bytes));
@@ -8012,24 +8003,17 @@ mod struct_layout_tests {
             parsed.get_data_layout().as_str(),
             layout.data_layout().as_str()
         );
-        let _ = fs::remove_file(path);
     }
 
     #[test]
     fn bitcode_writer_accepts_non_ascii_paths() {
         let context = Context::create();
         let module = context.create_module("non-ascii-bitcode-path");
-        let root = std::env::current_dir()
-            .expect("current directory")
-            .join("target")
-            .join("non-ascii-bitcode-test");
-        fs::create_dir_all(&root).expect("test output directory");
+        let root = TempDir::new("bitcode-unicode");
         let path = root.join("taro-bitcode-雪.bc");
 
         write_llvm_bitcode(&module, &path).expect("non-ASCII path should be supported");
         assert!(fs::metadata(&path).expect("bitcode metadata").len() > 0);
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_dir(root);
     }
 
     #[test]

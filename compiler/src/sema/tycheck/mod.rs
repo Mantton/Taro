@@ -17,8 +17,6 @@ pub mod lower;
 pub(crate) mod opaque;
 pub mod results;
 pub mod solve;
-#[cfg(test)]
-pub(crate) mod test_support;
 pub mod utils;
 pub(crate) mod visit;
 mod wf;

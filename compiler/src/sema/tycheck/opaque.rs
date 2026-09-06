@@ -124,7 +124,7 @@ pub(crate) fn reveal_opaque_aliases<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'c
 
 #[cfg(test)]
 mod tests {
-    use crate::sema::tycheck::test_support::analyze_script_diagnostics;
+    use crate::test_support::analyze_script_diagnostics;
 
     const PRELUDE: &str = r#"
 interface Named {

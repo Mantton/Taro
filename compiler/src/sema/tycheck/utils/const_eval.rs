@@ -708,9 +708,7 @@ fn validate_value_for_type<'ctx>(
 
 #[cfg(test)]
 mod tests {
-    use crate::sema::tycheck::test_support::{
-        analyze_package_diagnostics, analyze_script_diagnostics,
-    };
+    use crate::test_support::{analyze_package_diagnostics, analyze_script_diagnostics};
 
     #[test]
     fn forward_constant_dependencies_are_order_independent() {

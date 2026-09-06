@@ -147,7 +147,7 @@ mod tests {
             optimize::passes::{DeadLocalElimination, PruneUnreachable},
             test_support::{minimal_body, pretty_body, push_temp, with_test_gcx},
         },
-        sema::tycheck::test_support::analyze_script_mir_diagnostics,
+        test_support::analyze_script_mir_diagnostics,
     };
     struct CorruptEdge;
 

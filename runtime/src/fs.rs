@@ -426,17 +426,7 @@ pub extern "C" fn __rt__fs_create_temp_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
-
-    fn test_root(label: &str) -> PathBuf {
-        let id = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "taro-runtime-fs-{label}-{}-{id}",
-            std::process::id()
-        ))
-    }
+    use crate::test_support::TempDir;
 
     fn rt_path(path: &Path) -> RtString {
         let bytes = path.as_os_str().as_bytes();
@@ -488,8 +478,7 @@ mod tests {
 
     #[test]
     fn copy_rejects_same_descriptor_before_truncation() {
-        let root = test_root("copy");
-        fs::create_dir(&root).unwrap();
+        let root = TempDir::new("copy");
         let source = root.join("source");
         fs::write(&source, b"preserved").unwrap();
 
@@ -499,12 +488,11 @@ mod tests {
             libc::EINVAL
         );
         assert_eq!(fs::read(&source).unwrap(), b"preserved");
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn recursive_remove_unlinks_symlink_without_following_target() {
-        let root = test_root("remove");
+        let root = TempDir::new("remove");
         let target = root.join("target");
         let tree = root.join("tree");
         fs::create_dir_all(&target).unwrap();
@@ -514,6 +502,5 @@ mod tests {
 
         assert_eq!(__rt__fs_remove_dir_all(rt_path(&tree)), 0);
         assert!(target.join("kept").exists());
-        fs::remove_dir_all(root).unwrap();
     }
 }

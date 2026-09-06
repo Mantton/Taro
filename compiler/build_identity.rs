@@ -93,18 +93,12 @@ fn collect_files(path: &Path, name: &str, inputs: &mut Vec<(String, PathBuf)>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::test_support::TempDir;
 
-    struct Fixture(PathBuf);
+    struct Fixture(TempDir);
     impl Fixture {
         fn new() -> Self {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            let root = std::env::temp_dir().join(format!(
-                "taro-build-identity-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            let fixture = Self(root);
+            let fixture = Self(TempDir::new("build-identity"));
             for path in [
                 "compiler/Cargo.toml",
                 "compiler/build.rs",
@@ -132,12 +126,6 @@ mod tests {
             compute(&self.0.join("compiler"), &[]).unwrap()
         }
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn source_native_driver_and_dependency_changes_invalidate_identity() {
         let fixture = Fixture::new();

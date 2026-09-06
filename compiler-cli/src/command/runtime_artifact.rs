@@ -414,7 +414,7 @@ fn object_architecture(bytes: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::test_support::TempDir;
 
     fn archive_with(member: &[u8]) -> Vec<u8> {
         let mut archive = b"!<arch>\n".to_vec();
@@ -429,19 +429,6 @@ mod tests {
             archive.push(b'\n');
         }
         archive
-    }
-
-    fn temp_archive(name: &str, bytes: &[u8]) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "taro-runtime-manifest-{}-{name}-{nonce}.a",
-            std::process::id()
-        ));
-        fs::write(&path, bytes).expect("write archive");
-        path
     }
 
     #[test]
@@ -519,167 +506,62 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_stale_abi_revision() {
+    fn validation_accepts_matching_runtime_and_rejects_each_compatibility_mismatch() {
+        let root = TempDir::new("runtime-manifest");
+        let archive = root.join("runtime.a");
         let mut object = vec![0; 20];
         object[..4].copy_from_slice(b"\x7fELF");
         object[5] = 1;
         object[18..20].copy_from_slice(&62_u16.to_le_bytes());
         let archive_bytes = archive_with(&object);
-        let archive = temp_archive("stale", &archive_bytes);
-        let manifest = RuntimeArtifactManifest {
+        fs::write(&archive, &archive_bytes).expect("archive");
+        let target = "x86_64-unknown-linux-gnu";
+        let baseline = RuntimeArtifactManifest {
             schema_version: RUNTIME_MANIFEST_SCHEMA,
-            abi_revision: RUNTIME_ABI_REVISION + 1,
+            abi_revision: RUNTIME_ABI_REVISION,
             abi_fingerprint: fingerprint(),
-            target: "x86_64-unknown-linux-gnu".into(),
+            target: target.into(),
             architecture: "x86_64".into(),
             archive_sha256: sha256_hex(&archive_bytes),
         };
-        fs::write(
-            manifest_path(&archive),
-            toml::to_string(&manifest).expect("manifest"),
-        )
-        .expect("write manifest");
-
-        let error = validate(
-            &archive,
-            Some("x86_64-unknown-linux-gnu"),
-            "x86_64-unknown-linux-gnu",
-        )
-        .unwrap_err();
-        assert!(error.contains("ABI revision mismatch"), "{error}");
-
-        let _ = fs::remove_file(manifest_path(&archive));
-        let _ = fs::remove_file(archive);
-    }
-
-    #[test]
-    fn validation_rejects_stale_abi_fingerprint() {
-        let mut object = vec![0; 20];
-        object[..4].copy_from_slice(b"\x7fELF");
-        object[5] = 1;
-        object[18..20].copy_from_slice(&62_u16.to_le_bytes());
-        let archive_bytes = archive_with(&object);
-        let archive = temp_archive("fingerprint", &archive_bytes);
-        let manifest = RuntimeArtifactManifest {
-            schema_version: RUNTIME_MANIFEST_SCHEMA,
-            abi_revision: RUNTIME_ABI_REVISION,
-            abi_fingerprint: "stale".into(),
-            target: "x86_64-unknown-linux-gnu".into(),
-            architecture: "x86_64".into(),
-            archive_sha256: sha256_hex(&archive_bytes),
+        let write_manifest = |manifest: &RuntimeArtifactManifest| {
+            fs::write(
+                manifest_path(&archive),
+                toml::to_string(manifest).expect("manifest"),
+            )
+            .expect("write manifest");
         };
-        fs::write(
-            manifest_path(&archive),
-            toml::to_string(&manifest).expect("manifest"),
-        )
-        .expect("write manifest");
+        write_manifest(&baseline);
+        validate(&archive, Some(target), target).expect("matching runtime");
 
-        let error = validate(
-            &archive,
-            Some("x86_64-unknown-linux-gnu"),
-            "x86_64-unknown-linux-gnu",
-        )
-        .unwrap_err();
-        assert!(error.contains("ABI fingerprint mismatch"), "{error}");
+        let mismatches: &[(fn(&mut RuntimeArtifactManifest), &str)] = &[
+            (|m| m.schema_version += 1, "schema mismatch"),
+            (|m| m.abi_revision += 1, "ABI revision mismatch"),
+            (
+                |m| m.abi_fingerprint = "stale".into(),
+                "ABI fingerprint mismatch",
+            ),
+            (|m| m.target = "host".into(), "runtime target mismatch"),
+            (|m| m.archive_sha256 = "0".repeat(64), "checksum mismatch"),
+            (
+                |m| m.architecture = "aarch64".into(),
+                "archive architecture mismatch",
+            ),
+        ];
+        for (mutate, expected) in mismatches {
+            let mut manifest = baseline.clone();
+            mutate(&mut manifest);
+            write_manifest(&manifest);
+            let error = validate(&archive, Some(target), target).unwrap_err();
+            assert!(error.contains(expected), "expected {expected}: {error}");
+        }
 
-        let _ = fs::remove_file(manifest_path(&archive));
-        let _ = fs::remove_file(archive);
-    }
-
-    #[test]
-    fn validation_rejects_wrong_target_before_linking() {
-        let mut object = vec![0; 20];
-        object[..4].copy_from_slice(b"\x7fELF");
-        object[5] = 1;
-        object[18..20].copy_from_slice(&183_u16.to_le_bytes());
-        let archive_bytes = archive_with(&object);
-        let archive = temp_archive("target", &archive_bytes);
-        let manifest = RuntimeArtifactManifest {
-            schema_version: RUNTIME_MANIFEST_SCHEMA,
-            abi_revision: RUNTIME_ABI_REVISION,
-            abi_fingerprint: fingerprint(),
-            target: "host".into(),
-            architecture: "aarch64".into(),
-            archive_sha256: sha256_hex(&archive_bytes),
-        };
-        fs::write(
-            manifest_path(&archive),
-            toml::to_string(&manifest).expect("manifest"),
-        )
-        .expect("write manifest");
-
-        let error = validate(
-            &archive,
-            Some("aarch64-unknown-linux-gnu"),
-            "aarch64-unknown-linux-gnu",
-        )
-        .unwrap_err();
-        assert!(error.contains("runtime target mismatch"), "{error}");
-
-        let _ = fs::remove_file(manifest_path(&archive));
-        let _ = fs::remove_file(archive);
-    }
-
-    #[test]
-    fn validation_rejects_manifest_archive_checksum_drift() {
-        let mut object = vec![0; 20];
-        object[..4].copy_from_slice(b"\x7fELF");
-        object[5] = 1;
-        object[18..20].copy_from_slice(&62_u16.to_le_bytes());
-        let archive_bytes = archive_with(&object);
-        let archive = temp_archive("checksum", &archive_bytes);
-        let manifest = RuntimeArtifactManifest {
-            schema_version: RUNTIME_MANIFEST_SCHEMA,
-            abi_revision: RUNTIME_ABI_REVISION,
-            abi_fingerprint: fingerprint(),
-            target: "x86_64-unknown-linux-gnu".into(),
-            architecture: "x86_64".into(),
-            archive_sha256: "0".repeat(64),
-        };
-        fs::write(
-            manifest_path(&archive),
-            toml::to_string(&manifest).expect("manifest"),
-        )
-        .expect("write manifest");
-
-        let error = validate(
-            &archive,
-            Some("x86_64-unknown-linux-gnu"),
-            "x86_64-unknown-linux-gnu",
-        )
-        .unwrap_err();
-        assert!(error.contains("checksum mismatch"), "{error}");
-
-        let _ = fs::remove_file(manifest_path(&archive));
-        let _ = fs::remove_file(archive);
-    }
-
-    #[test]
-    fn validation_rejects_archive_for_wrong_architecture() {
-        let mut object = vec![0; 20];
-        object[..4].copy_from_slice(b"\x7fELF");
-        object[5] = 1;
-        object[18..20].copy_from_slice(&183_u16.to_le_bytes());
-        let archive_bytes = archive_with(&object);
-        let archive = temp_archive("architecture", &archive_bytes);
-        let manifest = RuntimeArtifactManifest {
-            schema_version: RUNTIME_MANIFEST_SCHEMA,
-            abi_revision: RUNTIME_ABI_REVISION,
-            abi_fingerprint: fingerprint(),
-            target: "host".into(),
-            architecture: "aarch64".into(),
-            archive_sha256: sha256_hex(&archive_bytes),
-        };
-        fs::write(
-            manifest_path(&archive),
-            toml::to_string(&manifest).expect("manifest"),
-        )
-        .expect("write manifest");
-
-        let error = validate(&archive, None, "x86_64-unknown-linux-gnu").unwrap_err();
-        assert!(error.contains("architecture mismatch"), "{error}");
-
-        let _ = fs::remove_file(manifest_path(&archive));
-        let _ = fs::remove_file(archive);
+        // A host-only archive still has to match the effective target's CPU.
+        let mut host_manifest = baseline;
+        host_manifest.target = "host".into();
+        write_manifest(&host_manifest);
+        validate(&archive, None, target).expect("matching host runtime");
+        let error = validate(&archive, None, "aarch64-unknown-linux-gnu").unwrap_err();
+        assert!(error.contains("runtime architecture mismatch"), "{error}");
     }
 }

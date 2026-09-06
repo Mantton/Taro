@@ -165,7 +165,8 @@ pub fn get_package_name(input: &str) -> Result<EcoString, String> {
 #[cfg(test)]
 mod tests {
     use super::{canonicalize_git_url, infer_language_home_from_executable};
-    use std::{fs::create_dir_all, path::PathBuf};
+    use crate::test_support::TempDir;
+    use std::fs::create_dir_all;
 
     #[test]
     fn canonicalizes_equivalent_git_urls() {
@@ -180,18 +181,18 @@ mod tests {
 
     #[test]
     fn infers_language_home_from_toolchain_bin_layout() {
-        let root = temp_dir("toolchain-home");
+        let root = TempDir::new("toolchain-home");
         create_dir_all(root.join("lib").join("taro")).expect("toolchain lib");
 
         let inferred =
             infer_language_home_from_executable(&root.join("bin").join("taro")).expect("home");
 
-        assert_eq!(inferred, root);
+        assert_eq!(inferred, root.as_ref());
     }
 
     #[test]
     fn does_not_infer_language_home_without_toolchain_layout() {
-        let root = temp_dir("toolchain-home-missing-lib");
+        let root = TempDir::new("toolchain-home-missing-lib");
 
         assert_eq!(
             infer_language_home_from_executable(&root.join("bin").join("taro")),
@@ -201,18 +202,5 @@ mod tests {
             infer_language_home_from_executable(&root.join("target").join("debug").join("taro")),
             None
         );
-    }
-
-    fn temp_dir(prefix: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "taro-{}-{}",
-            prefix,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        create_dir_all(&path).expect("temp dir");
-        path
     }
 }

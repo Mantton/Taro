@@ -954,7 +954,7 @@ impl<'ctx> TypeFolder<'ctx> for SignatureFreshener<'ctx> {
 mod tests {
     #[test]
     fn conformance_substitutes_interface_const_parameters() {
-        let diagnostics = crate::sema::tycheck::test_support::analyze_script_diagnostics(
+        let diagnostics = crate::test_support::analyze_script_diagnostics(
             r#"
 interface Fixed[const N: usize] {
     func consume(&self, _ values: [int32; N])
@@ -970,7 +970,7 @@ func main() {}
     }
     #[test]
     fn mismatched_method_reports_missing_requirement_without_panicking() {
-        let diagnostics = crate::sema::tycheck::test_support::analyze_script_diagnostics(
+        let diagnostics = crate::test_support::analyze_script_diagnostics(
             r#"
 interface Value {
     func consume(&self, _ value: int32)

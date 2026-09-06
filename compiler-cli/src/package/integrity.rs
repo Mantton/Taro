@@ -111,25 +111,11 @@ fn hash_directory_inner(
 #[cfg(test)]
 mod tests {
     use super::hash_directory;
-    use std::path::PathBuf;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "taro-integrity-test-{}-{}-{}",
-            name,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        dir
-    }
+    use crate::test_support::TempDir;
 
     #[test]
     fn hash_directory_is_stable_for_same_contents() {
-        let dir = temp_dir("stable");
+        let dir = TempDir::new("stable");
         std::fs::create_dir_all(dir.join("a")).expect("mkdir");
         std::fs::write(dir.join("a/file.txt"), b"hello").expect("write");
         std::fs::write(dir.join("b.txt"), b"world").expect("write");
@@ -137,14 +123,11 @@ mod tests {
         let a = hash_directory(&dir).expect("hash");
         let b = hash_directory(&dir).expect("hash");
         assert_eq!(a, b);
-
-        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
     fn hash_directory_changes_when_contents_change() {
-        let dir = temp_dir("changes");
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = TempDir::new("changes");
         std::fs::write(dir.join("file.txt"), b"one").expect("write");
         let before = hash_directory(&dir).expect("hash");
 
@@ -152,6 +135,5 @@ mod tests {
         let after = hash_directory(&dir).expect("hash");
 
         assert_ne!(before, after);
-        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

@@ -292,18 +292,11 @@ fn xcrun_path(arguments: &[&str]) -> Option<PathBuf> {
 mod tests {
     use super::{build_link_plan, link_executable};
     use crate::{
-        PackageIndex,
         codegen::artifact::ModuleArtifact,
-        compile::{
-            config::{
-                BuildProfile, Config, DebugOptions, ModuleArtifactKind, PackageKind, StdMode,
-            },
-            context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
-        },
-        diagnostics::DiagCtx,
+        compile::config::{ModuleArtifactKind, PackageKind},
+        test_support::with_test_gcx_config,
     };
-    use rustc_hash::FxHashMap;
-    use std::{path::PathBuf, rc::Rc};
+    use std::path::PathBuf;
 
     fn args(plan: &super::LinkPlan) -> Vec<String> {
         plan.args
@@ -312,84 +305,50 @@ mod tests {
             .collect()
     }
 
-    fn with_test_gcx<R>(kind: PackageKind, f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
-        let root = std::env::temp_dir().join(format!(
-            "taro-link-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("temp dir");
-
-        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
-        let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(&arenas, root, &dcx, None, BuildProfile::Debug)
-            .unwrap_or_else(|_| panic!("store"));
-        let icx = CompilerContext::new(dcx, store);
-        let config = icx.store.arenas.configs.alloc(Config {
-            name: "link-test".into(),
-            identifier: "link-test".into(),
-            src: PathBuf::from("link-test.tr"),
-            dependencies: FxHashMap::default(),
-            index: PackageIndex::new(1),
-            kind,
-            executable_out: None,
-            no_std_prelude: true,
-            is_script: true,
-            profile: BuildProfile::Debug,
-            codegen: Default::default(),
-            overflow_checks: false,
-            debug: DebugOptions {
-                dump_mir: false,
-                dump_llvm: false,
-                timings: false,
-                debug_info: Default::default(),
-            },
-            harness_mode: Default::default(),
-            std_mode: StdMode::BootstrapStd,
-            is_std_provider: false,
-        });
-
-        f(Gcx::new(&icx, config))
-    }
-
     #[test]
     fn library_without_object_files_skips_linking() {
-        with_test_gcx(PackageKind::Library, |gcx| {
-            let result = link_executable(gcx);
+        with_test_gcx_config(
+            |config| config.kind = PackageKind::Library,
+            |gcx| {
+                let result = link_executable(gcx);
 
-            match result {
-                Ok(None) => {}
-                Ok(Some(path)) => panic!("library unexpectedly linked {}", path.display()),
-                Err(_) => panic!("library link should be skipped"),
-            }
-            assert_eq!(gcx.dcx().error_count(), 0);
-        });
+                match result {
+                    Ok(None) => {}
+                    Ok(Some(path)) => panic!("library unexpectedly linked {}", path.display()),
+                    Err(_) => panic!("library link should be skipped"),
+                }
+                assert_eq!(gcx.dcx().error_count(), 0);
+            },
+        );
     }
 
     #[test]
     fn executable_without_object_files_errors() {
-        with_test_gcx(PackageKind::Executable, |gcx| {
-            let result = link_executable(gcx);
+        with_test_gcx_config(
+            |config| config.kind = PackageKind::Executable,
+            |gcx| {
+                let result = link_executable(gcx);
 
-            assert!(result.is_err());
-            assert_eq!(gcx.dcx().error_count(), 1);
-        });
+                assert!(result.is_err());
+                assert_eq!(gcx.dcx().error_count(), 1);
+            },
+        );
     }
 
     #[test]
     fn llvm_bitcode_is_not_forwarded_to_the_native_linker() {
-        with_test_gcx(PackageKind::Executable, |gcx| {
-            gcx.cache_module_artifact(ModuleArtifact::new(
-                ModuleArtifactKind::LlvmBitcode,
-                PathBuf::from("main.bc"),
-            ));
+        with_test_gcx_config(
+            |config| config.kind = PackageKind::Executable,
+            |gcx| {
+                gcx.cache_module_artifact(ModuleArtifact::new(
+                    ModuleArtifactKind::LlvmBitcode,
+                    PathBuf::from("main.bc"),
+                ));
 
-            assert!(gcx.all_object_files().is_empty());
-            assert!(link_executable(gcx).is_err());
-        });
+                assert!(gcx.all_object_files().is_empty());
+                assert!(link_executable(gcx).is_err());
+            },
+        );
     }
 
     #[test]

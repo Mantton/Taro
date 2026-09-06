@@ -831,6 +831,7 @@ mod tests {
         PcFunction, PcRecord, PcSafepointSelector, RawStackMapLocationKind, StackMapSiteKind,
         normalize_record_selectors, parse_object, strip_object,
     };
+    use crate::test_support::TempDir;
     use inkwell::{
         OptimizationLevel,
         context::Context,
@@ -838,12 +839,7 @@ mod tests {
         passes::PassBuilderOptions,
         targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple},
     };
-    use std::{
-        fs,
-        path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-        time::SystemTime,
-    };
+    use std::path::PathBuf;
 
     #[test]
     fn initialization_offsets_cover_variant_union_without_following_references() {
@@ -907,36 +903,10 @@ mod tests {
     }
 
     const STACK_MAP_ID: u64 = 0x0102_0304_0506_0708;
-    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("time should follow epoch")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "taro-stack-map-test-{}-{nonce}-{}",
-                std::process::id(),
-                NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir_all(&path).expect("create stack-map test directory");
-            Self(path)
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     fn emit_probe_object(
         triple: &str,
         optimization: OptimizationLevel,
-        directory: &TestDirectory,
+        directory: &TempDir,
         name: &str,
     ) -> PathBuf {
         Target::initialize_all(&InitializationConfig::default());
@@ -979,7 +949,7 @@ mod tests {
                 .expect("optimize stack-map probe");
         }
         module.verify().expect("verify stack-map probe");
-        let path = directory.0.join(format!("{name}.o"));
+        let path = directory.join(format!("{name}.o"));
         machine
             .write_to_file(&module, FileType::Object, &path)
             .expect("emit stack-map probe object");
@@ -1122,7 +1092,7 @@ mod tests {
 
     #[test]
     fn parses_direct_locations_at_o0_and_o2() {
-        let directory = TestDirectory::new();
+        let directory = TempDir::new("stack-map");
         let o0 = emit_probe_object(
             "aarch64-apple-darwin",
             OptimizationLevel::None,
@@ -1141,7 +1111,7 @@ mod tests {
 
     #[test]
     fn parses_elf_and_macho_function_relocations() {
-        let directory = TestDirectory::new();
+        let directory = TempDir::new("stack-map");
         let elf = emit_probe_object(
             "x86_64-unknown-linux-gnu",
             OptimizationLevel::Default,
@@ -1160,7 +1130,7 @@ mod tests {
 
     #[test]
     fn rejects_objects_without_a_stack_map_section() {
-        let directory = TestDirectory::new();
+        let directory = TempDir::new("stack-map");
         let context = Context::create();
         Target::initialize_all(&InitializationConfig::default());
         let triple = TargetTriple::create("aarch64-apple-darwin");
@@ -1178,7 +1148,7 @@ mod tests {
         let module = context.create_module("empty");
         module.set_triple(&triple);
         module.set_data_layout(&machine.get_target_data().get_data_layout());
-        let path = directory.0.join("empty.o");
+        let path = directory.join("empty.o");
         machine
             .write_to_file(&module, FileType::Object, &path)
             .expect("emit empty object");
@@ -1188,7 +1158,7 @@ mod tests {
 
     #[test]
     fn strips_normalized_sections_from_elf_and_macho_objects() {
-        let directory = TestDirectory::new();
+        let directory = TempDir::new("stack-map");
         for (triple, name) in [
             ("x86_64-unknown-linux-gnu", "strip-elf"),
             ("aarch64-apple-darwin", "strip-macho"),

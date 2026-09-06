@@ -160,7 +160,7 @@ impl<'r, 'a> Actor<'r, 'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::sema::tycheck::test_support::analyze_package_diagnostics;
+    use crate::test_support::analyze_package_diagnostics;
 
     #[test]
     fn chained_reexports_resolve_to_a_fixed_point() {

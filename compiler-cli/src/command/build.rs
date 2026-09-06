@@ -1472,14 +1472,7 @@ mod target_runtime_tests {
 
     #[test]
     fn publishing_bitcode_copies_the_internal_artifact() {
-        let root = std::env::temp_dir().join(format!(
-            "taro-publish-bitcode-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let root = crate::test_support::TempDir::new("publish-bitcode");
         let source = root.join("objects/app.bc");
         let output = root.join("published/app.bc");
         fs::create_dir_all(source.parent().expect("source parent")).expect("source directory");
@@ -1496,6 +1489,5 @@ mod target_runtime_tests {
             fs::read(published).expect("published bitcode"),
             b"BC\xc0\xde"
         );
-        let _ = fs::remove_dir_all(root);
     }
 }

@@ -886,3 +886,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../test_support.rs"]
+mod test_support;

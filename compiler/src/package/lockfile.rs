@@ -155,7 +155,8 @@ fn short_hash(value: &blake3::Hash) -> String {
 mod tests {
     use super::{LockFile, LockPackage, LockSourceType, equivalent, write};
     use crate::compile::config::PackageKind;
-    use std::{collections::BTreeMap, path::PathBuf};
+    use crate::test_support::TempDir;
+    use std::collections::BTreeMap;
 
     #[test]
     fn lockfile_round_trip_preserves_semantics() {
@@ -187,32 +188,18 @@ mod tests {
             deps: [("b".to_string(), "b".to_string())].into_iter().collect(),
         });
 
-        let path = std::env::temp_dir().join(format!(
-            "taro-lockfile-test-{}-{}.toml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let root = TempDir::new("lockfile");
+        let path = root.join("package.lock");
 
         write(&path, &file).expect("write");
         let loaded = super::load(&path).expect("load").expect("exists");
         assert!(equivalent(&file, &loaded));
-
-        std::fs::remove_file(PathBuf::from(path)).expect("cleanup");
     }
 
     #[test]
     fn lockfile_rejects_v1_before_shape_validation() {
-        let path = std::env::temp_dir().join(format!(
-            "taro-lockfile-v1-test-{}-{}.toml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let root = TempDir::new("lockfile");
+        let path = root.join("package.lock");
         std::fs::write(
             &path,
             "version = 1\ngenerated_by = \"taro 0.1.0\"\n\n[[package]]\nnode = \"dep\"\nname = \"github.com/example/dep\"\nkind = \"library\"\nno_std_prelude = false\nsource_type = \"git\"\nurl = \"https://github.com/example/dep.git\"\nrequested = \"tag:v1.0.0\"\nrevision = \"0123456789abcdef0123456789abcdef01234567\"\n",
@@ -221,7 +208,5 @@ mod tests {
 
         let err = super::load(&path).expect_err("v1 should fail");
         assert!(err.contains("unsupported lockfile version 1 (expected 2)"));
-
-        std::fs::remove_file(PathBuf::from(path)).expect("cleanup");
     }
 }

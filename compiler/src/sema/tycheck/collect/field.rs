@@ -133,19 +133,10 @@ impl<'ctx> Actor<'ctx> {
 mod tests {
     use super::*;
     use crate::{
-        compile::{
-            Compiler,
-            config::BuildProfile,
-            context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
-        },
-        diagnostics::{DiagCtx, DiagnosticRecord},
+        diagnostics::DiagnosticRecord,
         hir::DeclarationKind,
-        interner,
-        sema::tycheck::test_support::{
-            analyze_script_diagnostics, make_script_config, temp_dir, write_file,
-        },
+        test_support::{analyze_script, analyze_script_diagnostics},
     };
-    use std::{fs::create_dir_all, path::PathBuf, rc::Rc};
 
     fn has_error_message(diagnostics: &[DiagnosticRecord], needle: &str) -> bool {
         diagnostics.iter().any(|diag| diag.message.contains(needle))
@@ -153,79 +144,43 @@ mod tests {
 
     #[test]
     fn struct_repr_defaults_to_taro() {
-        interner::reset_session();
-
-        let root = temp_dir("default-repr");
-        let output_root = root.join("target");
-        create_dir_all(&output_root).expect("output root");
-        let file = root.join("main.tr");
-        write_file(&file, "struct Boxed { value: int32; }\nfunc main() {}\n");
-
-        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
-        let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(&arenas, output_root, &dcx, None, BuildProfile::Debug)
-            .unwrap_or_else(|_| panic!("store"));
-        let icx = CompilerContext::new(dcx, store);
-        let config = make_script_config(&icx, file, "script-repr-default");
-        let gcx = Gcx::new(&icx, config);
-
-        let mut compiler = Compiler::new(&icx, config);
-        let (package, _) = compiler
-            .analyze()
-            .unwrap_or_else(|_| panic!("analysis should succeed"));
-        let decl = package
-            .root
-            .declarations
-            .iter()
-            .find(|decl| decl.identifier.symbol.as_str() == "Boxed")
-            .expect("struct declaration");
-        assert!(matches!(decl.kind, DeclarationKind::Struct(_)));
-        assert_eq!(gcx.get_struct_definition(decl.id).repr, StructRepr::Taro);
+        analyze_script(
+            "struct Boxed { value: int32; }\nfunc main() {}\n",
+            |package, gcx| {
+                let decl = package
+                    .root
+                    .declarations
+                    .iter()
+                    .find(|decl| decl.identifier.symbol.as_str() == "Boxed")
+                    .expect("struct declaration");
+                assert!(matches!(decl.kind, DeclarationKind::Struct(_)));
+                assert_eq!(gcx.get_struct_definition(decl.id).repr, StructRepr::Taro);
+            },
+        );
     }
 
     #[test]
     fn struct_repr_accepts_case_insensitive_values() {
-        interner::reset_session();
+        analyze_script(
+            "@repr(\"c\") struct CStyle { value: int32; }\n@repr(\"TaRo\") struct Packed { value: int32; }\nfunc main() {}\n",
+            |package, gcx| {
+                let c_decl = package
+                    .root
+                    .declarations
+                    .iter()
+                    .find(|decl| decl.identifier.symbol.as_str() == "CStyle")
+                    .expect("CStyle declaration");
+                let t_decl = package
+                    .root
+                    .declarations
+                    .iter()
+                    .find(|decl| decl.identifier.symbol.as_str() == "Packed")
+                    .expect("Packed declaration");
 
-        let root = temp_dir("case-insensitive-repr");
-        let output_root = root.join("target");
-        create_dir_all(&output_root).expect("output root");
-        let file = root.join("main.tr");
-        write_file(
-            &file,
-            "@repr(\"c\") struct CStyle { value: int32; }\n\
-             @repr(\"TaRo\") struct Packed { value: int32; }\n\
-             func main() {}\n",
+                assert_eq!(gcx.get_struct_definition(c_decl.id).repr, StructRepr::C);
+                assert_eq!(gcx.get_struct_definition(t_decl.id).repr, StructRepr::Taro);
+            },
         );
-
-        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
-        let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(&arenas, output_root, &dcx, None, BuildProfile::Debug)
-            .unwrap_or_else(|_| panic!("store"));
-        let icx = CompilerContext::new(dcx, store);
-        let config = make_script_config(&icx, file, "script-repr-case-insensitive");
-        let gcx = Gcx::new(&icx, config);
-
-        let mut compiler = Compiler::new(&icx, config);
-        let (package, _) = compiler
-            .analyze()
-            .unwrap_or_else(|_| panic!("analysis should succeed"));
-
-        let c_decl = package
-            .root
-            .declarations
-            .iter()
-            .find(|decl| decl.identifier.symbol.as_str() == "CStyle")
-            .expect("CStyle declaration");
-        let t_decl = package
-            .root
-            .declarations
-            .iter()
-            .find(|decl| decl.identifier.symbol.as_str() == "Packed")
-            .expect("Packed declaration");
-
-        assert_eq!(gcx.get_struct_definition(c_decl.id).repr, StructRepr::C);
-        assert_eq!(gcx.get_struct_definition(t_decl.id).repr, StructRepr::Taro);
     }
 
     #[test]

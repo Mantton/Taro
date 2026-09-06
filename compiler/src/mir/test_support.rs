@@ -1,10 +1,6 @@
 use crate::{
     PackageIndex,
-    compile::{
-        config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
-        context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
-    },
-    diagnostics::DiagCtx,
+    compile::context::Gcx,
     hir::DefinitionID,
     mir::{
         BasicBlockData, Body, LocalDecl, LocalId, LocalKind, MirPhase, Terminator, TerminatorKind,
@@ -14,49 +10,8 @@ use crate::{
     span::{FileID, Span},
 };
 use index_vec::IndexVec;
-use rustc_hash::FxHashMap;
-use std::{path::PathBuf, rc::Rc};
 
-pub(crate) fn with_test_gcx<R>(f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
-    let root = std::env::temp_dir().join(format!(
-        "taro-mir-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("time")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&root).expect("temp dir");
-
-    let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
-    dcx.enable_recording();
-    let arenas = CompilerArenas::new();
-    let store = CompilerStore::new(&arenas, root.clone(), &dcx, None, BuildProfile::Debug)
-        .unwrap_or_else(|_| panic!("store"));
-    let icx = CompilerContext::new(dcx, store);
-    let config = icx.store.arenas.configs.alloc(Config {
-        name: "mir-test".into(),
-        identifier: "mir-test".into(),
-        src: root.clone(),
-        dependencies: FxHashMap::default(),
-        index: PackageIndex::new(1),
-        kind: PackageKind::Library,
-        executable_out: None,
-        no_std_prelude: true,
-        is_script: true,
-        profile: BuildProfile::Debug,
-        codegen: Default::default(),
-        overflow_checks: true,
-        debug: DebugOptions::default(),
-        harness_mode: Default::default(),
-        std_mode: StdMode::BootstrapStd,
-        is_std_provider: true,
-    });
-
-    let result = f(Gcx::new(&icx, config));
-    let _ = std::fs::remove_dir_all(root);
-    result
-}
+pub(crate) use crate::test_support::with_test_gcx;
 
 pub(crate) fn minimal_body<'ctx>(gcx: Gcx<'ctx>) -> Body<'ctx> {
     let span = Span::empty(FileID::new(0));

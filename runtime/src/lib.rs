@@ -31,3 +31,7 @@ pub use garbage_collector::*;
 pub use hash_seed::*;
 pub use panic_unwind::*;
 pub use task::*;
+
+#[cfg(test)]
+#[path = "../../test_support.rs"]
+mod test_support;

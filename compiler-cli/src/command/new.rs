@@ -167,10 +167,10 @@ fn library_source_template() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{create_project, invalid_package_name_message, normalize_package_name};
-    use crate::NewProjectKind;
+    use crate::{NewProjectKind, test_support::TempDir};
     use std::{
-        fs::{self, create_dir_all, read_to_string, write},
-        path::PathBuf,
+        fs::{create_dir_all, read_to_string, write},
+        path::{Path, PathBuf},
         sync::{Mutex, OnceLock},
     };
 
@@ -268,14 +268,14 @@ mod tests {
         });
     }
 
-    fn with_test_cwd(name: &str, f: impl FnOnce(PathBuf)) {
+    fn with_test_cwd(name: &str, f: impl FnOnce(&Path)) {
         let _guard = cwd_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let root = temp_dir(name);
-        let _cwd = TestCwdGuard::enter(root.clone());
+        let root = TempDir::new(name);
+        let _cwd = TestCwdGuard::enter(&root);
 
-        f(root.clone());
+        f(&root);
     }
 
     fn cwd_lock() -> &'static Mutex<()> {
@@ -283,37 +283,21 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "taro-new-{}-{}-{}",
-            name,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        create_dir_all(&path).expect("temp dir");
-        path
-    }
-
     struct TestCwdGuard {
         original: PathBuf,
-        root: PathBuf,
     }
 
     impl TestCwdGuard {
-        fn enter(root: PathBuf) -> Self {
+        fn enter(root: &Path) -> Self {
             let original = std::env::current_dir().expect("current dir");
             std::env::set_current_dir(&root).expect("set current dir");
-            Self { original, root }
+            Self { original }
         }
     }
 
     impl Drop for TestCwdGuard {
         fn drop(&mut self) {
             std::env::set_current_dir(&self.original).expect("restore current dir");
-            fs::remove_dir_all(&self.root).expect("cleanup temp dir");
         }
     }
 }

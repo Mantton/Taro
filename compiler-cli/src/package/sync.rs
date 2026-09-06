@@ -845,32 +845,14 @@ mod tests {
     use super::{GitGroupKey, GitRequest, SyncOptions, checkout_group_requests};
     use crate::package::manifest::{PackageIdentifier, RefSpec, SourceSpec, UnresolvedDependency};
     use crate::package::{integrity, lockfile};
+    use crate::test_support::TempDir;
     use compiler::compile::config::PackageKind;
     use compiler::constants::PACKAGE_STORE;
     use ecow::EcoString;
     use git2::{Oid, Repository, Signature};
     use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
-    use std::sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    };
-
-    fn temp_dir(name: &str) -> PathBuf {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "taro-sync-test-{}-{}-{}-{}",
-            name,
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&path).expect("temp dir");
-        path
-    }
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
 
     fn commit_file(repo: &Repository, root: &Path, contents: &str) -> Oid {
         std::fs::write(root.join("package.toml"), contents).expect("write package");
@@ -903,8 +885,8 @@ mod tests {
         std::fs::write(path.join("package.toml"), contents).expect("manifest");
     }
 
-    fn tagged_repo(tags: &[&str]) -> (PathBuf, Repository, Vec<Oid>) {
-        let root = temp_dir("git");
+    fn tagged_repo(tags: &[&str]) -> (TempDir, Repository, Vec<Oid>) {
+        let root = TempDir::new("git");
         let repo = Repository::init(&root).expect("repo");
         let mut revisions = Vec::new();
         for tag_name in tags {
@@ -1066,7 +1048,7 @@ mod tests {
 
     #[test]
     fn sync_accepts_both_packages_as_path_dependencies() {
-        let workspace = temp_dir("both-path");
+        let workspace = TempDir::new("both-path");
         let dep = workspace.join("dep");
         let root = workspace.join("root");
 
@@ -1112,7 +1094,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let workspace = temp_dir("locked-cache");
+        let workspace = TempDir::new("locked-cache");
         let home = workspace.join("home");
         let root = workspace.join("root");
         let package_name = "github.com/example/dep";

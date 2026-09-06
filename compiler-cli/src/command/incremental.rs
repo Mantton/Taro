@@ -368,6 +368,7 @@ mod tests {
         compute_package_fingerprint_input, compute_package_fingerprint_input_with_runtime_abi,
         compute_package_fingerprint_input_with_test_selection,
     };
+    use crate::test_support::TempDir;
     use compiler::{
         PackageIndex,
         compile::{
@@ -381,28 +382,7 @@ mod tests {
         diagnostics::DiagCtx,
     };
     use rustc_hash::FxHashMap;
-    use std::{
-        fs,
-        path::PathBuf,
-        rc::Rc,
-        sync::atomic::{AtomicU64, Ordering},
-    };
-
-    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    fn test_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "taro-fingerprint-test-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos(),
-            NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&root).expect("temp root");
-        root
-    }
+    use std::{fs, path::PathBuf, rc::Rc};
 
     fn base_config(source: PathBuf) -> Config {
         Config {
@@ -426,10 +406,10 @@ mod tests {
     }
 
     fn with_context<R>(f: impl for<'ctx> FnOnce(&CompilerContext<'ctx>, PathBuf) -> R) -> R {
-        let root = test_root();
+        let root = TempDir::new("fingerprint");
         let source = root.join("main.tr");
         fs::write(&source, "func main() {}\n").expect("source");
-        let dcx = Rc::new(DiagCtx::new(root.clone()));
+        let dcx = Rc::new(DiagCtx::new(root.to_path_buf()));
         let arenas = CompilerArenas::new();
         let store = CompilerStore::new(
             &arenas,
@@ -440,9 +420,7 @@ mod tests {
         )
         .unwrap_or_else(|_| panic!("store"));
         let context = CompilerContext::new(dcx, store);
-        let result = f(&context, source);
-        let _ = fs::remove_dir_all(root);
-        result
+        f(&context, source)
     }
 
     #[test]

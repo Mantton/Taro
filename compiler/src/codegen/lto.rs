@@ -851,6 +851,7 @@ mod tests {
         ThinLtoCodegen, declared_symbols, full_lto_pipeline, optimize_full_lto_module,
         parse_bitcode, preserved_symbols, thin_lto_optimization_level, write_thin_lto_bitcode,
     };
+    use crate::test_support::TempDir;
     use crate::{
         codegen::target::TargetLayout,
         compile::config::{BuildProfile, OptLevel, OptimizationMode},
@@ -860,17 +861,6 @@ mod tests {
         context::Context, module::Linkage, passes::PassBuilderOptions, values::AnyValue,
     };
     use std::{fs, path::PathBuf};
-
-    fn temporary_bitcode_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "taro-full-lto-{name}-{}-{}.bc",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ))
-    }
 
     #[test]
     fn full_lto_pipeline_tracks_optimization_policy() {
@@ -928,7 +918,8 @@ mod tests {
             source_context.void_type().fn_type(&[], false),
             None,
         );
-        let path = temporary_bitcode_path("target-identity");
+        let root = TempDir::new("target-identity");
+        let path = root.join("module.bc");
         let bytes = module.write_bitcode_to_memory();
         let bytes = bytes
             .as_slice()
@@ -955,7 +946,6 @@ mod tests {
         let error = parse_bitcode(&parse_context, &path, &wrong_triple, &layout.data_layout())
             .expect_err("mismatched target should fail");
         assert!(error.contains("expected"));
-        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -1081,14 +1071,7 @@ mod tests {
                 .expect("ThinLTO pre-link pipeline");
         }
 
-        let temp_root = std::env::temp_dir().join(format!(
-            "taro-thin-lto-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp_root = TempDir::new("thin-lto");
         let input_dir = temp_root.join("input");
         let output_dir = temp_root.join("output");
         fs::create_dir_all(&input_dir).expect("ThinLTO input directory");
@@ -1149,6 +1132,5 @@ mod tests {
         assert!(main_ir.contains("ret i32 42"), "{main_ir}");
         assert!(!main_ir.contains("call i32 @thin_value"), "{main_ir}");
         assert_eq!(opaque_export_linkage, Some(Linkage::External));
-        let _ = fs::remove_dir_all(temp_root);
     }
 }

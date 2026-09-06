@@ -2,21 +2,17 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
-struct TempProject(PathBuf);
+#[path = "../../test_support.rs"]
+mod test_support;
+use test_support::TempDir;
+
+struct TempProject(TempDir);
 
 impl TempProject {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "taro-root-incremental-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let root = TempDir::new("root-incremental");
         fs::create_dir_all(root.join("src")).expect("project source directory");
         fs::create_dir_all(root.join("dep/src")).expect("dependency source directory");
         fs::write(
@@ -53,12 +49,6 @@ impl TempProject {
             format!("public func dependencyValue() -> int32 {{ {value} }}\n"),
         )
         .expect("dependency source");
-    }
-}
-
-impl Drop for TempProject {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

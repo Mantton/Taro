@@ -1316,60 +1316,10 @@ mod tests {
         TyKind, TyVarID,
     };
     use crate::{
-        PackageIndex,
-        compile::{
-            config::{BuildProfile, Config, DebugOptions, PackageKind, StdMode},
-            context::{CompilerArenas, CompilerContext, CompilerStore, Gcx},
-        },
-        diagnostics::DiagCtx,
-        hir::DefinitionID,
-        sema::resolve::models::DefinitionIndex,
+        PackageIndex, compile::context::Gcx, hir::DefinitionID,
+        sema::resolve::models::DefinitionIndex, test_support::with_test_gcx,
     };
-    use rustc_hash::FxHashMap;
-    use std::{path::PathBuf, rc::Rc};
-
-    fn with_test_gcx<R>(f: impl for<'ctx> FnOnce(Gcx<'ctx>) -> R) -> R {
-        let root = std::env::temp_dir().join(format!(
-            "taro-models-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("temp dir");
-
-        let dcx = Rc::new(DiagCtx::new(PathBuf::from(".")));
-        let arenas = CompilerArenas::new();
-        let store = CompilerStore::new(&arenas, root, &dcx, None, BuildProfile::Debug)
-            .unwrap_or_else(|_| panic!("store"));
-        let icx = CompilerContext::new(dcx, store);
-        let config = icx.store.arenas.configs.alloc(Config {
-            name: "models-test".into(),
-            identifier: "models-test".into(),
-            src: PathBuf::from("models-test.tr"),
-            dependencies: FxHashMap::default(),
-            index: PackageIndex::new(1),
-            kind: PackageKind::Library,
-            executable_out: None,
-            no_std_prelude: true,
-            is_script: true,
-            profile: BuildProfile::Debug,
-            codegen: Default::default(),
-            overflow_checks: false,
-            debug: DebugOptions {
-                dump_mir: false,
-                dump_llvm: false,
-                timings: false,
-                debug_info: Default::default(),
-            },
-            harness_mode: Default::default(),
-            std_mode: StdMode::BootstrapStd,
-            is_std_provider: false,
-        });
-
-        f(Gcx::new(&icx, config))
-    }
+    use std::rc::Rc;
 
     fn dummy_definition(index: u32) -> DefinitionID {
         DefinitionID::new(PackageIndex::new(1), DefinitionIndex::from_raw(index))

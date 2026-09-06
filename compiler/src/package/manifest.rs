@@ -255,25 +255,11 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::Manifest;
-    use std::{fs::create_dir_all, path::PathBuf};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "taro-manifest-test-{}-{}-{}",
-            name,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        create_dir_all(&path).expect("temp dir");
-        path
-    }
+    use std::path::PathBuf;
 
     fn normalize_manifest(source: &str) -> Result<super::NormalizedManifest, String> {
         let manifest = toml::from_str::<Manifest>(source).expect("manifest");
-        manifest.normalize(temp_dir("base"))
+        manifest.normalize(PathBuf::from("/manifest-test"))
     }
 
     #[test]
