@@ -101,7 +101,7 @@ def main() -> int:
 
     try:
         current_stage = "development script tests"
-        print_stage(1, stage_count, "Development script and Cargo tests")
+        print_stage(1, stage_count, "Development script tests")
         run_command(
             [
                 sys.executable,
@@ -135,18 +135,20 @@ def main() -> int:
                 cwd=repo_root,
             )
 
+        current_stage = "build dist"
+        print_stage(2, stage_count, "Build dist and Cargo tests")
+        if args.skip_build_dist:
+            print("SKIPPED: disabled via --skip-build-dist")
+        else:
+            run_command(["python3", str(build_script)], cwd=repo_root)
+
+        # Integration tests use the new compiler with dist's attached std, which
+        # must be refreshed first when the compiler's build identity changes.
         current_stage = "cargo tests"
         if args.skip_cargo_tests:
             print("SKIPPED: disabled via --skip-cargo-tests")
         else:
             run_command(["cargo", "test", "--workspace"], cwd=repo_root)
-
-        current_stage = "build dist"
-        print_stage(2, stage_count, "Build dist")
-        if args.skip_build_dist:
-            print("SKIPPED: disabled via --skip-build-dist")
-        else:
-            run_command(["python3", str(build_script)], cwd=repo_root)
 
         current_stage = "compile std smoke"
         print_stage(3, stage_count, "Compile std smoke")

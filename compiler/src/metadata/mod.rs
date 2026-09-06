@@ -171,9 +171,7 @@ fn validate_payload_capabilities(
 }
 
 fn compiler_revision_stamp() -> String {
-    std::option_env!("VERGEN_GIT_SHA")
-        .unwrap_or(env!("CARGO_PKG_VERSION"))
-        .to_string()
+    env!("TARO_COMPILER_ID").to_owned()
 }
 
 fn profile_name(profile: BuildProfile) -> &'static str {
@@ -1424,6 +1422,12 @@ mod tests {
             );
             assert!(decode(&invocation, false).is_ok());
             for cached in [true, false] {
+                let mut legacy = header.clone();
+                legacy.compiler_revision = env!("CARGO_PKG_VERSION").into();
+                assert_eq!(
+                    decode(&legacy, cached).unwrap_err(),
+                    "metadata compiler revision mismatch"
+                );
                 let mut corrupt = header.clone();
                 corrupt.payload_checksum_hex.clear();
                 assert_eq!(

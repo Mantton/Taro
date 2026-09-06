@@ -1,6 +1,9 @@
 #![feature(associated_type_defaults)]
 mod ast;
 mod ast_lowering;
+#[cfg(test)]
+#[path = "../build_identity.rs"]
+mod build_identity;
 mod cfg;
 mod cfg_eval;
 pub mod codegen;

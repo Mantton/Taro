@@ -28,4 +28,5 @@ toml = "0.8.20"
 semver = { version = "1.0.26", features = ["serde"] }
 
 [build-dependencies]
+blake3 = "1.8.2"
 cc = "1.2"
