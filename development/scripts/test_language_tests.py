@@ -14,6 +14,30 @@ from language_tests import TestEnvironment, parse_test_directives, run_test
 
 
 class LanguageTestDirectiveTests(unittest.TestCase):
+    def test_malformed_directives_are_errors(self) -> None:
+        for directive in (
+            '// STDIN: "unfinished',
+            '// STDIN: 3',
+            '// EXPECT_EXIT: nope',
+            '// EXPECT_STDERR_COUNT: nope panic',
+            '// EXPECT_STDERR_COUNT: -1 panic',
+            '// EXPECT_STDOUT_CONTAINS:',
+            '// ENV: MISSING_EQUALS',
+            '// ARGS: "unfinished',
+            '// PACKAGE: ../outside',
+            '// CHECK_ONLY\n// TEST',
+            '// CHECK_ONLY: x',
+            '// TEST:',
+            '// OVERFLOW_CHECKS: true',
+            '// ARGS',
+            '// ENV',
+        ):
+            with self.subTest(directive=directive), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "case.tr"
+                source.write_text(directive + "\n", encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    parse_test_directives(source)
+
     def test_stdin_is_decoded_from_a_json_string(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "stdin.tr"
@@ -78,6 +102,76 @@ class LanguageTestDirectiveTests(unittest.TestCase):
                         )
                     self.assertFalse(binary.exists())
                     self.assertFalse(Path(str(binary) + ".dSYM").exists())
+
+
+class LanguageTestOracleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.sources = self.root / "sources"
+        self.outputs = self.root / "outputs"
+        self.env = TestEnvironment(self.root / "scratch", Path("taro"), self.root, self.root / "std")
+        for name, value in (("SOURCE_FILES_DIR", self.sources), ("OUTPUTS_DIR", self.outputs)):
+            patcher = patch.object(language_tests, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_case(self, name: str, *, stdout="", stderr="", exit_code=0, directives=""):
+        source = self.sources / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(directives, encoding="utf-8")
+        with patch.object(language_tests.subprocess, "run", return_value=
+                          subprocess.CompletedProcess([], exit_code, stdout, stderr)):
+            return run_test(source, self.env, "debug", None)
+
+    def test_missing_valid_snapshot_means_empty_stdout_without_writing(self) -> None:
+        self.assertTrue(self.run_case("valid/empty.tr")[0])
+        self.assertFalse(self.run_case("valid/unexpected.tr", stdout="unexpected\n")[0])
+        self.assertFalse(self.outputs.exists())
+
+    def test_invalid_case_requires_an_existing_diagnostic_snapshot(self) -> None:
+        self.assertFalse(self.run_case("invalid/broken.tr", stderr="error: broken\n", exit_code=1)[0])
+        self.assertFalse(self.outputs.exists())
+
+    def test_valid_filename_containing_invalid_does_not_change_expectations(self) -> None:
+        self.assertTrue(self.run_case("valid/invalid_utf8.tr")[0])
+
+    def test_comment_prefix_does_not_disable_output_comparison(self) -> None:
+        self.assertFalse(self.run_case(
+            "valid/comment.tr", stdout="unexpected\n",
+            directives="// TESTING ordinary behavior\n",
+        )[0])
+
+    def test_failed_bootstrap_cleans_its_temporary_directory(self) -> None:
+        with (
+            patch.object(tempfile, "tempdir", str(self.root)),
+            patch.object(language_tests.subprocess, "run", side_effect=subprocess.CalledProcessError(1, [])),
+            self.assertRaises(SystemExit),
+        ):
+            with language_tests.setup_test_environment(True):
+                self.fail("bootstrap must fail")
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_invalid_cases_enforce_supplemental_assertions(self) -> None:
+        snapshot = self.outputs / "invalid/broken.out"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text("error: broken\n", encoding="utf-8")
+        self.assertFalse(self.run_case(
+            "invalid/broken.tr", stderr="error: broken\n", exit_code=1,
+            directives="// EXPECT_STDERR_NOT_CONTAINS: broken\n",
+        )[0])
+
+    def test_invalid_cases_honor_explicit_exit_codes(self) -> None:
+        snapshot = self.outputs / "invalid/broken.out"
+        snapshot.parent.mkdir(parents=True)
+        snapshot.write_text("error: broken\n", encoding="utf-8")
+        for expected, passes in ((1, True), (2, False)):
+            with self.subTest(expected=expected):
+                self.assertEqual(self.run_case(
+                    "invalid/broken.tr", stderr="error: broken\n", exit_code=1,
+                    directives=f"// EXPECT_EXIT: {expected}\n",
+                )[0], passes)
 
 
 if __name__ == "__main__":

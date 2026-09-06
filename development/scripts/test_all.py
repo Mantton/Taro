@@ -36,7 +36,6 @@ def run_command_capture(
         command,
         cwd=str(cwd),
         env=env,
-        check=True,
         capture_output=True,
         text=True,
     )
@@ -44,6 +43,7 @@ def run_command_capture(
         print(completed.stdout, end="")
     if completed.stderr:
         print(completed.stderr, end="", file=sys.stderr)
+    completed.check_returncode()
     return completed
 
 
@@ -96,6 +96,9 @@ def main() -> int:
         repo_root / "language_tests" / "package_fixtures" / "default_params"
     )
 
+    env = os.environ.copy()
+    env["TARO_HOME"] = str(dist_dir)
+
     stage_count = 8
     current_stage = "startup"
 
@@ -140,7 +143,7 @@ def main() -> int:
         if args.skip_build_dist:
             print("SKIPPED: disabled via --skip-build-dist")
         else:
-            run_command(["python3", str(build_script)], cwd=repo_root)
+            run_command([sys.executable, str(build_script)], cwd=repo_root)
 
         # Integration tests use the new compiler with dist's attached std, which
         # must be refreshed first when the compiler's build identity changes.
@@ -150,19 +153,22 @@ def main() -> int:
         else:
             run_command(["cargo", "test", "--workspace"], cwd=repo_root)
 
+        current_stage = "toolchain validation"
+        needs_toolchain = not all((
+            args.skip_compile_std, args.skip_bitcode_smoke,
+            args.skip_lto_smoke, args.skip_std_package_tests,
+        ))
+        if needs_toolchain:
+            if not taro_bin.is_file():
+                raise RuntimeError(f"compiler binary not found at {taro_bin}; run without --skip-build-dist first")
+            if not std_path.is_dir():
+                raise RuntimeError(f"std package directory not found at {std_path}")
+
         current_stage = "compile std smoke"
         print_stage(3, stage_count, "Compile std smoke")
         if args.skip_compile_std:
             print("SKIPPED: disabled via --skip-compile-std")
         else:
-            if not taro_bin.exists():
-                print(
-                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
-                )
-                return 1
-
-            env = os.environ.copy()
-            env["TARO_HOME"] = str(dist_dir)
             run_command(
                 [
                     str(taro_bin),
@@ -180,14 +186,6 @@ def main() -> int:
         if args.skip_bitcode_smoke:
             print("SKIPPED: disabled via --skip-bitcode-smoke")
         else:
-            if not taro_bin.exists():
-                print(
-                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
-                )
-                return 1
-
-            env = os.environ.copy()
-            env["TARO_HOME"] = str(dist_dir)
             with tempfile.TemporaryDirectory(prefix="taro_bitcode_smoke_") as temp:
                 output = Path(temp) / "hello.bc"
                 missing_runtime = Path(temp) / "runtime-does-not-exist.a"
@@ -264,14 +262,6 @@ def main() -> int:
         if args.skip_lto_smoke:
             print("SKIPPED: disabled via --skip-lto-smoke")
         else:
-            if not taro_bin.exists():
-                print(
-                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
-                )
-                return 1
-
-            env = os.environ.copy()
-            env["TARO_HOME"] = str(dist_dir)
             with tempfile.TemporaryDirectory(prefix="taro_full_lto_smoke_") as temp:
                 copied_fixture = Path(temp) / "default_params"
                 shutil.copytree(package_fixture, copied_fixture)
@@ -340,14 +330,6 @@ def main() -> int:
         if args.skip_lto_smoke:
             print("SKIPPED: disabled via --skip-lto-smoke")
         else:
-            if not taro_bin.exists():
-                print(
-                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
-                )
-                return 1
-
-            env = os.environ.copy()
-            env["TARO_HOME"] = str(dist_dir)
             with tempfile.TemporaryDirectory(prefix="taro_thin_lto_smoke_") as temp:
                 copied_fixture = Path(temp) / "default_params"
                 shutil.copytree(package_fixture, copied_fixture)
@@ -443,35 +425,18 @@ def main() -> int:
         if args.skip_std_package_tests:
             print("SKIPPED: disabled via --skip-std-package-tests")
         else:
-            if not taro_bin.exists():
-                print(
-                    f"error: compiler binary not found at {taro_bin}; run without --skip-build-dist first"
-                )
-                return 1
-
-            if not std_path.exists():
-                print(f"SKIPPED: std package directory not found at {std_path}")
-            else:
-                env = os.environ.copy()
-                env["TARO_HOME"] = str(dist_dir)
-                run_command(
-                    [
-                        str(taro_bin),
-                        "test",
-                        "std",
-                        "--std-path",
-                        "std",
-                    ],
-                    cwd=repo_root,
-                    env=env,
-                )
+            run_command(
+                [str(taro_bin), "test", "std", "--std-path", "std"],
+                cwd=repo_root,
+                env=env,
+            )
 
         current_stage = "language tests"
         print_stage(8, stage_count, "Language tests")
         if args.skip_language_tests:
             print("SKIPPED: disabled via --skip-language-tests")
         else:
-            command = ["python3", str(language_tests_script), "--codegen-profile", "both"]
+            command = [sys.executable, str(language_tests_script), "--codegen-profile", "both"]
             if args.jobs is not None:
                 command.extend(["--jobs", str(args.jobs)])
             run_command(command, cwd=repo_root)

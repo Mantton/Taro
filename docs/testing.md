@@ -67,6 +67,9 @@ Use `JOBS=<n>` to control language-test concurrency and
 `FILTER=<substring>` to select language cases. Compiler changes should finish
 with the complete compiler, language, standard-library, and codegen suites.
 
+Runtime stress compiles each program once, then executes it under every requested
+worker setting.
+
 Standard-library tests live under `std/src/tests/`. Language regression sources
 live under `language_tests/source_files/`, with expected stdout or diagnostics
 under `language_tests/outputs/`.
@@ -79,12 +82,18 @@ valid tests execute with `taro run` and compare stdout snapshots. Files under
 `CHECK_ONLY`, `TEST`, and `BENCH` cases use successful exit status instead of
 snapshots.
 
+A missing stdout snapshot means the expected output is empty. Invalid tests
+require a diagnostic snapshot. The runner never creates or updates snapshots;
+write expected output explicitly when adding a case. Malformed known directives
+fail the test, and supplemental output assertions apply to every execution mode.
+
 | Directive | Effect |
 | --- | --- |
 | `// CHECK_ONLY` | Run `taro check` without producing or executing a binary |
 | `// TEST` | Run `taro test` |
 | `// BENCH` | Run a bounded benchmark smoke test in the selected codegen profile |
 | `// BENCH_RELEASE` | Run the benchmark smoke test with its release/O2 default |
+| `// OVERFLOW_CHECKS` | Enable checked arithmetic in every codegen profile |
 | `// TARGET: <triple>` | Cross-compile for the target triple |
 | `// PACKAGE: <fixture>` | Run `language_tests/package_fixtures/<fixture>/app` |
 | `// ARGS: <values...>` | Forward shell-split arguments to a normal run case |

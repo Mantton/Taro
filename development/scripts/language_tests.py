@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,88 +35,59 @@ TestDetails = dict[str, Any]
 TestRunResult = tuple[bool, str, TestDetails | None]
 
 
-def setup_test_environment(use_release: bool) -> TestEnvironment:
-    """Bootstrap a distribution and setup temporary directories."""
+@contextmanager
+def setup_test_environment(use_release: bool):
+    """Own the distribution and case artifacts through bootstrap and execution."""
     profile = "release" if use_release else "debug"
     print(f"Bootstrapping distribution via build_dist.py ({profile})...")
+    with tempfile.TemporaryDirectory(prefix="taro_tests_") as temporary:
+        temp_dir = Path(temporary)
+        dist_dir = temp_dir / "dist"
+        bootstrap_cmd = [
+            sys.executable,
+            str(BUILD_DIST_SCRIPT),
+            "--profile",
+            profile,
+            "--dist-dir",
+            str(dist_dir),
+            "--std-path",
+            str(PROJECT_ROOT / "std"),
+        ]
+        try:
+            subprocess.run(
+                bootstrap_cmd,
+                cwd=PROJECT_ROOT,
+                check=True,
+            )
+        except subprocess.CalledProcessError as error:
+            print("Failed to bootstrap distribution for language tests:")
+            sys.exit(error.returncode or 1)
 
-    # Create temporary directory
-    temp_dir = Path(tempfile.mkdtemp(prefix="taro_tests_"))
-    print(f"Created temp directory: {temp_dir}")
+        compiler_path = dist_dir / "bin" / "taro"
+        taro_home = dist_dir
+        std_path = dist_dir / "std"
+        if not compiler_path.exists():
+            print(f"Compiler binary missing at {compiler_path}")
+            sys.exit(1)
 
-    dist_dir = temp_dir / "dist"
-    bootstrap_cmd = [
-        sys.executable,
-        str(BUILD_DIST_SCRIPT),
-        "--profile",
-        profile,
-        "--dist-dir",
-        str(dist_dir),
-        "--std-path",
-        str(PROJECT_ROOT / "std"),
-    ]
-    try:
-        subprocess.run(
-            bootstrap_cmd,
-            cwd=PROJECT_ROOT,
-            check=True,
+        print(f"Compiler path: {compiler_path}")
+        print(f"TARO_HOME: {taro_home}")
+        print(f"STD_PATH: {std_path}")
+        print()
+
+        yield TestEnvironment(
+            temp_dir=temp_dir,
+            compiler_path=compiler_path,
+            taro_home=taro_home,
+            std_path=std_path,
         )
-    except subprocess.CalledProcessError as error:
-        print("Failed to bootstrap distribution for language tests:")
-        sys.exit(error.returncode or 1)
-
-    compiler_path = dist_dir / "bin" / "taro"
-    taro_home = dist_dir
-    std_path = dist_dir / "std"
-    if not compiler_path.exists():
-        print(f"Compiler binary missing at {compiler_path}")
-        sys.exit(1)
-
-    print(f"Compiler path: {compiler_path}")
-    print(f"TARO_HOME: {taro_home}")
-    print(f"STD_PATH: {std_path}")
-    print()
-
-    return TestEnvironment(
-        temp_dir=temp_dir,
-        compiler_path=compiler_path,
-        taro_home=taro_home,
-        std_path=std_path,
-    )
-
-
-def cleanup_test_environment(env: TestEnvironment):
-    """Clean up temporary directories."""
-    if env.temp_dir.exists():
-        shutil.rmtree(env.temp_dir)
-        print(f"Cleaned up temp directory: {env.temp_dir}")
 
 
 def parse_test_directives(file_path: Path) -> dict[str, Any]:
-    """Parse directives from the first few lines of a test file.
-
-    Supported directives:
-      // TARGET: <triple>          — cross-compile for the given target triple
-      // CHECK_ONLY                — compile with `taro check` (no run, no output compare)
-      // TEST                      — run with `taro test` instead of `taro run`; passes if exit 0
-      // BENCH                     — run a short `taro bench`; passes if exit 0
-      // BENCH_RELEASE             — run the short benchmark in its default release/O2 profile
-      // OVERFLOW_CHECKS           — enable checked arithmetic in every codegen profile
-      // ARGS: <values...>         — forward runtime args to `taro run` after `--`
-      // STDIN: <JSON string>       — provide decoded text as the program's stdin
-      // ENV: KEY=value …          — set environment variables for compile/run
-      // EXPECT_EXIT: <code>       — expect the given exit code (default 0)
-      // EXPECT_STDOUT_CONTAINS: … — assert this substring appears in stdout
-      // EXPECT_STDERR_CONTAINS: … — assert this substring appears in stderr
-      // EXPECT_STDERR_NOT_CONTAINS: … — assert this substring is absent from stderr
-      // EXPECT_STDERR_COUNT: <n> <substring> — assert an exact stderr occurrence count
-      // PACKAGE: <fixture>        — run package_fixtures/<fixture>/app
-    """
+    """Read the documented directives; malformed test expectations are errors."""
     result = {
+        "command": "run",
         "target": None,
-        "check_only": False,
-        "run_as_test": False,
-        "run_as_bench": False,
         "bench_release": False,
         "overflow_checks": False,
         "args": [],
@@ -128,77 +100,69 @@ def parse_test_directives(file_path: Path) -> dict[str, Any]:
         "expect_stderr_counts": [],
         "package_fixture": None,
     }
-    try:
-        with open(file_path, "r") as f:
-            for _ in range(30):  # Check first lines for directives
-                line = f.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if line.startswith("// TARGET:"):
-                    result["target"] = line[len("// TARGET:") :].strip()
-                elif line.startswith("// CHECK_ONLY"):
-                    result["check_only"] = True
-                elif line.startswith("// TEST"):
-                    result["run_as_test"] = True
-                elif line == "// OVERFLOW_CHECKS":
+    commands = {"CHECK_ONLY": "check", "TEST": "test", "BENCH": "bench", "BENCH_RELEASE": "bench"}
+    fragments = {"EXPECT_STDOUT_CONTAINS", "EXPECT_STDERR_CONTAINS", "EXPECT_STDERR_NOT_CONTAINS"}
+    values = fragments | {"STDIN", "ARGS", "ENV", "EXPECT_EXIT", "EXPECT_STDERR_COUNT", "TARGET", "PACKAGE"}
+    mode = None
+    with file_path.open(encoding="utf-8") as source:
+        for line_number, raw_line in enumerate(source, start=1):
+            if line_number > 30:
+                break
+            line = raw_line.strip()
+            if not line.startswith("//"):
+                continue
+            directive = line[2:].strip()
+            name, separator, value = directive.partition(":")
+            value = value.strip()
+            try:
+                if name in values and not separator:
+                    raise ValueError(f"{name} requires ':' before its value")
+                if separator and name in {*commands, "OVERFLOW_CHECKS"}:
+                    raise ValueError(f"{name} does not take a value")
+                if directive in commands:
+                    command = commands[directive]
+                    if mode is not None and mode != command:
+                        raise ValueError("conflicting execution directives")
+                    mode = result["command"] = command
+                    result["bench_release"] |= directive == "BENCH_RELEASE"
+                elif directive == "OVERFLOW_CHECKS":
                     result["overflow_checks"] = True
-                elif line.startswith("// BENCH_RELEASE"):
-                    result["run_as_bench"] = True
-                    result["bench_release"] = True
-                elif line.startswith("// BENCH"):
-                    result["run_as_bench"] = True
-                elif line.startswith("// ARGS:"):
-                    values = line[len("// ARGS:") :].strip()
-                    result["args"] = shlex.split(values)
-                elif line.startswith("// STDIN:"):
-                    value = line[len("// STDIN:") :].strip()
-                    try:
-                        decoded = json.loads(value)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(decoded, str):
-                        result["stdin"] = decoded
-                elif line.startswith("// ENV:"):
-                    values = shlex.split(line[len("// ENV:") :].strip())
-                    for value in values:
-                        key, separator, env_value = value.partition("=")
-                        if separator and key:
-                            result["env"][key] = env_value
-                elif line.startswith("// EXPECT_EXIT:"):
-                    code = line[len("// EXPECT_EXIT:") :].strip()
-                    try:
-                        result["expect_exit"] = int(code)
-                    except ValueError:
-                        pass
-                elif line.startswith("// EXPECT_STDOUT_CONTAINS:"):
-                    needle = line[len("// EXPECT_STDOUT_CONTAINS:") :].strip()
-                    if needle:
-                        result["expect_stdout_contains"].append(needle)
-                elif line.startswith("// EXPECT_STDERR_CONTAINS:"):
-                    needle = line[len("// EXPECT_STDERR_CONTAINS:") :].strip()
-                    if needle:
-                        result["expect_stderr_contains"].append(needle)
-                elif line.startswith("// EXPECT_STDERR_NOT_CONTAINS:"):
-                    needle = line[len("// EXPECT_STDERR_NOT_CONTAINS:") :].strip()
-                    if needle:
-                        result["expect_stderr_not_contains"].append(needle)
-                elif line.startswith("// EXPECT_STDERR_COUNT:"):
-                    value = line[len("// EXPECT_STDERR_COUNT:") :].strip()
-                    count_text, separator, needle = value.partition(" ")
-                    if separator and needle.strip():
-                        try:
-                            result["expect_stderr_counts"].append(
-                                (int(count_text), needle.strip())
-                            )
-                        except ValueError:
-                            pass
-                elif line.startswith("// PACKAGE:"):
-                    fixture = line[len("// PACKAGE:") :].strip()
-                    if fixture:
-                        result["package_fixture"] = fixture
-    except Exception:
-        pass
+                elif name in fragments:
+                    if not separator or not value:
+                        raise ValueError("expected a nonempty output fragment")
+                    result[name.lower()].append(value)
+                elif name == "STDIN":
+                    decoded = json.loads(value)
+                    if not isinstance(decoded, str):
+                        raise ValueError("STDIN must contain a JSON string")
+                    result["stdin"] = decoded
+                elif name == "ARGS":
+                    result["args"] = shlex.split(value)
+                elif name == "ENV":
+                    for assignment in shlex.split(value):
+                        key, equals, env_value = assignment.partition("=")
+                        if not equals or not key:
+                            raise ValueError("ENV requires KEY=value assignments")
+                        result["env"][key] = env_value
+                elif name == "EXPECT_EXIT":
+                    result["expect_exit"] = int(value)
+                elif name == "EXPECT_STDERR_COUNT":
+                    count_text, needle = value.split(maxsplit=1)
+                    count = int(count_text)
+                    if count < 0:
+                        raise ValueError("expected a nonnegative occurrence count")
+                    result["expect_stderr_counts"].append((count, needle))
+                elif name == "TARGET":
+                    if not value:
+                        raise ValueError("expected a target triple")
+                    result["target"] = value
+                elif name == "PACKAGE":
+                    fixture = Path(value)
+                    if not value or fixture.is_absolute() or ".." in fixture.parts:
+                        raise ValueError("PACKAGE must stay under package_fixtures")
+                    result["package_fixture"] = value
+            except ValueError as error:
+                raise ValueError(f"{file_path}:{line_number}: {error}") from error
     return result
 
 
@@ -216,10 +180,7 @@ def run_test(
         output_file_path = OUTPUTS_DIR / relative_path.with_suffix(".out")
 
         # Determine if this is an "invalid" test (expected to fail compilation)
-        is_invalid_test = "invalid" in str(relative_path)
-
-        # Ensure output directory exists
-        output_file_path.parent.mkdir(parents=True, exist_ok=True)
+        is_invalid_test = relative_path.parts[0] == "invalid"
 
         # Output binary path within temp directory
         codegen_variant = codegen_profile
@@ -228,21 +189,8 @@ def run_test(
         output_bin = env.temp_dir / "bin" / codegen_variant / relative_path.with_suffix("")
         output_bin.parent.mkdir(parents=True, exist_ok=True)
 
-        # Parse test directives (TARGET, CHECK_ONLY, TEST, …)
         directives = parse_test_directives(file_path)
-        target_triple = directives["target"]
-        is_check_only = directives["check_only"]
-        is_run_as_test = directives["run_as_test"]
-        is_run_as_bench = directives["run_as_bench"]
-        is_bench_release = directives["bench_release"]
-        program_args = directives["args"]
-        program_stdin = directives["stdin"]
-        environment = directives["env"]
-        expected_exit = directives["expect_exit"]
-        expected_stdout_contains = directives["expect_stdout_contains"]
-        expected_stderr_contains = directives["expect_stderr_contains"]
-        expected_stderr_not_contains = directives["expect_stderr_not_contains"]
-        expected_stderr_counts = directives["expect_stderr_counts"]
+        command = directives["command"]
         package_fixture = directives["package_fixture"]
 
         compile_input = file_path
@@ -259,20 +207,6 @@ def run_test(
             shutil.copytree(fixture_source, fixture_copy)
             compile_input = fixture_copy / "app"
 
-        # Choose sub-command:
-        #   "check"  — CHECK_ONLY: type-check only, no binary produced
-        #   "test"   — TEST: compile & run as a test binary (exit 0 = all pass)
-        #   "bench"  — BENCH: compile & run a bounded benchmark smoke test
-        #   "run"    — default: compile & run normally
-        if is_check_only:
-            command = "check"
-        elif is_run_as_test:
-            command = "test"
-        elif is_run_as_bench:
-            command = "bench"
-        else:
-            command = "run"
-
         cmd = [
             str(env.compiler_path),
             command,
@@ -286,12 +220,12 @@ def run_test(
             cmd.extend(["-o", str(output_bin)])
 
         # Add --target flag if specified in test file
-        if target_triple:
-            cmd.extend(["--target", target_triple])
+        if directives["target"]:
+            cmd.extend(["--target", directives["target"]])
 
         if codegen_profile == "release":
             cmd.append("--release")
-        elif is_run_as_bench and not is_bench_release:
+        elif command == "bench" and not directives["bench_release"]:
             # `taro bench` defaults to release/O2; preserve the language-test
             # matrix's requested debug profile when it asks for one.
             cmd.append("--debug")
@@ -300,7 +234,7 @@ def run_test(
         if directives["overflow_checks"]:
             cmd.append("--overflow-checks")
 
-        if is_run_as_bench:
+        if command == "bench":
             # Keep the regression in the normal language suite without adding
             # the production benchmark defaults to every test run.
             cmd.extend(
@@ -318,29 +252,44 @@ def run_test(
                 ]
             )
 
-        if program_args:
+        if directives["args"]:
             if command != "run":
                 return (
                     False,
                     "ARGS directive only supports `taro run` tests",
-                    {"args": program_args, "command": command},
+                    {"args": directives["args"], "command": command},
                 )
             cmd.append("--")
-            cmd.extend(program_args)
+            cmd.extend(directives["args"])
 
         process_env = os.environ.copy()
         process_env["TARO_HOME"] = str(env.taro_home)
-        process_env.update(environment)
+        process_env.update(directives["env"])
 
         # Run process
         result = subprocess.run(
             cmd,
-            input=program_stdin,
+            input=directives["stdin"],
             capture_output=True,
             text=True,
             cwd=PROJECT_ROOT,
             env=process_env,
         )
+
+        expected_code = directives["expect_exit"]
+        if expected_code is None and not is_invalid_test:
+            expected_code = 0
+        if expected_code is not None and result.returncode != expected_code:
+            return (
+                False,
+                "Unexpected exit code",
+                {
+                    "stderr": result.stderr,
+                    "stdout": result.stdout,
+                    "expected_exit": expected_code,
+                    "actual_exit": result.returncode,
+                },
+            )
 
         if is_invalid_test:
             # For invalid tests, we expect compilation to fail
@@ -366,80 +315,61 @@ def run_test(
                 error_lines.append(line)
             actual_output = "\n".join(error_lines).strip() + "\n" if error_lines else ""
         else:
-            # For valid tests, default runtime exit is 0 unless overridden by directive.
-            expected_code = 0 if expected_exit is None else expected_exit
-            if result.returncode != expected_code:
+            actual_output = result.stdout
+
+        for needle in directives["expect_stdout_contains"]:
+            if needle not in result.stdout:
                 return (
                     False,
-                    "Compilation error" if is_check_only else "Runtime error",
+                    "Missing expected stdout fragment",
                     {
-                        "stderr": result.stderr,
                         "stdout": result.stdout,
-                        "expected_exit": expected_code,
-                        "actual_exit": result.returncode,
+                        "missing": needle,
                     },
                 )
 
-            for needle in expected_stdout_contains:
-                if needle not in result.stdout:
-                    return (
-                        False,
-                        "Missing expected stdout fragment",
-                        {
-                            "stdout": result.stdout,
-                            "missing": needle,
-                        },
-                    )
+        for needle in directives["expect_stderr_contains"]:
+            if needle not in result.stderr:
+                return (
+                    False,
+                    "Missing expected stderr fragment",
+                    {
+                        "stderr": result.stderr,
+                        "missing": needle,
+                    },
+                )
+        for needle in directives["expect_stderr_not_contains"]:
+            if needle in result.stderr:
+                return (
+                    False,
+                    "Unexpected stderr fragment",
+                    {
+                        "stderr": result.stderr,
+                        "unexpected": needle,
+                    },
+                )
+        for expected_count, needle in directives["expect_stderr_counts"]:
+            actual_count = result.stderr.count(needle)
+            if actual_count != expected_count:
+                return (
+                    False,
+                    "Unexpected stderr fragment count",
+                    {
+                        "stderr": result.stderr,
+                        "fragment": needle,
+                        "expected_count": expected_count,
+                        "actual_count": actual_count,
+                    },
+                )
+        if not is_invalid_test and command != "run":
+            return True, "Passed", None
 
-            for needle in expected_stderr_contains:
-                if needle not in result.stderr:
-                    return (
-                        False,
-                        "Missing expected stderr fragment",
-                        {
-                            "stderr": result.stderr,
-                            "missing": needle,
-                        },
-                    )
-            for needle in expected_stderr_not_contains:
-                if needle in result.stderr:
-                    return (
-                        False,
-                        "Unexpected stderr fragment",
-                        {
-                            "stderr": result.stderr,
-                            "unexpected": needle,
-                        },
-                    )
-            for expected_count, needle in expected_stderr_counts:
-                actual_count = result.stderr.count(needle)
-                if actual_count != expected_count:
-                    return (
-                        False,
-                        "Unexpected stderr fragment count",
-                        {
-                            "stderr": result.stderr,
-                            "fragment": needle,
-                            "expected_count": expected_count,
-                            "actual_count": actual_count,
-                        },
-                    )
-            # CHECK_ONLY and TEST files have no output snapshot to compare —
-            # a clean exit code is the entire success criterion.
-            if is_check_only or is_run_as_test or is_run_as_bench:
-                return True, "Passed", None
-            # Only capture stdout for normal run output comparison
-            actual_output = result.stdout
-
-        # Check if output file exists
-        if not output_file_path.exists():
-            with open(output_file_path, "w") as f:
-                f.write(actual_output)
-            return True, "Created snapshot", None
-
-        # Compare output
-        with open(output_file_path, "r") as f:
-            expected_output = f.read()
+        if output_file_path.is_file():
+            expected_output = output_file_path.read_text(encoding="utf-8")
+        elif is_invalid_test:
+            return False, "Missing diagnostic snapshot", {"error": str(output_file_path)}
+        else:
+            expected_output = ""
 
         if actual_output != expected_output:
             return (
@@ -545,35 +475,7 @@ def format_elapsed(seconds: float) -> str:
     return f"{mins:02d}:{secs:05.2f}"
 
 
-def run_tests_serial(
-    test_files: list[Path],
-    env: TestEnvironment,
-    codegen_profile: str,
-    opt_level: str | None,
-) -> tuple[int, list[tuple[Path, str, TestDetails | None]]]:
-    passed = 0
-    failures: list[tuple[Path, str, TestDetails | None]] = []
-
-    for file_path in test_files:
-        relative_path = file_path.relative_to(SOURCE_FILES_DIR)
-        codegen_variant = (
-            codegen_profile if opt_level is None else f"{codegen_profile}-O{opt_level}"
-        )
-        display_path = Path(codegen_variant) / relative_path
-        print(f"Running {display_path}...", end=" ", flush=True)
-        success, msg, details = run_test(file_path, env, codegen_profile, opt_level)
-
-        if success:
-            print("OK")
-            passed += 1
-        else:
-            print()
-            failures.append((display_path, msg, details))
-
-    return passed, failures
-
-
-def run_tests_parallel(
+def run_tests(
     test_files: list[Path],
     env: TestEnvironment,
     jobs: int,
@@ -599,14 +501,7 @@ def run_tests_parallel(
                 else f"{codegen_profile}-O{opt_level}"
             )
             display_path = Path(codegen_variant) / relative_path
-            try:
-                success, msg, details = future.result()
-            except (
-                Exception
-            ) as error:  # Defensive fallback; run_test also catches internally.
-                success = False
-                msg = "Exception"
-                details = {"error": str(error)}
+            success, msg, details = future.result()
 
             if success:
                 print(f"Running {display_path}... OK")
@@ -679,10 +574,7 @@ def main():
         else [args.codegen_profile]
     )
 
-    # Setup: build compiler and create temp directories
-    env = setup_test_environment(args.release)
-
-    try:
+    with setup_test_environment(args.release) as env:
         print(f"Running tests in {SOURCE_FILES_DIR}...")
         if args.filter:
             print(f"Filter: {args.filter}")
@@ -699,14 +591,9 @@ def main():
         passed = 0
         failures: list[tuple[Path, str, TestDetails | None]] = []
         for codegen_profile in codegen_profiles:
-            if jobs == 1:
-                profile_passed, profile_failures = run_tests_serial(
-                    test_files, env, codegen_profile, args.opt_level
-                )
-            else:
-                profile_passed, profile_failures = run_tests_parallel(
-                    test_files, env, jobs, codegen_profile, args.opt_level
-                )
+            profile_passed, profile_failures = run_tests(
+                test_files, env, jobs, codegen_profile, args.opt_level
+            )
             passed += profile_passed
             failures.extend(profile_failures)
 
@@ -753,8 +640,6 @@ def main():
 
         if total != passed:
             sys.exit(1)
-    finally:
-        cleanup_test_environment(env)
 
 
 if __name__ == "__main__":

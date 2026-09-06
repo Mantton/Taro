@@ -64,6 +64,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--workers",
+        type=parse_workers,
         default="1,2,4,default",
         help="Comma-separated TARO_WORKERS values. Use 'default' for no override.",
     )
@@ -102,56 +103,45 @@ def main() -> int:
             print(f"error: compiler binary not found at {taro}")
             return 1
 
-        for worker_count in parse_workers(args.workers):
-            env = os.environ.copy()
-            env["TARO_HOME"] = str(dist_dir)
+        regression_root = repo_root / "language_tests/source_files/valid"
+        cases = [
+            (Path("std"), "test", ["--tag", "runtime"], False),
+            (regression_root / "gc_stack_map_stress.tr", "run", [], True),
+            (regression_root / "gc_precise_liveness.tr", "run", [], True),
+        ]
+        binary_dir = temp_dir / "bin"
+        binary_dir.mkdir()
+        for worker_index, worker_count in enumerate(args.workers):
+            worker_env = os.environ.copy()
+            worker_env["TARO_HOME"] = str(dist_dir)
             if worker_count is None:
-                env.pop("TARO_WORKERS", None)
+                worker_env.pop("TARO_WORKERS", None)
             else:
-                env["TARO_WORKERS"] = worker_count
+                worker_env["TARO_WORKERS"] = worker_count
 
-            run_command(
-                [
-                    str(taro),
-                    "test",
-                    "std",
-                    "--std-path",
-                    str(std_path),
-                    "--tag",
-                    "runtime",
-                ],
-                cwd=repo_root,
-                env=env,
-            )
-
-            gc_stress_env = env.copy()
-            gc_stress_env["TARO_GC_STRESS"] = "1"
-            for regression in [
-                "gc_stack_map_stress.tr",
-                "gc_precise_liveness.tr",
-            ]:
-                gc_stress_command = [
-                    str(taro),
-                    "run",
-                    str(
-                        repo_root
-                        / "language_tests"
-                        / "source_files"
-                        / "valid"
-                        / regression
-                    ),
-                    "--std-path",
-                    str(std_path),
-                ]
-                if args.release:
-                    gc_stress_command.append("--release")
-                run_command(
-                    gc_stress_command,
-                    cwd=repo_root,
-                    env=gc_stress_env,
-                )
+            for source, subcommand, selection, gc_stress in cases:
+                binary = binary_dir / source.stem
+                env = worker_env.copy()
+                if gc_stress:
+                    env["TARO_GC_STRESS"] = "1"
+                # `taro test` always executes after compilation; its selected
+                # cases are baked into the harness. Compile and run each case
+                # for the first worker, then reuse that executable unchanged.
+                command = [str(binary)]
+                if worker_index == 0:
+                    command = [
+                        str(taro), subcommand, str(source),
+                        "--std-path", str(std_path), "-o", str(binary),
+                        *selection, *(["--release"] if args.release else []),
+                    ]
+                run_command(command, cwd=repo_root, env=env)
+                if not binary.is_file():
+                    raise RuntimeError(f"compiler did not produce executable: {binary}")
     except subprocess.CalledProcessError as error:
         return error.returncode or 1
+    except RuntimeError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     finally:
         if args.keep_temp:
             print(f"Kept temp directory: {temp_dir}")

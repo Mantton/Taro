@@ -4,6 +4,7 @@ import os
 import subprocess
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 """
@@ -56,8 +57,7 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
 
 def run_command(command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None):
     print(f"Running: {' '.join(command)}")
-    result = subprocess.run(command, cwd=cwd, env=env, check=True)
-    return result
+    subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
 def release_flag(profile: str) -> list[str]:
@@ -67,6 +67,12 @@ def release_flag(profile: str) -> list[str]:
 def validate_dist_dir(repo_root: Path, dist_dir: Path):
     if not dist_dir.is_absolute():
         raise ValueError(f"dist dir must be absolute: {dist_dir}")
+
+    if dist_dir.is_symlink():
+        raise ValueError(f"refusing to replace symlink dist directory: {dist_dir}")
+    if dist_dir.exists() and not dist_dir.is_dir():
+        raise ValueError(f"dist destination is not a directory: {dist_dir}")
+    dist_dir = dist_dir.resolve()
 
     forbidden = {
         Path("/"),
@@ -89,12 +95,15 @@ def main():
     args = parse_args(repo_root)
 
     profile = args.profile
-    dist_dir = args.dist_dir.resolve()
+    dist_dir = args.dist_dir.absolute()
     std_src = args.std_path.resolve()
     target = args.target
     validate_dist_dir(repo_root, dist_dir)
+    dist_dir = dist_dir.resolve()
 
-    if not std_src.exists():
+    if std_src.is_relative_to(dist_dir):
+        raise ValueError("std sources must be outside the distribution being replaced")
+    if not std_src.is_dir():
         raise FileNotFoundError(f"std path does not exist: {std_src}")
 
     print(f"Repository Root: {repo_root}")
@@ -129,65 +138,61 @@ def main():
         cwd=repo_root,
     )
 
-    # Preserve an existing distribution if either source build fails.
-    if dist_dir.exists():
-        if dist_dir.is_symlink():
-            raise RuntimeError(
-                f"refusing to remove symlink dist directory: {dist_dir}"
-            )
-        shutil.rmtree(dist_dir)
-    dist_dir.mkdir(parents=True, exist_ok=True)
-
-    # 3. Create Distribution Structure
-    print("\n--- These files go to dist ---")
-    
-    # bin/taro
-    bin_dir = dist_dir / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    
-    src_bin = repo_root / "target" / profile / "taro-bin"
-    dst_bin = bin_dir / "taro"
-    
-    print(f"Copying {src_bin} -> {dst_bin}")
-    shutil.copy2(src_bin, dst_bin)
-
-    # lib/taro/runtime[/<target-triple>]/libtaro_runtime.a
-    lib_dir = dist_dir / "lib" / "taro" / "runtime"
-    if target:
-        lib_dir = lib_dir / target
-    lib_dir.mkdir(parents=True, exist_ok=True)
-
-    src_lib = repo_root / "target"
-    if target:
-        src_lib = src_lib / target
-    src_lib = src_lib / profile / "libtaro_runtime.a"
-    dst_lib = lib_dir / "libtaro_runtime.a"
-    
-    print(f"Copying {src_lib} -> {dst_lib}")
-    shutil.copy2(src_lib, dst_lib)
-
-    manifest_command = [str(dst_bin), "runtime-manifest", str(dst_lib)]
-    if target:
-        manifest_command.extend(["--target", target])
-    run_command(manifest_command, cwd=repo_root)
-    
-    # std - symlink instead of copy for development
-    std_dst = dist_dir / "std"
-    print(f"Symlinking {std_src} -> {std_dst}")
-    if std_dst.exists():
-        std_dst.unlink() if std_dst.is_symlink() else shutil.rmtree(std_dst)
-    std_dst.symlink_to(std_src, target_is_directory=True)
-
-    # 4. Build attached std artifacts into TARO_HOME (dist)
-    print("\n--- Building Attached Std Artifacts ---")
-    env = os.environ.copy()
-    env["TARO_HOME"] = str(dist_dir)
-    bootstrap_src = dist_dir / ".std_bootstrap.tr"
-    bootstrap_src.write_text(
-        "func main() {\n    // std bootstrap source for attached artifact build\n}\n",
-        encoding="utf-8",
-    )
+    # Assemble every artifact before replacing the previous distribution.
+    # Keep staging and backup on the destination filesystem so publication is a rename.
+    dist_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{dist_dir.name}-", dir=dist_dir.parent))
+    previous = temporary / "previous"
     try:
+        staged_dist = temporary / "dist"
+        staged_dist.mkdir()
+        # 3. Create Distribution Structure
+        print("\n--- These files go to dist ---")
+
+        # bin/taro
+        bin_dir = staged_dist / "bin"
+        bin_dir.mkdir(exist_ok=True)
+
+        src_bin = repo_root / "target" / profile / "taro-bin"
+        dst_bin = bin_dir / "taro"
+
+        print(f"Copying {src_bin} -> {dst_bin}")
+        shutil.copy2(src_bin, dst_bin)
+
+        # lib/taro/runtime[/<target-triple>]/libtaro_runtime.a
+        lib_dir = staged_dist / "lib" / "taro" / "runtime"
+        if target:
+            lib_dir = lib_dir / target
+        lib_dir.mkdir(parents=True, exist_ok=True)
+
+        src_lib = repo_root / "target"
+        if target:
+            src_lib = src_lib / target
+        src_lib = src_lib / profile / "libtaro_runtime.a"
+        dst_lib = lib_dir / "libtaro_runtime.a"
+
+        print(f"Copying {src_lib} -> {dst_lib}")
+        shutil.copy2(src_lib, dst_lib)
+
+        manifest_command = [str(dst_bin), "runtime-manifest", str(dst_lib)]
+        if target:
+            manifest_command.extend(["--target", target])
+        run_command(manifest_command, cwd=repo_root)
+
+        # std - symlink instead of copy for development
+        std_dst = staged_dist / "std"
+        print(f"Symlinking {std_src} -> {std_dst}")
+        std_dst.symlink_to(std_src, target_is_directory=True)
+
+        # 4. Build attached std artifacts into TARO_HOME (dist)
+        print("\n--- Building Attached Std Artifacts ---")
+        env = os.environ.copy()
+        env["TARO_HOME"] = str(staged_dist)
+        bootstrap_src = staged_dist / ".std_bootstrap.tr"
+        bootstrap_src.write_text(
+            "func main() {\n    // std bootstrap source for attached artifact build\n}\n",
+            encoding="utf-8",
+        )
         bootstrap_command = [
             str(dst_bin),
             "check",
@@ -203,8 +208,24 @@ def main():
             cwd=repo_root,
             env=env,
         )
+        bootstrap_src.unlink()
+
+        if dist_dir.exists():
+            dist_dir.rename(previous)
+        try:
+            staged_dist.rename(dist_dir)
+        except BaseException:
+            if previous.exists():
+                previous.rename(dist_dir)
+            raise
+        if previous.exists():
+            shutil.rmtree(previous)
     finally:
-        bootstrap_src.unlink(missing_ok=True)
+        # A failed rollback must leave the previous distribution recoverable.
+        if previous.exists():
+            print(f"Previous distribution retained at {previous}", file=sys.stderr)
+        else:
+            shutil.rmtree(temporary)
 
     print("\n--- Build Complete ---")
     print(f"Distribution is ready at {dist_dir}")

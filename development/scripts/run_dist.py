@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import subprocess
 import sys
@@ -28,7 +29,17 @@ def main():
     dist_dir = repo_root / "dist"
     taro_bin = dist_dir / "bin" / "taro"
 
-    # 1. Build Distribution
+    parser = argparse.ArgumentParser(description="Build the local distribution and run a Taro input.")
+    parser.add_argument("--test", action="store_true", help="Run package tests instead of the program.")
+    parser.add_argument("input", help="Taro source file or package")
+    parser.add_argument("args", nargs=argparse.REMAINDER, help="Arguments forwarded to the program")
+    args = parser.parse_args()
+    program_args = args.args
+    if program_args and program_args[0] == "--":
+        program_args = program_args[1:]
+    if args.test and program_args:
+        parser.error("forwarding program arguments is only supported for run, not --test")
+
     print(">>> Building Distribution...")
     try:
         subprocess.run([sys.executable, str(build_script)], check=True)
@@ -36,33 +47,7 @@ def main():
         print("Error: Build failed.")
         sys.exit(1)
 
-    # 2. Parse arguments — strip our own --test flag before forwarding the rest
-    raw_args = sys.argv[1:]
-
-    use_test = False
-    if "--test" in raw_args:
-        use_test = True
-        raw_args = [a for a in raw_args if a != "--test"]
-
-    if not raw_args:
-        print("Usage: python3 run_dist.py [--test] <file_or_package> [args...]")
-        sys.exit(1)
-
-    # 3. Construct taro command
-    taro_subcommand = "test" if use_test else "run"
-    input_path = raw_args[0]
-    program_args = raw_args[1:]
-
-    # Allow either `run_dist.py <path> a b c` or `run_dist.py <path> -- a b c`;
-    # drop a leading `--` so we don't forward a duplicate to taro.
-    if program_args and program_args[0] == "--":
-        program_args = program_args[1:]
-
-    if use_test and program_args:
-        print("Error: forwarding program arguments is only supported for run, not --test.")
-        sys.exit(1)
-
-    cmd = [str(taro_bin), taro_subcommand, input_path]
+    cmd = [str(taro_bin), "test" if args.test else "run", args.input]
     if program_args:
         cmd.append("--")
         cmd.extend(program_args)

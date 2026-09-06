@@ -25,9 +25,10 @@ dist/
 ```
 
 Run `python3 development/scripts/build_dist.py --help` for profile, output
-directory, standard-library source, and target options. Source builds complete
-before an existing distribution is replaced, so a compiler or LLVM build
-failure does not discard the last usable `dist/`.
+directory, standard-library source, and target options. The compiler, runtime,
+and attached standard-library artifacts are assembled before an existing
+distribution is replaced. A build or bootstrap failure preserves the last
+usable `dist/`; symlink destinations are rejected.
 
 ## Run the Local Compiler
 
@@ -37,7 +38,7 @@ the compiler:
 ```bash
 python3 development/scripts/run_dist.py examples/hello.tr
 python3 development/scripts/run_dist.py examples/hello.tr -- first second
-python3 development/scripts/run_dist.py --test showcase/monkey-interpreter
+python3 development/scripts/run_dist.py --test showcase/monkey
 ```
 
 To reuse an existing distribution directly:
