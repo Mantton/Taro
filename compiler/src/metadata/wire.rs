@@ -4310,59 +4310,74 @@ pub fn resolution_output_to_wire(
     }
 }
 
-fn validate_scope_graph_for_hydration(wire: &ResolutionOutputWire) -> Result<(), WireDecodeError> {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum VisitState {
+/// Validate every scope reference and return parents before children for allocation.
+fn validate_scope_graph_for_hydration(
+    wire: &ResolutionOutputWire,
+) -> Result<Vec<usize>, WireDecodeError> {
+    fn scope_idx(scope_id: u32, count: usize, context: &str) -> Result<usize, WireDecodeError> {
+        let index = scope_id as usize;
+        if index >= count {
+            return Err(WireDecodeError::new(format!(
+                "{context}: invalid scope index {scope_id} (scope count = {count})",
+            )));
+        }
+        Ok(index)
+    }
+    let count = wire.scopes.len();
+    scope_idx(wire.root_scope, count, "root scope")?;
+    for (_, scope) in &wire.file_scope_mapping {
+        scope_idx(*scope, count, "file scope mapping")?;
+    }
+    for (_, scope) in &wire.definition_scope_mapping {
+        scope_idx(*scope, count, "definition scope mapping")?;
+    }
+    for scope in &wire.scopes {
+        for (usages, context) in [
+            (&scope.glob_imports, "glob import module scope"),
+            (&scope.glob_exports, "glob export module scope"),
+        ] {
+            for usage in usages {
+                if let Some(index) = usage.module_scope {
+                    scope_idx(index, count, context)?;
+                }
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum State {
         Unvisited,
         Visiting,
         Visited,
     }
-
-    fn scope_idx(
-        scope_id: u32,
-        scope_count: usize,
-        context: &str,
-    ) -> Result<usize, WireDecodeError> {
-        let idx = scope_id as usize;
-        if idx >= scope_count {
-            return Err(WireDecodeError::new(format!(
-                "{context}: invalid scope index {scope_id} (scope count = {scope_count})",
-            )));
-        }
-        Ok(idx)
-    }
-
-    fn visit_scope(
-        idx: usize,
-        wire: &ResolutionOutputWire,
-        states: &mut [VisitState],
-    ) -> Result<(), WireDecodeError> {
-        match states[idx] {
-            VisitState::Visited => return Ok(()),
-            VisitState::Visiting => {
-                return Err(WireDecodeError::new(format!(
-                    "cycle detected while validating scope graph at index {}",
-                    idx
-                )));
+    let mut states = vec![State::Unvisited; count];
+    let mut order = Vec::with_capacity(count);
+    let mut path = Vec::new();
+    for start in 0..count {
+        let mut index = start;
+        loop {
+            match states[index] {
+                State::Visited => break,
+                State::Visiting => {
+                    return Err(WireDecodeError::new(format!(
+                        "cycle detected while validating scope graph at index {index}",
+                    )));
+                }
+                State::Unvisited => {}
             }
-            VisitState::Unvisited => {}
+            states[index] = State::Visiting;
+            path.push(index);
+            let Some(parent) = wire.scopes[index].parent else {
+                break;
+            };
+            index = scope_idx(parent, count, "scope parent")?;
         }
-
-        states[idx] = VisitState::Visiting;
-        if let Some(parent) = wire.scopes[idx].parent {
-            let parent_idx = scope_idx(parent, wire.scopes.len(), "scope parent")?;
-            visit_scope(parent_idx, wire, states)?;
+        for index in path.drain(..).rev() {
+            states[index] = State::Visited;
+            order.push(index);
         }
-        states[idx] = VisitState::Visited;
-        Ok(())
     }
-
-    let mut states = vec![VisitState::Unvisited; wire.scopes.len()];
-    for idx in 0..wire.scopes.len() {
-        visit_scope(idx, wire, &mut states)?;
-    }
-    let _ = scope_idx(wire.root_scope, wire.scopes.len(), "root scope")?;
-    Ok(())
+    Ok(order)
 }
 
 pub fn resolution_output_from_wire<'a>(
@@ -4371,90 +4386,7 @@ pub fn resolution_output_from_wire<'a>(
     remap: FileRemap<'_>,
     symbols: SymbolTableRef<'_>,
 ) -> Result<ResolutionOutput<'a>, WireDecodeError> {
-    validate_scope_graph_for_hydration(wire)?;
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum ScopeBuildState {
-        Unvisited,
-        Visiting,
-        Built,
-    }
-
-    fn scope_idx(
-        scope_id: u32,
-        scope_count: usize,
-        context: &str,
-    ) -> Result<usize, WireDecodeError> {
-        let idx = scope_id as usize;
-        if idx >= scope_count {
-            return Err(WireDecodeError::new(format!(
-                "{context}: invalid scope index {scope_id} (scope count = {scope_count})",
-            )));
-        }
-        Ok(idx)
-    }
-
-    fn scope_by_id<'a>(
-        built: &[Option<crate::sema::resolve::models::Scope<'a>>],
-        scope_id: u32,
-        context: &str,
-    ) -> Result<crate::sema::resolve::models::Scope<'a>, WireDecodeError> {
-        let idx = scope_idx(scope_id, built.len(), context)?;
-        built[idx].ok_or_else(|| {
-            WireDecodeError::new(format!(
-                "{context}: scope index {scope_id} was not built during hydration",
-            ))
-        })
-    }
-
-    fn build_scope<'a>(
-        idx: usize,
-        wires: &[ScopeWire],
-        built: &mut [Option<crate::sema::resolve::models::Scope<'a>>],
-        states: &mut [ScopeBuildState],
-        gcx: GlobalContext<'a>,
-        remap: FileRemap<'_>,
-    ) -> Result<crate::sema::resolve::models::Scope<'a>, WireDecodeError> {
-        match states[idx] {
-            ScopeBuildState::Built => {
-                return built[idx].ok_or_else(|| {
-                    WireDecodeError::new(format!(
-                        "scope index {} marked built but missing value",
-                        idx
-                    ))
-                });
-            }
-            ScopeBuildState::Visiting => {
-                return Err(WireDecodeError::new(format!(
-                    "cycle detected while hydrating scopes at index {}",
-                    idx
-                )));
-            }
-            ScopeBuildState::Unvisited => {}
-        }
-
-        states[idx] = ScopeBuildState::Visiting;
-        let scope_wire = wires.get(idx).ok_or_else(|| {
-            WireDecodeError::new(format!(
-                "scope index {} out of bounds (scope count = {})",
-                idx,
-                wires.len()
-            ))
-        })?;
-        let parent = match scope_wire.parent {
-            Some(parent_id) => {
-                let parent_idx = scope_idx(parent_id, wires.len(), "scope parent")?;
-                Some(build_scope(parent_idx, wires, built, states, gcx, remap)?)
-            }
-            None => None,
-        };
-        let kind = scope_kind_from_wire(&scope_wire.kind, remap);
-        let scope =
-            Interned::new_unchecked(gcx.store.arenas.scopes.alloc(ScopeData::new(kind, parent)));
-        built[idx] = Some(scope);
-        states[idx] = ScopeBuildState::Built;
-        Ok(scope)
-    }
+    let scope_order = validate_scope_graph_for_hydration(wire)?;
 
     let fallback_file = remap
         .old_to_new
@@ -4472,25 +4404,20 @@ pub fn resolution_output_from_wire<'a>(
     }
 
     let mut built_scopes = vec![None; wire.scopes.len()];
-    let mut build_states = vec![ScopeBuildState::Unvisited; wire.scopes.len()];
-    for idx in 0..wire.scopes.len() {
-        let _ = build_scope(
-            idx,
-            &wire.scopes,
-            &mut built_scopes,
-            &mut build_states,
-            gcx,
-            remap,
-        )?;
+    for index in scope_order {
+        let scope = &wire.scopes[index];
+        let parent = scope.parent.map(|parent| {
+            built_scopes[parent as usize].expect("validated parent is built before its children")
+        });
+        let kind = scope_kind_from_wire(&scope.kind, remap);
+        built_scopes[index] = Some(Interned::new_unchecked(
+            gcx.store.arenas.scopes.alloc(ScopeData::new(kind, parent)),
+        ));
     }
+    let scope_by_id = |index: u32| built_scopes[index as usize].expect("validated scope is built");
 
     for (idx, scope_wire) in wire.scopes.iter().enumerate() {
-        let scope = built_scopes[idx].ok_or_else(|| {
-            WireDecodeError::new(format!(
-                "scope index {} missing after scope-build pass",
-                idx
-            ))
-        })?;
+        let scope = scope_by_id(idx as u32);
         let default_file = match scope.kind {
             ScopeKind::File(file) => file,
             ScopeKind::Definition(def, _) => definition_to_ident
@@ -4527,14 +4454,7 @@ pub fn resolution_output_from_wire<'a>(
 
         let mut glob_imports = scope.glob_imports.borrow_mut();
         for usage in &scope_wire.glob_imports {
-            let module_scope = match usage.module_scope {
-                Some(scope_id) => Some(scope_by_id(
-                    &built_scopes,
-                    scope_id,
-                    "glob import module scope",
-                )?),
-                None => None,
-            };
+            let module_scope = usage.module_scope.map(scope_by_id);
             let usage = UsageEntryData {
                 span: span_from_wire(&usage.span, remap),
                 module_path: Vec::new(),
@@ -4551,14 +4471,7 @@ pub fn resolution_output_from_wire<'a>(
 
         let mut glob_exports = scope.glob_exports.borrow_mut();
         for usage in &scope_wire.glob_exports {
-            let module_scope = match usage.module_scope {
-                Some(scope_id) => Some(scope_by_id(
-                    &built_scopes,
-                    scope_id,
-                    "glob export module scope",
-                )?),
-                None => None,
-            };
+            let module_scope = usage.module_scope.map(scope_by_id);
             let usage = UsageEntryData {
                 span: span_from_wire(&usage.span, remap),
                 module_path: Vec::new(),
@@ -4574,7 +4487,7 @@ pub fn resolution_output_from_wire<'a>(
         }
     }
 
-    let root_scope = scope_by_id(&built_scopes, wire.root_scope, "root scope")?;
+    let root_scope = scope_by_id(wire.root_scope);
     Ok(ResolutionOutput {
         resolutions: wire
             .resolutions
@@ -4607,17 +4520,14 @@ pub fn resolution_output_from_wire<'a>(
             .iter()
             .filter_map(|(file, scope)| {
                 let file = remap.old_to_new.get(file).copied()?;
-                let scope = built_scopes.get(*scope as usize).and_then(|scope| *scope)?;
+                let scope = scope_by_id(*scope);
                 Some((file, scope))
             })
             .collect(),
         definition_scope_mapping: wire
             .definition_scope_mapping
             .iter()
-            .filter_map(|(def, scope)| {
-                let scope = built_scopes.get(*scope as usize).and_then(|scope| *scope)?;
-                Some((def_from_wire(def), scope))
-            })
+            .map(|(def, scope)| (def_from_wire(def), scope_by_id(*scope)))
             .collect(),
         block_scope_mapping: FxHashMap::default(),
         expression_resolutions: wire
@@ -5403,6 +5313,95 @@ mod tests {
                 decoded.basic_blocks[decoded.start_block].statements[1].kind,
                 mir::StatementKind::SetInitialized(local) if local == decoded.return_local
             ));
+        });
+    }
+
+    #[test]
+    fn hydration_rejects_invalid_scope_mappings_instead_of_dropping_them() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let file_remap = FxHashMap::from_iter([(0, FileID::new(0))]);
+            let table = SymbolTableWire { symbols: vec![] };
+            let invalid = Cell::new(None);
+            for file_mapping in [true, false] {
+                let mut wire = minimal_resolution_wire();
+                if file_mapping {
+                    wire.file_scope_mapping.push((0, 99));
+                } else {
+                    wire.definition_scope_mapping.push((
+                        DefIdWire {
+                            package: 1,
+                            index: 0,
+                        },
+                        99,
+                    ));
+                }
+                let result = resolution_output_from_wire(
+                    gcx,
+                    &wire,
+                    FileRemap {
+                        old_to_new: &file_remap,
+                    },
+                    SymbolTableRef::new(&table, &invalid),
+                );
+                assert!(result.is_err(), "invalid scope mapping must fail hydration");
+            }
+        });
+    }
+
+    #[test]
+    fn hydration_builds_out_of_order_parents_and_cyclic_glob_references() {
+        crate::mir::test_support::with_test_gcx(|gcx| {
+            let file_remap = FxHashMap::from_iter([(0, FileID::new(0))]);
+            let table = SymbolTableWire { symbols: vec![] };
+            let invalid = Cell::new(None);
+            let mut wire = minimal_resolution_wire();
+            wire.scopes.push(wire.scopes[0].clone());
+            wire.scopes[0].parent = Some(1);
+            wire.root_scope = 1;
+            wire.file_scope_mapping.push((0, 0));
+            wire.scopes[0].glob_imports.push(GlobUsageWire {
+                id: 0,
+                span: span_to_wire(Span::empty(FileID::new(0))),
+                module_scope: Some(1),
+            });
+            wire.scopes[1].glob_exports.push(GlobUsageWire {
+                id: 1,
+                span: span_to_wire(Span::empty(FileID::new(0))),
+                module_scope: Some(0),
+            });
+            let output = resolution_output_from_wire(
+                gcx,
+                &wire,
+                FileRemap {
+                    old_to_new: &file_remap,
+                },
+                SymbolTableRef::new(&table, &invalid),
+            )
+            .expect("valid parent and glob graphs");
+            let child = output.file_scope_mapping[&FileID::new(0)];
+            assert_eq!(child.parent, Some(output.root_scope));
+            assert!(output.root_scope.parent.is_none());
+            assert_eq!(
+                child.glob_imports.borrow()[0].module_scope.get(),
+                Some(output.root_scope)
+            );
+            assert_eq!(
+                output.root_scope.glob_exports.borrow()[0]
+                    .module_scope
+                    .get(),
+                Some(child)
+            );
+
+            for imported in [true, false] {
+                let mut invalid_wire = wire.clone();
+                let usage = if imported {
+                    &mut invalid_wire.scopes[0].glob_imports[0]
+                } else {
+                    &mut invalid_wire.scopes[1].glob_exports[0]
+                };
+                usage.module_scope = Some(99);
+                assert!(validate_scope_graph_for_hydration(&invalid_wire).is_err());
+            }
         });
     }
 

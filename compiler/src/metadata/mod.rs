@@ -882,7 +882,10 @@ fn build_payload_wire<'ctx>(
             let inline_package = inline_packages.get(&pkg).copied();
             match (package, inline_package) {
                 (Some(package), Some(inline_package)) => {
-                    let inline_retained = retained_mir_defs_for_metadata(gcx, inline_package);
+                    let inline_retained = reachable_mir_defs(
+                        inline_package,
+                        mir_roots_for_metadata(gcx, inline_package),
+                    );
                     // Canonical retention is authoritative for which bodies are
                     // available to the inliner. Final MIR needs an additional,
                     // independent seed: global optimization and late method
@@ -892,9 +895,9 @@ fn build_payload_wire<'ctx>(
                     // Keeping these only in the final store preserves
                     // source/metadata inlining parity while making every body
                     // needed for downstream monomorphization available.
-                    let mut final_roots = retained_mir_defs_for_metadata(gcx, package);
-                    final_roots.extend(inline_retained.iter().copied());
-                    let final_retained = extend_final_mir_retention(package, &final_roots);
+                    let final_roots =
+                        mir_roots_for_metadata(gcx, package).chain(inline_retained.iter().copied());
+                    let final_retained = reachable_mir_defs(package, final_roots);
                     (
                         Some(wire::mir_package_to_wire_filtered(
                             package,
@@ -963,81 +966,39 @@ fn build_payload_wire<'ctx>(
     })
 }
 
-fn retained_mir_defs_for_metadata<'ctx>(
+fn mir_roots_for_metadata<'ctx>(
     gcx: GlobalContext<'ctx>,
-    package: &crate::mir::MirPackage<'ctx>,
-) -> FxHashSet<DefinitionID> {
-    let mut retained = FxHashSet::default();
-    let mut worklist: Vec<DefinitionID> = package
+    package: &'ctx crate::mir::MirPackage<'ctx>,
+) -> impl Iterator<Item = DefinitionID> + 'ctx {
+    package
         .functions
         .iter()
-        .filter_map(|(def_id, body)| {
-            if should_retain_mir_root_for_metadata(gcx, *def_id, body) {
-                Some(*def_id)
-            } else {
-                None
-            }
+        .filter_map(move |(&definition, body)| {
+            should_retain_mir_root_for_metadata(gcx, definition, body).then_some(definition)
         })
-        .collect();
-    let mut local_callees = Vec::new();
-
-    while let Some(def_id) = worklist.pop() {
-        if !retained.insert(def_id) {
-            continue;
-        }
-
-        let Some(body) = package.functions.get(&def_id).copied() else {
-            continue;
-        };
-
-        local_callees.clear();
-        crate::mir::for_each_function_constant_in_body(body, |callee, _args| {
-            local_callees.push(callee);
-        });
-        for callee in local_callees.iter().copied() {
-            if package.functions.contains_key(&callee) && !retained.contains(&callee) {
-                worklist.push(callee);
-            }
-        }
-    }
-
-    retained
 }
 
-/// Final MIR may introduce references absent from canonical MIR, most notably
-/// an async constructor's synthesized poll and drop functions. Start from the
-/// canonical candidate set (which controls source/cached inline parity) and
-/// retain the transitive final bodies required to codegen those candidates.
-fn extend_final_mir_retention<'ctx>(
-    package: &crate::mir::MirPackage<'ctx>,
-    roots: &FxHashSet<DefinitionID>,
+/// Follow local function and closure references once for each retained body.
+/// Canonical and final MIR have distinct roots, but the reachability rule is the same.
+fn reachable_mir_defs(
+    package: &crate::mir::MirPackage<'_>,
+    roots: impl IntoIterator<Item = DefinitionID>,
 ) -> FxHashSet<DefinitionID> {
     let mut retained = FxHashSet::default();
-    let mut worklist: Vec<_> = roots
-        .iter()
-        .copied()
-        .filter(|definition| package.functions.contains_key(definition))
-        .collect();
-    let mut local_callees = Vec::new();
-
+    let mut worklist: Vec<_> = roots.into_iter().collect();
     while let Some(definition) = worklist.pop() {
+        let Some(body) = package.functions.get(&definition) else {
+            continue;
+        };
         if !retained.insert(definition) {
             continue;
         }
-        let Some(body) = package.functions.get(&definition).copied() else {
-            continue;
-        };
-        local_callees.clear();
         crate::mir::for_each_function_constant_in_body(body, |callee, _args| {
-            local_callees.push(callee);
-        });
-        for callee in local_callees.iter().copied() {
-            if package.functions.contains_key(&callee) && !retained.contains(&callee) {
+            if !retained.contains(&callee) {
                 worklist.push(callee);
             }
-        }
+        });
     }
-
     retained
 }
 
@@ -1441,6 +1402,85 @@ mod tests {
                     "metadata target CPU/features mismatch"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn mir_retention_preserves_closures_cycles_and_final_only_callees() {
+        use crate::mir::{
+            AggregateKind, Constant, ConstantKind, MirPackage, Operand, Place, Rvalue, Statement,
+            StatementKind,
+            test_support::{minimal_body, with_test_gcx},
+        };
+        use crate::sema::resolve::models::DefinitionIndex;
+        with_test_gcx(|gcx| {
+            let def =
+                |index| DefinitionID::new(gcx.package_index(), DefinitionIndex::from_raw(index));
+            let args = gcx.store.interners.intern_generic_args(vec![]);
+            let make_body = |owner, callees: &[u32]| {
+                let mut body = minimal_body(gcx);
+                body.owner = def(owner);
+                let span = body.locals[body.return_local].span;
+                for &callee in callees {
+                    body.basic_blocks[body.start_block]
+                        .statements
+                        .push(Statement {
+                            span,
+                            kind: StatementKind::KeepAlive(Operand::Constant(Constant {
+                                ty: gcx.types.void,
+                                value: ConstantKind::Function(def(callee), args, gcx.types.void),
+                            })),
+                        });
+                }
+                body
+            };
+            let mut root = make_body(0, &[]);
+            root.basic_blocks[root.start_block]
+                .statements
+                .push(Statement {
+                    span: root.locals[root.return_local].span,
+                    kind: StatementKind::Assign(
+                        Place::from_local(root.return_local),
+                        Rvalue::Aggregate {
+                            kind: AggregateKind::Closure {
+                                def_id: def(1),
+                                captured_generics: args,
+                            },
+                            fields: Default::default(),
+                        },
+                    ),
+                });
+            // The closure reaches a cycle and an external definition without local MIR.
+            let closure = make_body(1, &[2, 4]);
+            let cycle = make_body(2, &[0]);
+            let unreferenced = make_body(3, &[]);
+            let late_callee = make_body(5, &[]);
+            let canonical = MirPackage {
+                functions: [&root, &closure, &cycle, &unreferenced, &late_callee]
+                    .into_iter()
+                    .map(|body| (body.owner, body))
+                    .collect(),
+                entry: None,
+            };
+            let inline_retained = reachable_mir_defs(&canonical, [def(0)]);
+            assert_eq!(
+                inline_retained,
+                [def(0), def(1), def(2)].into_iter().collect()
+            );
+
+            // Final lowering replaces the closure edge with a synthesized callee.
+            // Canonical candidates must survive, and only final MIR expands to it.
+            let final_root = make_body(0, &[5]);
+            let mut final_package = MirPackage {
+                functions: canonical.functions.clone(),
+                entry: None,
+            };
+            final_package.functions.insert(def(0), &final_root);
+            let final_retained = reachable_mir_defs(&final_package, inline_retained);
+            assert_eq!(
+                final_retained,
+                [def(0), def(1), def(2), def(5)].into_iter().collect()
+            );
         });
     }
 
