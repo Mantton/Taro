@@ -645,9 +645,12 @@ impl<'a, 'c> Actor<'a, 'c> {
         self.find_holder_in_scope(scope, identifier, ScopeNamespace::Type)
             .or_else(|| self.find_holder_in_scope(scope, identifier, ScopeNamespace::Value))
             .or_else(|| {
-                scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Type).or_else(
-                    || scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Value),
-                )
+                scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Type)
+                    .ok()
+                    .or_else(|| {
+                        scope_lookup::resolve_in_scope(scope, identifier, ScopeNamespace::Value)
+                            .ok()
+                    })
             })
     }
 

@@ -207,7 +207,7 @@ impl<'ctx> InferCtx<'ctx> {
     where
         T: TypeFoldable<'ctx>,
     {
-        let mut resolver = InferVarResolver::new(self);
+        let mut resolver = InferVarResolver::new(self, false);
         value.fold_with(&mut resolver)
     }
 
@@ -218,27 +218,13 @@ impl<'ctx> InferCtx<'ctx> {
     where
         T: TypeFoldable<'ctx>,
     {
-        let mut resolver = resolve::InferVarOrErrorResolver::new(self);
+        let mut resolver = InferVarResolver::new(self, true);
         value.fold_with(&mut resolver)
     }
 
     /// Resolve inference variables in generic arguments.
     pub fn resolve_args_if_possible(&self, args: GenericArguments<'ctx>) -> GenericArguments<'ctx> {
-        if args.is_empty() {
-            return args;
-        }
-        let resolved: Vec<_> = args
-            .iter()
-            .map(|arg| match arg {
-                GenericArgument::Type(ty) => {
-                    GenericArgument::Type(self.resolve_vars_if_possible(*ty))
-                }
-                GenericArgument::Const(c) => {
-                    GenericArgument::Const(self.resolve_const_if_possible(*c))
-                }
-            })
-            .collect();
-        self.gcx.store.interners.intern_generic_args(resolved)
+        self.resolve_vars_if_possible(args)
     }
 
     pub fn bind_overload(&self, ty: Ty<'ctx>, source: DefinitionID) {
@@ -356,33 +342,20 @@ impl<'ctx> InferCtx<'ctx> {
     }
 
     pub fn resolve_const_if_possible(&self, c: Const<'ctx>) -> Const<'ctx> {
-        let ConstKind::Infer(id) = c.kind else {
-            return Const {
-                ty: self.resolve_vars_if_possible(c.ty),
-                kind: c.kind,
-            };
-        };
-        let binding = {
-            let mut inner = self.inner.borrow_mut();
-            let mut table = inner.const_variables();
-            table.probe(id)
-        };
+        self.resolve_vars_if_possible(c)
+    }
 
-        let ty = self.resolve_vars_if_possible(c.ty);
-        match binding {
-            ConstVarValue::Known(value) => Const {
-                ty,
-                kind: ConstKind::Value(value),
+    /// Resolve the value at this node; the active folder owns type traversal.
+    pub(crate) fn shallow_resolve_const(&self, c: Const<'ctx>) -> Const<'ctx> {
+        let kind = match c.kind {
+            ConstKind::Infer(id) => match self.const_var_binding(id) {
+                ConstVarValue::Known(value) => ConstKind::Value(value),
+                ConstVarValue::Param(param) => ConstKind::Param(param),
+                ConstVarValue::Unknown => c.kind,
             },
-            ConstVarValue::Param(param) => Const {
-                ty,
-                kind: ConstKind::Param(param),
-            },
-            ConstVarValue::Unknown => Const {
-                ty,
-                kind: ConstKind::Infer(id),
-            },
-        }
+            _ => c.kind,
+        };
+        Const { kind, ..c }
     }
 
     pub fn const_var_binding(&self, id: ConstVarID) -> ConstVarValue {

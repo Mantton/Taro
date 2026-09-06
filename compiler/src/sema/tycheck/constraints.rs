@@ -1,11 +1,10 @@
 use crate::{
     compile::context::GlobalContext,
     sema::{
-        models::{
-            Constraint, GenericArgument, InterfaceDefinition, InterfaceReference, Ty, TyKind,
-        },
+        impl_engine::ref_ops::collect_interface_with_superfaces,
+        models::{Constraint, InterfaceReference, Ty, TyKind},
         resolve::models::DefinitionID,
-        tycheck::utils::instantiate::instantiate_interface_ref_with_args,
+        tycheck::utils::normalize_aliases,
     },
     span::Spanned,
 };
@@ -57,16 +56,7 @@ fn normalize_constraints<'ctx>(
     let constraints = constraints
         .iter()
         .map(|c| {
-            let normalized = match c.value {
-                Constraint::TypeEquality(lhs, rhs) => Constraint::TypeEquality(
-                    crate::sema::tycheck::utils::normalize_aliases(gcx, lhs),
-                    crate::sema::tycheck::utils::normalize_aliases(gcx, rhs),
-                ),
-                Constraint::Bound { ty, interface } => Constraint::Bound {
-                    ty: crate::sema::tycheck::utils::normalize_aliases(gcx, ty),
-                    interface: normalize_interface_ref(gcx, interface),
-                },
-            };
+            let normalized = normalize_aliases(gcx, c.value);
             Spanned::new(normalized, c.span)
         })
         .collect::<Vec<_>>();
@@ -278,83 +268,12 @@ fn insert_with_closure<'ctx>(
     gcx: GlobalContext<'ctx>,
 ) -> bool {
     let mut changed = false;
-    for iface in collect_interface_with_supers(gcx, iface) {
+    for iface in collect_interface_with_superfaces(gcx, iface) {
         if set.insert(iface) {
             changed = true;
         }
     }
     changed
-}
-
-fn collect_interface_with_supers<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    root: InterfaceReference<'ctx>,
-) -> Vec<InterfaceReference<'ctx>> {
-    let mut out = Vec::new();
-    let mut queue = std::collections::VecDeque::new();
-    let mut seen: FxHashSet<InterfaceReference<'ctx>> = FxHashSet::default();
-
-    seen.insert(root);
-    out.push(root);
-    queue.push_back(root);
-
-    while let Some(current) = queue.pop_front() {
-        let Some(def) = interface_definition(gcx, current.id) else {
-            continue;
-        };
-
-        for superface in &def.superfaces {
-            let iface =
-                instantiate_interface_ref_with_args(gcx, superface.value, current.arguments);
-            if seen.insert(iface) {
-                out.push(iface);
-                queue.push_back(iface);
-            }
-        }
-    }
-
-    out
-}
-
-fn normalize_interface_ref<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    interface: InterfaceReference<'ctx>,
-) -> InterfaceReference<'ctx> {
-    let mut new_args = Vec::with_capacity(interface.arguments.len());
-    for arg in interface.arguments.iter() {
-        match arg {
-            GenericArgument::Type(ty) => {
-                let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, *ty);
-                new_args.push(GenericArgument::Type(normalized));
-            }
-            GenericArgument::Const(c) => new_args.push(GenericArgument::Const(*c)),
-        }
-    }
-
-    let mut new_bindings = Vec::with_capacity(interface.bindings.len());
-    for binding in interface.bindings {
-        let normalized = crate::sema::tycheck::utils::normalize_aliases(gcx, binding.ty);
-        new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-            name: binding.name,
-            ty: normalized,
-        });
-    }
-
-    let interned = gcx.store.interners.intern_generic_args(new_args);
-    InterfaceReference {
-        id: interface.id,
-        arguments: interned,
-        bindings: gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
-    }
-}
-
-fn interface_definition<'ctx>(
-    gcx: GlobalContext<'ctx>,
-    interface_id: DefinitionID,
-) -> Option<&'ctx InterfaceDefinition<'ctx>> {
-    gcx.with_type_database(interface_id.package(), |db| {
-        db.def_to_iface_def.get(&interface_id).cloned()
-    })
 }
 
 fn is_concrete(ty: Ty<'_>) -> bool {

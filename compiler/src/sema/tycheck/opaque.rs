@@ -2,10 +2,11 @@ use crate::{
     compile::context::Gcx,
     hir::{self, DefinitionID},
     sema::{
-        models::{AliasKind, GenericArgument, Ty, TyKind},
+        models::{AliasKind, Ty, TyKind},
         tycheck::{
             fold::{TypeFoldable, TypeFolder, TypeSuperFoldable},
             utils::{generics::GenericsBuilder, instantiate::instantiate_ty_with_args},
+            visit::{TypeSuperVisitable, TypeVisitable, TypeVisitor},
         },
     },
 };
@@ -47,74 +48,39 @@ pub(crate) fn contains_opaque_owner_through_hidden<'ctx>(
     ty: Ty<'ctx>,
     owner: DefinitionID,
 ) -> bool {
-    fn visit<'ctx>(
+    struct OpaqueOwner<'ctx> {
         gcx: Gcx<'ctx>,
-        ty: Ty<'ctx>,
         owner: DefinitionID,
-        visiting: &mut FxHashSet<DefinitionID>,
-    ) -> bool {
-        let visit_arg = |arg: &GenericArgument<'ctx>, visiting: &mut FxHashSet<DefinitionID>| {
-            let ty = match arg {
-                GenericArgument::Type(ty) => *ty,
-                GenericArgument::Const(c) => c.ty,
+        visiting: FxHashSet<DefinitionID>,
+    }
+    impl<'ctx> TypeVisitor<'ctx> for OpaqueOwner<'ctx> {
+        fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+            let TyKind::Alias {
+                kind: AliasKind::Opaque,
+                def_id,
+                args,
+            } = ty.kind()
+            else {
+                return ty.super_visit_with(self);
             };
-            visit(gcx, ty, owner, visiting)
-        };
-        match ty.kind() {
-            TyKind::Alias { kind, def_id, args } => {
-                if kind == AliasKind::Opaque && def_id == owner {
-                    return true;
-                }
-                if args.iter().any(|arg| visit_arg(arg, visiting)) {
-                    return true;
-                }
-                if kind != AliasKind::Opaque || !visiting.insert(def_id) {
-                    return false;
-                }
-                let result = gcx.try_get_alias_type(def_id).is_some_and(|hidden| {
-                    let hidden = instantiate_ty_with_args(gcx, hidden, args);
-                    visit(gcx, hidden, owner, visiting)
-                });
-                visiting.remove(&def_id);
-                result
+            if def_id == self.owner || args.visit_with(self) {
+                return true;
             }
-            TyKind::Adt(_, args) => args.iter().any(|arg| visit_arg(arg, visiting)),
-            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
-                visit(gcx, inner, owner, visiting)
+            if !self.visiting.insert(def_id) {
+                return false;
             }
-            TyKind::Array { element, len } => {
-                visit(gcx, element, owner, visiting) || visit(gcx, len.ty, owner, visiting)
-            }
-            TyKind::Tuple(items) => items.iter().any(|ty| visit(gcx, *ty, owner, visiting)),
-            TyKind::FnPointer { inputs, output } => {
-                inputs.iter().any(|ty| visit(gcx, *ty, owner, visiting))
-                    || visit(gcx, output, owner, visiting)
-            }
-            TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|interface| {
-                interface
-                    .arguments
-                    .iter()
-                    .any(|arg| visit_arg(arg, visiting))
-                    || interface
-                        .bindings
-                        .iter()
-                        .any(|binding| visit(gcx, binding.ty, owner, visiting))
-            }),
-            TyKind::Closure {
-                captured_generics,
-                inputs,
-                output,
-                ..
-            } => {
-                captured_generics.iter().any(|arg| visit_arg(arg, visiting))
-                    || inputs.iter().any(|ty| visit(gcx, *ty, owner, visiting))
-                    || visit(gcx, output, owner, visiting)
-            }
-            _ => false,
+            let result = self.gcx.try_get_alias_type(def_id).is_some_and(|hidden| {
+                instantiate_ty_with_args(self.gcx, hidden, args).visit_with(self)
+            });
+            self.visiting.remove(&def_id);
+            result
         }
     }
-
-    visit(gcx, ty, owner, &mut FxHashSet::default())
+    ty.visit_with(&mut OpaqueOwner {
+        gcx,
+        owner,
+        visiting: FxHashSet::default(),
+    })
 }
 
 pub(crate) fn reveal_opaque_aliases<'ctx>(gcx: Gcx<'ctx>, ty: Ty<'ctx>) -> Ty<'ctx> {

@@ -2,12 +2,12 @@ use crate::{
     compile::context::GlobalContext,
     hir::DefinitionID,
     sema::{
-        models::{ConstKind, GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind},
+        models::{GenericArgument, GenericArguments, InterfaceReference, Ty, TyKind},
         resolve::models::DefinitionKind,
         tycheck::{
             resolve_conformance_witness,
             utils::instantiate::{instantiate_const_with_args, instantiate_ty_with_args},
-            utils::type_head_from_value_ty,
+            utils::{type_head_from_value_ty, unresolved::contains_unresolved_generics},
         },
     },
     specialize::Instance,
@@ -378,49 +378,8 @@ fn signature_has_unresolved_generics<'ctx>(
     let sig = gcx.get_signature(def_id);
     sig.inputs.iter().any(|param| {
         let instantiated = instantiate_ty_with_args(gcx, param.ty, args);
-        ty_has_unresolved_generics(instantiated)
-    }) || ty_has_unresolved_generics(instantiate_ty_with_args(gcx, sig.output, args))
-}
-
-fn ty_has_unresolved_generics<'ctx>(ty: Ty<'ctx>) -> bool {
-    match ty.kind() {
-        TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::Alias { .. } => true,
-        TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
-            GenericArgument::Type(ty) => ty_has_unresolved_generics(*ty),
-            GenericArgument::Const(c) => {
-                matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_))
-                    || ty_has_unresolved_generics(c.ty)
-            }
-        }),
-        TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
-            ty_has_unresolved_generics(inner)
-        }
-        TyKind::Array { element, len } => {
-            ty_has_unresolved_generics(element)
-                || matches!(len.kind, ConstKind::Param(_) | ConstKind::Infer(_))
-                || ty_has_unresolved_generics(len.ty)
-        }
-        TyKind::Tuple(items) => items.iter().any(|item| ty_has_unresolved_generics(*item)),
-        TyKind::FnPointer { inputs, output } => {
-            inputs
-                .iter()
-                .any(|input| ty_has_unresolved_generics(*input))
-                || ty_has_unresolved_generics(output)
-        }
-        TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
-            iface.arguments.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => ty_has_unresolved_generics(*ty),
-                GenericArgument::Const(c) => {
-                    matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_))
-                        || ty_has_unresolved_generics(c.ty)
-                }
-            }) || iface
-                .bindings
-                .iter()
-                .any(|binding| ty_has_unresolved_generics(binding.ty))
-        }),
-        _ => false,
-    }
+        contains_unresolved_generics(instantiated)
+    }) || contains_unresolved_generics(instantiate_ty_with_args(gcx, sig.output, args))
 }
 
 fn instantiate_generic_args_with_args<'ctx>(

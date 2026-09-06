@@ -36,20 +36,14 @@ impl<'ctx> TypeFolder<'ctx> for InstantiateFolder<'ctx> {
     }
 
     fn fold_const(&mut self, c: Const<'ctx>) -> Const<'ctx> {
-        instantiate_const_with_args(self.gcx, c, self.args)
-    }
-}
-
-impl<'ctx> InstantiateFolder<'ctx> {
-    fn fold_constraint(&mut self, c: Constraint<'ctx>) -> Constraint<'ctx> {
-        match c {
-            Constraint::TypeEquality(a, b) => {
-                Constraint::TypeEquality(self.fold_ty(a), self.fold_ty(b))
+        if let ConstKind::Param(param) = c.kind {
+            if let Some(GenericArgument::Const(value)) = self.args.get(param.index) {
+                return *value;
             }
-            Constraint::Bound { ty, interface } => Constraint::Bound {
-                ty: self.fold_ty(ty),
-                interface: instantiate_interface_ref_with_args(self.gcx, interface, self.args),
-            },
+        }
+        Const {
+            ty: c.ty.fold_with(self),
+            ..c
         }
     }
 }
@@ -59,7 +53,7 @@ pub fn instantiate_ty_with_args<'ctx>(
     ty: Ty<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> Ty<'ctx> {
-    if !ty.needs_instantiation() {
+    if args.is_empty() {
         return ty;
     }
 
@@ -72,16 +66,7 @@ pub fn instantiate_const_with_args<'ctx>(
     c: Const<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> Const<'ctx> {
-    let ty = instantiate_ty_with_args(gcx, c.ty, args);
-    let kind = match c.kind {
-        ConstKind::Param(p) => match args.get(p.index) {
-            Some(GenericArgument::Const(arg)) => return *arg,
-            _ => ConstKind::Param(p),
-        },
-        ConstKind::Infer(_) => c.kind,
-        ConstKind::Value(_) => c.kind,
-    };
-    Const { ty, kind }
+    c.fold_with(&mut InstantiateFolder { gcx, args })
 }
 
 pub fn instantiate_constraint_with_args<'ctx>(
@@ -90,7 +75,7 @@ pub fn instantiate_constraint_with_args<'ctx>(
     args: GenericArguments<'ctx>,
 ) -> Constraint<'ctx> {
     let mut folder = InstantiateFolder { gcx, args };
-    folder.fold_constraint(constraint)
+    constraint.fold_with(&mut folder)
 }
 
 /// Substitute type and const arguments without normalizing associated projections.
@@ -99,21 +84,10 @@ pub fn instantiate_generic_args<'ctx>(
     template: GenericArguments<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> GenericArguments<'ctx> {
-    if template.is_empty() || args.is_empty() {
+    if args.is_empty() {
         return template;
     }
-    let substituted = template
-        .iter()
-        .map(|arg| match arg {
-            GenericArgument::Type(ty) => {
-                GenericArgument::Type(instantiate_ty_with_args(gcx, *ty, args))
-            }
-            GenericArgument::Const(c) => {
-                GenericArgument::Const(instantiate_const_with_args(gcx, *c, args))
-            }
-        })
-        .collect();
-    gcx.store.interners.intern_generic_args(substituted)
+    template.fold_with(&mut InstantiateFolder { gcx, args })
 }
 
 pub fn instantiate_interface_ref_with_args<'ctx>(
@@ -125,20 +99,7 @@ pub fn instantiate_interface_ref_with_args<'ctx>(
         return interface;
     }
 
-    let mut new_bindings = Vec::with_capacity(interface.bindings.len());
-    for binding in interface.bindings {
-        let substituted = instantiate_ty_with_args(gcx, binding.ty, args);
-        new_bindings.push(crate::sema::models::AssociatedTypeBinding {
-            name: binding.name,
-            ty: substituted,
-        });
-    }
-
-    InterfaceReference {
-        id: interface.id,
-        arguments: instantiate_generic_args(gcx, interface.arguments, args),
-        bindings: gcx.store.arenas.global.alloc_slice_clone(&new_bindings),
-    }
+    interface.fold_with(&mut InstantiateFolder { gcx, args })
 }
 
 pub fn instantiate_signature_with_args<'ctx>(
@@ -146,14 +107,10 @@ pub fn instantiate_signature_with_args<'ctx>(
     signature: &LabeledFunctionSignature<'ctx>,
     args: GenericArguments<'ctx>,
 ) -> LabeledFunctionSignature<'ctx> {
-    if !signature
-        .inputs
-        .iter()
-        .any(|param| param.ty.needs_instantiation())
-        && !signature.output.needs_instantiation()
-    {
+    if args.is_empty() {
         return signature.clone();
     }
+    let mut folder = InstantiateFolder { gcx, args };
 
     let inputs = signature
         .inputs
@@ -161,12 +118,12 @@ pub fn instantiate_signature_with_args<'ctx>(
         .map(|param| LabeledFunctionParameter {
             label: param.label,
             name: param.name,
-            ty: instantiate_ty_with_args(gcx, param.ty, args),
+            ty: param.ty.fold_with(&mut folder),
             default_provider: param.default_provider,
         })
         .collect();
 
-    let output = instantiate_ty_with_args(gcx, signature.output, args);
+    let output = signature.output.fold_with(&mut folder);
 
     LabeledFunctionSignature {
         inputs,

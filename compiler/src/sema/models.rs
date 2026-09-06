@@ -8,7 +8,10 @@ use crate::{
     hir::{self, DefinitionID, Mutability},
     sema::{
         resolve::models::TypeHead,
-        tycheck::infer::keys::{FloatVarID, IntVarID, NilVarID},
+        tycheck::{
+            infer::keys::{FloatVarID, IntVarID, NilVarID},
+            visit::{TypeSuperVisitable, TypeVisitable, TypeVisitor},
+        },
     },
     span::{Span, Spanned, Symbol},
     utils::intern::{Interned, List},
@@ -99,35 +102,19 @@ impl<'arena> Ty<'arena> {
         matches!(self.kind(), TyKind::Infer(InferTy::TyVar(_)))
     }
 
+    /// Conservative normalization query: aliases may hide inference or projections.
     pub fn contains_inference(self) -> bool {
-        fn visit<'ctx>(ty: Ty<'ctx>) -> bool {
-            match ty.kind() {
-                TyKind::Infer(_) => true,
-                TyKind::Alias { .. } => true, // unnormalized aliases might hide inference vars
-                TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
-                    GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => {
-                        matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty)
-                    }
-                }),
-                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
-                TyKind::Array { element, .. } => visit(element), // Skip const len for now, usually it doesn't affect member lookup
-                TyKind::Tuple(elems) => elems.iter().any(|t| visit(*t)),
-                TyKind::FnPointer { inputs, output } => {
-                    inputs.iter().any(|t| visit(*t)) || visit(output)
-                }
-                TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
-                    iface.arguments.iter().any(|arg| match arg {
-                        GenericArgument::Type(ty) => visit(*ty),
-                        GenericArgument::Const(c) => {
-                            matches!(c.kind, ConstKind::Infer(_)) || visit(c.ty)
-                        }
-                    }) || iface.bindings.iter().any(|binding| visit(binding.ty))
-                }),
-                _ => false,
+        struct Inference;
+        impl<'ctx> TypeVisitor<'ctx> for Inference {
+            fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+                matches!(ty.kind(), TyKind::Infer(_) | TyKind::Alias { .. })
+                    || ty.super_visit_with(self)
+            }
+            fn visit_const(&mut self, value: Const<'ctx>) -> bool {
+                matches!(value.kind, ConstKind::Infer(_)) || value.ty.visit_with(self)
             }
         }
-        visit(self)
+        self.visit_with(&mut Inference)
     }
 
     pub fn is_pointer(self) -> bool {
@@ -302,54 +289,20 @@ impl<'arena> Ty<'arena> {
 
 // HELPERS
 impl<'ctx> Ty<'ctx> {
-    /// Fast “syntactic” check: does this type mention any generic parameters?
+    /// Syntactic substitution query; const inference is retained for callers
+    /// that use this to decide whether a type is ready for monomorphization.
     pub fn needs_instantiation(self) -> bool {
-        fn visit<'ctx>(ty: Ty<'ctx>) -> bool {
-            fn const_needs_instantiation<'ctx>(c: Const<'ctx>) -> bool {
-                matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_)) || visit(c.ty)
+        struct Parameters;
+        impl<'ctx> TypeVisitor<'ctx> for Parameters {
+            fn visit_ty(&mut self, ty: Ty<'ctx>) -> bool {
+                matches!(ty.kind(), TyKind::Parameter(_)) || ty.super_visit_with(self)
             }
-
-            match ty.kind() {
-                // A generic parameter definitely needs instantiation
-                TyKind::Parameter(_) => true,
-                TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
-                    GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => const_needs_instantiation(*c),
-                }),
-                // Walk composite types
-                TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => visit(inner),
-                TyKind::Array { element, len } => visit(element) || const_needs_instantiation(len),
-                TyKind::Tuple(elems) => elems.iter().cloned().any(visit),
-                TyKind::FnPointer { inputs, output, .. } => {
-                    inputs.iter().cloned().any(visit) || visit(output)
-                }
-                TyKind::Closure {
-                    captured_generics,
-                    inputs,
-                    output,
-                    ..
-                } => {
-                    captured_generics.iter().any(|arg| match arg {
-                        GenericArgument::Type(ty) => visit(*ty),
-                        GenericArgument::Const(c) => const_needs_instantiation(*c),
-                    }) || inputs.iter().cloned().any(visit)
-                        || visit(output)
-                }
-                // Existential, associated, infer, error, primitives …
-                TyKind::BoxedExistential { interfaces } => interfaces.iter().any(|iface| {
-                    iface.arguments.iter().any(|arg| match arg {
-                        GenericArgument::Type(ty) => visit(*ty),
-                        GenericArgument::Const(c) => const_needs_instantiation(*c),
-                    }) || iface.bindings.iter().any(|binding| visit(binding.ty))
-                }),
-                TyKind::Alias { args, .. } => args.iter().any(|arg| match arg {
-                    GenericArgument::Type(ty) => visit(*ty),
-                    GenericArgument::Const(c) => const_needs_instantiation(*c),
-                }),
-                _ => false,
+            fn visit_const(&mut self, value: Const<'ctx>) -> bool {
+                matches!(value.kind, ConstKind::Param(_) | ConstKind::Infer(_))
+                    || value.ty.visit_with(self)
             }
         }
-        visit(self)
+        self.visit_with(&mut Parameters)
     }
 }
 
@@ -1460,6 +1413,183 @@ mod tests {
             let existential = boxed_existential_with_binding(gcx, param_ty);
 
             assert!(existential.needs_instantiation());
+        });
+    }
+    #[test]
+    fn closure_inference_is_normalized_in_all_children() {
+        use crate::sema::models::{ClosureKind, GenericArgument};
+        use crate::sema::tycheck::{
+            infer::InferCtx,
+            utils::{ParamEnv, normalize_ty, unify::TypeUnifier},
+        };
+        with_test_gcx(|gcx| {
+            let icx = Rc::new(InferCtx::new(gcx));
+            let inferred =
+                icx.next_ty_var(crate::span::Span::empty(crate::span::FileID::from_raw(0)));
+            TypeUnifier::new(icx.clone())
+                .unify(inferred, gcx.types.int32)
+                .unwrap();
+            let closure = Ty::new(
+                TyKind::Closure {
+                    closure_def_id: dummy_definition(20),
+                    kind: ClosureKind::Fn,
+                    captured_generics: gcx
+                        .store
+                        .interners
+                        .intern_generic_args(vec![GenericArgument::Type(inferred)]),
+                    inputs: gcx.store.interners.intern_ty_list(vec![inferred]),
+                    output: inferred,
+                },
+                gcx,
+            );
+            let normalized = normalize_ty(icx, closure, &ParamEnv::default());
+            let TyKind::Closure {
+                captured_generics,
+                inputs,
+                output,
+                ..
+            } = normalized.kind()
+            else {
+                panic!("closure");
+            };
+            assert_eq!(captured_generics[0], GenericArgument::Type(gcx.types.int32));
+            assert_eq!(inputs[0], gcx.types.int32);
+            assert_eq!(output, gcx.types.int32);
+        });
+    }
+
+    #[test]
+    fn array_length_inference_is_normalized() {
+        use crate::sema::models::{ConstKind, ConstValue};
+        use crate::sema::tycheck::{
+            infer::{
+                InferCtx,
+                keys::{ConstVarValue, ConstVariableOrigin},
+            },
+            utils::{ParamEnv, normalize_ty},
+        };
+        with_test_gcx(|gcx| {
+            let icx = Rc::new(InferCtx::new(gcx));
+            let len = icx.new_const_var(
+                gcx.types.uint,
+                ConstVariableOrigin {
+                    location: crate::span::Span::empty(crate::span::FileID::from_raw(0)),
+                    param_name: None,
+                },
+            );
+            let ConstKind::Infer(id) = len.kind else {
+                panic!("inference variable");
+            };
+            icx.instantiate_const_var_raw(id, ConstVarValue::Known(ConstValue::Integer(2)));
+            let array = Ty::new(
+                TyKind::Array {
+                    element: gcx.types.int32,
+                    len,
+                },
+                gcx,
+            );
+            let TyKind::Array { len, .. } = normalize_ty(icx, array, &ParamEnv::default()).kind()
+            else {
+                panic!("array");
+            };
+            assert_eq!(len.kind, ConstKind::Value(ConstValue::Integer(2)));
+        });
+    }
+    #[test]
+    fn structural_queries_preserve_alias_and_parameter_policies() {
+        use crate::sema::models::{AliasKind, Const, ConstKind, ConstVarID, GenericArgument};
+        use crate::sema::tycheck::utils::unresolved::{
+            contains_unresolved_generics, ty_contains_unresolved_inference,
+        };
+        with_test_gcx(|gcx| {
+            let alias = Ty::new(
+                TyKind::Alias {
+                    kind: AliasKind::Weak,
+                    def_id: dummy_definition(30),
+                    args: GenericArguments::empty(),
+                },
+                gcx,
+            );
+            assert!(
+                alias.contains_inference(),
+                "aliases must still trigger normalization"
+            );
+            assert!(
+                !ty_contains_unresolved_inference(alias),
+                "an alias is not itself an inference variable"
+            );
+            assert!(!alias.needs_instantiation());
+            assert!(contains_unresolved_generics(alias));
+
+            let inferred_const = Const {
+                ty: gcx.types.uint,
+                kind: ConstKind::Infer(ConstVarID::from_raw(0)),
+            };
+            let array = Ty::new(
+                TyKind::Array {
+                    element: gcx.types.int32,
+                    len: inferred_const,
+                },
+                gcx,
+            );
+            assert!(ty_contains_unresolved_inference(array));
+            assert!(array.needs_instantiation());
+            assert!(contains_unresolved_generics(array));
+
+            let generic = GenericArgument::Type(Ty::new(
+                TyKind::Parameter(GenericParameter {
+                    index: 0,
+                    name: gcx.intern_symbol("T"),
+                }),
+                gcx,
+            ));
+            let interface = InterfaceReference {
+                id: dummy_definition(31),
+                arguments: gcx.store.interners.intern_generic_args(vec![generic]),
+                bindings: &[],
+            };
+            assert!(contains_unresolved_generics(interface));
+        });
+    }
+
+    #[test]
+    fn resolving_const_parameters_releases_the_table_before_resolving_their_type() {
+        use crate::sema::models::ConstKind;
+        use crate::sema::tycheck::infer::{
+            InferCtx,
+            keys::{ConstVarValue, ConstVariableOrigin},
+        };
+        use crate::sema::tycheck::utils::unify::TypeUnifier;
+        with_test_gcx(|gcx| {
+            let icx = Rc::new(InferCtx::new(gcx));
+            let span = crate::span::Span::empty(crate::span::FileID::from_raw(0));
+            let inferred_ty = icx.next_ty_var(span);
+            TypeUnifier::new(icx.clone())
+                .unify(inferred_ty, gcx.types.uint)
+                .unwrap();
+            let value = icx.new_const_var(
+                inferred_ty,
+                ConstVariableOrigin {
+                    location: span,
+                    param_name: None,
+                },
+            );
+            let ConstKind::Infer(id) = value.kind else {
+                panic!("const variable");
+            };
+            let param = GenericParameter {
+                index: 0,
+                name: gcx.intern_symbol("N"),
+            };
+            icx.instantiate_const_var_raw(id, ConstVarValue::Param(param));
+            for resolved in [
+                icx.resolve_const_if_possible(value),
+                icx.resolve_vars_if_possible(value),
+                icx.resolve_vars_or_error(value),
+            ] {
+                assert_eq!(resolved.ty, gcx.types.uint);
+                assert_eq!(resolved.kind, ConstKind::Param(param));
+            }
         });
     }
 }

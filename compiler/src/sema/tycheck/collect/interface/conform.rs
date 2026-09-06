@@ -1,15 +1,13 @@
 use crate::{
     compile::context::Gcx,
     error::CompileResult,
-    hir::{self, DefinitionID},
+    hir,
     sema::{
-        impl_engine::method_signature_matches,
         models::{
-            ConformanceRecord, Constraint, GenericArguments, InterfaceGoal,
-            InterfaceMethodRequirement, InterfaceReference, SelectionError, SelectionMode, Ty,
+            ConformanceRecord, Constraint, GenericArguments, InterfaceGoal, InterfaceReference,
+            SelectionError, SelectionMode,
         },
         tycheck::utils::{
-            generics::GenericsBuilder,
             type_head_from_value_ty,
             unresolved::{
                 goal_contains_unresolved_inference, interface_ref_contains_unresolved_inference,
@@ -236,7 +234,16 @@ impl<'ctx> Actor<'ctx> {
                 continue;
             }
 
-            if self.has_required_method_impl(goal, record, requirement) {
+            if crate::sema::impl_engine::find_method_witness(
+                self.context,
+                type_head,
+                requirement,
+                &record,
+                GenericArguments::empty(),
+                &FxHashMap::default(),
+            )
+            .is_some()
+            {
                 continue;
             }
 
@@ -249,51 +256,6 @@ impl<'ctx> Actor<'ctx> {
                 Some(span),
             );
         }
-    }
-
-    fn has_required_method_impl(
-        &self,
-        goal: InterfaceGoal<'ctx>,
-        record: ConformanceRecord<'ctx>,
-        requirement: &InterfaceMethodRequirement<'ctx>,
-    ) -> bool {
-        if record.is_inline {
-            let Some(type_head) = type_head_from_value_ty(goal.self_ty) else {
-                return false;
-            };
-            let args_template = GenericsBuilder::identity_for_item(self.context, requirement.id);
-            return crate::sema::tycheck::derive::try_synthesize_method(
-                self.context,
-                type_head,
-                goal.self_ty,
-                goal.interface_id,
-                goal.to_interface_ref(self.context).arguments,
-                requirement.name,
-                requirement.id,
-                args_template,
-            )
-            .is_some();
-        }
-
-        let empty_type_witnesses: FxHashMap<DefinitionID, Ty<'ctx>> = FxHashMap::default();
-
-        self.context
-            .with_type_database(record.extension.package(), |db| {
-                db.def_to_fn_sig.keys().copied().any(|candidate| {
-                    self.context.definition_parent(candidate) == Some(record.extension)
-                        && self.context.definition_kind(candidate)
-                            == crate::sema::resolve::models::DefinitionKind::AssociatedFunction
-                        && self.context.definition_ident(candidate).symbol == requirement.name
-                        && method_signature_matches(
-                            self.context,
-                            requirement.id,
-                            candidate,
-                            &record,
-                            GenericArguments::empty(),
-                            &empty_type_witnesses,
-                        )
-                })
-            })
     }
 
     fn collect_interface_with_supers(

@@ -2,7 +2,8 @@ use crate::{
     ast::Identifier,
     compile::context::GlobalContext,
     sema::resolve::models::{
-        DefinitionID, DefinitionKind, Holder, NameEntry, ResolutionOutput, Scope, ScopeNamespace,
+        DefinitionID, DefinitionKind, Holder, NameEntry, Resolution, ResolutionError,
+        ResolutionOutput, Scope, ScopeNamespace,
     },
     span::Symbol,
 };
@@ -40,9 +41,18 @@ pub(crate) fn resolve_in_scope<'arena>(
     scope: Scope<'arena>,
     identifier: Identifier,
     namespace: ScopeNamespace,
-) -> Option<Holder<'arena>> {
+) -> Result<Holder<'arena>, ResolutionError> {
+    resolve_in_scope_with_path(scope, identifier, namespace, &mut Vec::new())
+}
+
+fn resolve_in_scope_with_path<'arena>(
+    scope: Scope<'arena>,
+    identifier: Identifier,
+    namespace: ScopeNamespace,
+    active: &mut Vec<Scope<'arena>>,
+) -> Result<Holder<'arena>, ResolutionError> {
     if let Some(holder) = find_holder_in_scope(scope, identifier.symbol, namespace) {
-        return Some(holder);
+        return Ok(holder);
     }
 
     let usages = match scope.kind {
@@ -52,30 +62,46 @@ pub(crate) fn resolve_in_scope<'arena>(
             _,
             DefinitionKind::Module | DefinitionKind::Namespace,
         ) => &scope.glob_exports,
-        _ => return None,
+        _ => return Err(ResolutionError::UnknownSymbol(identifier)),
     };
 
+    // Glob reexports may form cycles. Only suppress the current recursion path:
+    // independent routes to a definition must retain the same ambiguity rules.
+    if active.contains(&scope) {
+        return Err(ResolutionError::UnknownSymbol(identifier));
+    }
+    active.push(scope);
     let mut candidates = Vec::new();
     for usage in usages.borrow().iter() {
         let Some(used_scope) = usage.module_scope.get() else {
             continue;
         };
-        if let Some(holder) = resolve_in_scope(used_scope, identifier, namespace) {
+        if let Ok(holder) = resolve_in_scope_with_path(used_scope, identifier, namespace, active) {
             candidates.push(holder);
         }
     }
 
+    active.pop();
+
     match candidates.len() {
-        0 => None,
-        1 => candidates.into_iter().next(),
-        _ if namespace == ScopeNamespace::Value => {
-            let all_entries = candidates
+        1 => Ok(candidates.pop().unwrap()),
+        2.. if namespace == ScopeNamespace::Value => {
+            let entries: Vec<_> = candidates
                 .into_iter()
                 .flat_map(|candidate| candidate.all_entries())
                 .collect();
-            Some(Holder::Overloaded(all_entries))
+            if entries.iter().all(|entry| {
+                matches!(
+                    entry.resolution(),
+                    Resolution::Definition(_, DefinitionKind::Function)
+                )
+            }) {
+                Ok(Holder::Overloaded(entries))
+            } else {
+                Err(ResolutionError::AmbiguousUsage(identifier))
+            }
         }
-        _ => None,
+        _ => Err(ResolutionError::UnknownSymbol(identifier)),
     }
 }
 

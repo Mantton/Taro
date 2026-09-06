@@ -1,0 +1,20 @@
+interface FixedConsumer[const N: usize] {
+    func sum(&self, _ values: [int32; N]) -> int32
+}
+
+struct PairConsumer {}
+impl FixedConsumer[2] for PairConsumer {
+    func sum(&self, _ values: [int32; 2]) -> int32 {
+        *values.at(0) + *values.at(1)
+    }
+}
+
+func consume[C: FixedConsumer[2]](_ consumer: C) -> int32 {
+    consumer.sum([19, 23])
+}
+
+func main() {
+    assert(consume(PairConsumer {}) == 42, "const generic method signature")
+    let erased: any FixedConsumer[2] = PairConsumer {}
+    assert(erased.sum([11, 31]) == 42, "const generic witness signature")
+}

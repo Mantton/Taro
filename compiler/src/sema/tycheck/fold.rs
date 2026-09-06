@@ -1,7 +1,7 @@
 use crate::{
     compile::context::GlobalContext,
     sema::models::{
-        AssociatedTypeBinding, Const, EnumDefinition, EnumVariant, EnumVariantField,
+        AssociatedTypeBinding, Const, Constraint, EnumDefinition, EnumVariant, EnumVariantField,
         EnumVariantKind, GenericArgument, GenericArguments, InterfaceReference, StructDefinition,
         StructField, Ty, TyKind, TyList,
     },
@@ -36,6 +36,48 @@ impl<'ctx> TypeFoldable<'ctx> for Ty<'ctx> {
 impl<'ctx> TypeFoldable<'ctx> for Const<'ctx> {
     fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
         folder.fold_const(self)
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for GenericArgument<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
+        match self {
+            GenericArgument::Type(ty) => GenericArgument::Type(ty.fold_with(folder)),
+            GenericArgument::Const(value) => GenericArgument::Const(value.fold_with(folder)),
+        }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for GenericArguments<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
+        match map_changed(&self, |arg| arg.fold_with(folder)) {
+            Some(folded) => folder.gcx().store.interners.intern_generic_args(folded),
+            None => self,
+        }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for InterfaceReference<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
+        Self {
+            id: self.id,
+            arguments: self.arguments.fold_with(folder),
+            bindings: fold_associated_type_bindings(folder.gcx(), self.bindings, folder),
+        }
+    }
+}
+
+impl<'ctx> TypeFoldable<'ctx> for Constraint<'ctx> {
+    fn fold_with<F: TypeFolder<'ctx> + ?Sized>(self, folder: &mut F) -> Self {
+        match self {
+            Constraint::TypeEquality(lhs, rhs) => {
+                Constraint::TypeEquality(lhs.fold_with(folder), rhs.fold_with(folder))
+            }
+            Constraint::Bound { ty, interface } => Constraint::Bound {
+                ty: ty.fold_with(folder),
+                interface: interface.fold_with(folder),
+            },
+        }
     }
 }
 
@@ -74,7 +116,8 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
     use TyKind::*;
     match kind {
         // Primitive/leaf types - no folding needed
-        Bool | Rune | Int(_) | UInt(_) | Float(_) | Infer(_) | Error => None,
+        Bool | Rune | String | Int(_) | UInt(_) | Float(_) | Infer(_) | Parameter(_)
+        | Opaque(_) | Error | Never => None,
 
         // Types with single Ty parameter
         Array { element, len } => {
@@ -108,7 +151,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         }
 
         Adt(def, args) => {
-            let folded_args = fold_generic_args(gcx, args, folder);
+            let folded_args = args.fold_with(folder);
             if args == folded_args {
                 None
             } else {
@@ -142,11 +185,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
         }
 
         BoxedExistential { interfaces } => {
-            let folded = map_changed(interfaces, |iface| InterfaceReference {
-                id: iface.id,
-                arguments: fold_generic_args(gcx, iface.arguments, folder),
-                bindings: fold_associated_type_bindings(gcx, iface.bindings, folder),
-            })?;
+            let folded = map_changed(interfaces, |iface| iface.fold_with(folder))?;
             Some(BoxedExistential {
                 interfaces: gcx.store.arenas.global.alloc_slice_clone(&folded),
             })
@@ -154,7 +193,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
 
         // Alias type - fold generic args
         Alias { kind, def_id, args } => {
-            let folded_args = fold_generic_args(gcx, args, folder);
+            let folded_args = args.fold_with(folder);
             if args == folded_args {
                 None
             } else {
@@ -174,7 +213,7 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
             output,
         } => {
             // Determine implicit closure types must be deeply resolved to eliminate inference variables.
-            let folded_generics = fold_generic_args(gcx, captured_generics, folder);
+            let folded_generics = captured_generics.fold_with(folder);
             let folded_inputs = fold_ty_list(gcx, inputs, folder);
             let folded_output = output.fold_with(folder);
 
@@ -193,8 +232,6 @@ fn fold_ty_kind<'ctx, F: TypeFolder<'ctx> + ?Sized>(
                 })
             }
         }
-
-        _ => None,
     }
 }
 
@@ -213,20 +250,6 @@ fn map_changed<T: Copy + PartialEq>(items: &[T], mut fold: impl FnMut(T) -> T) -
         }
     }
     rebuilt
-}
-
-fn fold_generic_args<'ctx, F: TypeFolder<'ctx> + ?Sized>(
-    gcx: GlobalContext<'ctx>,
-    args: GenericArguments<'ctx>,
-    folder: &mut F,
-) -> GenericArguments<'ctx> {
-    match map_changed(&args, |arg| match arg {
-        GenericArgument::Type(ty) => GenericArgument::Type(ty.fold_with(folder)),
-        GenericArgument::Const(c) => GenericArgument::Const(c.fold_with(folder)),
-    }) {
-        Some(folded) => gcx.store.interners.intern_generic_args(folded),
-        None => args,
-    }
 }
 
 fn fold_ty_list<'ctx, F: TypeFolder<'ctx> + ?Sized>(

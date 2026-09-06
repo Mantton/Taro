@@ -2,10 +2,10 @@ use crate::{
     compile::context::Gcx,
     sema::{
         models::{
-            AliasKind, ConformanceRecord, ConformanceWitness, GenericArgument, GenericArguments,
-            GenericParameter, InferTy, InterfaceGoal, InterfaceMethodRequirement,
-            InterfacePropertyRequirement, MethodImplementation, MethodWitness, SelectionError,
-            SelectionMode, SyntheticMethodKind, Ty, TyKind,
+            AliasKind, ConformanceRecord, ConformanceWitness, GenericArguments, GenericParameter,
+            InferTy, InterfaceGoal, InterfaceMethodRequirement, InterfacePropertyRequirement,
+            MethodImplementation, MethodWitness, SelectionError, SelectionMode,
+            SyntheticMethodKind, Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
@@ -376,7 +376,7 @@ fn stored_field_property_accessor_witness<'ctx>(
         TyKind::Adt(_, args) => instantiate_ty_with_args(gcx, field.ty, args),
         _ => field.ty,
     };
-    let mut expected_ty = substitute_with_args(gcx, requirement.ty, record.interface.arguments);
+    let mut expected_ty = instantiate_ty_with_args(gcx, requirement.ty, record.interface.arguments);
     if !subst.is_empty() {
         expected_ty = instantiate_ty_with_args(gcx, expected_ty, subst);
     }
@@ -391,7 +391,7 @@ fn stored_field_property_accessor_witness<'ctx>(
                 return None;
             }
             let mut receiver = gcx.get_signature(requirement.getter_id).inputs.first()?.ty;
-            receiver = substitute_with_args(gcx, receiver, record.interface.arguments);
+            receiver = instantiate_ty_with_args(gcx, receiver, record.interface.arguments);
             if !subst.is_empty() {
                 receiver = instantiate_ty_with_args(gcx, receiver, subst);
             }
@@ -620,7 +620,7 @@ fn find_type_witness<'ctx>(
     assoc.default_type
 }
 
-fn find_method_witness<'ctx>(
+pub(crate) fn find_method_witness<'ctx>(
     gcx: Gcx<'ctx>,
     type_head: TypeHead,
     requirement: &InterfaceMethodRequirement<'ctx>,
@@ -743,7 +743,7 @@ fn find_constant_witness<'ctx>(
 ) -> Option<crate::hir::DefinitionID> {
     let impl_id = record.extension;
     let extension_pkg = impl_id.package();
-    let mut expected_ty = substitute_with_args(gcx, requirement_ty, record.interface.arguments);
+    let mut expected_ty = instantiate_ty_with_args(gcx, requirement_ty, record.interface.arguments);
     if !subst.is_empty() {
         expected_ty = instantiate_ty_with_args(gcx, expected_ty, subst);
     }
@@ -780,7 +780,7 @@ fn find_constant_witness<'ctx>(
     None
 }
 
-pub(crate) fn method_signature_matches<'ctx>(
+fn method_signature_matches<'ctx>(
     gcx: Gcx<'ctx>,
     interface_fn_id: crate::hir::DefinitionID,
     impl_fn_id: crate::hir::DefinitionID,
@@ -804,7 +804,7 @@ pub(crate) fn method_signature_matches<'ctx>(
     }
 
     let mut expected = Ty::from_labeled_signature(gcx, interface_sig);
-    expected = substitute_with_args(gcx, expected, record.interface.arguments);
+    expected = instantiate_ty_with_args(gcx, expected, record.interface.arguments);
     if !subst.is_empty() {
         expected = instantiate_ty_with_args(gcx, expected, subst);
     }
@@ -860,18 +860,6 @@ fn build_method_args_template<'ctx>(
     gcx.store.interners.intern_generic_args(args)
 }
 
-fn substitute_with_args<'ctx>(
-    gcx: Gcx<'ctx>,
-    ty: Ty<'ctx>,
-    args: GenericArguments<'ctx>,
-) -> Ty<'ctx> {
-    if args.is_empty() {
-        return ty;
-    }
-    let mut substitutor = ArgSubstitutor { gcx, args };
-    ty.fold_with(&mut substitutor)
-}
-
 fn substitute_projection_witnesses<'ctx>(
     gcx: Gcx<'ctx>,
     ty: Ty<'ctx>,
@@ -885,31 +873,6 @@ fn substitute_projection_witnesses<'ctx>(
         type_witnesses,
     };
     ty.fold_with(&mut substitutor)
-}
-
-struct ArgSubstitutor<'ctx> {
-    gcx: Gcx<'ctx>,
-    args: GenericArguments<'ctx>,
-}
-
-impl<'ctx> TypeFolder<'ctx> for ArgSubstitutor<'ctx> {
-    fn gcx(&self) -> Gcx<'ctx> {
-        self.gcx
-    }
-
-    fn fold_ty(&mut self, ty: Ty<'ctx>) -> Ty<'ctx> {
-        match ty.kind() {
-            TyKind::Parameter(param) => {
-                if let Some(arg) = self.args.get(param.index as usize) {
-                    if let GenericArgument::Type(sub_ty) = arg {
-                        return *sub_ty;
-                    }
-                }
-                ty
-            }
-            _ => ty.super_fold_with(self),
-        }
-    }
 }
 
 struct ProjectionSubstitutor<'ctx, 'w> {
@@ -984,5 +947,52 @@ impl<'ctx> TypeFolder<'ctx> for SignatureFreshener<'ctx> {
             }
             _ => ty.super_fold_with(self),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn conformance_substitutes_interface_const_parameters() {
+        let diagnostics = crate::sema::tycheck::test_support::analyze_script_diagnostics(
+            r#"
+interface Fixed[const N: usize] {
+    func consume(&self, _ values: [int32; N])
+}
+struct Consumer {}
+impl Fixed[2] for Consumer {
+    func consume(&self, _ values: [int32; 2]) {}
+}
+func main() {}
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+    #[test]
+    fn mismatched_method_reports_missing_requirement_without_panicking() {
+        let diagnostics = crate::sema::tycheck::test_support::analyze_script_diagnostics(
+            r#"
+interface Value {
+    func consume(&self, _ value: int32)
+}
+struct Consumer {}
+impl Value for Consumer {
+    func consume(&self, _ value: bool) {}
+}
+func main() {}
+"#,
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("does not satisfy requirements")),
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("missing required method 'consume'")),
+            "{diagnostics:?}"
+        );
     }
 }

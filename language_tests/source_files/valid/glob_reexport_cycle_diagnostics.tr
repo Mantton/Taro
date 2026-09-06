@@ -1,0 +1,8 @@
+// PACKAGE: glob_reexport_cycle
+// CHECK_ONLY
+// EXPECT_EXIT: 1
+// EXPECT_STDERR_COUNT: 1 unknown symbol 'Missing' in module
+// EXPECT_STDERR_NOT_CONTAINS: stack overflow
+// EXPECT_STDERR_NOT_CONTAINS: panicked
+
+// A missing name in cyclic glob reexports must produce a normal diagnostic.

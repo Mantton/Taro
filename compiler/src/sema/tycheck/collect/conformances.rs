@@ -163,7 +163,6 @@ impl<'ctx> Actor<'ctx> {
             return;
         }
 
-        let kind = self.context.definition_kind(type_id);
         let ty_key = TypeHead::Nominal(type_id);
         let self_ty = self.context.get_type(type_id);
 
@@ -184,11 +183,6 @@ impl<'ctx> Actor<'ctx> {
             // Reject compiler-only interfaces (Tuple)
             if self.is_compiler_only_interface(reference.id) {
                 self.emit_compiler_only_error(interface.span, reference);
-                continue;
-            }
-
-            // Validate auto-derive for marker interfaces (Copy, etc.)
-            if !self.validate_marker_derivation(ty_key, reference, interface.span, kind) {
                 continue;
             }
 
@@ -393,20 +387,15 @@ impl<'ctx> Actor<'ctx> {
         let span = Span::empty(crate::span::FileID::from_usize(0));
         let unifier = TypeUnifier::new(icx.clone());
 
-        let (existing_iface, existing_extension_args) =
-            match self.instantiate_interface_for_overlap(existing, icx.clone(), span) {
-                Some(args) => args,
-                None => return false,
-            };
-        let (new_iface, new_extension_args) = match self.instantiate_interface_for_new_overlap(
-            new_interface,
-            new_extension_id,
-            icx.clone(),
-            span,
-        ) {
-            Some(args) => args,
-            None => return false,
-        };
+        let existing_extension_args = icx.fresh_args_for_def(existing.extension, span);
+        let existing_iface = instantiate_interface_ref_with_args(
+            self.context,
+            existing.interface,
+            existing_extension_args,
+        );
+        let new_extension_args = icx.fresh_args_for_def(new_extension_id, span);
+        let new_iface =
+            instantiate_interface_ref_with_args(self.context, new_interface, new_extension_args);
 
         let Some(existing_self) = self.conformance_self_ty(existing.extension) else {
             return false;
@@ -470,36 +459,6 @@ impl<'ctx> Actor<'ctx> {
             }
             _ => None,
         }
-    }
-
-    fn instantiate_interface_for_overlap(
-        &self,
-        record: ConformanceRecord<'ctx>,
-        icx: Rc<InferCtx<'ctx>>,
-        span: Span,
-    ) -> Option<(
-        InterfaceReference<'ctx>,
-        crate::sema::models::GenericArguments<'ctx>,
-    )> {
-        let args = icx.fresh_args_for_def(record.extension, span);
-        let instantiated =
-            instantiate_interface_ref_with_args(self.context, record.interface, args);
-        Some((instantiated, args))
-    }
-
-    fn instantiate_interface_for_new_overlap(
-        &self,
-        interface: InterfaceReference<'ctx>,
-        extension_id: DefinitionID,
-        icx: Rc<InferCtx<'ctx>>,
-        span: Span,
-    ) -> Option<(
-        InterfaceReference<'ctx>,
-        crate::sema::models::GenericArguments<'ctx>,
-    )> {
-        let args = icx.fresh_args_for_def(extension_id, span);
-        let instantiated = instantiate_interface_ref_with_args(self.context, interface, args);
-        Some((instantiated, args))
     }
 
     fn combined_constraints_potentially_satisfiable(
@@ -605,16 +564,5 @@ impl<'ctx> Actor<'ctx> {
             "existing conformance is defined here".into(),
             Some(prev.location),
         );
-    }
-
-    /// Marker interfaces no longer require special field-level validation.
-    fn validate_marker_derivation(
-        &self,
-        _ty_key: TypeHead,
-        _interface: InterfaceReference<'ctx>,
-        _span: Span,
-        _kind: DefinitionKind,
-    ) -> bool {
-        true
     }
 }

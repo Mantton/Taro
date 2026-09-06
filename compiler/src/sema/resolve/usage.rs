@@ -203,4 +203,84 @@ mod tests {
             "{diagnostics:#?}"
         );
     }
+    #[test]
+    fn glob_imports_merge_function_overloads() {
+        let diagnostics = analyze_package_diagnostics(&[
+            (
+                "a/value.tr",
+                "public func value(_ x: int32) -> int32 { x }\n",
+            ),
+            ("b/value.tr", "public func value(_ x: bool) -> bool { x }\n"),
+            (
+                "main.tr",
+                "import package.a.*\nimport package.b.*\nfunc exercise() { let _: int32 = value(1); let _: bool = value(true) }\n",
+            ),
+        ]);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn glob_imports_reject_ambiguous_constants() {
+        let diagnostics = analyze_package_diagnostics(&[
+            ("a/value.tr", "public const VALUE: int32 = 1\n"),
+            ("b/value.tr", "public const VALUE: int32 = 2\n"),
+            (
+                "main.tr",
+                "import package.a.*\nimport package.b.*\nfunc exercise() -> int32 { VALUE }\n",
+            ),
+        ]);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("ambiguous usage of `VALUE`")),
+            "{diagnostics:#?}"
+        );
+    }
+    #[test]
+    fn cyclic_glob_reexports_report_missing_symbols_once() {
+        let diagnostics = analyze_package_diagnostics(&[
+            ("a/reexport.tr", "export package.b.*\n"),
+            ("b/reexport.tr", "export package.a.*\n"),
+            ("main.tr", "import package.a.Missing\nfunc main() {}\n"),
+        ]);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].message, "unknown symbol 'Missing' in module");
+    }
+
+    #[test]
+    fn cyclic_glob_reexports_still_find_reachable_symbols() {
+        let diagnostics = analyze_package_diagnostics(&[
+            ("a/reexport.tr", "export package.b.*\n"),
+            ("b/reexport.tr", "export package.a.*\nexport package.c.*\n"),
+            ("c/value.tr", "public struct Value {}\n"),
+            (
+                "main.tr",
+                "import package.a.Value\nfunc consume(_ value: Value) {}\n",
+            ),
+        ]);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn glob_diamond_paths_preserve_overload_ambiguity() {
+        let diagnostics = analyze_package_diagnostics(&[
+            ("a/reexport.tr", "export package.c.*\n"),
+            ("b/reexport.tr", "export package.c.*\n"),
+            (
+                "c/value.tr",
+                "public func value(_ x: int32) -> int32 { x }\n",
+            ),
+            (
+                "main.tr",
+                "import package.a.*\nimport package.b.*\nfunc exercise() -> int32 { value(1) }\n",
+            ),
+        ]);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("ambiguous overload; unable to pick a best candidate"),
+            "{diagnostics:#?}"
+        );
+    }
 }
