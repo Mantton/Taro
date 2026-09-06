@@ -2,24 +2,26 @@ use super::{CallTarget, Emitter, LocalStorage, StackMapSiteKind};
 use crate::{
     codegen::{
         abi,
-        mangle::{interface_ref_key, mangle_instance, stable_hash_u64, ty_key},
+        mangle::{interface_ref_key, stable_hash_u64, ty_key},
     },
     error::CompileResult,
     hir,
     mir::{self, Operand, Place},
     sema::{
         models::{
-            AssociatedTypeBinding, ConstKind, GenericArgument, GenericArguments,
-            InterfaceDefinition, InterfaceReference, InterfaceRequirements, SelectionMode, Ty,
-            TyKind,
+            AssociatedTypeBinding, GenericArgument, GenericArguments, InterfaceDefinition,
+            InterfaceReference, InterfaceRequirements, SelectionMode, Ty, TyKind,
         },
         resolve::models::TypeHead,
         tycheck::{
             resolve_conformance_witness_with_mode,
-            utils::{instantiate::instantiate_ty_with_args, type_head_from_value_ty},
+            utils::{
+                instantiate::instantiate_ty_with_args, type_head_from_value_ty,
+                unresolved::contains_unresolved_generics,
+            },
         },
     },
-    specialize::{Instance, InstanceKind, resolve_instance},
+    specialize::{InstanceKind, resolve_instance},
 };
 use inkwell::{
     AddressSpace,
@@ -106,58 +108,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         for superface in self.interface_superfaces(iface) {
             self.collect_interface_and_superfaces_for_metadata(superface, seen, out);
         }
-    }
-
-    fn ty_contains_unresolved_generics(&self, ty: Ty<'gcx>) -> bool {
-        match ty.kind() {
-            TyKind::Parameter(_) | TyKind::Infer(_) | TyKind::Alias { .. } => true,
-            TyKind::Adt(_, args) => args.iter().any(|arg| match arg {
-                GenericArgument::Type(ty) => self.ty_contains_unresolved_generics(*ty),
-                GenericArgument::Const(c) => self.const_contains_unresolved_generics(*c),
-            }),
-            TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) => {
-                self.ty_contains_unresolved_generics(inner)
-            }
-            TyKind::Array { element, len } => {
-                self.ty_contains_unresolved_generics(element)
-                    || self.const_contains_unresolved_generics(len)
-            }
-            TyKind::Tuple(items) => items
-                .iter()
-                .any(|item| self.ty_contains_unresolved_generics(*item)),
-            TyKind::FnPointer { inputs, output } => {
-                inputs
-                    .iter()
-                    .any(|input| self.ty_contains_unresolved_generics(*input))
-                    || self.ty_contains_unresolved_generics(output)
-            }
-            TyKind::BoxedExistential { interfaces } => interfaces
-                .iter()
-                .any(|iface| !self.interface_ref_is_runtime_materializable(*iface)),
-            _ => false,
-        }
-    }
-
-    fn const_contains_unresolved_generics(&self, c: crate::sema::models::Const<'gcx>) -> bool {
-        matches!(c.kind, ConstKind::Param(_) | ConstKind::Infer(_))
-            || self.ty_contains_unresolved_generics(c.ty)
-    }
-
-    fn interface_ref_is_runtime_materializable(&self, iface: InterfaceReference<'gcx>) -> bool {
-        iface.arguments.iter().all(|arg| match arg {
-            GenericArgument::Type(ty) => !self.ty_contains_unresolved_generics(*ty),
-            GenericArgument::Const(c) => !self.const_contains_unresolved_generics(*c),
-        }) && iface
-            .bindings
-            .iter()
-            .all(|binding| !self.ty_contains_unresolved_generics(binding.ty))
-    }
-
-    fn generic_args_are_runtime_materializable(&self, args: GenericArguments<'gcx>) -> bool {
-        args.iter().all(|arg| match arg {
-            GenericArgument::Type(ty) => !self.ty_contains_unresolved_generics(*ty),
-            GenericArgument::Const(c) => !self.const_contains_unresolved_generics(*c),
-        })
     }
 
     fn collect_conformance_interfaces_for_metadata(
@@ -267,7 +217,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         let mut entry_values = Vec::new();
         for iface in interfaces {
-            if !self.interface_ref_is_runtime_materializable(iface) {
+            if contains_unresolved_generics(iface) {
                 continue;
             }
             let Some(_) = self.conformance_witness(iface) else {
@@ -384,7 +334,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                         self.debug_format_generic_args(args),
                     ));
                 }
-                if !self.generic_args_are_runtime_materializable(args) {
+                if contains_unresolved_generics(args) {
                     None
                 } else {
                     Some((method.id, args))
@@ -436,42 +386,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         opaque_ptr
     }
 
-    fn function_ptr_for_instance(&mut self, instance: Instance<'gcx>) -> PointerValue<'llvm> {
-        let def_id = match instance.kind() {
-            InstanceKind::Item(def_id) => def_id,
-            InstanceKind::Virtual(_) => {
-                return self.context.ptr_type(AddressSpace::default()).const_null();
-            }
-        };
-
-        if let Some(&f) = self.functions.get(&instance) {
-            return f.as_global_value().as_pointer_value();
-        }
-
-        let sig = self.gcx.get_signature(def_id);
-        let prev_subst = self.current_subst;
-        self.current_subst = instance.args();
-        let fn_abi = self.compute_fn_abi(sig);
-        self.current_subst = prev_subst;
-
-        if self.is_foreign_function(def_id) {
-            let f = self.declare_foreign_function(def_id);
-            self.insert_function_instance(instance, f, fn_abi);
-            return f.as_global_value().as_pointer_value();
-        }
-
-        let prev_subst = self.current_subst;
-        self.current_subst = instance.args();
-        let fn_ty = self.lower_fn_abi(&fn_abi);
-        let name = mangle_instance(self.gcx, instance);
-        let f = self
-            .module
-            .add_function(&name, fn_ty, Some(Linkage::External));
-        self.insert_function_instance(instance, f, fn_abi);
-        self.current_subst = prev_subst;
-        f.as_global_value().as_pointer_value()
-    }
-
     /// Generate a thunk for witness table entries.
     /// The thunk takes a raw ptr as self (from existential data pointer) and forwards
     /// to the concrete implementation with the correct signature.
@@ -482,7 +396,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         impl_def_id: hir::DefinitionID,
         args: GenericArguments<'gcx>,
     ) -> PointerValue<'llvm> {
-        if !self.generic_args_are_runtime_materializable(args) {
+        if contains_unresolved_generics(args) {
             return self.context.ptr_type(AddressSpace::default()).const_null();
         }
         // Check cache first
@@ -494,13 +408,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Get the concrete implementation function
         let impl_instance = resolve_instance(self.gcx, impl_def_id, args);
         let impl_target_def_id = impl_instance.def_id();
-        let impl_fn = self.function_ptr_for_instance(impl_instance);
+        let (impl_fn, impl_fn_abi) = self.instance_function_with_abi(impl_instance);
 
         // Get the implementation signature
         let prev_subst = self.current_subst;
         self.current_subst = impl_instance.args();
         let sig = self.gcx.get_signature(impl_target_def_id);
-        let impl_fn_abi = self.compute_fn_abi(sig);
 
         // Build thunk parameter types: first param is raw ptr (data pointer from existential),
         // then map remaining implementation arguments according to ABI mode.
@@ -530,7 +443,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             abi::PassMode::Ignore | abi::PassMode::Indirect { .. } => {
                 self.context.void_type().fn_type(&thunk_param_types, false)
             }
-            abi::PassMode::Direct => match self.lower_ty(sig.output) {
+            abi::PassMode::Direct => match self.lower_ty(impl_fn_abi.ret.ty) {
                 Some(ret) => ret.fn_type(&thunk_param_types, false),
                 None => self.context.void_type().fn_type(&thunk_param_types, false),
             },
@@ -607,13 +520,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             param_index += 1;
         }
 
-        // Get the implementation function type for indirect call
-        let impl_fn_ty = self.lower_fn_abi(&impl_fn_abi);
-
         // Call the implementation
         let call = self
             .builder
-            .build_indirect_call(impl_fn_ty, impl_fn, &call_args, "thunk_call")
+            .build_call(impl_fn, &call_args, "thunk_call")
             .unwrap();
 
         // Return the result

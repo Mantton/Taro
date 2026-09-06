@@ -1,4 +1,5 @@
-use super::{Emitter, enum_variant_tuple_ty};
+use super::Emitter;
+use crate::mir::enum_variant_tuple_ty;
 use crate::{
     error::CompileResult,
     hir,

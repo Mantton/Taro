@@ -55,6 +55,44 @@ pub(crate) struct GcLayoutNode {
     pub width: u8,
 }
 
+/// Pointer storage to zero before a local becomes live. Unlike runtime tracing,
+/// initialization covers every enum variant and stops at reference slots: the
+/// referenced object is separate storage and may not even be initialized yet.
+/// Layout cycles only follow reference edges, so this traversal is acyclic.
+pub(crate) fn gc_pointer_offsets(nodes: &[GcLayoutNode]) -> Vec<u64> {
+    fn append(nodes: &[GcLayoutNode], index: usize, base: u64, offsets: &mut Vec<u64>) {
+        let node = nodes[index];
+        let base = base + node.offset;
+        match node.kind {
+            GcLayoutKind::Pointer | GcLayoutKind::Reference => offsets.push(base),
+            GcLayoutKind::Aggregate | GcLayoutKind::Tagged => {
+                for child in node.first_child..node.first_child + node.child_count {
+                    append(nodes, child as usize, base, offsets);
+                }
+            }
+            GcLayoutKind::Repeat if node.child_count != 0 => {
+                let mut element_offsets = Vec::new();
+                append(nodes, node.first_child as usize, 0, &mut element_offsets);
+                if !element_offsets.is_empty() {
+                    for element in 0..node.child_count {
+                        let element_base = base + u64::from(element) * node.stride;
+                        offsets.extend(element_offsets.iter().map(|offset| element_base + offset));
+                    }
+                }
+            }
+            GcLayoutKind::Repeat => {}
+        }
+    }
+
+    let mut offsets = Vec::new();
+    if !nodes.is_empty() {
+        append(nodes, 0, 0, &mut offsets);
+        offsets.sort_unstable();
+        offsets.dedup();
+    }
+    offsets
+}
+
 /// Typed layout associated with one LLVM stack-map operand.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PendingRootOperand {
@@ -806,6 +844,67 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
         time::SystemTime,
     };
+
+    #[test]
+    fn initialization_offsets_cover_variant_union_without_following_references() {
+        use super::{GcLayoutKind::*, GcLayoutNode, gc_pointer_offsets};
+        let node = |offset, first_child, child_count, kind| GcLayoutNode {
+            offset,
+            stride: 0,
+            first_child,
+            child_count,
+            kind,
+            width: 1,
+        };
+        let nodes = [
+            node(8, 1, 2, Tagged),
+            node(8, 3, 2, Aggregate),
+            node(8, 5, 2, Aggregate),
+            // Reference cycles refer to external storage. Do not follow one
+            // while computing addresses within this local to initialize.
+            node(0, 0, 1, Reference),
+            node(8, 0, 0, Pointer),
+            node(0, 0, 0, Pointer),
+            node(16, 0, 0, Pointer),
+        ];
+        assert_eq!(gc_pointer_offsets(&nodes), vec![16, 24, 32]);
+    }
+
+    #[test]
+    fn initialization_offsets_use_nested_repeat_stride_and_ignore_empty_arrays() {
+        use super::{GcLayoutKind::*, GcLayoutNode, gc_pointer_offsets};
+        let nodes = [
+            GcLayoutNode {
+                offset: 8,
+                stride: 32,
+                first_child: 1,
+                child_count: 2,
+                kind: Repeat,
+                width: 0,
+            },
+            GcLayoutNode {
+                offset: 4,
+                stride: 8,
+                first_child: 2,
+                child_count: 3,
+                kind: Repeat,
+                width: 0,
+            },
+            GcLayoutNode {
+                offset: 0,
+                stride: 0,
+                first_child: 0,
+                child_count: 0,
+                kind: Pointer,
+                width: 0,
+            },
+        ];
+        assert_eq!(gc_pointer_offsets(&nodes), vec![12, 20, 28, 44, 52, 60]);
+        let mut empty = nodes;
+        empty[0].child_count = 0;
+        assert!(gc_pointer_offsets(&empty).is_empty());
+        assert!(gc_pointer_offsets(&[]).is_empty());
+    }
 
     const STACK_MAP_ID: u64 = 0x0102_0304_0506_0708;
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);

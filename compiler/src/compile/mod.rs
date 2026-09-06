@@ -8,7 +8,6 @@ use crate::{
     error::CompileResult,
     hir, mir, parse, sema, specialize, thir,
 };
-use rustc_hash::FxHashSet;
 use std::time::{Duration, Instant};
 
 pub mod bench_collector;
@@ -24,7 +23,7 @@ pub struct Compiler<'state> {
 
 #[derive(Debug, Clone)]
 struct PhaseTiming {
-    name: &'static str,
+    name: String,
     duration: Duration,
 }
 
@@ -36,13 +35,35 @@ struct TimingReport {
 impl TimingReport {
     fn push_elapsed(&mut self, name: &'static str, started_at: Instant) {
         self.phases.push(PhaseTiming {
-            name,
+            name: name.into(),
             duration: started_at.elapsed(),
         });
     }
 
-    fn push_duration(&mut self, name: &'static str, duration: Duration) {
-        self.phases.push(PhaseTiming { name, duration });
+    fn push_duration(&mut self, name: impl Into<String>, duration: Duration) {
+        self.phases.push(PhaseTiming {
+            name: name.into(),
+            duration,
+        });
+    }
+
+    fn push_codegen(
+        &mut self,
+        prefix: &str,
+        entry: &str,
+        timings: codegen::llvm::CodegenPhaseTimings,
+    ) {
+        for (phase, duration) in [
+            ("setup", timings.module_setup),
+            ("declare_instances", timings.declare_instances),
+            ("lower_instances", timings.lower_instances),
+            (entry, timings.emit_entry_or_harness),
+            ("verify", timings.verify),
+            ("optimize_ir", timings.optimize_ir),
+            ("emit_artifact", timings.emit_artifact),
+        ] {
+            self.push_duration(format!("{prefix}.{phase}"), duration);
+        }
     }
 
     fn emit(&self, package_name: &str, mode: &str, total: Duration) {
@@ -74,31 +95,92 @@ impl<'state> Compiler<'state> {
     }
 }
 
+enum CompilationMode<'a> {
+    Build,
+    Emit,
+    Test(&'a test_collector::TestSelection),
+    Bench(&'a bench_collector::BenchmarkSelection),
+}
+
+impl CompilationMode<'_> {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Emit => "emit",
+            Self::Test(_) => "test",
+            Self::Bench(_) => "bench",
+        }
+    }
+}
+
 impl<'state> Compiler<'state> {
     pub fn build(&mut self) -> CompileResult<Option<std::path::PathBuf>> {
-        let (_, executable) = self.build_with_link(true)?;
-        Ok(executable)
+        self.compile(CompilationMode::Build)
+            .map(|(_, executable)| executable)
     }
 
     /// Compile the package into its selected module artifact without linking.
     pub fn emit_module(&mut self) -> CompileResult<ModuleArtifact> {
-        let (artifact, _) = self.build_with_link(false)?;
-        Ok(artifact)
+        self.compile(CompilationMode::Emit)
+            .map(|(artifact, _)| artifact)
     }
 
-    fn build_with_link(
+    /// Compile selected tests with a generated test harness as the entry point.
+    pub fn test(
         &mut self,
-        should_link: bool,
+        selection: &test_collector::TestSelection,
+    ) -> CompileResult<Option<std::path::PathBuf>> {
+        self.compile(CompilationMode::Test(selection))
+            .map(|(_, executable)| executable)
+    }
+
+    /// Compile selected benchmarks with a generated benchmark harness.
+    pub fn bench(
+        &mut self,
+        selection: &bench_collector::BenchmarkSelection,
+    ) -> CompileResult<Option<std::path::PathBuf>> {
+        self.compile(CompilationMode::Bench(selection))
+            .map(|(_, executable)| executable)
+    }
+
+    fn compile(
+        &mut self,
+        mode: CompilationMode<'_>,
     ) -> CompileResult<(ModuleArtifact, Option<std::path::PathBuf>)> {
         let total_started_at = Instant::now();
-        let package_name = self.context.config.name.to_string();
         let mut timings = TimingReport::default();
-
-        let result = (|| -> CompileResult<(ModuleArtifact, Option<std::path::PathBuf>)> {
+        let result = (|| {
             let (package, results) = self.analyze_with_timings(&mut timings)?;
+            let phase_started_at = Instant::now();
+            let (entry, codegen_phase, entry_phase) = match mode {
+                CompilationMode::Build | CompilationMode::Emit => (
+                    codegen::llvm::PackageEntry::Main,
+                    "codegen.llvm",
+                    "emit_entry",
+                ),
+                CompilationMode::Test(selection) => {
+                    let discovered = test_collector::collect_tests(&package, self.context)?;
+                    let tests = test_collector::filter_tests(discovered, selection);
+                    timings.push_elapsed("test.collect", phase_started_at);
+                    (
+                        codegen::llvm::PackageEntry::Tests(tests),
+                        "codegen.llvm_test",
+                        "emit_harness",
+                    )
+                }
+                CompilationMode::Bench(selection) => {
+                    let discovered = bench_collector::collect_benchmarks(&package, self.context)?;
+                    let benchmarks = bench_collector::filter_benchmarks(discovered, selection);
+                    timings.push_elapsed("bench.collect", phase_started_at);
+                    (
+                        codegen::llvm::PackageEntry::Benchmarks(benchmarks),
+                        "codegen.llvm_bench",
+                        "emit_harness",
+                    )
+                }
+            };
 
             let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
-
             let phase_started_at = Instant::now();
             let package = mir::package::build_package(thir, self.context)?;
             timings.push_elapsed("mir.build", phase_started_at);
@@ -107,45 +189,18 @@ impl<'state> Compiler<'state> {
             specialize::collect::collect_instances(package, self.context);
             timings.push_elapsed("specialize.collect_instances", phase_started_at);
 
-            let compiled_before_codegen = self.context.store.compiled_instances.borrow().clone();
-
             let phase_started_at = Instant::now();
             let (artifact, codegen_timings) =
-                codegen::llvm::emit_package_with_timings(package, self.context)?;
-            timings.push_elapsed("codegen.llvm", phase_started_at);
-            timings.push_duration("codegen.llvm.setup", codegen_timings.module_setup);
-            timings.push_duration(
-                "codegen.llvm.declare_instances",
-                codegen_timings.declare_instances,
-            );
-            timings.push_duration(
-                "codegen.llvm.lower_instances",
-                codegen_timings.lower_instances,
-            );
-            timings.push_duration(
-                "codegen.llvm.emit_entry",
-                codegen_timings.emit_entry_or_harness,
-            );
-            timings.push_duration("codegen.llvm.verify", codegen_timings.verify);
-            timings.push_duration("codegen.llvm.optimize_ir", codegen_timings.optimize_ir);
-            timings.push_duration("codegen.llvm.emit_artifact", codegen_timings.emit_artifact);
+                codegen::llvm::emit_package_with_timings(package, self.context, entry)?;
+            timings.push_elapsed(codegen_phase, phase_started_at);
+            timings.push_codegen(codegen_phase, entry_phase, codegen_timings);
 
-            let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
-            let emitted_instances = compiled_after_codegen
-                .difference(&compiled_before_codegen)
-                .cloned()
-                .collect();
-            self.context
-                .cache_emitted_instances(self.context.package_index(), emitted_instances);
-
-            // Monomorphization-time passes (instance collection, devirtualize,
-            // codegen) report some errors through the diagnostics context
-            // without threading a `Result` back up (e.g. object-safety
-            // violations only discoverable once generic args are concrete).
-            // Fail here rather than linking a binary for an errored build.
+            // Some monomorphization errors are reported through diagnostics
+            // rather than Result. Never link an artifact after those errors.
             self.context.dcx().ok()?;
-
-            let exe = if should_link {
+            let executable = if matches!(mode, CompilationMode::Emit) {
+                None
+            } else {
                 if artifact.kind != ModuleArtifactKind::Object {
                     self.context.dcx().emit_error(
                         format!(
@@ -160,174 +215,15 @@ impl<'state> Compiler<'state> {
                 let executable = codegen::link::link_executable(self.context)?;
                 timings.push_elapsed("link.executable", phase_started_at);
                 executable
-            } else {
-                None
             };
-
-            Ok((artifact, exe))
+            Ok((artifact, executable))
         })();
-
         if self.context.config.debug.timings {
-            let mode = if should_link { "build" } else { "emit" };
-            timings.emit(&package_name, mode, total_started_at.elapsed());
-        }
-
-        result
-    }
-
-    /// Build in test mode: compile all code, discover tests, and generate
-    /// a test harness as the entry point instead of the normal main.
-    pub fn test(
-        &mut self,
-        selection: &test_collector::TestSelection,
-    ) -> CompileResult<Option<std::path::PathBuf>> {
-        let total_started_at = Instant::now();
-        let package_name = self.context.config.name.to_string();
-        let mut timings = TimingReport::default();
-
-        let result = (|| -> CompileResult<Option<std::path::PathBuf>> {
-            let (package, results) = self.analyze_with_timings(&mut timings)?;
-
-            // Collect tests from HIR (needs type info from analysis)
-            let phase_started_at = Instant::now();
-            let discovered_tests = test_collector::collect_tests(&package, self.context)?;
-            let tests = test_collector::filter_tests(discovered_tests, selection);
-            timings.push_elapsed("test.collect", phase_started_at);
-
-            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
-
-            let phase_started_at = Instant::now();
-            let package = mir::package::build_package(thir, self.context)?;
-            timings.push_elapsed("mir.build", phase_started_at);
-
-            let phase_started_at = Instant::now();
-            specialize::collect::collect_instances(package, self.context);
-            timings.push_elapsed("specialize.collect_instances", phase_started_at);
-
-            let compiled_before_codegen = self.context.store.compiled_instances.borrow().clone();
-
-            let phase_started_at = Instant::now();
-            let (_, codegen_timings) =
-                codegen::llvm::emit_test_package_with_timings(package, self.context, &tests)?;
-            timings.push_elapsed("codegen.llvm_test", phase_started_at);
-            timings.push_duration("codegen.llvm_test.setup", codegen_timings.module_setup);
-            timings.push_duration(
-                "codegen.llvm_test.declare_instances",
-                codegen_timings.declare_instances,
+            timings.emit(
+                &self.context.config.name,
+                mode.name(),
+                total_started_at.elapsed(),
             );
-            timings.push_duration(
-                "codegen.llvm_test.lower_instances",
-                codegen_timings.lower_instances,
-            );
-            timings.push_duration(
-                "codegen.llvm_test.emit_harness",
-                codegen_timings.emit_entry_or_harness,
-            );
-            timings.push_duration("codegen.llvm_test.verify", codegen_timings.verify);
-            timings.push_duration("codegen.llvm_test.optimize_ir", codegen_timings.optimize_ir);
-            timings.push_duration(
-                "codegen.llvm_test.emit_artifact",
-                codegen_timings.emit_artifact,
-            );
-
-            let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
-            let emitted_instances = compiled_after_codegen
-                .difference(&compiled_before_codegen)
-                .cloned()
-                .collect();
-            self.context
-                .cache_emitted_instances(self.context.package_index(), emitted_instances);
-
-            // Same gate as the normal build path: surface diagnostics emitted
-            // during monomorphization/codegen as a failed build before linking.
-            self.context.dcx().ok()?;
-
-            let phase_started_at = Instant::now();
-            let exe = codegen::link::link_executable(self.context)?;
-            timings.push_elapsed("link.executable", phase_started_at);
-
-            Ok(exe)
-        })();
-
-        if self.context.config.debug.timings {
-            timings.emit(&package_name, "test", total_started_at.elapsed());
-        }
-
-        result
-    }
-
-    /// Build in benchmark mode: discover validated `@bench` functions and
-    /// replace the normal entry point with the generated benchmark harness.
-    pub fn bench(
-        &mut self,
-        selection: &bench_collector::BenchmarkSelection,
-    ) -> CompileResult<Option<std::path::PathBuf>> {
-        let total_started_at = Instant::now();
-        let package_name = self.context.config.name.to_string();
-        let mut timings = TimingReport::default();
-
-        let result = (|| -> CompileResult<Option<std::path::PathBuf>> {
-            let (package, results) = self.analyze_with_timings(&mut timings)?;
-
-            let phase_started_at = Instant::now();
-            let discovered = bench_collector::collect_benchmarks(&package, self.context)?;
-            let benchmarks = bench_collector::filter_benchmarks(discovered, selection);
-            timings.push_elapsed("bench.collect", phase_started_at);
-
-            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
-            let phase_started_at = Instant::now();
-            let package = mir::package::build_package(thir, self.context)?;
-            timings.push_elapsed("mir.build", phase_started_at);
-
-            let phase_started_at = Instant::now();
-            specialize::collect::collect_instances(package, self.context);
-            timings.push_elapsed("specialize.collect_instances", phase_started_at);
-
-            let compiled_before_codegen = self.context.store.compiled_instances.borrow().clone();
-            let phase_started_at = Instant::now();
-            let (_, codegen_timings) =
-                codegen::llvm::emit_bench_package_with_timings(package, self.context, &benchmarks)?;
-            timings.push_elapsed("codegen.llvm_bench", phase_started_at);
-            timings.push_duration("codegen.llvm_bench.setup", codegen_timings.module_setup);
-            timings.push_duration(
-                "codegen.llvm_bench.declare_instances",
-                codegen_timings.declare_instances,
-            );
-            timings.push_duration(
-                "codegen.llvm_bench.lower_instances",
-                codegen_timings.lower_instances,
-            );
-            timings.push_duration(
-                "codegen.llvm_bench.emit_harness",
-                codegen_timings.emit_entry_or_harness,
-            );
-            timings.push_duration("codegen.llvm_bench.verify", codegen_timings.verify);
-            timings.push_duration(
-                "codegen.llvm_bench.optimize_ir",
-                codegen_timings.optimize_ir,
-            );
-            timings.push_duration(
-                "codegen.llvm_bench.emit_artifact",
-                codegen_timings.emit_artifact,
-            );
-
-            let compiled_after_codegen = self.context.store.compiled_instances.borrow().clone();
-            let emitted_instances = compiled_after_codegen
-                .difference(&compiled_before_codegen)
-                .cloned()
-                .collect();
-            self.context
-                .cache_emitted_instances(self.context.package_index(), emitted_instances);
-            self.context.dcx().ok()?;
-
-            let phase_started_at = Instant::now();
-            let executable = codegen::link::link_executable(self.context)?;
-            timings.push_elapsed("link.executable", phase_started_at);
-            Ok(executable)
-        })();
-
-        if self.context.config.debug.timings {
-            timings.emit(&package_name, "bench", total_started_at.elapsed());
         }
         result
     }
@@ -354,49 +250,6 @@ impl<'state> Compiler<'state> {
         result
     }
 
-    /// Compile dependency semantic state (HIR/THIR/MIR/specializations) without
-    /// producing a new module artifact. This is used to reuse cached dependency
-    /// artifacts while still making dependency semantics available to
-    /// downstream packages in the current session.
-    pub fn prepare_dependency_reuse(&mut self) -> CompileResult<()> {
-        let total_started_at = Instant::now();
-        let package_name = self.context.config.name.to_string();
-        let mut timings = TimingReport::default();
-
-        let result = (|| -> CompileResult<()> {
-            let (package, results) = self.analyze_with_timings(&mut timings)?;
-
-            let thir = self.build_semantic_thir_with_timings(&package, results, &mut timings)?;
-
-            let phase_started_at = Instant::now();
-            let package = mir::package::build_package(thir, self.context)?;
-            timings.push_elapsed("mir.build", phase_started_at);
-
-            let phase_started_at = Instant::now();
-            specialize::collect::collect_instances(package, self.context);
-            timings.push_elapsed("specialize.collect_instances", phase_started_at);
-
-            let emitted_instances = self.predicted_emitted_instances();
-            for instance in emitted_instances.iter().copied() {
-                self.context.mark_instance_compiled(instance);
-            }
-            self.context
-                .cache_emitted_instances(self.context.package_index(), emitted_instances);
-
-            Ok(())
-        })();
-
-        if self.context.config.debug.timings {
-            timings.emit(
-                &package_name,
-                "prepare_dependency_reuse",
-                total_started_at.elapsed(),
-            );
-        }
-
-        result
-    }
-
     pub fn analyze(
         &mut self,
     ) -> CompileResult<(
@@ -405,37 +258,6 @@ impl<'state> Compiler<'state> {
     )> {
         let mut timings = TimingReport::default();
         self.analyze_with_timings(&mut timings)
-    }
-
-    fn predicted_emitted_instances(&self) -> FxHashSet<specialize::Instance<'state>> {
-        let mut emitted = FxHashSet::default();
-        let current_pkg = self.context.package_index();
-
-        for instance in self.context.specializations_of(current_pkg) {
-            let specialize::InstanceKind::Item(def_id) = instance.kind() else {
-                continue;
-            };
-
-            if matches!(
-                self.context.get_signature(def_id).abi,
-                Some(hir::Abi::Intrinsic | hir::Abi::C | hir::Abi::Blocking)
-            ) {
-                continue;
-            }
-
-            let has_mir_body = {
-                let packages = self.context.store.mir_packages.borrow();
-                packages
-                    .get(&def_id.package())
-                    .is_some_and(|pkg| pkg.functions.contains_key(&def_id))
-            };
-
-            if has_mir_body {
-                emitted.insert(instance);
-            }
-        }
-
-        emitted
     }
 
     fn analyze_with_timings(

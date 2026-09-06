@@ -6,7 +6,7 @@ use crate::{
         stack_maps::{
             GcLayoutKind, GcLayoutNode, PendingLogicalFrame, PendingRootOperand,
             PendingStackMapModule, PendingStackMapRecord, StackMapSiteKind, deterministic_map_id,
-            normalize_object, strip_object, write_pending_module,
+            gc_pointer_offsets, normalize_object, strip_object, write_pending_module,
         },
     },
     compile::{
@@ -304,41 +304,17 @@ pub struct CodegenPhaseTimings {
     pub emit_artifact: Duration,
 }
 
-/// Lower MIR for a package into a single LLVM module and cache its IR,
-/// returning fine-grained LLVM codegen phase timings.
-pub fn emit_package_with_timings<'gcx>(
-    package: &'gcx mir::MirPackage<'gcx>,
-    gcx: GlobalContext<'gcx>,
-) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
-    emit_with_entry(package, gcx, |emitter| emitter.emit_start_shim(package))
+pub(crate) enum PackageEntry {
+    Main,
+    Tests(Vec<crate::compile::test_collector::TestCase>),
+    Benchmarks(Vec<crate::compile::bench_collector::BenchmarkCase>),
 }
 
-/// Lower MIR for a package and generate a test harness instead of a normal entry shim,
-/// returning fine-grained LLVM codegen phase timings.
-pub fn emit_test_package_with_timings<'gcx>(
+/// Lower MIR and its selected entry point into one LLVM module.
+pub(crate) fn emit_package_with_timings<'gcx>(
     package: &'gcx mir::MirPackage<'gcx>,
     gcx: GlobalContext<'gcx>,
-    tests: &[crate::compile::test_collector::TestCase],
-) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
-    emit_with_entry(package, gcx, |emitter| emitter.emit_test_harness(tests))
-}
-
-/// Lower MIR for a package and generate a benchmark harness instead of a
-/// normal entry shim.
-pub fn emit_bench_package_with_timings<'gcx>(
-    package: &'gcx mir::MirPackage<'gcx>,
-    gcx: GlobalContext<'gcx>,
-    benchmarks: &[crate::compile::bench_collector::BenchmarkCase],
-) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
-    emit_with_entry(package, gcx, |emitter| {
-        emitter.emit_bench_harness(benchmarks)
-    })
-}
-
-fn emit_with_entry<'gcx>(
-    package: &'gcx mir::MirPackage<'gcx>,
-    gcx: GlobalContext<'gcx>,
-    emit_entry: impl FnOnce(&mut Emitter<'_, 'gcx>),
+    entry: PackageEntry,
 ) -> CompileResult<(ModuleArtifact, CodegenPhaseTimings)> {
     let mut timings = CodegenPhaseTimings::default();
 
@@ -359,13 +335,17 @@ fn emit_with_entry<'gcx>(
     timings.declare_instances = phase_started_at.elapsed();
 
     let phase_started_at = Instant::now();
-    emitter.lower_instances(package)?;
+    emitter.lower_instances()?;
     timings.lower_instances = phase_started_at.elapsed();
 
     emitter.emit_static_root_registration_ctor();
 
     let phase_started_at = Instant::now();
-    emit_entry(&mut emitter);
+    match entry {
+        PackageEntry::Main => emitter.emit_start_shim(package),
+        PackageEntry::Tests(tests) => emitter.emit_test_harness(&tests),
+        PackageEntry::Benchmarks(benchmarks) => emitter.emit_bench_harness(&benchmarks),
+    }
     timings.emit_entry_or_harness = phase_started_at.elapsed();
 
     emitter.finalize_debug_info();
@@ -412,8 +392,7 @@ struct Emitter<'llvm, 'gcx> {
     builder: Builder<'llvm>,
     debug: Option<debug::DebugContext<'llvm>>,
     gcx: GlobalContext<'gcx>,
-    functions: FxHashMap<Instance<'gcx>, FunctionValue<'llvm>>,
-    fn_abis: FxHashMap<Instance<'gcx>, abi::FnAbi<'gcx>>,
+    functions: FxHashMap<Instance<'gcx>, (FunctionValue<'llvm>, abi::FnAbi<'gcx>)>,
     globals: FxHashMap<hir::DefinitionID, PointerValue<'llvm>>,
     static_gc_roots: Vec<(PointerValue<'llvm>, PointerValue<'llvm>)>,
     strings: FxHashMap<Symbol, PointerValue<'llvm>>,
@@ -461,7 +440,7 @@ struct Emitter<'llvm, 'gcx> {
     current_subst: GenericArguments<'gcx>,
     env_argc_storage: Option<PointerValue<'llvm>>,
     env_argv_storage: Option<PointerValue<'llvm>>,
-    new_function_instances: Vec<Instance<'gcx>>,
+    pending_function_instances: Vec<Instance<'gcx>>,
 }
 
 #[derive(Clone, Copy)]
@@ -555,7 +534,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             debug,
             gcx,
             functions: FxHashMap::default(),
-            fn_abis: FxHashMap::default(),
             globals: FxHashMap::default(),
             static_gc_roots: Vec::new(),
             strings: FxHashMap::default(),
@@ -593,7 +571,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             current_subst: GenericArguments::empty(),
             env_argc_storage: None,
             env_argv_storage: None,
-            new_function_instances: Vec::new(),
+            pending_function_instances: Vec::new(),
         })
     }
 
@@ -627,11 +605,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         fn_abi: abi::FnAbi<'gcx>,
     ) {
         self.apply_source_function_attributes(instance, function);
-        let inserted = self.functions.insert(instance, function).is_none();
-        self.fn_abis.insert(instance, fn_abi);
-        if inserted {
-            self.new_function_instances.push(instance);
-        }
+        assert!(
+            self.functions
+                .insert(instance, (function, fn_abi))
+                .is_none()
+        );
+        self.pending_function_instances.push(instance);
     }
 
     fn apply_source_function_attributes(
@@ -686,26 +665,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             enable_indirect_args: is_taro_abi,
             indirect_arg_threshold_bytes: self.indirect_arg_threshold_bytes,
         }
-    }
-
-    #[track_caller]
-    fn compute_fn_abi(
-        &self,
-        sig: &crate::sema::models::LabeledFunctionSignature<'gcx>,
-    ) -> abi::FnAbi<'gcx> {
-        let input_tys: Vec<_> = sig
-            .inputs
-            .iter()
-            .map(|param| self.mono_ty_if_resolved(param.ty))
-            .collect();
-        let output = self.mono_ty_if_resolved(sig.output);
-        abi::compute_fn_abi_from_tys(
-            &input_tys,
-            output,
-            sig.is_variadic,
-            |ty| self.type_layout(ty),
-            self.abi_policy_for_signature(sig),
-        )
     }
 
     fn type_layout(&self, ty: Ty<'gcx>) -> Option<abi::TypeLayout> {
@@ -827,16 +786,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 continue;
             }
 
-            // Set substitution context for this instance
-            self.current_subst = instance.args();
-
-            let fn_abi = self.compute_instance_fn_abi(instance, def_id);
-
-            let fn_ty = self.lower_fn_abi(&fn_abi);
-            let name = mangle_instance(self.gcx, instance);
-
-            let f = self.module.add_function(&name, fn_ty, None);
-            self.insert_function_instance(instance, f, fn_abi);
+            self.instance_function_with_abi(instance);
         }
     }
 
@@ -988,7 +938,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         llvm_ty: BasicTypeEnum<'llvm>,
     ) -> bool {
         self.target_data.get_store_size(&llvm_ty) != 0
-            && !self.gc_root_offsets_for_ty(ty).is_empty()
+            && !self.gc_layout_nodes_for_ty(ty).is_empty()
     }
 
     fn declare_gc_register_static_fn(&self) -> FunctionValue<'llvm> {
@@ -1076,17 +1026,13 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         }
     }
 
-    fn lower_instances(&mut self, _package: &mir::MirPackage<'gcx>) -> CompileResult<()> {
+    fn lower_instances(&mut self) -> CompileResult<()> {
         self.declare_local_static_globals();
-        let mut pending = self.gcx.specializations_of(self.gcx.package_index());
-        let mut queued: FxHashSet<Instance<'gcx>> = pending.iter().copied().collect();
-        self.new_function_instances.clear();
-        let mut cursor = 0usize;
-
-        while cursor < pending.len() {
-            let instance = pending[cursor];
-            cursor += 1;
-
+        let mut emitted = FxHashSet::default();
+        // Declaring a function schedules it exactly once. Lowering can declare
+        // more functions (closure shims and witness thunks), which join this
+        // same worklist without rebuilding a second reachability set.
+        while let Some(instance) = self.pending_function_instances.pop() {
             // Skip if already compiled by another package
             if self.gcx.is_instance_compiled(instance) {
                 continue;
@@ -1116,21 +1062,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             // Mark as compiled so other packages don't duplicate work
             self.gcx.mark_instance_compiled(instance);
 
-            // New instances can be discovered while lowering (e.g., witness table thunks
-            // materializing synthetic methods). Only inspect instances inserted since the
-            // last lowered body rather than rescanning the full function map.
-            let discovered: Vec<_> = self.new_function_instances.drain(..).collect();
-            for instance in discovered {
-                if queued.contains(&instance)
-                    || !matches!(instance.kind(), InstanceKind::Item(_))
-                    || !self.instance_has_mir_body(instance)
-                {
-                    continue;
-                }
-                queued.insert(instance);
-                pending.push(instance);
-            }
+            emitted.insert(instance);
         }
+        self.gcx
+            .cache_emitted_instances(self.gcx.package_index(), emitted);
         Ok(())
     }
 
@@ -1250,14 +1185,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
         // Entry point is always a concrete instance with no generic args
         let entry_instance = Instance::item(entry, GenericArguments::empty());
-        let Some(&user_fn) = self.functions.get(&entry_instance) else {
+        let Some((user_fn, entry_fn_abi)) = self.functions.get(&entry_instance).cloned() else {
             return;
         };
-        let entry_fn_abi = self
-            .fn_abis
-            .get(&entry_instance)
-            .expect("declared entry function must have a computed ABI");
-        self.assert_entry_abi_takes_no_args(entry_fn_abi, "entry point `main`");
+        self.assert_entry_abi_takes_no_args(&entry_fn_abi, "entry point `main`");
         let entry_sig = self.gcx.get_signature(entry);
         let finish_rootless_fn = self.declare_executor_finish_rootless_fn();
 
@@ -1466,9 +1397,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         for (idx, test) in tests.iter().enumerate() {
             let test_instance = Instance::item(test.id, GenericArguments::empty());
-            let test_fn = match self.functions.get(&test_instance) {
-                Some(f) => *f,
-                None => continue,
+            let Some((test_fn, test_fn_abi)) = self.functions.get(&test_instance).cloned() else {
+                continue;
             };
 
             let prefix = format!("test {} ... ", test.display_name);
@@ -1483,14 +1413,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 self.build_global_cstring(&skipped_msg, &format!("skipped_msg_{}", idx));
             skipped_msg_ptrs.push(skipped_global);
 
-            let test_fn_abi = self
-                .fn_abis
-                .get(&test_instance)
-                .expect("declared test function must have a computed ABI");
             let fn_ptr = if test.is_async {
-                self.emit_async_test_wrapper(test_fn, test_fn_abi, async_run_root_fn, idx)
+                self.emit_async_test_wrapper(test_fn, &test_fn_abi, async_run_root_fn, idx)
             } else {
-                self.emit_sync_test_wrapper(test_fn, test_fn_abi, finish_rootless_fn, idx)
+                self.emit_sync_test_wrapper(test_fn, &test_fn_abi, finish_rootless_fn, idx)
             };
             fn_ptrs.push(fn_ptr);
             expect_flags.push(if test.expect_panic { 1 } else { 0 });
@@ -1981,15 +1907,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         for (index, benchmark) in benchmarks.iter().enumerate() {
             let instance = Instance::item(benchmark.id, GenericArguments::empty());
-            let Some(&function) = self.functions.get(&instance) else {
+            let Some((function, function_abi)) = self.functions.get(&instance).cloned() else {
                 continue;
             };
-            let function_abi = self
-                .fn_abis
-                .get(&instance)
-                .expect("declared benchmark function must have a computed ABI");
             let wrapper =
-                self.emit_bench_wrapper(function, function_abi, finish_rootless_fn, index);
+                self.emit_bench_wrapper(function, &function_abi, finish_rootless_fn, index);
 
             let name =
                 self.build_global_cstring(&benchmark.display_name, &format!("bench_name_{index}"));
@@ -2751,15 +2673,11 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         // Set substitution context for monomorphization
         self.current_subst = instance.args();
 
-        let function = *self
+        let (function, fn_abi) = self
             .functions
             .get(&instance)
-            .expect("function must be declared");
-        let fn_abi = self
-            .fn_abis
-            .get(&instance)
             .cloned()
-            .expect("function ABI must be declared");
+            .expect("function must be declared");
         self.current_fn = Some(function);
         self.current_fn_abi = Some(fn_abi.clone());
         self.current_body = Some(body);
@@ -3483,14 +3401,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                 let LocalStorage::Stack(storage) = locals[local.index()] else {
                     unreachable!("addressable GC local must use stack storage");
                 };
-                let mut initialized_offsets: Vec<u64> = self
-                    .gc_root_offsets_for_ty(decl.ty)
-                    .iter()
-                    .copied()
-                    .collect();
-                initialized_offsets.sort_unstable();
-                initialized_offsets.dedup();
-                for offset in initialized_offsets {
+                for offset in gc_pointer_offsets(&nodes) {
                     let field = build_byte_offset_ptr(
                         self.context,
                         &self.builder,
@@ -5025,35 +4936,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
 
         // Get the closure body function
         let closure_instance = Instance::item(closure_def_id, closure_args);
-        let (closure_fn, closure_fn_abi) = if let Some(&f) = self.functions.get(&closure_instance) {
-            let fn_abi = self
-                .fn_abis
-                .get(&closure_instance)
-                .cloned()
-                .unwrap_or_else(|| {
-                    let prev_subst = self.current_subst;
-                    self.current_subst = closure_args;
-                    let sig = self.gcx.get_signature(closure_def_id);
-                    let abi = self.compute_fn_abi(sig);
-                    self.current_subst = prev_subst;
-                    abi
-                });
-            (f, fn_abi)
-        } else {
-            // Declare the closure body function
-            let prev_subst = self.current_subst;
-            self.current_subst = closure_args;
-            let sig = self.gcx.get_signature(closure_def_id);
-            let fn_abi = self.compute_fn_abi(sig);
-            let fn_ty = self.lower_fn_abi(&fn_abi);
-            let name = mangle_instance(self.gcx, closure_instance);
-            let f = self
-                .module
-                .add_function(&name, fn_ty, Some(Linkage::External));
-            self.insert_function_instance(closure_instance, f, fn_abi.clone());
-            self.current_subst = prev_subst;
-            (f, fn_abi)
-        };
+        let (closure_fn, closure_fn_abi) = self.instance_function_with_abi(closure_instance);
 
         // Build the shim function type (without self parameter).
         let shim_fn_abi = self.compute_fn_pointer_abi(inputs.as_slice(), output);
@@ -6634,11 +6517,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             }
         };
 
-        let existing_fn = self.functions.get(&instance).copied();
-        if let Some(&f) = self.functions.get(&instance) {
-            if let Some(fn_abi) = self.fn_abis.get(&instance).cloned() {
-                return (f, fn_abi);
-            }
+        if let Some(function) = self.functions.get(&instance) {
+            return function.clone();
         }
 
         let prev_subst = self.current_subst;
@@ -6646,11 +6526,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let fn_abi = self.compute_instance_fn_abi(instance, resolved_def_id);
         let name = mangle_instance(self.gcx, instance);
         self.current_subst = prev_subst;
-
-        if let Some(f) = existing_fn {
-            self.fn_abis.insert(instance, fn_abi.clone());
-            return (f, fn_abi);
-        }
 
         if self.is_foreign_function(resolved_def_id) {
             let f = self.declare_foreign_function(resolved_def_id);
@@ -6760,24 +6635,10 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         body: &mir::Body<'gcx>,
         func: &Operand<'gcx>,
     ) -> Option<(FunctionValue<'llvm>, abi::FnAbi<'gcx>)> {
-        // Get the type of the operand
-        let ty = match func {
-            Operand::Copy(place) | Operand::Move(place) | Operand::CopyWith(place, _) => {
-                // Get the base type from the local
-                let mut ty = body.locals[place.local].ty;
-                // Apply projections to get the final type
-                for elem in &place.projection {
-                    ty = match elem {
-                        mir::PlaceElem::Deref => ty.dereference().unwrap_or(ty),
-                        mir::PlaceElem::Field(_, field_ty) => *field_ty,
-                        mir::PlaceElem::VariantDowncast { .. } => ty,
-                    };
-                }
-                ty
-            }
-            Operand::Constant(_) => return None, // Constants handled by lower_callable
-        };
-        let ty = self.mono_ty(ty);
+        if matches!(func, Operand::Constant(_)) {
+            return None; // Constants handled by lower_callable.
+        }
+        let ty = self.mono_ty(body.operand_ty(self.gcx, func));
 
         // Check if it's a closure type
         let TyKind::Closure {
@@ -6797,24 +6658,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         };
         let instance = Instance::item(closure_def_id, closure_args);
 
-        // Look up or declare the closure body function
-        if let Some(&f) = self.functions.get(&instance) {
-            if let Some(fn_abi) = self.fn_abis.get(&instance).cloned() {
-                return Some((f, fn_abi));
-            }
-        }
-
-        // Need to declare it as external
-        let prev_subst = self.current_subst;
-        self.current_subst = closure_args;
-        let fn_abi = self.compute_instance_fn_abi(instance, closure_def_id);
-        let fn_ty = self.lower_fn_abi(&fn_abi);
-        let name = mangle_instance(self.gcx, instance);
-        let linkage = Some(Linkage::External);
-        let f = self.module.add_function(&name, fn_ty, linkage);
-        self.insert_function_instance(instance, f, fn_abi.clone());
-        self.current_subst = prev_subst;
-        Some((f, fn_abi))
+        Some(self.instance_function_with_abi(instance))
     }
 
     fn is_foreign_function(&self, id: hir::DefinitionID) -> bool {
@@ -7043,7 +6887,7 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
                     };
                     let layout = self.enum_layout_for(def.id, adt_args);
 
-                    let variant_ty = enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
+                    let variant_ty = mir::enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
 
                     if layout.npo.is_some() {
                         // NPO: the value IS the payload — no struct GEP needed.
@@ -7096,32 +6940,8 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         Ok(ptr)
     }
 
-    fn place_ty<'a>(&self, body: &'a mir::Body<'gcx>, place: &mir::Place<'gcx>) -> Ty<'gcx> {
-        let mut ty = body.locals[place.local].ty;
-        for elem in &place.projection {
-            match elem {
-                mir::PlaceElem::Deref => {
-                    if let TyKind::Pointer(inner, _) | TyKind::Reference(inner, _) = ty.kind() {
-                        ty = inner;
-                    }
-                }
-                mir::PlaceElem::Field(_, field_ty) => {
-                    ty = *field_ty;
-                }
-                mir::PlaceElem::VariantDowncast { name: _, index } => {
-                    let (def, adt_args) = match ty.kind() {
-                        TyKind::Adt(def, args)
-                            if def.kind == crate::sema::models::AdtKind::Enum =>
-                        {
-                            (def, args)
-                        }
-                        _ => panic!("variant downcast on non-enum type {}", ty.format(self.gcx)),
-                    };
-                    ty = enum_variant_tuple_ty(self.gcx, def.id, *index, adt_args);
-                }
-            }
-        }
-        self.substitute_ty_current(ty)
+    fn place_ty(&self, body: &mir::Body<'gcx>, place: &mir::Place<'gcx>) -> Ty<'gcx> {
+        self.substitute_ty_current(body.place_ty(self.gcx, place))
     }
 
     fn lower_constant(&mut self, constant: &mir::Constant<'gcx>) -> Option<BasicValueEnum<'llvm>> {
@@ -7435,15 +7255,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         let ptr = gv.as_pointer_value();
         self.gc_descs.insert(ty, ptr);
         ptr
-    }
-
-    fn gc_root_offsets_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<u64> {
-        let ty = self.mono_ty(ty);
-        let mut offsets = Vec::new();
-        self.append_gc_root_offsets(ty, 0, &mut offsets);
-        offsets.sort_unstable();
-        offsets.dedup();
-        offsets
     }
 
     fn gc_layout_nodes_for_ty(&mut self, ty: Ty<'gcx>) -> Vec<GcLayoutNode> {
@@ -7770,197 +7581,6 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
             _ => false,
         }
     }
-
-    fn append_gc_root_offsets(&mut self, ty: Ty<'gcx>, base: u64, offsets: &mut Vec<u64>) {
-        let ty = crate::sema::tycheck::utils::normalize_aliases(self.gcx, ty);
-
-        match ty.kind() {
-            TyKind::Parameter(_) => {
-                panic!(
-                    "ICE: unresolved type parameter while computing GC root offsets: {}",
-                    ty.format(self.gcx)
-                )
-            }
-            TyKind::Alias { .. } => {
-                panic!(
-                    "ICE: unnormalized type alias while computing GC root offsets: {}",
-                    ty.format(self.gcx)
-                )
-            }
-            TyKind::Infer(_) => {
-                panic!(
-                    "ICE: unresolved inference variable while computing GC root offsets: {}",
-                    ty.format(self.gcx)
-                )
-            }
-            TyKind::Error => panic!("ICE: error type while computing GC root offsets"),
-            TyKind::Pointer(..)
-            | TyKind::Reference(..)
-            | TyKind::String
-            | TyKind::BoxedExistential { .. } => offsets.push(base),
-            TyKind::Adt(def, adt_args) => match def.kind {
-                crate::sema::models::AdtKind::Struct => {
-                    let defn = self.gcx.get_struct_definition(def.id);
-                    let layout = struct_field_layout(
-                        self.context,
-                        self.gcx,
-                        &self.target_data,
-                        def.id,
-                        adt_args,
-                        self.current_subst,
-                        defn.repr,
-                    );
-                    let struct_ty = self
-                        .lower_ty(ty)
-                        .expect("struct gc layout")
-                        .into_struct_type();
-                    for (idx, field) in defn.fields.iter().enumerate() {
-                        let field_ty = crate::sema::tycheck::utils::normalize_aliases(
-                            self.gcx,
-                            instantiate_ty_with_args(self.gcx, field.ty, adt_args),
-                        );
-                        let Some(field_offset) = self
-                            .target_data
-                            .offset_of_element(&struct_ty, layout.logical_to_physical[idx])
-                        else {
-                            continue;
-                        };
-                        self.append_gc_root_offsets(field_ty, base + field_offset, offsets);
-                    }
-                }
-                crate::sema::models::AdtKind::Enum => {
-                    let defn = self.gcx.get_enum_definition(def.id);
-                    let layout = self.enum_layout_for(def.id, adt_args);
-
-                    if let Some(npo) = layout.npo {
-                        // NPO: the entire value is the single payload field at offset 0.
-                        // The GC handles null pointers gracefully (mark_ptr returns early).
-                        let variant = &defn.variants[npo.payload_variant];
-                        if let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind {
-                            if !fields.is_empty() {
-                                let field_ty = crate::sema::tycheck::utils::normalize_aliases(
-                                    self.gcx,
-                                    instantiate_ty_with_args(self.gcx, fields[0].ty, adt_args),
-                                );
-                                self.append_gc_root_offsets(field_ty, base, offsets);
-                            }
-                        }
-                    } else {
-                        for variant in defn.variants.iter() {
-                            let crate::sema::models::EnumVariantKind::Tuple(fields) = variant.kind
-                            else {
-                                continue;
-                            };
-                            if fields.is_empty() {
-                                continue;
-                            }
-                            let struct_ty = enum_variant_struct_ty(
-                                self.context,
-                                self.gcx,
-                                &self.target_data,
-                                fields,
-                                adt_args,
-                                self.current_subst,
-                            );
-                            for (idx, field) in fields.iter().enumerate() {
-                                let field_ty = crate::sema::tycheck::utils::normalize_aliases(
-                                    self.gcx,
-                                    instantiate_ty_with_args(self.gcx, field.ty, adt_args),
-                                );
-                                let Some(field_offset) =
-                                    self.target_data.offset_of_element(&struct_ty, idx as u32)
-                                else {
-                                    continue;
-                                };
-                                self.append_gc_root_offsets(
-                                    field_ty,
-                                    base + layout.payload_offset + field_offset,
-                                    offsets,
-                                );
-                            }
-                        }
-                    }
-                }
-            },
-            TyKind::Tuple(items) => {
-                let Some(lowered) = self.lower_ty(ty) else {
-                    return;
-                };
-                let struct_ty = lowered.into_struct_type();
-                for (idx, item_ty) in items.iter().enumerate() {
-                    let item_ty =
-                        crate::sema::tycheck::utils::normalize_aliases(self.gcx, *item_ty);
-                    let Some(field_offset) =
-                        self.target_data.offset_of_element(&struct_ty, idx as u32)
-                    else {
-                        continue;
-                    };
-                    self.append_gc_root_offsets(item_ty, base + field_offset, offsets);
-                }
-            }
-            TyKind::Array { element, len } => {
-                let element = crate::sema::tycheck::utils::normalize_aliases(self.gcx, element);
-                let n = concrete_array_len_for_gc_offsets(len.kind);
-                let element_offsets = self.gc_root_offsets_for_ty(element);
-                if n == 0 || element_offsets.is_empty() {
-                    return;
-                }
-                let elem_ty = self.lower_ty(element).expect("array element type");
-                let elem_size = self.target_data.get_store_size(&elem_ty);
-                for i in 0..n {
-                    let elem_base = base + (i * elem_size);
-                    for elem_offset in &element_offsets {
-                        offsets.push(elem_base + elem_offset);
-                    }
-                }
-            }
-            TyKind::Closure {
-                closure_def_id,
-                captured_generics,
-                ..
-            } => {
-                let Some(captures) = self.gcx.get_closure_captures(closure_def_id) else {
-                    return;
-                };
-                if captures.captures.is_empty() {
-                    return;
-                }
-                let struct_ty = self
-                    .lower_ty(ty)
-                    .expect("closure gc layout")
-                    .into_struct_type();
-                for (idx, capture) in captures.captures.iter().enumerate() {
-                    let base_ty = instantiate_ty_with_args(
-                        self.gcx,
-                        instantiate_ty_with_args(self.gcx, capture.ty, captured_generics),
-                        self.current_subst,
-                    );
-                    // ByRef captures are stored as pointers in the environment struct.
-                    let capture_ty = if let crate::sema::models::CaptureKind::ByRef { mutable } =
-                        capture.capture_kind
-                    {
-                        let mutability = if mutable {
-                            hir::Mutability::Mutable
-                        } else {
-                            hir::Mutability::Immutable
-                        };
-                        Ty::new(TyKind::Reference(base_ty, mutability), self.gcx)
-                    } else {
-                        base_ty
-                    };
-                    let capture_ty =
-                        crate::sema::tycheck::utils::normalize_aliases(self.gcx, capture_ty);
-                    let Some(field_offset) =
-                        self.target_data.offset_of_element(&struct_ty, idx as u32)
-                    else {
-                        continue;
-                    };
-                    self.append_gc_root_offsets(capture_ty, base + field_offset, offsets);
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -8174,31 +7794,6 @@ fn enum_variant_struct_ty<'llvm, 'gcx>(
         })
         .collect();
     context.struct_type(&field_tys, false)
-}
-
-fn enum_variant_tuple_ty<'gcx>(
-    gcx: Gcx<'gcx>,
-    def_id: hir::DefinitionID,
-    variant_index: crate::thir::VariantIndex,
-    adt_args: GenericArguments<'gcx>,
-) -> Ty<'gcx> {
-    let def = gcx.get_enum_definition(def_id);
-    let variant = def
-        .variants
-        .get(variant_index.index())
-        .expect("enum variant index");
-    match variant.kind {
-        crate::sema::models::EnumVariantKind::Unit => gcx.types.void,
-        crate::sema::models::EnumVariantKind::Tuple(fields) => {
-            let mut tys = Vec::with_capacity(fields.len());
-            for field in fields.iter() {
-                let resolved = instantiate_ty_with_args(gcx, field.ty, adt_args);
-                tys.push(resolved);
-            }
-            let list = gcx.store.interners.intern_ty_list(tys);
-            Ty::new(TyKind::Tuple(list), gcx)
-        }
-    }
 }
 
 fn lower_fn_sig<'llvm, 'gcx>(
