@@ -3,9 +3,8 @@ use crate::package::{
     integrity,
     lockfile::{self, LockFile, LockPackage, LockSourceType},
     manifest::{
-        DependencyGraph, DependencyGraphEdge, Manifest, NormalizedManifest, PackageIdentifier,
-        RefSpec, ResolvedPackage, ResolvedSource, Selector, SourceSpec, UnresolvedDependency,
-        ValidatedDependencyGraph,
+        DependencyGraph, Manifest, NormalizedManifest, PackageIdentifier, RefSpec, ResolvedPackage,
+        ResolvedSource, Selector, SourceSpec, UnresolvedDependency, ValidatedDependencyGraph,
     },
     utils::{canonicalize_git_url, language_home},
 };
@@ -68,7 +67,6 @@ pub fn sync_dependencies(
         options,
         lockfile: existing_lock.clone(),
         root_package: None,
-        package_selections: Default::default(),
         resolution_map: Default::default(),
         package_manifests: Default::default(),
         package_dependencies: Default::default(),
@@ -122,7 +120,6 @@ struct Actor<'arena> {
     root_package: Option<RPkg<'arena>>,
 
     resolution_map: FxHashMap<UPkg<'arena>, RPkg<'arena>>,
-    package_selections: FxHashMap<PackageIdentifier, Vec<RPkg<'arena>>>,
 
     package_manifests: FxHashMap<RPkg<'arena>, NormalizedManifest>,
     package_dependencies: FxHashMap<RPkg<'arena>, Vec<(EcoString, UPkg<'arena>)>>,
@@ -224,9 +221,7 @@ impl<'a> Actor<'a> {
 
         for _ in 0..64 {
             self.resolution_map.clear();
-            self.package_selections.clear();
             self.package_dependencies.clear();
-            self.resolved_package_dependencies.clear();
             self.expected_tree_hashes.clear();
 
             let mut pending = vec![root_package];
@@ -237,11 +232,6 @@ impl<'a> Actor<'a> {
                 if !seen_packages.insert(package) {
                     continue;
                 }
-
-                self.package_selections
-                    .entry(package.package.clone())
-                    .or_default()
-                    .push(package);
 
                 let manifest = self
                     .package_manifests
@@ -317,17 +307,12 @@ impl<'a> Actor<'a> {
                 }
 
                 self.package_manifests.entry(selection).or_insert(manifest);
-                self.package_selections
-                    .entry(selection.package.clone())
-                    .or_default()
-                    .push(selection);
                 if let Some(hash) = expected_tree_hash {
                     self.expected_tree_hashes.insert(selection, hash);
                 }
                 next_git_selections.insert(key, selection);
             }
 
-            self.normalize_package_selections();
             let selected_manifest_not_traversed = next_git_selections
                 .values()
                 .any(|selection| !seen_packages.contains(selection));
@@ -549,27 +534,8 @@ impl<'a> Actor<'a> {
         Ok(cache_path)
     }
 
-    fn normalize_package_selections(&mut self) {
-        for selections in self.package_selections.values_mut() {
-            selections.sort_by(|a, b| {
-                a.package
-                    .0
-                    .cmp(&b.package.0)
-                    .then_with(|| format!("{:?}", a.source).cmp(&format!("{:?}", b.source)))
-            });
-            selections.dedup();
-        }
-    }
-
     fn install_dependencies(&mut self) -> CompileResult<()> {
-        let selections: FxHashSet<_> = self
-            .package_selections
-            .values()
-            .flatten()
-            .copied()
-            .collect();
-
-        for &selection in &selections {
+        for &selection in self.package_dependencies.keys() {
             if let ResolvedSource::Git { revision, .. } = &selection.source {
                 let expected_hash = self.expected_tree_hashes.get(&selection).cloned();
                 let mut final_hash = None;
@@ -630,23 +596,7 @@ impl<'a> Actor<'a> {
     }
 
     fn cache_package_resolution_map(&mut self) {
-        let selections: FxHashSet<_> = self
-            .package_selections
-            .values()
-            .flatten()
-            .copied()
-            .collect();
-
-        for &selection in &selections {
-            self.resolved_package_dependencies
-                .entry(selection)
-                .or_default();
-        }
-
-        for package in selections {
-            let Some(unresolved) = self.package_dependencies.get(&package) else {
-                continue;
-            };
+        for (&package, unresolved) in &self.package_dependencies {
             let mut resolved = FxHashMap::default();
             for (name, dependency) in unresolved {
                 let Some(&dependency_resolution) = self.resolution_map.get(&dependency) else {
@@ -662,10 +612,10 @@ impl<'a> Actor<'a> {
 
     fn build_dependency_graph(&self) -> Result<DependencyGraph, ReportedError> {
         let mut graph = DependencyGraph::new();
-        let mut nodes = FxHashMap::<ResolvedPackage, petgraph::graph::NodeIndex>::default();
+        let mut nodes = FxHashMap::<RPkg<'a>, petgraph::graph::NodeIndex>::default();
         let mut idx = |p: RPkg<'a>, g: &mut DependencyGraph| {
             *nodes
-                .entry(p.as_ref().clone())
+                .entry(p)
                 .or_insert_with(|| g.add_node(p.as_ref().clone()))
         };
 
@@ -673,11 +623,7 @@ impl<'a> Actor<'a> {
             let pkg_ix = idx(pkg, &mut graph);
             for (name, &dependency) in deps {
                 let dep_ix = idx(dependency, &mut graph);
-                let edge = DependencyGraphEdge {
-                    dependency: dependency.as_ref().clone(),
-                    name: name.clone(),
-                };
-                graph.add_edge(dep_ix, pkg_ix, edge);
+                graph.add_edge(dep_ix, pkg_ix, name.clone());
             }
         }
 
@@ -687,17 +633,16 @@ impl<'a> Actor<'a> {
     fn validate_graph(&self, graph: DependencyGraph) -> CompileResult<ValidatedDependencyGraph> {
         match toposort(&graph, None) {
             Ok(order) => {
-                let items: Vec<ResolvedPackage> =
-                    order.into_iter().map(|i| graph[i].clone()).collect();
-                debug_assert!(!items.is_empty(), "non empty compilation list");
+                debug_assert!(!order.is_empty(), "non empty compilation list");
                 debug_assert!(
-                    items.last().cloned() == self.root_package.map(|v| v.as_ref().clone()),
+                    order.last().map(|&index| &graph[index])
+                        == self.root_package.as_ref().map(|v| v.as_ref()),
                     "target package is last on compilation list"
                 );
 
                 Ok(ValidatedDependencyGraph {
                     graph,
-                    ordered: items,
+                    ordered: order,
                 })
             }
             Err(cycle) => {
@@ -718,14 +663,12 @@ impl<'a> Actor<'a> {
             .ok_or_else(|| "root package was not initialized".to_string())?;
 
         let mut selections: Vec<_> = self
-            .package_selections
-            .values()
-            .flatten()
+            .package_dependencies
+            .keys()
             .copied()
             .filter(|selection| *selection != root)
             .collect();
         selections.sort_by(|a, b| a.package.0.cmp(&b.package.0));
-        selections.dedup();
 
         let mut node_map = FxHashMap::default();
         for selection in &selections {
@@ -1141,14 +1084,26 @@ mod tests {
             Err(_) => panic!("sync should succeed"),
         };
 
+        let mut ordered = graph.ordered_packages();
+        let (dep_node, dependency) = ordered.next().expect("dependency first");
+        let (root_node, root) = ordered.next().expect("root last");
+        assert!(ordered.next().is_none());
+        assert_eq!(dependency.package.0.as_ref(), "github.com/example/dep");
+        assert_eq!(dependency.kind, PackageKind::Both);
+        assert_eq!(root.package.0.as_ref(), "github.com/example/root");
         assert!(
             graph
-                .ordered
-                .iter()
-                .any(
-                    |package| package.package.0.as_ref() == "github.com/example/dep"
-                        && package.kind == PackageKind::Both
-                )
+                .dependencies_for(dep_node)
+                .expect("leaf dependencies")
+                .is_empty()
+        );
+        let dependencies = graph
+            .dependencies_for(root_node)
+            .expect("root dependencies");
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(
+            dependencies["dep"],
+            dependency.unique_identifier().expect("identifier").as_str()
         );
     }
 

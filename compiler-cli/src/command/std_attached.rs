@@ -238,7 +238,7 @@ pub fn is_root_std_package(
         ReportedError
     })?;
 
-    let Some(root_pkg) = graph.ordered.last() else {
+    let Some((_, root_pkg)) = graph.ordered_packages().next_back() else {
         return Ok(false);
     };
 

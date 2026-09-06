@@ -311,9 +311,9 @@ fn run_package(
         }
     }
 
-    let total = graph.ordered.len();
+    let total = graph.ordered_packages().len();
 
-    for (index, package) in graph.ordered.iter().enumerate() {
+    for (index, (package_node, package)) in graph.ordered_packages().enumerate() {
         let is_root = index + 1 == total;
         if !is_root && !matches!(package.kind, PackageKind::Library | PackageKind::Both) {
             icx.dcx.emit_error(
@@ -368,7 +368,7 @@ fn run_package(
                 ReportedError
             })?
         };
-        let mut dependencies = graph.dependencies_for(package).map_err(|e| {
+        let mut dependencies = graph.dependencies_for(package_node).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
                     "failed to resolve dependencies for '{}': {}",
@@ -1168,9 +1168,9 @@ fn run_package_harness(
     }
     build_runtime(&icx, &project_root, arguments.runtime_path.clone())?;
 
-    let total = graph.ordered.len();
+    let total = graph.ordered_packages().len();
 
-    for (index, package) in graph.ordered.iter().enumerate() {
+    for (index, (package_node, package)) in graph.ordered_packages().enumerate() {
         let is_root = index + 1 == total;
 
         // Non-root packages are compiled normally (as libraries)
@@ -1213,7 +1213,7 @@ fn run_package_harness(
                 ReportedError
             })?
         };
-        let mut dependencies = graph.dependencies_for(package).map_err(|e| {
+        let mut dependencies = graph.dependencies_for(package_node).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
                     "failed to resolve dependencies for '{}': {}",

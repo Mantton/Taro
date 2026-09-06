@@ -5,6 +5,7 @@ pub use compiler::package::manifest::{
 use crate::package::utils::{get_package_name, language_home};
 use compiler::{compile::config::PackageKind, constants::PACKAGE_SOURCE};
 use ecow::EcoString;
+use petgraph::{graph::NodeIndex, visit::EdgeRef};
 use rustc_hash::FxHashMap;
 use std::{hash::Hash, os::unix::ffi::OsStrExt, path::PathBuf};
 
@@ -67,43 +68,35 @@ pub enum Selector {
     Commit(git2::Oid),
 }
 
-pub type DependencyGraph =
-    petgraph::stable_graph::StableDiGraph<ResolvedPackage, DependencyGraphEdge>;
+pub type DependencyGraph = petgraph::stable_graph::StableDiGraph<ResolvedPackage, EcoString>;
 
 pub struct ValidatedDependencyGraph {
-    pub graph: DependencyGraph,
-    pub ordered: Vec<ResolvedPackage>,
-}
-
-pub struct DependencyGraphEdge {
-    pub dependency: ResolvedPackage,
-    pub name: EcoString,
+    pub(super) graph: DependencyGraph,
+    pub(super) ordered: Vec<NodeIndex>,
 }
 
 impl ValidatedDependencyGraph {
+    /// Dependencies precede their consumers; the root is always last.
+    pub fn ordered_packages(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (NodeIndex, &ResolvedPackage)> + ExactSizeIterator {
+        self.ordered
+            .iter()
+            .map(|&index| (index, &self.graph[index]))
+    }
+
     pub fn dependencies_for(
         &self,
-        package: &ResolvedPackage,
+        package: NodeIndex,
     ) -> Result<FxHashMap<EcoString, String>, String> {
-        let Some(node_idx) = self
-            .graph
-            .node_indices()
-            .find(|&i| &self.graph[i] == package)
-        else {
-            return Ok(Default::default());
-        };
-
         self.graph
-            .edges_directed(node_idx, petgraph::Direction::Incoming)
-            .map(|e| {
-                let name = e.weight().name.clone();
-                let id = e
-                    .weight()
-                    .dependency
-                    .unique_identifier()
-                    .map_err(|err| err.to_string())?;
-                Ok((name, id.into()))
+            .edges_directed(package, petgraph::Direction::Incoming)
+            .map(|edge| {
+                Ok((
+                    edge.weight().clone(),
+                    self.graph[edge.source()].unique_identifier()?.into(),
+                ))
             })
-            .collect::<Result<FxHashMap<_, _>, String>>()
+            .collect()
     }
 }

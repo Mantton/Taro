@@ -235,8 +235,8 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
         )?;
     }
 
-    let total = graph.ordered.len();
-    for (index, package) in graph.ordered.iter().enumerate() {
+    let total = graph.ordered_packages().len();
+    for (index, (package_node, package)) in graph.ordered_packages().enumerate() {
         let is_root = index + 1 == total;
         if !is_root && !matches!(package.kind, PackageKind::Library | PackageKind::Both) {
             icx.dcx.emit_error(
@@ -275,7 +275,7 @@ fn run_package(arguments: CommonCompileArgs) -> Result<(), ReportedError> {
                 ReportedError
             })?
         };
-        let mut dependencies = graph.dependencies_for(package).map_err(|e| {
+        let mut dependencies = graph.dependencies_for(package_node).map_err(|e| {
             icx.dcx.emit_error(
                 format!(
                     "failed to resolve dependencies for '{}': {}",
