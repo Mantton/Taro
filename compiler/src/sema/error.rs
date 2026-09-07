@@ -46,6 +46,9 @@ pub enum TypeError<'ctx> {
     NotCallable {
         found: Ty<'ctx>,
     },
+    AmbiguousCallable {
+        found: Ty<'ctx>,
+    },
     NotAStruct {
         ty: Ty<'ctx>,
     },
@@ -175,6 +178,12 @@ impl<'ctx> TypeError<'ctx> {
             }
             TypeError::NotCallable { found } => {
                 format!("cannot call value of type {}", found.format(gcx))
+            }
+            TypeError::AmbiguousCallable { found } => {
+                format!(
+                    "ambiguous callable interfaces on {}; convert to a single callable interface before calling",
+                    found.format(gcx)
+                )
             }
             TypeError::NotAStruct { ty } => {
                 format!("type {} is not a struct", ty.format(gcx))

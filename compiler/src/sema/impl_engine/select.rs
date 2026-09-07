@@ -441,10 +441,7 @@ impl<'ctx> Selector<'ctx> {
             return None;
         }
 
-        let args_ty = match inputs.len() {
-            1 => inputs[0],
-            _ => Ty::new(TyKind::Tuple(inputs), self.gcx),
-        };
+        let args_ty = crate::sema::models::callable_args_ty(self.gcx, inputs);
 
         let Some(GenericArgument::Type(actual_args_ty)) = goal.interface_args.get(0).copied()
         else {

@@ -101,10 +101,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
 
         if matches!(
             from.kind(),
-            TyKind::Alias {
-                kind: AliasKind::Opaque,
-                ..
-            }
+            TyKind::Closure { .. }
+                | TyKind::Parameter(_)
+                | TyKind::Alias {
+                    kind: AliasKind::Opaque,
+                    ..
+                }
         ) {
             let obligations = interfaces
                 .iter()
@@ -996,23 +998,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
         let expected_args_ty = interface.arguments[1].ty()?;
         let expected_output_ty = interface.arguments[2].ty()?;
 
-        // Build the closure's args type:
-        // - Single argument: just the type
-        // - Multiple arguments: tuple type
-        let closure_args_ty = if closure_inputs.len() == 1 {
-            closure_inputs[0]
-        } else {
-            // Create tuple type for multiple arguments
-            Ty::new(TyKind::Tuple(closure_inputs), gcx)
-        };
+        let closure_args_ty = crate::sema::models::callable_args_ty(gcx, closure_inputs);
 
-        self.register_closure_callable_adapter(
-            ty,
-            interface.id,
-            closure_args_ty,
-            closure_output,
-            interface.bindings,
-        );
+        self.register_closure_callable_adapter(ty);
 
         // Create obligations to match Args and Output
         let mut obligations = vec![];
@@ -1038,133 +1026,25 @@ impl<'ctx> ConstraintSolver<'ctx> {
         from: Ty<'ctx>,
         to: Ty<'ctx>,
     ) -> Option<SolverResult<'ctx>> {
-        use crate::hir::StdItem;
-
-        // Check if from is a closure
-        let TyKind::Closure {
-            kind,
-            inputs: closure_inputs,
-            output: closure_output,
-            ..
-        } = from.kind()
-        else {
-            return None;
-        };
-
-        // Get Fn bounds for this type from param_env. Generic calls instantiate
-        // type parameters with inference variables, so this must work for both
-        // parameter types and the fresh inference vars they become at call sites.
-        let bounds = self.param_env.bounds_for(to);
-        if bounds.is_empty() {
+        if !matches!(from.kind(), TyKind::Closure { .. }) {
             return None;
         }
 
-        let gcx = self.gcx();
-        let fn_def = gcx.std_item_def(StdItem::Fn);
-        let fn_mut_def = gcx.std_item_def(StdItem::FnMut);
-        let fn_once_def = gcx.std_item_def(StdItem::FnOnce);
-        let async_fn_def = gcx.std_item_def(StdItem::AsyncFn);
-        let async_fn_mut_def = gcx.std_item_def(StdItem::AsyncFnMut);
-        let async_fn_once_def = gcx.std_item_def(StdItem::AsyncFnOnce);
-
-        for bound in bounds {
-            let is_fn_trait = fn_def == Some(bound.id)
-                || fn_mut_def == Some(bound.id)
-                || fn_once_def == Some(bound.id)
-                || async_fn_def == Some(bound.id)
-                || async_fn_mut_def == Some(bound.id)
-                || async_fn_once_def == Some(bound.id);
-
-            if !is_fn_trait {
-                continue;
+        // Generic call parameters have fresh inference variables at the call
+        // site. Prove their callable bound using the same rules as boxing.
+        for bound in self.param_env.bounds_for(to) {
+            if let Some(mut result) = self.solve_closure_fn_conformance(location, from, bound) {
+                if let SolverResult::Solved(obligations) = &mut result {
+                    if to.is_infer() {
+                        obligations.push(Obligation {
+                            location,
+                            goal: Goal::Equal(from, to),
+                        });
+                    }
+                }
+                return Some(result);
             }
-            let allowed = if fn_def == Some(bound.id) {
-                matches!(kind, crate::sema::models::ClosureKind::Fn)
-            } else if fn_mut_def == Some(bound.id) {
-                matches!(
-                    kind,
-                    crate::sema::models::ClosureKind::Fn | crate::sema::models::ClosureKind::FnMut
-                )
-            } else if fn_once_def == Some(bound.id) {
-                matches!(
-                    kind,
-                    crate::sema::models::ClosureKind::Fn
-                        | crate::sema::models::ClosureKind::FnMut
-                        | crate::sema::models::ClosureKind::FnOnce
-                )
-            } else if async_fn_def == Some(bound.id) {
-                matches!(kind, crate::sema::models::ClosureKind::AsyncFn)
-            } else if async_fn_mut_def == Some(bound.id) {
-                matches!(
-                    kind,
-                    crate::sema::models::ClosureKind::AsyncFn
-                        | crate::sema::models::ClosureKind::AsyncFnMut
-                )
-            } else if async_fn_once_def == Some(bound.id) {
-                matches!(
-                    kind,
-                    crate::sema::models::ClosureKind::AsyncFn
-                        | crate::sema::models::ClosureKind::AsyncFnMut
-                        | crate::sema::models::ClosureKind::AsyncFnOnce
-                )
-            } else {
-                false
-            };
-            if !allowed {
-                continue;
-            }
-
-            // Raw interface refs still carry `Self` as the first argument.
-            if bound.arguments.len() < 3 {
-                continue;
-            }
-
-            let Some(expected_args_ty) = bound.arguments[1].ty() else {
-                continue;
-            };
-            let Some(expected_output_ty) = bound.arguments[2].ty() else {
-                continue;
-            };
-
-            // Build the closure's args type
-            let closure_args_ty = if closure_inputs.len() == 1 {
-                closure_inputs[0]
-            } else {
-                Ty::new(TyKind::Tuple(closure_inputs), gcx)
-            };
-
-            self.register_closure_callable_adapter(
-                from,
-                bound.id,
-                closure_args_ty,
-                closure_output,
-                bound.bindings,
-            );
-
-            // Create obligations to bind the target inference variable to this
-            // concrete closure type, then validate the callable signature.
-            let mut obligations = vec![];
-
-            if to.is_infer() {
-                obligations.push(super::Obligation {
-                    location,
-                    goal: super::Goal::Equal(from, to),
-                });
-            }
-
-            obligations.push(super::Obligation {
-                location,
-                goal: super::Goal::Equal(closure_args_ty, expected_args_ty),
-            });
-
-            obligations.push(super::Obligation {
-                location,
-                goal: super::Goal::Equal(closure_output, expected_output_ty),
-            });
-
-            return Some(SolverResult::Solved(obligations));
         }
-
         None
     }
 
@@ -1172,33 +1052,19 @@ impl<'ctx> ConstraintSolver<'ctx> {
     /// chance to synthesize and serialize its THIR/MIR. Generic callable calls
     /// are specialized later, after THIR construction, which is too late to
     /// create a missing `call`/`callMut`/`callOnce` body on demand.
-    fn register_closure_callable_adapter(
-        &self,
-        closure_ty: Ty<'ctx>,
-        interface_id: crate::hir::DefinitionID,
-        args_ty: Ty<'ctx>,
-        output_ty: Ty<'ctx>,
-        bindings: &'ctx [crate::sema::models::AssociatedTypeBinding<'ctx>],
-    ) {
+    fn register_closure_callable_adapter(&self, closure_ty: Ty<'ctx>) {
         let gcx = self.gcx();
-        let arguments = gcx.store.interners.intern_generic_args(vec![
-            GenericArgument::Type(closure_ty),
-            GenericArgument::Type(args_ty),
-            GenericArgument::Type(output_ty),
-        ]);
-        let interface = InterfaceReference {
-            id: interface_id,
-            arguments,
-            bindings,
-        };
-        let Some(goal) = interface.to_goal(gcx, &[]) else {
+        let Some(interface) = crate::sema::models::closure_interface_ref(gcx, closure_ty) else {
             return;
         };
-
-        // This closure/interface pair has already passed the callable-kind
-        // check above. Building its witness records the demanded synthetic
-        // adapter; signature equality remains represented by solver goals.
-        let _ = gcx.build_conformance_witness(goal, SelectionMode::Typecheck);
+        // A closure may be erased inside generic code and then dynamically cast
+        // to any interface it implements. Demand its strongest interface and
+        // inherited adapters before THIR synthesis; codegen cannot create bodies.
+        for interface in self.collect_interface_with_supers(interface) {
+            if let Some(goal) = interface.to_goal(gcx, &[]) {
+                let _ = gcx.build_conformance_witness(goal, SelectionMode::Typecheck);
+            }
+        }
     }
 }
 

@@ -1,0 +1,7 @@
+func reuse(_ f: any FnOnce() -> int32) -> int32 {
+    let first = f()
+    first + f()
+}
+
+func main() {
+}

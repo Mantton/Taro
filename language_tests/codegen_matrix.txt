@@ -38,6 +38,9 @@ valid/task_deadlock_diagnostics.tr
 
 # Existentials and data layout
 valid/existential_metadata_constraints.tr
+valid/callable_existentials.tr
+valid/callable_existentials_async.tr
+valid/callable_existentials_cross_package.tr
 valid/existentials.tr
 valid/optional_npo_layout.tr
 valid/repr_layouts.tr
@@ -50,4 +53,5 @@ valid/associated_types.tr
 valid/generic_interface_metadata.tr
 valid/interface_default_self_existential.tr
 valid/interface_properties_cross_package.tr
+valid/interface_inheritance_cross_package.tr
 valid/interfaces.tr

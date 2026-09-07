@@ -10,7 +10,7 @@ error: type annotations needed: unable to infer type
  -> language_tests/source_files/invalid/async_closures.tr:15:21
 	    let _ = std.task.spawn(thunk)
 	                     ^^^^^
-error: expected int32, found ()
+error: expected (int32,), found ()
  -> language_tests/source_files/invalid/async_closures.tr:19:27
 	    let _ = std.task.spawn(|x: int32| async { x })
 	                           ^

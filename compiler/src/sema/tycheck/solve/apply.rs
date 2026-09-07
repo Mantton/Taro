@@ -7,7 +7,10 @@ use crate::{
             solve::{
                 ApplyArgument, ApplyGoalData, ConstraintSolver, Goal, Obligation, SolverResult,
             },
-            utils::arguments::{match_arguments_to_parameters, validate_arity},
+            utils::{
+                arguments::{match_arguments_to_parameters, validate_arity},
+                callable::select_existential_callable,
+            },
         },
     },
     span::Spanned,
@@ -50,12 +53,32 @@ impl<'ctx> ConstraintSolver<'ctx> {
                     )]);
                 }
             }
-            _ => {
-                return SolverResult::Error(vec![Spanned::new(
-                    TypeError::NotCallable { found: callee_ty },
-                    data.call_span,
-                )]);
-            }
+            _ => match select_existential_callable(self.gcx(), callee_ty) {
+                Ok(Some(callable)) => {
+                    self.record_interface_call(
+                        data.call_node_id,
+                        super::InterfaceCallInfo {
+                            root_interface: callable.root_interface,
+                            method_interface: callable.interface.id,
+                            method_id: callable
+                                .method_id(self.gcx())
+                                .expect("callable method missing"),
+                            table_index: callable.table_index,
+                        },
+                    );
+                    callable
+                        .signature(self.gcx())
+                        .expect("callable interface signature missing")
+                }
+                selection => {
+                    let error = if selection.is_err() {
+                        TypeError::AmbiguousCallable { found: callee_ty }
+                    } else {
+                        TypeError::NotCallable { found: callee_ty }
+                    };
+                    return SolverResult::Error(vec![Spanned::new(error, data.call_span)]);
+                }
+            },
         };
 
         let signature = if let Some(id) = callee_source {
@@ -165,17 +188,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             let args_ty = bound.arguments[1].ty()?;
             let output_ty = bound.arguments[2].ty()?;
 
-            // Unpack tuple Args into individual parameters (rust-call ABI style).
-            // For Fn[int32, int32] -> one int32 argument
-            // For Fn[(int32, int32), int32] -> two int32 arguments (unpacked)
-            // This allows users to write f(a, b) instead of f((a, b))
-            let inputs: TyList<'ctx> = if let TyKind::Tuple(elem_tys) = args_ty.kind() {
-                // Tuple Args - unpack into individual parameters
-                elem_tys
-            } else {
-                // Non-tuple Args - treat as single parameter
-                gcx.store.interners.intern_ty_list(vec![args_ty])
-            };
+            let inputs = crate::sema::models::callable_inputs(gcx, args_ty);
 
             return Some((inputs, output_ty));
         }

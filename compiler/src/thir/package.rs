@@ -210,6 +210,79 @@ impl<'ctx> FunctionLower<'ctx> {
         (lower.func, lower.nested_closures)
     }
 
+    fn lower_indirect_call(
+        &mut self,
+        callee: ExprId,
+        args: Vec<ExprId>,
+        is_async: bool,
+        span: crate::span::Span,
+    ) -> ExprKind<'ctx> {
+        if let Some(callable) = crate::sema::tycheck::utils::callable::existential_callable(
+            self.gcx,
+            self.func.exprs[callee].ty,
+        ) {
+            // Invocation syntax is the callable interface's ordinary
+            // method call. Keep receiver borrows/moves visible to flow
+            // analysis and use the existing virtual-call ABI.
+            let mut receiver = callee;
+            while let TyKind::Reference(inner, _) = self.func.exprs[receiver].ty.kind() {
+                receiver = self.push_expr(ExprKind::Deref(receiver), inner, span);
+            }
+            if let Some(mutability) = callable.receiver_mutability() {
+                let receiver_ty = Ty::new(
+                    TyKind::Reference(self.func.exprs[receiver].ty, mutability),
+                    self.gcx,
+                );
+                receiver = self.push_expr(
+                    ExprKind::Reference {
+                        mutable: mutability == Mutability::Mutable,
+                        expr: receiver,
+                    },
+                    receiver_ty,
+                    span,
+                );
+            }
+            let args_ty = callable.interface.arguments[1].ty().unwrap();
+            let packed_args = if matches!(args_ty.kind(), TyKind::Tuple(_)) {
+                self.push_expr(ExprKind::Tuple { fields: args }, args_ty, span)
+            } else {
+                // An abstract Args: Tuple parameter is already a pack;
+                // its arity only becomes known after instantiation.
+                let [argument] = args.as_slice() else {
+                    unreachable!("abstract callable pack arity was checked")
+                };
+                *argument
+            };
+            let method_id = callable
+                .method_id(self.gcx)
+                .expect("callable method missing");
+            let signature = instantiate_signature_with_args(
+                self.gcx,
+                self.gcx.get_signature(method_id),
+                callable.interface.arguments,
+            );
+            let method_ty = Ty::from_labeled_signature(self.gcx, &signature);
+            let method = self.push_expr(
+                ExprKind::Zst {
+                    id: method_id,
+                    generic_args: Some(callable.interface.arguments),
+                },
+                method_ty,
+                span,
+            );
+            return ExprKind::Call {
+                callee: method,
+                args: vec![receiver, packed_args],
+                is_async: callable.is_async(),
+            };
+        }
+        ExprKind::Call {
+            callee,
+            args,
+            is_async,
+        }
+    }
+
     fn lower_call_args(
         &mut self,
         arguments: &[hir::ExpressionArgument],
@@ -1032,11 +1105,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     self.lower_call_args(arguments, &[])
                 };
 
-                ExprKind::Call {
-                    callee: thir_callee,
-                    args: final_args,
-                    is_async: self.results.is_async_call(expr.id),
-                }
+                self.lower_indirect_call(
+                    thir_callee,
+                    final_args,
+                    self.results.is_async_call(expr.id),
+                    span,
+                )
             }
             hir::ExpressionKind::Binary(op, lhs, rhs) => {
                 // Check if this is an operator method call
@@ -1327,11 +1401,12 @@ impl<'ctx> FunctionLower<'ctx> {
                     );
 
                     let final_args = self.lower_call_args(arguments, &[]);
-                    ExprKind::Call {
+                    self.lower_indirect_call(
                         callee,
-                        args: final_args,
-                        is_async: self.results.is_async_call(expr.id),
-                    }
+                        final_args,
+                        self.results.is_async_call(expr.id),
+                        span,
+                    )
                 } else {
                     self.gcx.dcx().emit_error(
                         "failed to lower method call (no resolved target)".into(),

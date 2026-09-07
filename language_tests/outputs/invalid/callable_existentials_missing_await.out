@@ -1,0 +1,4 @@
+error: async calls must be immediately awaited
+ -> language_tests/source_files/invalid/callable_existentials_missing_await.tr:6:4
+	    holder.callback(21)
+	    ^^^^^^^^^^^^^^^^^^^

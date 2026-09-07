@@ -9,7 +9,7 @@ use crate::{
     sema::{
         models::{
             GenericArgument, GenericArguments, GenericParameter, InterfaceReference,
-            SyntheticMethodKind, Ty, TyKind, TyList,
+            SyntheticMethodKind, Ty, TyKind, callable_args_ty,
         },
         resolve::models::TypeHead,
         tycheck::derive::SyntheticMethodInfo,
@@ -79,7 +79,7 @@ fn register_definition<'ctx>(
             let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
                 return;
             };
-            let args_ty = closure_args_ty(gcx, inputs);
+            let args_ty = callable_args_ty(gcx, inputs);
             let is_async = gcx.std_item_def(StdItem::AsyncFn) == Some(info.interface_id)
                 || gcx.std_item_def(StdItem::AsyncFnMut) == Some(info.interface_id)
                 || gcx.std_item_def(StdItem::AsyncFnOnce) == Some(info.interface_id);
@@ -1318,7 +1318,13 @@ fn synthesize_closure_call<'ctx>(
     info: SyntheticMethodInfo<'ctx>,
     syn_id: DefinitionID,
 ) -> Option<ThirFunction<'ctx>> {
-    let TyKind::Closure { inputs, output, .. } = info.self_ty.kind() else {
+    let TyKind::Closure {
+        kind: closure_kind,
+        inputs,
+        output,
+        ..
+    } = info.self_ty.kind()
+    else {
         return None;
     };
     let is_async = gcx.std_item_def(StdItem::AsyncFn) == Some(info.interface_id)
@@ -1328,7 +1334,7 @@ fn synthesize_closure_call<'ctx>(
     let span = synthetic_span();
     let mut builder = ThirBuilder::new(gcx, span);
 
-    let args_ty = closure_args_ty(gcx, inputs);
+    let args_ty = callable_args_ty(gcx, inputs);
 
     let self_param_ty = match info.kind {
         SyntheticMethodKind::ClosureCall => gcx.store.interners.intern_ty(TyKind::Reference(
@@ -1361,32 +1367,50 @@ fn synthesize_closure_call<'ctx>(
     };
 
     let self_local = builder.push_expr(ExprKind::Local(self_node_id), self_param_ty);
+    let mut body_stmts = Vec::new();
     let callee = if matches!(info.kind, SyntheticMethodKind::ClosureCallOnce) {
-        self_local
+        if matches!(
+            closure_kind,
+            crate::sema::models::ClosureKind::FnMut | crate::sema::models::ClosureKind::AsyncFnMut
+        ) {
+            // Consuming a mutable callable transfers ownership of its receiver.
+            // Invoke it from mutable owned storage, just as `var f = f; f()`.
+            let receiver_id = synthetic_node_id(syn_id, 2);
+            body_stmts.push(builder.push_stmt(StmtKind::Let {
+                id: receiver_id,
+                pattern: Pattern {
+                    ty: info.self_ty,
+                    span,
+                    kind: PatternKind::Binding {
+                        name: gcx.intern_symbol("receiver"),
+                        local: receiver_id,
+                        ty: info.self_ty,
+                        mode: BindingMode::ByValue,
+                    },
+                },
+                expr: Some(self_local),
+                ty: info.self_ty,
+                mutable: true,
+            }));
+            builder.push_expr(ExprKind::Local(receiver_id), info.self_ty)
+        } else {
+            self_local
+        }
     } else {
         builder.push_expr(ExprKind::Deref(self_local), info.self_ty)
     };
 
     let mut call_args = Vec::new();
-    match inputs.len() {
-        0 => {}
-        1 => {
-            let args_local = builder.push_expr(ExprKind::Local(args_node_id), args_ty);
-            call_args.push(args_local);
-        }
-        _ => {
-            for (idx, &input_ty) in inputs.iter().enumerate() {
-                let args_local = builder.push_expr(ExprKind::Local(args_node_id), args_ty);
-                let field = builder.push_expr(
-                    ExprKind::Field {
-                        lhs: args_local,
-                        index: FieldIndex::from_usize(idx),
-                    },
-                    input_ty,
-                );
-                call_args.push(field);
-            }
-        }
+    for (idx, &input_ty) in inputs.iter().enumerate() {
+        let args_local = builder.push_expr(ExprKind::Local(args_node_id), args_ty);
+        let field = builder.push_expr(
+            ExprKind::Field {
+                lhs: args_local,
+                index: FieldIndex::from_usize(idx),
+            },
+            input_ty,
+        );
+        call_args.push(field);
     }
 
     let call_expr = builder.push_expr(
@@ -1403,7 +1427,7 @@ fn synthesize_closure_call<'ctx>(
     } else {
         call_expr
     };
-    let body_block = builder.push_block(vec![], Some(body_expr));
+    let body_block = builder.push_block(body_stmts, Some(body_expr));
 
     Some(ThirFunction {
         id: syn_id,
@@ -1417,14 +1441,6 @@ fn synthesize_closure_call<'ctx>(
         match_reports: FxHashMap::default(),
         is_async,
     })
-}
-
-fn closure_args_ty<'ctx>(gcx: GlobalContext<'ctx>, inputs: TyList<'ctx>) -> Ty<'ctx> {
-    match inputs.len() {
-        0 => gcx.types.void,
-        1 => inputs[0],
-        _ => Ty::new(TyKind::Tuple(inputs), gcx),
-    }
 }
 
 fn synthesize_enum_clone<'ctx>(

@@ -9,7 +9,15 @@ impl<'ctx> Checker<'ctx> {
         cs: &mut Cs<'ctx>,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
-        let effective_async = closure.is_async || self.is_forced_async_closure_expr(expression.id);
+        let effective_async = closure.is_async
+            || self.is_forced_async_closure_expr(expression.id)
+            || expectation.is_some_and(|ty| {
+                crate::sema::tycheck::utils::callable::existential_callable(
+                    gcx,
+                    cs.infer_cx.resolve_vars_if_possible(ty),
+                )
+                .is_some_and(|callable| callable.is_async())
+            });
 
         // Collect closure parameter IDs (these are NOT captures)
         let param_ids: rustc_hash::FxHashSet<NodeID> =
@@ -160,6 +168,7 @@ impl<'ctx> Checker<'ctx> {
         cs.solve_intermediate();
         let adjustments = cs.resolved_adjustments();
         let expr_tys = cs.resolved_expr_types();
+        let interface_calls = cs.resolved_interface_calls();
         let return_ty = cs.infer_cx.resolve_vars_if_possible(return_ty);
         let param_tys: Vec<_> = param_tys
             .into_iter()
@@ -175,6 +184,7 @@ impl<'ctx> Checker<'ctx> {
             checker: self,
             adjustments: &adjustments,
             expr_tys: &expr_tys,
+            interface_calls: &interface_calls,
         };
         collector.collect_expr(&closure.body, UseContext::Value);
 
@@ -310,8 +320,16 @@ impl<'ctx> Checker<'ctx> {
 
             // Function pointer - use its inputs
             TyKind::FnPointer { inputs, .. } => Some(inputs.to_vec()),
-
-            _ => None,
+            _ => {
+                crate::sema::tycheck::utils::callable::existential_callable(self.gcx(), expectation)
+                    .and_then(|callable| {
+                        callable.interface.arguments.get(1).and_then(|arg| arg.ty())
+                    })
+                    .and_then(|args_ty| match args_ty.kind() {
+                        TyKind::Tuple(inputs) => Some(inputs.to_vec()),
+                        _ => None,
+                    })
+            }
         }
     }
 
@@ -327,7 +345,11 @@ impl<'ctx> Checker<'ctx> {
         match expectation.kind() {
             TyKind::Closure { output, .. } => Some(output),
             TyKind::FnPointer { output, .. } => Some(output),
-            _ => None,
+            _ => {
+                crate::sema::tycheck::utils::callable::existential_callable(self.gcx(), expectation)
+                    .and_then(|callable| callable.signature(self.gcx()))
+                    .map(|(_, output)| output)
+            }
         }
     }
 
@@ -464,6 +486,8 @@ struct CaptureCollector<'a, 'ctx> {
     /// Fully resolved expression types used to distinguish copying a projected
     /// field from moving it out of the captured aggregate.
     expr_tys: &'a rustc_hash::FxHashMap<NodeID, Ty<'ctx>>,
+    interface_calls:
+        &'a rustc_hash::FxHashMap<NodeID, crate::sema::tycheck::solve::InterfaceCallInfo>,
 }
 
 impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
@@ -735,7 +759,21 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             }
             hir::ExpressionKind::Break { .. } | hir::ExpressionKind::Continue { .. } => {}
             hir::ExpressionKind::Call { callee, arguments } => {
-                self.collect_expr(callee, UseContext::Value);
+                let callee_context = self
+                    .expr_tys
+                    .get(&callee.id)
+                    .and_then(|ty| {
+                        crate::sema::tycheck::utils::callable::existential_callable(
+                            self.checker.gcx(),
+                            *ty,
+                        )
+                    })
+                    .and_then(|callable| callable.receiver_mutability())
+                    .map(|mutability| UseContext::Borrow {
+                        mutable: mutability == hir::Mutability::Mutable,
+                    })
+                    .unwrap_or(UseContext::Value);
+                self.collect_expr(callee, callee_context);
                 for arg in arguments {
                     self.collect_expr(&arg.expression, UseContext::Value);
                 }
@@ -745,7 +783,28 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
                 arguments,
                 ..
             } => {
-                self.collect_expr(receiver, UseContext::Value);
+                let receiver_context = self
+                    .interface_calls
+                    .get(&expr.id)
+                    .and_then(|info| {
+                        let kind = crate::sema::models::callable_kind(
+                            self.checker.gcx(),
+                            info.method_interface,
+                        )?;
+                        match kind {
+                            crate::sema::models::ClosureKind::Fn
+                            | crate::sema::models::ClosureKind::AsyncFn => {
+                                Some(UseContext::Borrow { mutable: false })
+                            }
+                            crate::sema::models::ClosureKind::FnMut
+                            | crate::sema::models::ClosureKind::AsyncFnMut => {
+                                Some(UseContext::Borrow { mutable: true })
+                            }
+                            _ => None,
+                        }
+                    })
+                    .unwrap_or(UseContext::Value);
+                self.collect_expr(receiver, receiver_context);
                 for arg in arguments {
                     self.collect_expr(&arg.expression, UseContext::Value);
                 }

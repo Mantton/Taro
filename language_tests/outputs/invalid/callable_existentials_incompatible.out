@@ -1,0 +1,32 @@
+error: type 'closure<FnMut>(() -> int32)' does not conform to interface 'Fn() -> int32'
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:7:45
+	    let mutableAsShared: any Fn() -> int32 = || {
+	                                             ^^
+error: type 'closure<FnOnce>(() -> int32)' does not conform to interface 'FnMut() -> int32'
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:12:46
+	    let onceAsMutable: any FnMut() -> int32 = move || consume(values)
+	                                              ^^^^
+error: expected int32, found bool
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:13:44
+	    let wrongReturn: any Fn() -> int32 = || true
+	                                            ^^^^
+error: expected tuple of length 1, found 2
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:14:56
+	    let wrongArguments: any Fn(int32, int32) -> int32 = |x: int32| x
+	                                                        ^
+error: type 'closure<AsyncFn>(() -> int32)' does not conform to interface 'Fn() -> int32'
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:15:41
+	    let asyncAsSync: any Fn() -> int32 = || async { 42 }
+	                                         ^^
+error: type 'closure<Fn>(() -> int32)' does not conform to interface 'AsyncFn() -> int32'
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:17:46
+	    let syncAsAsync: any AsyncFn() -> int32 = syncClosure
+	                                              ^^^^^^^^^^^
+error: type 'closure<AsyncFnMut>(() -> int32)' does not conform to interface 'AsyncFn() -> int32'
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:18:55
+	    let asyncMutableAsShared: any AsyncFn() -> int32 = || async {
+	                                                       ^^
+error: type 'int32' does not conform to interface 'Fn() -> int32'
+ -> language_tests/source_files/invalid/callable_existentials_incompatible.tr:22:41
+	    let nonCallable: any Fn() -> int32 = 42
+	                                         ^^

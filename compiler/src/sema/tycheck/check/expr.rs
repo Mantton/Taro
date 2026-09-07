@@ -1640,8 +1640,17 @@ impl<'ctx> Checker<'ctx> {
         // Get the callee type (may still have type params if not yet instantiated)
         let callee_ty = cs.infer_cx.resolve_vars_if_possible(callee_ty);
         let (instantiated_inputs, instantiated_output) = match callee_ty.kind() {
-            TyKind::FnPointer { inputs, output } => (inputs.to_vec(), output),
-            _ => return None,
+            TyKind::FnPointer { inputs, output } | TyKind::Closure { inputs, output, .. } => {
+                (inputs.to_vec(), output)
+            }
+            _ => {
+                let callable = crate::sema::tycheck::utils::callable::existential_callable(
+                    self.gcx(),
+                    callee_ty,
+                )?;
+                let (inputs, output) = callable.signature(self.gcx())?;
+                (inputs.to_vec(), output)
+            }
         };
 
         // If we have a callee definition with type parameters that have Fn bounds,
@@ -1685,7 +1694,7 @@ impl<'ctx> Checker<'ctx> {
                 if let Some(bound) =
                     self.try_resolve_fn_bound(original_ty, def_id, bound_instantiation_args)
                 {
-                    resolved.push(bound.fn_signature_ty);
+                    resolved.push(bound.fn_signature_ty.unwrap_or(instantiated_ty));
                     resolved_async_expectations.push(bound.expects_async_callable);
                 } else {
                     // Fall back to instantiated type from callee
@@ -1930,21 +1939,20 @@ impl<'ctx> Checker<'ctx> {
                     continue;
                 };
 
-                // Unpack tuple Args into individual inputs (rust-call ABI)
-                let inputs: Vec<Ty<'ctx>> = if let TyKind::Tuple(elem_tys) = args_ty.kind() {
-                    elem_tys.to_vec()
-                } else {
-                    vec![args_ty]
+                // An unknown Args pack does not imply one closure parameter.
+                // Preserve the async expectation while conformance inference
+                // determines its arity from the actual closure inputs.
+                let fn_signature_ty = match args_ty.kind() {
+                    TyKind::Tuple(inputs) => {
+                        Some(gcx.store.interners.intern_ty(TyKind::FnPointer {
+                            inputs,
+                            output: output_ty,
+                        }))
+                    }
+                    _ => None,
                 };
-                let inputs = gcx.store.interners.intern_ty_list(inputs);
-
-                // Create a synthetic FnPointer type to pass as expectation
-                // This allows the closure synthesizer to extract expected input types
                 return Some(ResolvedCallableBound {
-                    fn_signature_ty: gcx.store.interners.intern_ty(TyKind::FnPointer {
-                        inputs,
-                        output: output_ty,
-                    }),
+                    fn_signature_ty,
                     expects_async_callable,
                 });
             }
@@ -2488,7 +2496,7 @@ impl<'ctx> Checker<'ctx> {
                 {
                     let expectation_ty = self.freshen_method_expectation_ty(
                         def_id,
-                        bound.fn_signature_ty,
+                        bound.fn_signature_ty.unwrap_or(instantiated_ty),
                         name.span,
                         cs,
                     );

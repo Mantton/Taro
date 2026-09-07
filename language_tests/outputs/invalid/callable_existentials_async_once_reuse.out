@@ -1,0 +1,4 @@
+error: use of moved value 'f'
+ -> language_tests/source_files/invalid/callable_existentials_async_once_reuse.tr:3:19
+	    first + (await f())
+	                   ^

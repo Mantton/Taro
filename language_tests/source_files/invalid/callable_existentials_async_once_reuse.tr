@@ -1,0 +1,7 @@
+func reuse(_ f: any AsyncFnOnce() -> int32) async -> int32 {
+    let first = await f()
+    first + (await f())
+}
+
+func main() {
+}

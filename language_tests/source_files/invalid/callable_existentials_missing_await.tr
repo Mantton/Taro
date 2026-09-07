@@ -1,0 +1,10 @@
+struct AsyncCallableField {
+    callback: any AsyncFn(int32) -> int32
+}
+
+func invoke(_ holder: AsyncCallableField) -> int32 {
+    holder.callback(21)
+}
+
+func main() {
+}

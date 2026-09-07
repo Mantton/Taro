@@ -127,7 +127,7 @@ impl<'ctx> Actor<'ctx> {
     ) -> Vec<Spanned<Constraint<'ctx>>> {
         let gcx = self.context;
         let icx = DefTyLoweringCtx::new(def_id, gcx);
-        let mut constraints = vec![];
+        let mut constraints = gcx.constraints_of(def_id);
 
         // Helper function (not closure) to avoid borrow issues
         fn add_interface_constraints<'ctx>(

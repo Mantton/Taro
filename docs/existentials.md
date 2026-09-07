@@ -5,9 +5,11 @@ pointer, and one witness-table pointer for each interface in the existential
 type. Interface aliases are expanded and exact duplicate interface references
 are removed, preserving first-occurrence order.
 
-The metadata identifies the concrete type and its known conformances. Runtime
-type tests and checked casts use it to test a concrete type or find a witness
-table for an interface outside the existential's declared interface list.
+The metadata identifies the concrete type and its known conformances, including
+compiler-provided callable conformances for closures and their inherited
+interfaces. Runtime type tests and checked casts use it to test a concrete type
+or find a witness table for an interface outside the existential's declared
+interface list.
 
 ## Witness Tables
 
@@ -44,3 +46,18 @@ the method slot indirectly. Witness entries point to adapter functions that
 bridge the erased data pointer to the concrete implementation's calling
 convention. When MIR establishes the concrete receiver, code generation can
 instead emit a direct call using its devirtualization hint.
+
+## Callable Existentials
+
+Calling a value such as `any Fn(int32) -> int32` with `value(42)` selects the
+callable interface's `call`, `callMut`, or `callOnce` requirement. Arguments are
+packed into its `Args` tuple, and the call uses the same witness-table dispatch
+as an explicitly named interface method. Closure adapters bridge that tuple
+to the closure's parameters. Async callable requirements use async method
+dispatch and must be immediately awaited.
+
+Receiver mutability and consumption remain enforced after erasure. Incompatible
+callable signatures, or a mixture of sync and async interfaces, require an
+explicit conversion to one callable interface before invocation. See the
+[type guide](guide/syntax/types.md#callable-interface-shorthand) for syntax,
+argument-pack examples, and receiver rules.

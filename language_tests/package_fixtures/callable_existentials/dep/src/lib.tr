@@ -1,0 +1,19 @@
+public func makeShared(_ offset: int32) -> any Fn(int32) -> int32 {
+    return move |value: int32| offset + value
+}
+
+public func makeCounter() -> any FnMut() -> int32 {
+    var count: int32 = 0
+    return || {
+        count += 1
+        count
+    }
+}
+
+public func invokeTuple(_ f: any Fn((int32, int32)) -> int32) -> int32 {
+    f((19, 23))
+}
+
+public func boxGeneric[T, F: Fn(T) -> T](_ f: F) -> any Fn(T) -> T {
+    f
+}

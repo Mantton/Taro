@@ -1,0 +1,8 @@
+error: ambiguous callable interfaces on any Fn(int32) -> int32 & AsyncFn(int32) -> int32; convert to a single callable interface before calling
+ -> language_tests/source_files/invalid/callable_existentials_ambiguous.tr:2:12
+	    let _ = f(1)
+	            ^^^^
+error: ambiguous callable interfaces on any Fn(int32) -> int32 & Fn(bool) -> bool; convert to a single callable interface before calling
+ -> language_tests/source_files/invalid/callable_existentials_ambiguous.tr:6:12
+	    let _ = f(1)
+	            ^^^^

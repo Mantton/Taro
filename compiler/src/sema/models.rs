@@ -385,6 +385,67 @@ pub enum ClosureKind {
     AsyncFnOnce,
 }
 
+/// Identify the built-in callable interfaces independently of their source spelling.
+pub fn callable_kind(gcx: Gcx<'_>, interface_id: DefinitionID) -> Option<ClosureKind> {
+    [
+        (hir::StdItem::Fn, ClosureKind::Fn),
+        (hir::StdItem::FnMut, ClosureKind::FnMut),
+        (hir::StdItem::FnOnce, ClosureKind::FnOnce),
+        (hir::StdItem::AsyncFn, ClosureKind::AsyncFn),
+        (hir::StdItem::AsyncFnMut, ClosureKind::AsyncFnMut),
+        (hir::StdItem::AsyncFnOnce, ClosureKind::AsyncFnOnce),
+    ]
+    .into_iter()
+    .find_map(|(item, kind)| (gcx.std_item_def(item) == Some(interface_id)).then_some(kind))
+}
+
+/// Callable Args is always a tuple, including zero and one argument signatures.
+pub fn callable_args_ty<'ctx>(gcx: Gcx<'ctx>, inputs: TyList<'ctx>) -> Ty<'ctx> {
+    Ty::new(TyKind::Tuple(inputs), gcx)
+}
+
+/// The strongest callable interface implemented by a concrete closure.
+pub fn closure_interface_ref<'ctx>(
+    gcx: Gcx<'ctx>,
+    ty: Ty<'ctx>,
+) -> Option<InterfaceReference<'ctx>> {
+    let TyKind::Closure {
+        kind,
+        inputs,
+        output,
+        ..
+    } = ty.kind()
+    else {
+        return None;
+    };
+    let item = match kind {
+        ClosureKind::Fn => hir::StdItem::Fn,
+        ClosureKind::FnMut => hir::StdItem::FnMut,
+        ClosureKind::FnOnce => hir::StdItem::FnOnce,
+        ClosureKind::AsyncFn => hir::StdItem::AsyncFn,
+        ClosureKind::AsyncFnMut => hir::StdItem::AsyncFnMut,
+        ClosureKind::AsyncFnOnce => hir::StdItem::AsyncFnOnce,
+    };
+    Some(InterfaceReference {
+        id: gcx.std_item_def(item)?,
+        arguments: gcx.store.interners.intern_generic_args(vec![
+            GenericArgument::Type(ty),
+            GenericArgument::Type(callable_args_ty(gcx, inputs)),
+            GenericArgument::Type(output),
+        ]),
+        bindings: &[],
+    })
+}
+
+/// Expand a callable argument pack. Abstract tuple parameters remain opaque until
+/// instantiated; they can still be forwarded to the explicit call methods.
+pub fn callable_inputs<'ctx>(gcx: Gcx<'ctx>, args_ty: Ty<'ctx>) -> TyList<'ctx> {
+    match args_ty.kind() {
+        TyKind::Tuple(inputs) => inputs,
+        _ => gcx.store.interners.intern_ty_list(vec![args_ty]),
+    }
+}
+
 /// How a variable is captured by a closure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CaptureKind {
@@ -926,20 +987,13 @@ fn format_callable_interface<'ctx>(
     interface_id: DefinitionID,
     args: &[GenericArgument<'ctx>],
 ) -> Option<String> {
-    let kind = if gcx.std_item_def(hir::StdItem::Fn) == Some(interface_id) {
-        "Fn"
-    } else if gcx.std_item_def(hir::StdItem::FnMut) == Some(interface_id) {
-        "FnMut"
-    } else if gcx.std_item_def(hir::StdItem::FnOnce) == Some(interface_id) {
-        "FnOnce"
-    } else if gcx.std_item_def(hir::StdItem::AsyncFn) == Some(interface_id) {
-        "AsyncFn"
-    } else if gcx.std_item_def(hir::StdItem::AsyncFnMut) == Some(interface_id) {
-        "AsyncFnMut"
-    } else if gcx.std_item_def(hir::StdItem::AsyncFnOnce) == Some(interface_id) {
-        "AsyncFnOnce"
-    } else {
-        return None;
+    let kind = match callable_kind(gcx, interface_id)? {
+        ClosureKind::Fn => "Fn",
+        ClosureKind::FnMut => "FnMut",
+        ClosureKind::FnOnce => "FnOnce",
+        ClosureKind::AsyncFn => "AsyncFn",
+        ClosureKind::AsyncFnMut => "AsyncFnMut",
+        ClosureKind::AsyncFnOnce => "AsyncFnOnce",
     };
 
     if args.len() != 2 {

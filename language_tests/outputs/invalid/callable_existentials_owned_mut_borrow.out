@@ -1,0 +1,4 @@
+error: use of moved value behind mutable reference
+ -> language_tests/source_files/invalid/callable_existentials_owned_mut_borrow.tr:3:12
+	    first + f()
+	            ^^^

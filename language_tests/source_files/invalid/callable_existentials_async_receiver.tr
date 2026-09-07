@@ -1,0 +1,6 @@
+func invoke(_ f: &any AsyncFnMut() -> int32) async -> int32 {
+    await f()
+}
+
+func main() {
+}

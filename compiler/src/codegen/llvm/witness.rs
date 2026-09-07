@@ -126,6 +126,12 @@ impl<'llvm, 'gcx> Emitter<'llvm, 'gcx> {
         });
         let mut seen = FxHashSet::default();
         let mut out = Vec::new();
+        // Closures conform through builtin selection rather than impl records.
+        // Their runtime metadata must expose the same callable interfaces so
+        // erased values support is/as? just like explicitly implemented types.
+        if let Some(interface) = crate::sema::models::closure_interface_ref(self.gcx, concrete_ty) {
+            self.collect_interface_and_superfaces_for_metadata(interface, &mut seen, &mut out);
+        }
         for record in records {
             let Some(iface) = self.materialized_interface_for_record(
                 record.extension,

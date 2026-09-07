@@ -1,0 +1,14 @@
+func wrongArity(_ f: any Fn(int32, int32) -> int32) {
+    let _ = f(1)
+}
+
+func wrongType(_ f: any Fn(int32, int32) -> int32) {
+    let _ = f(true, 1)
+}
+
+func flattenedTuple(_ f: any Fn((int32, int32)) -> int32) {
+    let _ = f(1, 2)
+}
+
+func main() {
+}

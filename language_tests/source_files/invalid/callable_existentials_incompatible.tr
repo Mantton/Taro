@@ -1,0 +1,23 @@
+func consume(_ values: List[int32]) -> int32 {
+    values.len() as int32
+}
+
+func main() {
+    var count: int32 = 0
+    let mutableAsShared: any Fn() -> int32 = || {
+        count += 1
+        count
+    }
+    var values = List[int32]()
+    let onceAsMutable: any FnMut() -> int32 = move || consume(values)
+    let wrongReturn: any Fn() -> int32 = || true
+    let wrongArguments: any Fn(int32, int32) -> int32 = |x: int32| x
+    let asyncAsSync: any Fn() -> int32 = || async { 42 }
+    let syncClosure = || 42_i32
+    let syncAsAsync: any AsyncFn() -> int32 = syncClosure
+    let asyncMutableAsShared: any AsyncFn() -> int32 = || async {
+        count += 1
+        count
+    }
+    let nonCallable: any Fn() -> int32 = 42
+}

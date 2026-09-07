@@ -1,0 +1,10 @@
+func ambiguousKind(_ f: any Fn(int32) -> int32 & AsyncFn(int32) -> int32) {
+    let _ = f(1)
+}
+
+func ambiguousSignature(_ f: any Fn(int32) -> int32 & Fn(bool) -> bool) {
+    let _ = f(1)
+}
+
+func main() {
+}

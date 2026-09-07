@@ -61,7 +61,7 @@ struct ArgumentExpectation<'ctx> {
 
 #[derive(Clone, Copy)]
 struct ResolvedCallableBound<'ctx> {
-    fn_signature_ty: Ty<'ctx>,
+    fn_signature_ty: Option<Ty<'ctx>>,
     expects_async_callable: bool,
 }
 

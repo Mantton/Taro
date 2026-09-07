@@ -4219,19 +4219,11 @@ impl Parser {
         self.expect(Token::RArrow)?;
         let output = self.parse_type()?;
 
-        let args = match inputs.len() {
-            0 => Box::new(Type {
-                id: self.next_id(),
-                span: tuple_span,
-                kind: TypeKind::Tuple(Vec::new()),
-            }),
-            1 => inputs.into_iter().next().expect("single input"),
-            _ => Box::new(Type {
-                id: self.next_id(),
-                span: tuple_span,
-                kind: TypeKind::Tuple(inputs),
-            }),
-        };
+        let args = Box::new(Type {
+            id: self.next_id(),
+            span: tuple_span,
+            kind: TypeKind::Tuple(inputs),
+        });
 
         Ok(TypeArguments {
             span: lo.to(self.hi_span()),
@@ -5053,11 +5045,28 @@ mod tests {
             .expect("callable shorthand lowers to type arguments");
         assert_eq!(args.arguments.len(), 2);
         assert!(
-            matches!(&args.arguments[0], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_)))
+            matches!(&args.arguments[0], TypeArgument::Type(ty) if matches!(&ty.kind, TypeKind::Tuple(items) if items.len() == 1 && matches!(items[0].kind, TypeKind::Nominal(_))))
         );
         assert!(
             matches!(&args.arguments[1], TypeArgument::Type(ty) if matches!(ty.kind, TypeKind::Nominal(_)))
         );
+    }
+
+    #[test]
+    fn test_callable_shorthand_preserves_tuple_argument() {
+        let ty = parse_type_str("Fn((int32, int32)) -> int32");
+        let TypeKind::Nominal(path) = &ty.kind else {
+            panic!("Expected nominal type");
+        };
+        let args = path.segments[0].arguments.as_ref().unwrap();
+        let TypeArgument::Type(args_ty) = &args.arguments[0] else {
+            panic!("Expected argument tuple");
+        };
+        let TypeKind::Tuple(inputs) = &args_ty.kind else {
+            panic!("Expected argument tuple");
+        };
+        assert_eq!(inputs.len(), 1);
+        assert!(matches!(&inputs[0].kind, TypeKind::Tuple(items) if items.len() == 2));
     }
 
     #[test]

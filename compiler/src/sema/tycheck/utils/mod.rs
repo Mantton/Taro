@@ -5,6 +5,7 @@ use crate::sema::{
 
 pub(crate) mod arguments;
 pub mod autoderef;
+pub mod callable;
 pub mod const_eval;
 pub mod generics;
 pub mod instantiate;

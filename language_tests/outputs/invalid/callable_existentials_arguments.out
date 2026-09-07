@@ -1,0 +1,12 @@
+error: Expected exactly 2 arguments, but 1 was provided
+ -> language_tests/source_files/invalid/callable_existentials_arguments.tr:2:12
+	    let _ = f(1)
+	            ^^^^
+error: expected int32, found bool
+ -> language_tests/source_files/invalid/callable_existentials_arguments.tr:6:14
+	    let _ = f(true, 1)
+	              ^^^^
+error: Expected exactly 1 argument, but 2 were provided
+ -> language_tests/source_files/invalid/callable_existentials_arguments.tr:10:12
+	    let _ = f(1, 2)
+	            ^^^^^^^

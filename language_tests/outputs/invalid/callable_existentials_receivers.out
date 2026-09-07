@@ -1,0 +1,4 @@
+error: cannot borrow immutable local 'f' as mutable
+ -> language_tests/source_files/invalid/callable_existentials_receivers.tr:2:4
+	    f()
+	    ^^^

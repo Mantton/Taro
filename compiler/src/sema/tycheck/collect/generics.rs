@@ -1,3 +1,5 @@
+use rustc_hash::{FxHashMap, FxHashSet};
+
 use crate::{
     compile::context::GlobalContext,
     error::CompileResult,
@@ -6,8 +8,8 @@ use crate::{
         TypeParameterKind,
     },
     sema::models::{
-        GenericParameter, GenericParameterDefinition, GenericParameterDefinitionKind, Generics, Ty,
-        TyKind,
+        Constraint, GenericArgument, GenericParameter, GenericParameterDefinition,
+        GenericParameterDefinitionKind, Generics, InterfaceReference, Ty, TyKind,
     },
     sema::tycheck::lower::{DefTyLoweringCtx, TypeLowerer},
 };
@@ -18,15 +20,17 @@ pub fn run(package: &hir::Package, context: GlobalContext) -> CompileResult<()> 
 
 struct Actor<'ctx> {
     context: GlobalContext<'ctx>,
+    tuple_bounds: TupleBounds,
 }
 
 impl<'ctx> Actor<'ctx> {
-    fn new(context: GlobalContext<'ctx>) -> Actor<'ctx> {
-        Actor { context }
-    }
-
     fn run(package: &hir::Package, context: GlobalContext<'ctx>) -> CompileResult<()> {
-        let mut actor = Actor::new(context);
+        let mut tuple_bounds = TupleBounds::default();
+        hir::walk_package(&mut tuple_bounds, package);
+        let mut actor = Actor {
+            context,
+            tuple_bounds,
+        };
         hir::walk_package(&mut actor, package);
         context.dcx().ok()
     }
@@ -129,6 +133,70 @@ impl<'ctx> Actor<'ctx> {
         }
     }
 
+    /// Argument-pack bounds must be visible before interface superfaces and
+    /// generic defaults are lowered. Store them in the ordinary constraint map;
+    /// the full constraint collector will retain and deduplicate these bounds.
+    fn seed_tuple_bounds(&self, owner: DefinitionID, generics: &hir::Generics) {
+        let gcx = self.context;
+        let Some(tuple_id) = gcx.std_item_def(hir::StdItem::Tuple) else {
+            return;
+        };
+        let mut constraints = Vec::new();
+        let mut add = |ty: Ty<'ctx>, bounds: &hir::GenericBounds| {
+            for bound in bounds {
+                let Some(id) = TupleBounds::target(&bound.path.path) else {
+                    continue;
+                };
+                if !self
+                    .tuple_bounds
+                    .implies_tuple(gcx, id, tuple_id, &mut FxHashSet::default())
+                {
+                    continue;
+                }
+                constraints.push(crate::span::Spanned::new(
+                    Constraint::Bound {
+                        ty,
+                        interface: InterfaceReference {
+                            id: tuple_id,
+                            arguments: gcx
+                                .store
+                                .interners
+                                .intern_generic_args(vec![GenericArgument::Type(ty)]),
+                            bindings: &[],
+                        },
+                    },
+                    bound.path.span,
+                ));
+            }
+        };
+        if let Some(parameters) = &generics.type_parameters {
+            for param in &parameters.parameters {
+                if let Some(bounds) = &param.bounds {
+                    add(gcx.get_type(param.id), bounds);
+                }
+            }
+        }
+        if let Some(clause) = &generics.where_clause {
+            for requirement in &clause.requirements {
+                let hir::GenericRequirement::ConformanceRequirement(requirement) = requirement
+                else {
+                    continue;
+                };
+                let hir::TypeKind::Nominal(hir::ResolvedPath::Resolved(path)) =
+                    &requirement.bounded_type.kind
+                else {
+                    continue;
+                };
+                if let hir::Resolution::Definition(id, DefinitionKind::TypeParameter) =
+                    path.resolution
+                {
+                    add(gcx.get_type(id), &requirement.bounds);
+                }
+            }
+        }
+        gcx.update_constraints(owner, constraints);
+    }
+
     fn collect(&mut self, id: DefinitionID, generics: &hir::Generics) {
         let gcx = self.context;
 
@@ -216,13 +284,103 @@ impl<'ctx> Actor<'ctx> {
         }
 
         // Result
-        let generics = Generics {
+        let lowered_generics = Generics {
             parent: parent_def_id,
             parameters,
             has_self: has_self || parent_has_self,
             parent_count,
         };
-        gcx.cache_generics(id, generics);
+        gcx.cache_generics(id, lowered_generics);
+        self.seed_tuple_bounds(id, generics);
         self.cache_lowered_generic_metadata(id);
+    }
+}
+
+/// Read only the nominal header graph so tuple-pack bounds are independent of
+/// declaration order. Generic arguments do not affect marker implication. The
+/// normal interface collector remains responsible for lowering and validation.
+#[derive(Default)]
+struct TupleBounds(FxHashMap<DefinitionID, Vec<DefinitionID>>);
+
+impl TupleBounds {
+    fn target(path: &hir::ResolvedPath) -> Option<DefinitionID> {
+        let hir::ResolvedPath::Resolved(path) = path else {
+            return None;
+        };
+        match path.resolution {
+            hir::Resolution::Definition(
+                id,
+                DefinitionKind::Interface | DefinitionKind::TypeAlias,
+            ) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn implies_tuple(
+        &self,
+        gcx: GlobalContext<'_>,
+        id: DefinitionID,
+        tuple_id: DefinitionID,
+        visited: &mut FxHashSet<DefinitionID>,
+    ) -> bool {
+        if id == tuple_id {
+            return true;
+        }
+        if !visited.insert(id) {
+            return false;
+        }
+        if let Some(parents) = self.0.get(&id) {
+            return parents
+                .iter()
+                .any(|&parent| self.implies_tuple(gcx, parent, tuple_id, visited));
+        }
+        if let Some(alias) = gcx.try_get_interface_alias(id) {
+            return alias
+                .iter()
+                .any(|parent| self.implies_tuple(gcx, parent.id, tuple_id, visited));
+        }
+        gcx.get_interface_definition(id).is_some_and(|definition| {
+            definition
+                .superfaces
+                .iter()
+                .any(|parent| self.implies_tuple(gcx, parent.value.id, tuple_id, visited))
+        })
+    }
+}
+
+impl HirVisitor for TupleBounds {
+    fn visit_declaration(&mut self, node: &hir::Declaration) -> Self::Result {
+        let parents = match &node.kind {
+            DeclarationKind::Interface(interface) => {
+                interface.conformances.as_ref().map(|conformances| {
+                    conformances
+                        .bounds
+                        .iter()
+                        .filter_map(|bound| Self::target(&bound.path))
+                        .collect()
+                })
+            }
+            DeclarationKind::TypeAlias(alias) => {
+                if let Some(bounds) = &alias.interface_set {
+                    Some(
+                        bounds
+                            .iter()
+                            .filter_map(|bound| Self::target(&bound.path.path))
+                            .collect(),
+                    )
+                } else if let Some(ty) = &alias.ty
+                    && let hir::TypeKind::Nominal(path) = &ty.kind
+                {
+                    Some(Self::target(path).into_iter().collect())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(parents) = parents {
+            self.0.insert(node.id, parents);
+        }
+        hir::walk_declaration(self, node)
     }
 }

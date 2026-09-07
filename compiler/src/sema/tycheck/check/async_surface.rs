@@ -379,6 +379,11 @@ impl<'ctx> Checker<'ctx> {
     }
 
     pub(super) fn ty_is_known_async_callable(&self, ty: Ty<'ctx>) -> bool {
+        if let Some(callable) =
+            crate::sema::tycheck::utils::callable::existential_callable(self.gcx(), ty)
+        {
+            return callable.is_async();
+        }
         matches!(
             ty.kind(),
             TyKind::Closure {
@@ -391,6 +396,18 @@ impl<'ctx> Checker<'ctx> {
     }
 
     pub(super) fn async_callable_input_count(&self, ty: Ty<'ctx>) -> Option<usize> {
+        if let Some(callable) =
+            crate::sema::tycheck::utils::callable::existential_callable(self.gcx(), ty)
+        {
+            return callable
+                .is_async()
+                .then(|| {
+                    callable
+                        .signature(self.gcx())
+                        .map(|(inputs, _)| inputs.len())
+                })
+                .flatten();
+        }
         match ty.kind() {
             TyKind::Closure { kind, inputs, .. } => matches!(
                 kind,

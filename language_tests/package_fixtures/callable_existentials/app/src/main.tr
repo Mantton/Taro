@@ -1,0 +1,14 @@
+import dep.{boxGeneric, invokeTuple, makeCounter, makeShared}
+
+func main() {
+    let shared = makeShared(19)
+    var counter = makeCounter()
+    let generic = boxGeneric[int32](|value: int32| value * 2)
+    std.runtime.collect()
+    assert(shared(23) == 42, "imported closure result and witness")
+    assert(counter() == 1, "imported mutable closure capture")
+    assert(counter() == 2, "imported mutable closure reuse")
+    assert(invokeTuple(|pair: (int32, int32)| pair.0 + pair.1) == 42, "closure argument crosses package boundary")
+    assert(generic(21) == 42, "imported generic callable boxing")
+    print("PASS: cross-package callable existentials\n")
+}

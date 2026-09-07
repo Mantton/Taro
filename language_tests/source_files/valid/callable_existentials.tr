@@ -1,0 +1,200 @@
+// ENV: TARO_GC_STRESS=1
+
+struct CallablePayload: Copy {
+    first: int64
+    second: int64
+    third: int64
+    fourth: int64
+}
+
+struct CallableField {
+    callback: any Fn(int32) -> int32
+}
+
+struct NominalCallable {
+    base: int32
+}
+
+impl FnOnce[(int32, int32), int32] for NominalCallable {
+    func callOnce(self, args: (int32, int32)) -> int32 {
+        self.base + args.0 + args.1
+    }
+}
+
+// A raw argument pack can inherit its Tuple bound through a later declaration.
+interface CallablePack[Args: Pack, R]: FnOnce[Args, R] {}
+interface Pack: Tuple {}
+type PackAlias = Tuple
+
+func forwardInheritedPack[Args: Pack, R, F: CallablePack[Args, R]](_ f: F, _ args: Args) -> R {
+    f.callOnce(args: args)
+}
+func forwardAliasedPack[Args: PackAlias, R, F: FnOnce[Args, R]](_ f: F, _ args: Args) -> R {
+    f.callOnce(args: args)
+}
+
+interface InheritedCallable: FnOnce(int32, int32) -> int32 {}
+impl InheritedCallable for NominalCallable {}
+
+type Pair = (int32, int32)
+
+func legacyUnary[F: Fn[int32, int32]](_ f: F) -> int32 { f(21) }
+func legacyPair[F: Fn[(int32, int32), int32]](_ f: F) -> int32 { f(19, 23) }
+func legacyAlias[F: Fn[Pair, int32]](_ f: F) -> int32 { f(19, 23) }
+func shorthandAlias[F: Fn(Pair) -> int32](_ f: F) -> int32 { f((19, 23)) }
+func forwardPack[Args: Tuple, R, F: FnOnce[Args, R]](_ f: F, _ args: Args) -> R {
+    f.callOnce(args: args)
+}
+
+func wherePack[Args, R, F: FnOnce[Args, R]](_ f: F, _ args: Args) -> R where Args: Tuple {
+    f.callOnce(args: args)
+}
+struct PackHolder[Args: Tuple] { args: Args }
+impl[Args: Tuple] PackHolder[Args] {
+    func invoke[F: FnOnce[Args, int32]](self, _ f: F) -> int32 { f.callOnce(args: self.args) }
+}
+
+func applyGeneric[F: Fn(int32) -> int32](_ f: F, _ value: int32) -> int32 {
+    f(value)
+}
+
+func callTwice[F: FnMut() -> int32](_ f: F) -> int32 {
+    var f = f
+    f() + f()
+}
+
+func erase[F: Fn(int32) -> int32](_ f: F) -> any Fn(int32) -> int32 {
+    f
+}
+
+func applyTuple[F: Fn((int32, int32)) -> int32](_ f: F) -> int32 {
+    f((19, 23))
+}
+
+func readCallable(_ f: &any Fn(int32) -> int32) -> int32 {
+    f(21)
+}
+
+func updateCallable(_ f: &mut any FnMut(int32) -> int32) -> int32 {
+    f(2)
+}
+
+func consumeCallable(_ f: &mut any FnOnce() -> int32) -> int32 {
+    f()
+}
+
+func makeCaptured() -> any Fn() -> int32 {
+    var values = List[int32]()
+    values.append(19)
+    values.append(23)
+    return || *values.get(0).unwrap() + *values.get(1).unwrap()
+}
+
+func consume(_ values: List[int32]) -> int32 {
+    values.len() as int32
+}
+
+func main() {
+    let transform: any Fn(CallablePayload) -> CallablePayload = |value: CallablePayload| {
+        CallablePayload { first: value.fourth, second: value.third, third: value.second, fourth: value.first }
+    }
+    let transformed = transform(CallablePayload { first: 1, second: 2, third: 3, fourth: 4 })
+    assert(transformed.first == 4 && transformed.second == 3 && transformed.third == 2 && transformed.fourth == 1, "indirect argument and result ABI")
+
+    assert(legacyUnary(|x: int32| x * 2) == 42, "legacy scalar Args remains accepted")
+    assert(legacyPair(|a: int32, b: int32| a + b) == 42, "raw tuple Args is an argument pack")
+    assert(legacyAlias(|a: int32, b: int32| a + b) == 42, "raw tuple alias is an argument pack")
+    assert(shorthandAlias(|pair: Pair| pair.0 + pair.1) == 42, "shorthand tuple alias is one argument")
+    assert(forwardPack(|a: int32, b: int32| a + b, (19_i32, 23_i32)) == 42, "generic Args pack forwarding")
+
+    assert(wherePack[Pair, int32, NominalCallable](NominalCallable { base: 1 }, (19_i32, 22_i32)) == 42, "where clause preserves abstract argument pack")
+    let holder = PackHolder[Pair] { args: (19_i32, 22_i32) }
+    assert(holder.invoke(NominalCallable { base: 1 }) == 42, "enclosing impl preserves abstract argument pack")
+
+    let zero: any Fn() -> int32 = || 42
+    assert(zero() == 42, "zero-argument callable")
+    assert(zero.call(args: ()) == 42, "explicit callable method")
+
+    let unary: any Fn(int32) -> int32 = |x: int32| x * 2
+    assert(unary(21) == 42, "one scalar argument")
+    assert(readCallable(&unary) == 42, "shared callable receiver")
+    assert(applyGeneric(unary, 21) == 42, "boxed callable satisfies generic bound")
+    assert(applyGeneric(|x: int32| x * 2, 21) == 42, "generic control")
+
+    let inferred: any Fn(int32) -> int32 = |x| x * 2
+    assert(inferred(21) == 42, "existential context infers closure parameter")
+    let erased = erase(|value: int32| value * 2)
+    assert(erased(21) == 42, "generic callable erasure")
+
+    let object = CallableField { callback: |value: int32| value * 2 }
+    assert(object.callback(21) == 42, "callable struct field")
+    let inner: any Fn(int32) -> int32 = |value: int32| value * 2
+    let outer = |value: int32| inner(value)
+    assert(applyGeneric(outer, 21) == 42, "capturing callable retains shared closure kind")
+    var innerCount: int32 = 0
+    var innerMutable: any FnMut() -> int32 = || {
+        innerCount += 1
+        innerCount
+    }
+    let outerMutable = || innerMutable()
+    assert(callTwice(outerMutable) == 3, "capturing mutable callable retains reusable closure kind")
+
+    let compatible: any Fn(int32) -> int32 & FnOnce(int32) -> int32 = |value: int32| value * 2
+    assert(compatible(21) == 42, "same-signature intersection chooses reusable callable capability")
+
+    let binary: any Fn(int32, int32) -> int32 = |a: int32, b: int32| a * 10 + b
+    assert(binary(4, 2) == 42, "two arguments preserve order")
+    let tuple: any Fn((int32, int32)) -> int32 = |pair: (int32, int32)| pair.0 + pair.1
+    assert(tuple((19, 23)) == 42, "one tuple argument remains one argument")
+    assert(applyTuple(|pair: (int32, int32)| pair.0 + pair.1) == 42, "generic tuple control")
+
+    let captured = makeCaptured()
+    std.runtime.collect()
+    assert(captured() == 42, "captured heap references outlive their creator")
+
+    var total: int32 = 0
+    var mutable: any FnMut(int32) -> int32 = |amount: int32| {
+        total += amount
+        total
+    }
+    assert(mutable(40) == 40, "mutable closure first call")
+    std.runtime.collect()
+    assert(updateCallable(&mut mutable) == 42, "mutable callable receiver")
+    assert(total == 42, "mutable capture shares state")
+    var promoted: any FnMut() -> int32 = || 42
+    assert(promoted() == 42, "Fn closure satisfies FnMut")
+
+    var owned = List[int32]()
+    owned.append(19)
+    owned.append(23)
+    let once: any FnOnce() -> int32 = move || consume(owned)
+    std.runtime.collect()
+    assert(once() == 2, "FnOnce owns and traces consumed capture")
+    var borrowedOnce: any FnOnce() -> int32 = || 42
+    assert(consumeCallable(&mut borrowedOnce) == 42, "mutable borrow allows consuming its callable content")
+    let promotedOnce: any FnOnce(int32) -> int32 = |x: int32| x * 2
+    assert(promotedOnce(21) == 42, "Fn closure satisfies FnOnce")
+
+    let erasedShared: any FnOnce(int32) -> int32 = |value: int32| value * 2
+    assert(erasedShared is any Fn(int32) -> int32, "runtime metadata includes shared callable capability")
+    assert(!(erasedShared is any Fn(bool) -> int32), "runtime callable check compares argument signature")
+    assert(!(erasedShared is any Fn(int32) -> bool), "runtime callable check compares return signature")
+    let recovered = erasedShared as? any Fn(int32) -> int32
+    match recovered {
+        case .some(shared) => assert(shared(21) == 42, "runtime callable cast preserves invocation")
+        case .none => assert(false, "shared callable cast should succeed")
+    }
+    let wrongSignature = erasedShared as? any Fn(bool) -> int32
+    match wrongSignature {
+        case .some(_) => assert(false, "mismatched callable cast should fail")
+        case .none => {}
+    }
+
+    let nominalInherited: any InheritedCallable = NominalCallable { base: 1 }
+    assert(nominalInherited(19, 22) == 42, "callable capability inherited by a local interface")
+    let nominalMethod: any FnOnce(int32, int32) -> int32 = NominalCallable { base: 1 }
+    assert(nominalMethod.callOnce(args: (19, 22)) == 42, "nominal explicit method control")
+    let nominalCall: any FnOnce(int32, int32) -> int32 = NominalCallable { base: 1 }
+    assert(nominalCall(19, 22) == 42, "nominal callable syntax dispatch")
+    print("PASS: callable existentials\n")
+}

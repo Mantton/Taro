@@ -1,0 +1,2 @@
+// PACKAGE: callable_existentials
+// ENV: TARO_GC_STRESS=1

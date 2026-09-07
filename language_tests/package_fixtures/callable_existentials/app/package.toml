@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/callable-app"
+kind = "executable"
+
+[require]
+"github.com/example/callable-dep" = { path = "../dep", alias = "dep" }

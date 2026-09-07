@@ -1,0 +1,6 @@
+func invoke(_ f: any FnMut() -> int32) -> int32 {
+    f()
+}
+
+func main() {
+}

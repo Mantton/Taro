@@ -601,7 +601,38 @@ impl<'ctx> dyn TypeLowerer<'ctx> + '_ {
         };
 
         let segment = path.segments.last().unwrap();
-        let (arguments, bindings) = self.lower_generic_args(interface_id, segment, Some(self_ty));
+        let (mut arguments, bindings) =
+            self.lower_generic_args(interface_id, segment, Some(self_ty));
+        let gcx = self.gcx();
+        if crate::sema::models::callable_kind(gcx, interface_id).is_some()
+            && let Some(args_ty) = arguments.get(1).and_then(|arg| arg.ty())
+            && !matches!(args_ty.kind(), TyKind::Tuple(_) | TyKind::Error)
+        {
+            // Legacy Fn[T, R] spells a single argument unless T explicitly names
+            // an argument pack. Shorthand already supplies a tuple, preserving
+            // the distinction between Fn((A, B)) and Fn(A, B).
+            let is_tuple_pack = self.current_definition().is_some_and(|owner| {
+                self.constraints_in_scope(owner).iter().any(|constraint| {
+                    let Constraint::Bound { ty, interface } = constraint.value else {
+                        return false;
+                    };
+                    ty == args_ty
+                        && crate::sema::impl_engine::ref_ops::collect_interface_with_superfaces(
+                            gcx, interface,
+                        )
+                        .iter()
+                        .any(|bound| gcx.std_item_def(hir::StdItem::Tuple) == Some(bound.id))
+                })
+            });
+            if !is_tuple_pack {
+                let mut normalized = arguments.to_vec();
+                normalized[1] = GenericArgument::Type(crate::sema::models::callable_args_ty(
+                    gcx,
+                    gcx.store.interners.intern_ty_list(vec![args_ty]),
+                ));
+                arguments = gcx.store.interners.intern_generic_args(normalized);
+            }
+        }
 
         InterfaceReference {
             id: interface_id,

@@ -1,0 +1,87 @@
+// ENV: TARO_GC_STRESS=1
+
+struct CallablePayload: Copy {
+    first: int64
+    second: int64
+    third: int64
+    fourth: int64
+}
+
+struct AsyncCallableField {
+    callback: any AsyncFn(int32) -> int32
+}
+
+func makeAsyncCaptured() -> any AsyncFn() -> int32 {
+    var values = List[int32]()
+    values.append(42)
+    return || async {
+        await std.testing.yieldNow()
+        values.len() as int32
+    }
+}
+
+func consumeAsyncValues(_ values: List[int32]) -> int32 {
+    values.len() as int32
+}
+
+func main() async {
+    let transform: any AsyncFn(CallablePayload) -> CallablePayload = |value: CallablePayload| async {
+        await std.testing.yieldNow()
+        CallablePayload { first: value.fourth, second: value.third, third: value.second, fourth: value.first }
+    }
+    let transformed = await transform(CallablePayload { first: 1, second: 2, third: 3, fourth: 4 })
+    assert(transformed.first == 4 && transformed.second == 3 && transformed.third == 2 && transformed.fourth == 1, "async indirect argument and result ABI")
+
+    let inferred: any AsyncFn() -> int32 = || 42
+    assert((await inferred()) == 42, "existential context infers async closure")
+    let zero: any AsyncFn() -> int32 = || async {
+        await std.testing.yieldNow()
+        42
+    }
+    assert((await zero()) == 42, "zero-argument async callable")
+    assert((await zero.call(args: ())) == 42, "async callable is reusable")
+    let unary: any AsyncFn(int32) -> int32 = |x: int32| async {
+        await std.testing.yieldNow()
+        x * 2
+    }
+    assert((await unary(21)) == 42, "unary async callable")
+    let binary: any AsyncFn(int32, int32) -> int32 = |a: int32, b: int32| async { a * 10 + b }
+    assert((await binary(4, 2)) == 42, "binary async callable")
+    let tuple: any AsyncFn((int32, int32)) -> int32 = |pair: (int32, int32)| async { pair.0 + pair.1 }
+    assert((await tuple((19, 23))) == 42, "async single tuple argument")
+
+    let holder = AsyncCallableField { callback: |value: int32| async { value * 2 } }
+    assert((await holder.callback(21)) == 42, "async callable struct field")
+    let fieldForward: any AsyncFn() -> int32 = || async { await holder.callback(21) }
+    assert((await fieldForward()) == 42, "captured async callable field retains shared kind")
+    assert((await fieldForward()) == 42, "captured async callable field is reusable")
+
+    let captured = makeAsyncCaptured()
+    std.runtime.collect()
+    assert((await captured()) == 1, "async capture survives creator and suspension")
+
+    var count: int32 = 0
+    var mutable: any AsyncFnMut() -> int32 = || async {
+        count += 1
+        await std.testing.yieldNow()
+        count
+    }
+    assert((await mutable()) == 1, "async mutable first call")
+    std.runtime.collect()
+    assert((await mutable()) == 2, "async mutable sequential reuse")
+    assert(count == 2, "async mutable capture shares state")
+    var promoted: any AsyncFnMut() -> int32 = || async { 42 }
+    assert((await promoted()) == 42, "AsyncFn satisfies AsyncFnMut")
+
+    var values = List[int32]()
+    values.append(42)
+    let once: any AsyncFnOnce() -> int32 = move || async {
+        await std.testing.yieldNow()
+        consumeAsyncValues(values)
+    }
+    std.runtime.collect()
+    assert((await once()) == 1, "async owned capture survives suspension")
+    let promotedOnce: any AsyncFnOnce() -> int32 = || async { 42 }
+    assert((await promotedOnce()) == 42, "AsyncFn satisfies AsyncFnOnce")
+    print("PASS: async callable existentials\n")
+}

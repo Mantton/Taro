@@ -106,7 +106,8 @@ Function types describe function pointer signatures.
 
 ## Callable Interface Shorthand
 
-Callable interface names support shorthand in generic bounds and type syntax.
+Callable shorthand works in both generic bounds and existential types:
+`Fn(A) -> R` describes a callable taking one `A` and returning `R`.
 
 ```taro
 Fn() -> string
@@ -129,21 +130,50 @@ func main() {
 }
 ```
 
-This is shorthand for the existing callable interfaces:
+Callable interfaces represent their argument list as a tuple:
 
 ```taro
 Fn() -> string                  // Fn[(), string]
-Fn(int32) -> int32              // Fn[int32, int32]
+Fn(int32) -> int32              // Fn[(int32,), int32]
 FnMut(int32, string) -> bool    // FnMut[(int32, string), bool]
+Fn((int32, string)) -> bool     // Fn[((int32, string),), bool]
 ```
 
 Taro keeps `(A, B) -> R` for function pointers. It does not use lowercase `fn(A) -> R`.
 
-Current limitation: converting closures such as `|x: int32| x * 2` and
-`|a: int32, b: int32| a + b` to `any Fn(int32) -> int32` and
-`any Fn(int32, int32) -> int32` is rejected. The unary form also conflicts with
-the interface's `Tuple` requirement; wrapping its input type in a singleton
-tuple does not fix the conversion. Generic bounds, as above, support these closures.
+The older spelling `Fn[int32, int32]` remains accepted for one scalar argument.
+An explicit tuple pack, such as `Fn[(int32, string), bool]`, describes two
+arguments. Generic `Args: Tuple` parameters can forward an argument pack through
+`call(args: ...)`, `callMut(args: ...)`, or `callOnce(args: ...)`.
+
+An existential stores a conforming callable and dispatches calls through its
+interface:
+
+```taro
+func main() {
+    let double: any Fn(int32) -> int32 = |x| x * 2
+    assert(double(21) == 42, "existential callable")
+    let sum: any Fn((int32, int32)) -> int32 = |pair| pair.0 + pair.1
+    assert(sum((19, 23)) == 42, "one tuple argument")
+}
+```
+
+`Fn` calls borrow the receiver immutably; `FnMut` calls require mutable access;
+`FnOnce` calls consume the receiver. Taro also permits consuming through a
+mutable reference and tracks the referenced contents as moved. A second call
+without reinitialization is rejected. Shared references cannot provide that
+consuming access.
+
+The corresponding `AsyncFn`, `AsyncFnMut`, and `AsyncFnOnce` calls require
+`await`. Closure parameter and result types can be inferred from the expected
+callable interface. An inline closure in an async callable context is inferred
+as async; an already typed synchronous closure does not become asynchronous
+when boxed.
+
+A callable intersection with incompatible signatures, or with both synchronous
+and asynchronous interfaces, requires conversion to a single callable interface
+before invocation. Compatible interfaces select the least restrictive receiver,
+so a value exposing both `Fn` and `FnOnce` is called through `Fn`.
 
 ---
 

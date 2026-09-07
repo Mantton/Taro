@@ -1,0 +1,4 @@
+error: use of moved value 'f'
+ -> language_tests/source_files/invalid/callable_existentials_once_reuse.tr:3:12
+	    first + f()
+	            ^

@@ -1,0 +1,4 @@
+error: cannot move out of borrowed content
+ -> language_tests/source_files/invalid/callable_existentials_owned_borrow.tr:2:4
+	    f()
+	    ^^^

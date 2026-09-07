@@ -755,55 +755,6 @@ impl<'ctx, 'thir> MirBuilder<'ctx, 'thir> {
                 .map(|arg| unpack!(block = self.as_operand(block, *arg)))
                 .collect();
             (fixed_operands, Some(list_operand))
-        } else if let Some(args_ty) = fn_trait_args_ty {
-            if let crate::sema::models::TyKind::Tuple(elem_tys) = args_ty.kind() {
-                if args.len() == 1 {
-                    let arg_expr = &self.thir.exprs[args[0]];
-                    if let ExprKind::Tuple { fields } = &arg_expr.kind {
-                        let unpacked: Vec<Operand<'ctx>> = fields
-                            .iter()
-                            .map(|field| unpack!(block = self.as_operand(block, *field)))
-                            .collect();
-                        (unpacked, None)
-                    } else if matches!(arg_expr.ty.kind(), crate::sema::models::TyKind::Tuple(_)) {
-                        let tuple_place = unpack!(block = self.as_place(block, args[0]));
-                        let unpacked: Vec<Operand<'ctx>> = elem_tys
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &ty)| {
-                                let field_place = Place {
-                                    local: tuple_place.local,
-                                    projection: {
-                                        let mut proj = tuple_place.projection.clone();
-                                        proj.push(PlaceElem::Field(FieldIndex::from_usize(i), ty));
-                                        proj
-                                    },
-                                };
-                                Operand::Copy(field_place)
-                            })
-                            .collect();
-                        (unpacked, None)
-                    } else {
-                        let all_args = args
-                            .iter()
-                            .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                            .collect();
-                        (all_args, None)
-                    }
-                } else {
-                    let all_args = args
-                        .iter()
-                        .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                        .collect();
-                    (all_args, None)
-                }
-            } else {
-                let all_args = args
-                    .iter()
-                    .map(|arg| unpack!(block = self.as_operand(block, *arg)))
-                    .collect();
-                (all_args, None)
-            }
         } else {
             let all_args = args
                 .iter()
