@@ -8,11 +8,15 @@ Identifiers name variables, functions, types, and other program elements.
 
 ```ebnf
 identifier ::= letter { letter | digit }
-             | '`' escaped_identifier_char+ '`'
+             | '`' { escaped_identifier_char } '`'
 
 letter     ::= 'a'..'z' | 'A'..'Z' | '_'
 digit      ::= '0'..'9'
+escaped_identifier_char ::= ? any character except backtick or newline ?
 ```
+
+An unescaped keyword or the standalone `_` token is not an identifier; use
+backticks when a name would otherwise be a keyword.
 
 ### Examples
 
@@ -24,7 +28,7 @@ let camelCase = 30
 
 // Escaped identifiers (for reserved words)
 let `type` = "string"
-let `func` = someFunction
+let `func` = 42
 ```
 
 ---
@@ -66,6 +70,11 @@ Taro supports decimal, binary, octal, and hexadecimal integer literals.
 0xDEAD_BEEF    // With underscores
 ```
 
+Integer suffixes select a fixed-width type: `_i8`, `_i16`, `_i32`, `_i64`,
+`_u8`, `_u16`, `_u32`, and `_u64` (the `i`/`u` is also accepted in uppercase).
+For example, `255_u8` and `0xFF_u8` have type `uint8`. Unsuffixed integer
+literals use context, defaulting to `int32` when unconstrained.
+
 ### Float Literals
 
 ```taro
@@ -89,6 +98,10 @@ Strings are enclosed in double quotes and support escape sequences.
 "Backslash: \\"             // Escaped backslash
 "Unicode: \u{1F600}"        // Unicode escape
 ```
+
+Strings and runes also accept `\r`, `\0`, and ASCII hexadecimal escapes such as
+`\x41`. Unicode escapes must name a Unicode scalar value. Source files use LF
+line endings; raw carriage returns are rejected.
 
 ### F-String Literals
 
@@ -155,7 +168,6 @@ class       final       override    fileprivate protected ref
 `get` and `set` are contextual keywords for computed-property accessor blocks.
 `move` is contextual before a closure, and `some` is contextual in an opaque
 return type. They remain valid identifiers elsewhere.
-Outside those blocks, they are regular identifiers.
 
 ---
 
@@ -181,7 +193,6 @@ Outside those blocks, they are regular identifiers.
 | `>` | Greater than |
 | `<=` | Less than or equal |
 | `>=` | Greater than or equal |
-| `===` | Pointer equality |
 
 ### Logical Operators
 
@@ -223,7 +234,7 @@ Outside those blocks, they are regular identifiers.
 | Operator | Description |
 |----------|-------------|
 | `->` | Arrow (return type, closure) |
-| `=>` | Fat arrow (match arms, shorthand if) |
+| `=>` | Fat arrow (match arms) |
 | `..` | Exclusive range |
 | `..=` | Inclusive range |
 | `...` | Variadic parameter |
@@ -248,6 +259,7 @@ Outside those blocks, they are regular identifiers.
 | `:` | Type annotation, labeled arguments |
 | `;` | Statement terminator |
 | `@` | Attributes |
+| `#` | Inline configuration check: `#cfg(...)` |
 | `_` | Wildcard pattern |
 
 ---
@@ -262,5 +274,8 @@ Outside those blocks, they are regular identifiers.
    block comment
 */
 
-/* Nested /* comments */ are supported */
+/* Block comments end at the first closing delimiter. */
 ```
+
+Block comments do not nest. A `/*` inside a block comment does not increase its
+nesting depth; the first `*/` closes it.

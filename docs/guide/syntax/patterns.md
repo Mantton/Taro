@@ -4,7 +4,10 @@ This chapter covers all pattern types used in pattern matching, variable binding
 
 ## Where Patterns Are Used
 
-Patterns appear in several contexts:
+Local `let`/`var` bindings accept an identifier, `_`, or a tuple pattern at
+the outermost level. Match arms and loop/binding conditions accept additional
+patterns. Optional-binding conditions (`if let`, `while let`, `guard let`)
+accept a single identifier; use `case` for destructuring in a condition:
 
 ```taro
 // Variable declarations
@@ -94,7 +97,8 @@ let (first, second, ..) = longTuple
 
 ## Path Pattern
 
-Matches enum variants or constants.
+Matches enum variants. A qualified constant such as `Limits.MAX` is not an
+enum-variant pattern; use a literal or a guard to compare against constants.
 
 ### Qualified Path
 
@@ -140,7 +144,9 @@ match message {
 
 ## Or Pattern
 
-Matches if any alternative matches.
+Matches if any alternative matches. Or-patterns are supported at the top
+level of a match arm. Alternatives must bind the same names with compatible
+types.
 
 ```taro
 match value {
@@ -159,7 +165,9 @@ match result {
 
 ## Literal Pattern
 
-Matches specific literal values.
+Matches specific literal values. Negative expressions (`-1`) and f-strings
+with interpolation are not supported as literal patterns; use a guard such as
+`case n if n == -1 => ...` instead.
 
 ```taro
 match x {
@@ -186,16 +194,32 @@ match name {
 
 ## Reference Pattern
 
-Matches references and binds by reference.
+An explicit `&pattern` matches through one reference layer. Its inner
+bindings have the pointee types, rather than gaining another reference:
 
 ```taro
-let &x = &value             // x is a reference
+let value = 42
+match &value {
+    case &x => {
+        let copied: int32 = x
+    }
+}
+```
 
-let &const x = &value       // x is a const reference
+`&const pattern` is the explicit immutable spelling. `&mut pattern` requires a
+mutable reference. These are match patterns; `let &x = ...` is rejected as a
+local binding.
 
+Without an explicit reference pattern, matching an enum or tuple through a
+reference automatically borrows the payload bindings:
+
+```taro
+let optional: int32? = .some(42)
 match &optional {
-    case &.some(v) => use(v)   // v is a reference
-    case &.none => {}
+    case .some(v) => {
+        let borrowed: &int32 = v
+    }
+    case .none => {}
 }
 ```
 
@@ -253,12 +277,13 @@ match point {
 Match expressions must be exhaustive—all possible values must be covered.
 
 ```taro
-enum Bool { case true, false; }
+enum Switch { case on, off; }
+let state: Switch = .on
 
 // Must cover all cases
-match b {
-    case .true => 1
-    case .false => 0
+match state {
+    case .on => 1
+    case .off => 0
     // Compiler ensures exhaustiveness
 }
 

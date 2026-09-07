@@ -1,6 +1,9 @@
 # Taro Language Grammar
 
-This document describes the formal grammar of the Taro programming language in Extended BNF notation.
+This reference describes the current Taro parser and supported language forms
+in Extended BNF notation. Semantic constraints are stated alongside the rules;
+parsing a form alone does not establish that it is well typed. The
+[syntax guide](guide/syntax/README.md) provides examples.
 
 ## Notation
 
@@ -12,6 +15,8 @@ This document describes the formal grammar of the Taro programming language in E
 ( )               grouping
 'text'            literal terminal
 /* comment */     comment
+? description ?   terminal described in prose
+item+             one or more occurrences
 ```
 
 ---
@@ -22,12 +27,15 @@ This document describes the formal grammar of the Taro programming language in E
 
 ```ebnf
 <identifier>           ::= <letter> { <letter> | <digit> }
-                         | '`' <escaped_identifier_char>+ '`'
+                         | '`' { <escaped_identifier_char> } '`'
 
 <letter>               ::= 'a'..'z' | 'A'..'Z' | '_'
 <digit>                ::= '0'..'9'
 <hex_digit>            ::= <digit> | 'a'..'f' | 'A'..'F'
+<escaped_identifier_char> ::= ? any character except backtick or newline ?
 ```
+
+Unescaped keywords and the standalone `_` token are excluded from identifiers.
 
 ### Literals
 
@@ -43,29 +51,41 @@ This document describes the formal grammar of the Taro programming language in E
 <bool_literal>         ::= 'true' | 'false'
 <nil_literal>          ::= 'nil'
 
-<integer_literal>      ::= <decimal_literal>
-                         | <binary_literal>
-                         | <octal_literal>
-                         | <hex_literal>
+<integer_literal>      ::= ( <decimal_literal> | <binary_literal>
+                           | <octal_literal> | <hex_literal> ) [ <integer_suffix> ]
+<integer_suffix>       ::= '_' ( 'i' | 'I' | 'u' | 'U' ) ( '8' | '16' | '32' | '64' )
 
 <decimal_literal>      ::= <digit> { <digit> | '_' }
 <binary_literal>       ::= '0b' ( '0' | '1' | '_' )+
 <octal_literal>        ::= '0o' ( '0'..'7' | '_' )+
 <hex_literal>          ::= '0x' ( <hex_digit> | '_' )+
 
-<float_literal>        ::= <decimal_literal> '.' <decimal_literal> [ <exponent> ]
+<float_literal>        ::= <decimal_literal> '.' [ <decimal_literal> [ <exponent> ] ]
                          | <decimal_literal> <exponent>
 
 <exponent>             ::= ( 'e' | 'E' ) [ '+' | '-' ] <decimal_literal>
 
 <string_literal>       ::= '"' { <string_char> } '"'
 <f_string_literal>     ::= 'f"' { <f_string_item> } '"'
-<f_string_item>        ::= <string_char>
+<f_string_item>        ::= <f_string_char>
                          | '{{'
                          | '}}'
                          | '{' <expression> '}'
 <rune_literal>         ::= '\'' <rune_char> '\''
+
+<string_char>          ::= <escape> | ? any character except quote, backslash, LF or CR ?
+<f_string_char>        ::= <escape> | ? any character except quote, backslash, braces, LF or CR ?
+<rune_char>            ::= <escape> | ? one Unicode scalar except quote, backslash, LF, CR or tab ?
+<escape>               ::= '\\' ( 'n' | 'r' | 't' | '0' | '\\' | '"' | '\'' )
+                         | '\\x' <hex_digit> <hex_digit>
+                         | '\\u{' <hex_digit> { <hex_digit> | '_' } '}'
 ```
+
+Digits must be valid for their base. Integer suffixes name fixed-width types.
+Unicode escapes contain one to six hexadecimal digits (underscores do not
+count) and must denote a Unicode scalar value; `\xNN` escapes are ASCII only.
+Unescaped source line endings are LF. Strings and f-strings occupy one source
+line.
 
 ### Keywords
 
@@ -97,7 +117,7 @@ opaque return type. These words remain valid identifiers in other contexts.
 <operator>             ::= '+' | '-' | '*' | '/' | '%'
                          | '&' | '|' | '^' | '~' | '!'
                          | '<' | '>' | '<<' | '>>'
-                         | '==' | '!=' | '<=' | '>=' | '==='
+                         | '==' | '!=' | '<=' | '>='
                          | '&&' | '||'
                          | '+=' | '-=' | '*=' | '/=' | '%='
                          | '&=' | '|=' | '^=' | '<<=' | '>>='
@@ -107,7 +127,7 @@ opaque return type. These words remain valid identifiers in other contexts.
                          | '|>'
 
 <punctuation>          ::= '(' | ')' | '[' | ']' | '{' | '}'
-                         | '.' | ',' | ':' | ';' | '@' | '_'
+                         | '.' | ',' | ':' | ';' | '@' | '#' | '_'
 ```
 
 ---
@@ -124,7 +144,7 @@ opaque return type. These words remain valid identifiers in other contexts.
 <file>                 ::= { <declaration> | <module_metadata_declaration> }
 
 <module_metadata_declaration>
-                       ::= { <attribute> } <visibility> 'mod' <identifier>
+                       ::= { <attribute> } <visibility> 'mod' <identifier> ';'
 ```
 
 A `<module_metadata_declaration>` attaches metadata — visibility and
@@ -142,7 +162,7 @@ It does not introduce a module. The following constraints apply:
 ### Declarations
 
 ```ebnf
-<declaration>          ::= { <attribute> } <visibility> <declaration_kind>
+<declaration>          ::= { <attribute> } <visibility> <declaration_kind> ';'
 
 <declaration_kind>     ::= <import_declaration>
                          | <export_declaration>
@@ -155,10 +175,14 @@ It does not introduce a module. The following constraints apply:
                          | <type_alias_declaration>
                          | <impl_declaration>
                          | <extern_block>
+                         | <extern_function>
                          | <namespace_declaration>
 
 <visibility>           ::= [ 'public' | 'private' ]
 ```
+
+Omitted visibility is public. Declarations, including declarations with bodies,
+need a terminating semicolon, which is normally supplied by ASI.
 
 ### Import and Export
 
@@ -174,7 +198,7 @@ It does not introduce a module. The following constraints apply:
                          | <use_tree_simple>
                          | <use_tree_nested>
 
-<use_tree_glob>        ::= '.' '*'
+<use_tree_glob>        ::= '.*'
 <use_tree_simple>      ::= [ 'as' <identifier> ]
 <use_tree_nested>      ::= '.{' <use_tree_nested_list> '}'
 
@@ -185,9 +209,11 @@ It does not introduce a module. The following constraints apply:
 ### Struct Declaration
 
 ```ebnf
-<struct_declaration>   ::= 'struct' <identifier> <generics> '{' <struct_fields> '}'
+<struct_declaration>   ::= 'struct' <identifier> [ <type_parameters> ]
+                           [ <conformances> ] [ <where_clause> ]
+                           '{' <struct_fields> '}'
 
-<struct_fields>        ::= { <struct_field> ';' }
+<struct_fields>        ::= [ <struct_field> { ';' <struct_field> } [ ';' ] ]
 
 <struct_field>         ::= <visibility> [ 'readonly' ] <identifier> ':' <type>
 ```
@@ -195,28 +221,31 @@ It does not introduce a module. The following constraints apply:
 ### Enum Declaration
 
 ```ebnf
-<enum_declaration>     ::= 'enum' <identifier> <generics> '{' { <enum_case> ';' } '}'
+<enum_declaration>     ::= 'enum' <identifier> [ <type_parameters> ]
+                           [ <conformances> ] [ <where_clause> ]
+                           '{' [ <enum_case> { ';' <enum_case> } [ ';' ] ] '}'
 
 <enum_case>            ::= 'case' <variant_list>
 
-<variant_list>         ::= <variant> { ',' <variant> } [ ',' ]
+<variant_list>         ::= <variant> { ',' <variant> }
 
 <variant>              ::= <identifier> [ <variant_kind> ] [ '=' <expression> ]
 
 <variant_kind>         ::= <tuple_variant>
 <tuple_variant>        ::= '(' <tuple_variant_fields> ')'
-<tuple_variant_fields> ::= <tuple_field> { ',' <tuple_field> } [ ',' ]
+<tuple_variant_fields> ::= [ <tuple_field> { ',' <tuple_field> } [ ',' ] ]
 <tuple_field>          ::= <visibility> [ 'readonly' ] [ <label> ] <type>
 ```
 
 ### Interface Declaration
 
 ```ebnf
-<interface_declaration>::= 'interface' <identifier> <generics> [ <conformances> ]
+<interface_declaration>::= 'interface' <identifier> [ <type_parameters> ]
+                           [ <where_clause> ] [ <conformances> ]
                            '{' { <interface_associated_declaration> } '}'
 
 <interface_associated_declaration>
-                       ::= { <attribute> } <visibility> <interface_associated_decl_kind>
+                       ::= { <attribute> } <visibility> <interface_associated_decl_kind> ';'
 
 <interface_associated_decl_kind>
                        ::= <function_declaration>
@@ -226,9 +255,10 @@ It does not introduce a module. The following constraints apply:
 
 <interface_property_declaration>
                        ::= 'var' <identifier> ':' <type>
-                           '{' <getter_requirement> [ <setter_requirement> ] '}'
+                           '{' ( <getter_requirement> [ <setter_requirement> ]
+                               | <setter_requirement> <getter_requirement> ) '}'
 
-<getter_requirement>   ::= 'get' '(' <self_parameter> ')' [ 'async' ] [ <block> ]
+<getter_requirement>   ::= 'get' '(' <self_parameter> ')' [ 'async' ] [ '->' <type> ] [ <block> ]
 
 <setter_requirement>   ::= 'set' '(' '&' 'mut' 'self' ',' <identifier> ':' <type> ')'
                            [ <block> ]
@@ -239,21 +269,24 @@ It does not introduce a module. The following constraints apply:
 ### Implementation Declaration
 
 ```ebnf
-<impl_declaration>     ::= 'impl' [ <generics> ] <type> [ 'for' <type> ]
-                           '{' { <impl_associated_declaration> } '}'
+<impl_declaration>     ::= 'impl' [ <type_parameters> ] <type> [ 'for' <type> ]
+                           [ <where_clause> ] '{' { <impl_associated_declaration> } '}'
 
 <impl_associated_declaration>
-                       ::= { <attribute> } <visibility> <impl_associated_decl_kind>
+                       ::= { <attribute> } <visibility> <impl_associated_decl_kind> ';'
 
 <impl_associated_decl_kind>
-                       ::= <interface_associated_decl_kind>
+                       ::= <function_declaration>
+                         | <constant_declaration>
+                         | <type_alias_declaration>
                          | <computed_property_declaration>
 
 <computed_property_declaration>
                        ::= 'var' <identifier> ':' <type>
-                           '{' <getter_accessor> [ <setter_accessor> ] '}'
+                           '{' ( <getter_accessor> [ <setter_accessor> ]
+                               | <setter_accessor> <getter_accessor> ) '}'
 
-<getter_accessor>      ::= 'get' '(' <self_parameter> ')' [ 'async' ] <block>
+<getter_accessor>      ::= 'get' '(' <self_parameter> ')' [ 'async' ] [ '->' <type> ] <block>
 
 <setter_accessor>      ::= 'set' '(' '&' 'mut' 'self' ',' <identifier> ':' <type> ')'
                            <block>
@@ -262,7 +295,8 @@ It does not introduce a module. The following constraints apply:
 ### Function Declaration
 
 ```ebnf
-<function_declaration> ::= 'func' <identifier> <generics> <function_signature> [ <block> ]
+<function_declaration> ::= [ 'unsafe' ] 'func' <identifier> [ <type_parameters> ]
+                           <function_signature> [ <where_clause> ] [ <block> ]
 
 <function_signature>   ::= <function_prototype>
 
@@ -270,12 +304,19 @@ It does not introduce a module. The following constraints apply:
 
 <function_parameters>  ::= <function_parameter> { ',' <function_parameter> } [ ',' ]
 
-<function_parameter>   ::= { <attribute> } [ <label> ] <identifier> ':'
+<function_parameter>   ::= { <attribute> } <parameter_name> ':'
                            <type> [ '...' ] [ '=' <expression> ]
                          | <self_parameter>
 
+<parameter_name>       ::= <identifier> [ <identifier> ]
+                         | '_' [ <identifier> ]
 <self_parameter>       ::= [ '&' [ 'const' | 'mut' ] ] 'self'
+<label>                ::= <identifier> ':'
 ```
+
+Function bodies are required outside interfaces and extern declarations.
+`unsafe` precedes `func`, after visibility. Variadic parameters have `Span[T]`
+inside the function.
 
 `operator` is reserved and has no declaration form. Operator overloading uses
 standard-library interfaces; see [Operator Overloading](guide/syntax/declarations.md#operator-overloading).
@@ -286,7 +327,8 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 <static_variable_declaration>
                        ::= 'static' ( 'let' | 'var' ) <identifier> ':' <type> '=' <expression>
 
-<variable_declaration> ::= ( 'let' | 'var' ) <pattern> [ ':' <type> ] [ '=' <expression> ] /* local-only */
+<variable_declaration> ::= ( 'let' | 'var' ) <local_pattern> [ ':' <type> ] [ '=' <expression> ]
+<local_pattern>        ::= <identifier_pattern> | <wildcard_pattern> | <tuple_pattern>
 
 <constant_declaration> ::= 'const' <identifier> ':' <type> [ '=' <expression> ]
 ```
@@ -294,17 +336,19 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 ### Type Alias Declaration
 
 ```ebnf
-<type_alias_declaration> ::= 'type' <identifier> <generics>
+<type_alias_declaration> ::= 'type' <identifier> [ <type_parameters> ]
                              [ ':' <generic_bounds> ]
-                             [ '=' <type> ]
+                             [ '=' <type> { '&' <path_node> } ] [ <where_clause> ]
 ```
 
 ### Namespace Declaration
 
 ```ebnf
-<namespace_declaration> ::= 'namespace' <identifier> '{' { <namespace_decl_item> } '}'
+<namespace_declaration> ::= 'namespace' <identifier> [ '{' { <namespace_decl_item> } '}' ]
 
-<namespace_decl_item>   ::= <function_declaration>
+<namespace_decl_item>   ::= { <attribute> } <visibility> <namespace_decl_kind> ';'
+
+<namespace_decl_kind>   ::= <function_declaration>
                           | <struct_declaration>
                           | <enum_declaration>
                           | <interface_declaration>
@@ -321,15 +365,27 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 ```ebnf
 <extern_block>         ::= 'extern' <string_literal> '{' { <extern_declaration> } '}'
 
-<extern_declaration>   ::= { <attribute> } <visibility> 'func' <identifier>
-                           <function_prototype>
+<extern_declaration>   ::= { <attribute> } <visibility> [ 'unsafe' ] 'func'
+                           <identifier> [ <type_parameters> ] <function_prototype>
+                           [ <where_clause> ] ';'
+                         | 'type' <identifier>
+
+<extern_function>      ::= 'extern' <string_literal> [ 'unsafe' ] 'func'
+                           <identifier> [ <type_parameters> ] <function_prototype>
+                           [ <where_clause> ]
 ```
 
 ### Attributes
 
 ```ebnf
 <attribute_list>       ::= { <attribute> }
-<attribute>            ::= '@' <identifier>
+<attribute>            ::= '@' <identifier> [ '(' [ <attribute_args> ] ')' ]
+                         | '@cfg' '(' <cfg_expression> ')'
+<attribute_args>       ::= <attribute_arg> { ',' <attribute_arg> } [ ',' ]
+<attribute_arg>        ::= <attribute_literal>
+                         | <identifier> [ '=' <attribute_literal> ]
+<attribute_literal>    ::= <bool_literal> | <nil_literal> | <integer_literal>
+                         | <float_literal> | <string_literal> | <rune_literal>
 ```
 
 ---
@@ -337,9 +393,7 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 ## Generics
 
 ```ebnf
-<generics>             ::= [ <type_parameters> ] [ <where_clause> ]
-
-<type_parameters>      ::= '[' <type_parameter_list> ']'
+<type_parameters>      ::= '[' [ <type_parameter_list> ] ']'
 <type_parameter_list>  ::= <type_parameter> { ',' <type_parameter> } [ ',' ]
 
 <type_parameter>       ::= <identifier> [ ':' <generic_bounds> ] [ '=' <type> ]
@@ -357,14 +411,22 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 <generic_bounds>       ::= <generic_bound> { '&' <generic_bound> }
 <generic_bound>        ::= <path_node>
 
-<type_arguments>       ::= '[' <type_argument_list> ']'
+<type_arguments>       ::= '[' [ <type_argument_list> ] ']'
 <callable_type_arguments>
                        ::= '(' [ <type_list> ] ')' '->' <type>
 <type_argument_list>   ::= <type_argument> { ',' <type_argument> } [ ',' ]
-<type_argument>        ::= <type> | <const_expression>
+<type_argument>        ::= <type> | <const_expression> | <identifier> '=' <type>
+<const_expression>     ::= <expression>
 ```
 
 ---
+
+Const expressions are restricted by constant evaluation (see
+[Constants](guide/syntax/declarations.md#constant-declaration)); general calls
+and runtime values are not constant expressions. Associated bindings use
+`Iterator[Element = int32]`. Function/impl `where` clauses follow the signature
+or target; struct/enum clauses follow conformances. Interface clauses precede
+superinterfaces.
 
 ## Types
 
@@ -382,12 +444,13 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
                          | <infer_type>
                          | <paren_type>
                          | <never_type>
+                         | <qualified_type>
 
 <nominal_type>         ::= <path>
 
-<pointer_type>         ::= '*' [ 'const' ] <type>
+<pointer_type>         ::= '*' [ 'const' | 'mut' ] <type>
 
-<reference_type>       ::= '&' [ 'const' ] <type>
+<reference_type>       ::= '&' [ 'const' | 'mut' ] <type>
 
 <tuple_type>           ::= '(' ')'
                          | '(' <type> ',' ')'                /* one-element tuple */
@@ -395,7 +458,7 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 
 <type_list>            ::= <type> { ',' <type> } [ ',' ]
 
-<function_type>        ::= '(' <type_list> ')' '->' <type>
+<function_type>        ::= '(' [ <type_list> ] ')' '->' <type>
 
 <collection_type>      ::= '[' <collection_type_inner> ']'
 
@@ -412,14 +475,22 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 <paren_type>           ::= '(' <type> ')'
 
 <never_type>           ::= '!'
+<qualified_type>       ::= '(' <type> 'as' <type> ')' '.' <identifier>
 ```
+
+Unqualified `&T` and `*T` are immutable; `const` is an explicit synonym and
+`mut` requests mutable access. `some` is restricted to supported return-type
+positions. `(T as Interface).Member` selects an associated type explicitly.
 
 ### Path
 
 ```ebnf
 <path>                 ::= <path_segment> { '.' <path_segment> }
 
-<path_segment>         ::= <identifier> [ <type_arguments> | <callable_type_arguments> ]
+<path_segment>         ::= <identifier> [ <type_arguments> ]
+                         | <callable_name> <callable_type_arguments>
+<callable_name>        ::= 'Fn' | 'FnMut' | 'FnOnce'
+                         | 'AsyncFn' | 'AsyncFnMut' | 'AsyncFnOnce'
 
 <path_node>            ::= <path>
 ```
@@ -436,7 +507,6 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
                          | <identifier_pattern>
                          | <tuple_pattern>
                          | <path_pattern>
-                         | <or_pattern>
                          | <literal_pattern>
                          | <reference_pattern>
 
@@ -446,7 +516,7 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 
 <identifier_pattern>   ::= <identifier>
 
-<tuple_pattern>        ::= '(' <pattern_list> ')'
+<tuple_pattern>        ::= '(' [ <pattern_list> ] ')'
 <pattern_list>         ::= <pattern> { ',' <pattern> } [ ',' ]
 
 <path_pattern>         ::= <pattern_path> [ <tuple_pattern> ]
@@ -454,19 +524,26 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 <pattern_path>         ::= <path>                        /* qualified: Foo.Bar */
                          | '.' <identifier>              /* inferred: .Bar */
 
-<or_pattern>           ::= <pattern> { '|' <pattern> }
+<match_pattern>        ::= <pattern> { '|' <pattern> }
 
 <literal_pattern>      ::= <literal>
 
-<reference_pattern>    ::= '&' [ 'const' ] <pattern>
+<reference_pattern>    ::= '&' [ 'const' | 'mut' ] <pattern>
 ```
 
 ---
 
+Or-patterns belong at the top level of match arms. Rest patterns are accepted
+inside tuple and variant-payload patterns. Explicit `&pattern` removes a
+reference layer; it does not itself make inner bindings references. Qualified
+path patterns resolve enum variants, not arbitrary constants. Literal patterns
+require a literal value; unary negative expressions and f-strings with
+interpolation are rejected. Use a guard for those comparisons.
+
 ## Statements
 
 ```ebnf
-<block>                ::= '{' { <statement> } '}'
+<block>                ::= '{' { <statement> ';' } [ <statement> ] '}'
 
 <statement>            ::= <declaration_statement>
                          | <expression_statement>
@@ -480,24 +557,24 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
                          | <defer_statement>
                          | <guard_statement>
 
-<declaration_statement>::= <function_declaration>
+<declaration_statement>::= { <attribute> } <visibility> <function_declaration>
 
-<expression_statement> ::= <expression> ';'
+<expression_statement> ::= <expression>
 
-<variable_statement>   ::= <variable_declaration> ';'
+<variable_statement>   ::= <variable_declaration>
 
 <loop_statement>       ::= [ <label_def> ] 'loop' <block>
 
 <while_statement>      ::= [ <label_def> ] 'while' <expression> <block>
 
-<for_statement>        ::= [ <label_def> ] 'for' <pattern> 'in' <expression>
+<for_statement>        ::= [ <label_def> ] 'for' [ 'await' ] <pattern> 'in' <expression>
                            [ 'where' <expression> ] <block>
 
-<return_statement>     ::= 'return' [ <expression> ] ';'
+<return_statement>     ::= 'return' [ <expression> ]
 
-<break_statement>      ::= 'break' [ <identifier> ] ';'
+<break_statement>      ::= 'break' [ <identifier> ]
 
-<continue_statement>   ::= 'continue' [ <identifier> ] ';'
+<continue_statement>   ::= 'continue' [ <identifier> ]
 
 <defer_statement>      ::= 'defer' <block>
 
@@ -507,6 +584,11 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 ```
 
 ---
+
+A final non-declaration statement may omit its semicolon before `}`. A local
+function declaration still requires one. `guard` and `if`/`while` conditions
+are boolean; binding conditions produce a boolean and introduce bindings.
+`for await` is restricted to async contexts.
 
 ## Expressions
 
@@ -519,7 +601,7 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 5. Range: `..`, `..=`
 6. Logical OR: `||`
 7. Logical AND: `&&`
-8. Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`, `===`
+8. Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
 9. Bitwise OR: `|`
 10. Bitwise XOR: `^`
 11. Bitwise AND: `&`
@@ -527,23 +609,23 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 13. Term: `+`, `-`
 14. Factor: `*`, `/`, `%`
 15. Cast / Type Assertion: `as`, `as?`, `is`
-16. Prefix: `!`, `-`, `~`, `&`, `*`, `await`
+16. Prefix: `!`, `-`, `~`, `&`, `*`
 17. Postfix: `.`, `()`, `[]`, `!`, `?.`
 18. Primary
 
 ```ebnf
 <expression>           ::= <assignment_expression>
 
-<assignment_expression>::= <pipe_expression> [ <assignment_op> <expression> ]
+<assignment_expression>::= <pipe_expression> [ <assignment_op> <pipe_expression> ]
 
 <assignment_op>        ::= '=' | '+=' | '-=' | '*=' | '/=' | '%='
                          | '&=' | '|=' | '^=' | '<<=' | '>>='
 
 <pipe_expression>      ::= <ternary_expression> { '|>' <ternary_expression> }
 
-<ternary_expression>   ::= <nil_coalesce_expr> [ '?' <expression> ':' <expression> ]
+<ternary_expression>   ::= <nil_coalesce_expr> [ '?' <ternary_expression> ':' <ternary_expression> ]
 
-<nil_coalesce_expr>    ::= <range_expression> { '??' <range_expression> }
+<nil_coalesce_expr>    ::= <range_expression> [ '??' <nil_coalesce_expr> ]
 
 <range_expression>     ::= <or_expression> [ ( '..' | '..=' ) <or_expression> ]
 
@@ -553,7 +635,7 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 
 <comparison_expr>      ::= <bitor_expression> { <comparison_op> <bitor_expression> }
 
-<comparison_op>        ::= '<' | '>' | '<=' | '>=' | '==' | '!=' | '==='
+<comparison_op>        ::= '<' | '>' | '<=' | '>=' | '==' | '!='
 
 <bitor_expression>     ::= <bitxor_expression> { '|' <bitxor_expression> }
 
@@ -572,7 +654,7 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 <prefix_expression>    ::= <prefix_op> <prefix_expression>
                          | <postfix_expression>
 
-<prefix_op>            ::= '!' | '-' | '~' | '&' [ 'const' ] | '*' | 'await'
+<prefix_op>            ::= '!' | '-' | '~' | '&' [ 'const' | 'mut' ] | '*'
 
 <postfix_expression>   ::= <primary_expression> { <postfix_op> }
 
@@ -585,11 +667,14 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 
 <argument_list>        ::= [ <argument> { ',' <argument> } [ ',' ] ]
 
-<argument>             ::= [ <label> ] <expression>
+<argument>             ::= [ <label> ] <pipe_expression>
 ```
 
 Postfix `!` propagates only `Optional[T]` and `Result[T, E]`. `await` remains a
-prefix operator, so propagation of an awaited value is written as `(await expr)!`.
+keyword that consumes the following expression, so propagation of an awaited
+value is written as `(await expr)!`. Likewise use `(await expr) + value` to
+operate on the result. Assignments do not chain without explicit grouping.
+Nil coalescing is right-associative.
 
 ### Primary Expressions
 
@@ -608,6 +693,12 @@ prefix operator, so propagation of an awaited value is written as `(await expr)!
                          | <wildcard_expression>
                          | <binding_condition>
                          | <paren_expression>
+                         | <unsafe_expression>
+                         | <await_expression>
+                         | <cfg_check>
+                         | <return_statement>
+                         | <break_statement>
+                         | <continue_statement>
 
 <paren_expression>     ::= '(' <expression> ')'
 
@@ -628,24 +719,27 @@ prefix operator, so propagation of an awaited value is written as `(await expr)!
 <map_pair>             ::= <expression> ':' <expression>
 
 <wildcard_expression>  ::= '_'
+<unsafe_expression>    ::= 'unsafe' <block>
+<await_expression>     ::= 'await' <expression>
+<cfg_check>            ::= '#cfg' '(' <cfg_expression> ')'
 ```
+
+`_` expressions are restricted to one direct argument placeholder in a pipe
+call. Binding conditions are restricted to `if`/`while`/`guard` conditions.
+Repeat literals require a compile-time count and construct fixed-size arrays.
 
 ### Control Flow Expressions
 
 ```ebnf
-<if_expression>        ::= 'if' <expression> <block_or_expr>
-                           [ 'else' <else_branch> ]
+<if_expression>        ::= 'if' <expression> <block> [ 'else' <else_branch> ]
 
-<else_branch>          ::= <if_expression>
-                         | <block_or_expr>
-
-<block_or_expr>        ::= <block>
-                         | '=>' <expression>
+<else_branch>          ::= <if_expression> | <block>
 
 <match_expression>     ::= 'match' <expression> '{' { <match_arm> } '}'
 
-<match_arm>            ::= 'case' <pattern> [ 'if' <expression> ]
-                           ( <block_or_expr> | '=>' <expression> )
+<match_arm>            ::= 'case' <match_pattern> [ 'if' <expression> ]
+                           '=>' <expression> ';'
+                         | '_' '=>' <expression> ';'
 
 <block_expression>     ::= <block>
 ```
@@ -655,6 +749,7 @@ prefix operator, so propagation of an awaited value is written as `(await expr)!
 ```ebnf
 <closure_expression>   ::= [ 'move' ] <closure_params>
                            ( 'async' [ '->' <type> ] <block>
+                           | '->' <type> 'async' <block>
                            | [ '->' <type> ] <closure_body> )
 
 <closure_params>       ::= '|' [ <closure_param_list> ] '|'
@@ -662,7 +757,7 @@ prefix operator, so propagation of an awaited value is written as `(await expr)!
 
 <closure_param_list>   ::= <closure_param> { ',' <closure_param> } [ ',' ]
 
-<closure_param>        ::= <identifier> [ ':' <type> ]
+<closure_param>        ::= { <attribute> } <identifier> [ ':' <type> [ '...' ] ]
 
 <closure_body>         ::= <block>
                          | <expression>
@@ -679,24 +774,43 @@ prefix operator, so propagation of an awaited value is written as `(await expr)!
                          | <identifier>   /* shorthand: foo instead of foo: foo */
 ```
 
-**Note on Disambiguation**: In control flow conditions (e.g., `if User { ... }`), a struct literal is disallowed if it is ambiguous with a block. The parser uses a heuristic to determine if a block-like structure is intended to be a struct literal:
-- It is treated as a struct literal if it contains keys followed by colons or commas.
-- Otherwise, it is parsed as a block.
-- If it looks like a struct literal but appears in a restricted context (like an `if` condition), a specific error is raised.
+Struct literals are restricted throughout `if`/`while`/`guard` conditions,
+`for` iterators/filters, and `match` scrutinees, including nested parentheses
+and call arguments. Bind the value first. Parser recovery may recognize a
+literal-like brace sequence to report a more specific error; it does not make
+that source valid.
 
 ### Binding Conditions
 
 ```ebnf
 <binding_condition>    ::= 'case' <pattern> '=' <expression>
-                         | 'let' <pattern> '=' <expression>
-                         | 'let' <pattern>   /* shorthand optional binding */
+                         | 'let' <identifier> '=' <expression>
+                         | 'let' <identifier>   /* shorthand optional binding */
 ```
+
+---
+
+## Conditional Compilation
+
+```ebnf
+<cfg_expression>       ::= <cfg_and> { '||' <cfg_and> }
+<cfg_and>              ::= <cfg_unary> { '&&' <cfg_unary> }
+<cfg_unary>            ::= '!' <cfg_unary> | '(' <cfg_expression> ')'
+                         | <identifier> [ '(' <string_literal> ')' ]
+```
+
+`@cfg(...)` controls declaration inclusion; `#cfg(...)` is a compile-time
+boolean expression. Supported flags are `debug`, `test`, and `bench`; valued
+predicates are `os`, `arch`, `family`, and `profile`. Unknown predicates evaluate
+to false. The legacy attribute form `@cfg(target_os = "linux")` is also
+accepted. A file can start with `//+cfg os("linux")`; file-level predicates
+support valued predicates and boolean operators, but not the bare flags.
 
 ---
 
 ## Automatic Semicolon Insertion
 
-Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inserted after tokens that can end a statement when followed by a newline, unless the next line begins with a continuation operator.
+Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inserted after tokens that can end a statement at a newline or end of file, unless the next line begins with a continuation operator.
 
 **Tokens that can end a statement:**
 - Identifiers, literals (`true`, `false`, `nil`)
@@ -707,10 +821,10 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 **Line continuation starters (suppress ASI):**
 - Binary operators: `+`, `-`, `/`, `%`, `|`, `^`, `&&`, `||`
   - Note: `&` and `*` are **not** treated as continuation starters because they have common unary uses (reference and dereference/pointer) that should start new statements
-- Comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=`, `===`
+- Comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=`
 - Shifts: `<<`, `>>`
 - Assignment operators
-- Member/range/optional: `.`, `..`, `...`, `?.`, `??`
+- Member/range/optional: `.`, `..`, `..=`, `...`, `?.`, `??`
 - Pipe and arrows: `|>`, `->`, `=>`
 - Keywords: `as`, `is`, `in`
 
@@ -719,11 +833,16 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 ## Comments
 
 ```ebnf
-<line_comment>         ::= '//' { <any_char> } <newline>
-<block_comment>        ::= '/*' { <any_char> } '*/'
+<line_comment>         ::= '//' { <line_comment_char> } [ <newline> ]
+<line_comment_char>    ::= ? any character except LF ?
+<newline>              ::= ? LF ?
+<block_comment>        ::= '/*' <block_comment_text> '*/'
+<block_comment_text>   ::= ? characters up to the first closing */ delimiter ?
 ```
 
 ---
+
+Block comments do not nest.
 
 ## Reserved for Future
 
@@ -748,11 +867,14 @@ Constructs that use semicolons as separators work naturally with ASI:
 
 ### Comma-Separated Lists and ASI
 
-For comma-separated lists, **commas are required before newlines** to prevent ASI from inserting semicolons. The trailing comma after the last element is optional.
+For delimited comma-separated lists, **commas are required before newlines**,
+including after the final element when the closing delimiter is on the next
+line. A trailing comma is optional only when the delimiter follows on the same
+line. Enum variants within one `case` do not accept a trailing comma.
 
 | Construct | Separator | Trailing Comma |
 |-----------|-----------|----------------|
-| Enum variants (in a case) | `,` | Optional |
+| Enum variants (in a case) | `,` | Not accepted |
 | Function parameters | `,` | Optional |
 | Type parameters | `,` | Optional |
 | Type arguments | `,` | Optional |
@@ -765,7 +887,8 @@ For comma-separated lists, **commas are required before newlines** to prevent AS
 | Closure parameters | `,` | Optional |
 | Pattern lists | `,` | Optional |
 
-**Important**: If you write a multiline comma-separated list without commas at the end of lines, ASI will insert semicolons and the parser will error with "unexpected semicolon in multiline list".
+**Important**: If you write a multiline comma-separated list without commas at the end of lines, ASI will insert semicolons and the parser rejects the inserted semicolon (the exact diagnostic depends on
+the list form).
 
 ---
 
@@ -779,7 +902,8 @@ struct Point {
 }
 ```
 
-**Comma-Separated Lists**: Commas are **required** at the end of each line to prevent ASI:
+**Comma-Separated Lists**: Commas are **required** after every element whose delimiter or next element
+starts on a new line:
 ```
 // WRONG - ASI inserts `;` after `a`, causing error
 foo(
@@ -790,14 +914,13 @@ foo(
 // CORRECT - comma prevents ASI
 foo(
     a,
-    b
-)
-
-// ALSO CORRECT - trailing comma is optional
-foo(
-    a,
     b,
 )
+
+// ALSO CORRECT - closing delimiter on the final element's line
+foo(
+    a,
+    b)
 ```
 
 More examples:
@@ -805,12 +928,12 @@ More examples:
 let arr = [
     1,          // comma required
     2,          // comma required
-    3           // trailing comma optional
+    3,          // comma required before closing delimiter on next line
 ]
 
 let user = User {
     id: 1,          // comma required
-    name: "John"    // trailing comma optional
+    name: "John",   // comma required before closing delimiter on next line
 }
 ```
 
@@ -839,3 +962,6 @@ Struct literals (`Foo { ... }`) can be ambiguous with blocks in certain contexts
 if condition { ... }           // block, not struct literal
 let x = Foo { field: value }   // struct literal OK here
 ```
+
+Keep `else` on the same line as the preceding `}`. It does not suppress ASI.
+An `if` without `else` has unit type; it does not implicitly produce an optional.

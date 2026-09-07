@@ -10,7 +10,7 @@ Blocks group statements and define scopes.
 {
     let x = 1
     let y = 2
-    print(x + y)
+    printf("%d", x + y)
 }
 ```
 
@@ -95,7 +95,9 @@ Notes:
 
 ## Assertions
 
-`assert` always panics on failure.
+`assert(condition, message)` requires a boolean condition and a string message;
+it always panics on failure. `print` accepts a string; use `printf`, `sprintf`,
+or an f-string for other values.
 
 `debugAssert` uses an inline `#cfg(profile("debug"))` guard and becomes a no-op outside debug builds.
 
@@ -117,7 +119,7 @@ func add(a: int32, b: int32) -> int32 {
     return a + b
 }
 
-// Without value (void return)
+// Without value (unit return)
 func process() {
     if done { return }
     // more work...
@@ -204,11 +206,11 @@ outer: for row in grid {
 
 // Range iteration
 for i in 0..10 {
-    print(i)  // 0 to 9
+    printf("%d\n", i)  // 0 to 9
 }
 
 for i in 0..=10 {
-    print(i)  // 0 to 10 (inclusive)
+    printf("%d\n", i)  // 0 to 10 (inclusive)
 }
 ```
 
@@ -295,17 +297,17 @@ func example() {
 
 ## Guard Statement
 
-Early exit if condition fails.
+Early exit if a `bool` condition fails. An optional is not a condition by
+itself; use `guard let` to unwrap it. The `else` block must exit the current
+control-flow path, for example with `return`, `break`, `continue`, or a
+never-returning call.
 
 ```taro
 func process(value: int32?) {
-    guard value else { return }
-    // 'value' is still optional here
-    
     guard let v = value else { return }
     // 'v' is non-optional int32
     
-    print(v)
+    printf("%d\n", v)
 }
 
 // With else block

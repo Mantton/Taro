@@ -1,14 +1,18 @@
 # Declarations
 
-This chapter covers all top-level and nested declarations in Taro.
+This chapter describes top-level and nested declarations in Taro. Declaration
+examples without `main` can be checked with an empty `func main() {}` appended.
+Examples that continue earlier definitions are identified in the surrounding text.
 
 ## Visibility
 
-Declarations can have visibility modifiers.
+Declarations are public by default. Use `private` to restrict access to the
+containing scope.
 
 ```taro
 public struct PublicType { }    // Accessible everywhere
-private struct PrivateType { }  // Module-private (default)
+private struct PrivateType { }  // Private to this module
+struct DefaultPublicType { }    // Public when no modifier is present
 
 public func publicFunction() { }
 private func privateFunction() { }
@@ -22,8 +26,8 @@ Attributes provide metadata for declarations.
 @inline
 func fastFunction() { }
 
-@deprecated
-struct OldType { }
+@noinline
+func separateFunction() { }
 ```
 
 ---
@@ -142,7 +146,11 @@ interface Cloneable {
 }
 
 // Interface inheritance
-interface Comparable: Equatable {
+interface Equal {
+    func equal(&self, other: &Self) -> bool;
+}
+
+interface Comparable: Equal {
     func compare(&self, other: &Self) -> int32;
 }
 
@@ -165,6 +173,11 @@ interface Collection {
     func contains(&self, element: Self.Element) -> bool;
 }
 ```
+
+Current limitation: inheriting from imported standard interfaces with declarations
+such as `interface Derived: Clone {}` or `interface Derived: Equatable {}`
+triggers an internal compiler failure. Inheritance between local interfaces,
+as in the example above, works.
 
 Interfaces may require computed properties and may provide default accessor
 bodies. A conforming type can satisfy an accessor with a stored field, an
@@ -195,6 +208,11 @@ the interface when the receiver type does not identify a unique candidate.
 Functions are the primary units of code.
 
 ```taro
+struct Point {
+    x: int32;
+    y: int32;
+}
+
 // Basic function
 func greet() {
     print("Hello!")
@@ -212,15 +230,15 @@ func move(from source: Point, to destination: Point) {
 }
 
 // Default parameter values
-func greet(name: string = "World") {
+func greetPerson(name: string = "World") {
     print("Hello, " + name)
 }
 
 // Variadic parameters
-func sum(nums: int32...) -> int32 {
-    // nums is a list
+func sum(_ nums: int32...) -> int32 {
+    // nums is a Span[int32]; iteration produces immutable references.
     var total = 0
-    for n in nums { total += n }
+    for n in nums { total += *n }
     return total
 }
 
@@ -235,13 +253,33 @@ func compare[T](a: T, b: T) -> bool where T: Equatable {
 }
 
 // Async functions place `async` after the parameter list
+func loadCount() async -> int32 { 42 }
+
 func fetchCount() async -> int32 {
     return await loadCount()
 }
 
-// Self parameters (in interfaces/implementations)
-func double(&self) -> int32          // Mutable borrow
-func value(&const self) -> int32     // Immutable borrow
+func main() {
+    let origin = Point { x: 0, y: 0 }
+    move(from: origin, to: Point { x: 1, y: 2 })
+    greetPerson()
+    let result = add(a: 1, b: sum(2, 3, 4))
+}
+```
+
+Parameter names are also argument labels unless `_` suppresses the label.
+A separate label, as in `from source: Point`, keeps the external and internal
+names distinct. Variadic parameters must be last and cannot have defaults.
+
+Self parameters appear in interfaces and implementations:
+
+```taro
+interface Value {
+    func value(&self) -> int32;       // Immutable borrow (the default)
+    func constant(&const self) -> int32; // Explicitly immutable borrow
+    func update(&mut self);          // Mutable borrow
+    func consume(self) -> int32;     // By value
+}
 ```
 
 ---
@@ -251,6 +289,15 @@ func value(&const self) -> int32     // Immutable borrow
 Implementations add functionality to existing types.
 
 ```taro
+struct Point {
+    x: int32;
+    y: int32;
+}
+
+interface Drawable {
+    func draw(&self);
+}
+
 struct Stack[T] {
     items: List[T];
 }
@@ -263,9 +310,9 @@ impl Point {
 }
 
 // Implementation of interface
-impl Hashable for int32 {
-    func hash(&self) -> int64 {
-        return self as int64
+impl Drawable for Point {
+    func draw(&self) {
+        println(f"({self.x}, {self.y})")
     }
 }
 
@@ -289,8 +336,9 @@ impl[T] Stack[T] where T: PartialEq {
 
 Inherent methods can only be added to types declared in the current package.
 `impl[T] List[T] { ... }` is rejected outside std with *cannot add inherent
-methods to type from another package without interface conformance*. Interface
-conformances such as `impl Hashable for int32` are unaffected.
+methods to type from another package without interface conformance*. A local
+interface may instead be implemented for a foreign type, such as
+`impl MyInterface for int32`, subject to conformance coherence rules.
 
 ### Initializer Shorthand
 
@@ -310,12 +358,15 @@ impl Point {
     }
 }
 
-let point = Point(x: 10, y: 20)
-let samePoint = Point.new(x: 10, y: 20)
+func main() {
+    let point = Point(x: 10, y: 20)
+    let samePoint = Point.new(x: 10, y: 20)
+}
 ```
 
 The shorthand participates in normal overload resolution. Generic types include
-their type arguments before the call, for example `Box[int32](42)`.
+their type arguments before the call, for example `Box[int32](42)` when `Box[T]`
+defines `func new(_ value: T) -> Self`.
 
 ### Computed Properties
 
@@ -323,6 +374,8 @@ Computed properties use explicit `get`/`set` accessor blocks and are accessed
 with field-like syntax.
 
 ```taro
+struct Counter { raw: int32; }
+
 impl Counter {
     var value: int32 {
         get(&self) {
@@ -338,6 +391,8 @@ impl Counter {
 Getter-only properties are read-only:
 
 ```taro
+struct User { _id: int64; }
+
 impl User {
     var id: int64 {
         get(&self) {
@@ -350,7 +405,14 @@ impl User {
 Getters may be async:
 
 ```taro
+struct Session { id: int64; }
+struct SessionStore {}
+
 impl SessionStore {
+    func loadCurrent(&self) async -> Session {
+        Session { id: 1 }
+    }
+
     var current: Session {
         get(&self) async {
             return await self.loadCurrent()
@@ -364,7 +426,7 @@ Rules:
 - Exactly one `get` accessor is required.
 - `set` is optional.
 - `set` must use `set(&mut self, value: T)` where `T` matches the property type.
-- `set` cannot be `async` in v1.
+- `set` cannot be `async`.
 - Async getters require explicit await at the read site: `await obj.prop`.
 - Compound assignment on a writable property evaluates the receiver once, reads
   through `get`, applies the assignment operator, and writes through `set`.
@@ -381,30 +443,51 @@ Rules:
 Type aliases create alternative names for types.
 
 ```taro
+import std.hash.Hashable
+
 // Simple alias
 type Meters = int32
 type UserId = string
 
 // Generic alias
 type StringMap[V] = Dictionary[string, V]
-type Callback[T] = (T) -> void
+type Callback[T] = (T) -> ()
+
+interface Readable[Value] {
+    func read(&self) -> Value;
+}
+
+interface Writable[Value] {
+    func write(&mut self, _ value: Value);
+}
 
 // Transparent interface-set aliases
-type ReadWrite = Readable & Writable
+type ReadWrite = Readable[int32] & Writable[int32]
 type Resource[Value] = Readable[Value] & Writable[Value]
 type ResourceAlias[Value] = Resource[Value]
 
-// Associated type constraint
-type Key: Hashable
-type Element: Equatable & Hashable
+// Associated type constraints belong to interfaces.
+interface Indexed {
+    type Key: Hashable;
+    type Element: Equatable & Hashable;
+}
 ```
 
-An interface-set alias expands wherever an interface list is accepted:
+Continuing those definitions, an interface-set alias expands wherever an
+interface list is accepted:
 
 ```taro
 func copy[Value: ReadWrite](_ value: Value) {}
 func erase(_ value: any ReadWrite) {}
-func make() -> some ReadWrite { /* ... */ }
+
+struct Cell { value: int32; }
+impl Readable[int32] for Cell {
+    func read(&self) -> int32 { self.value }
+}
+impl Writable[int32] for Cell {
+    func write(&mut self, _ value: int32) { self.value = value }
+}
+func cell() -> some ReadWrite { Cell { value: 0 } }
 ```
 
 Interface-set aliases may be generic, nested, and exported across package
@@ -416,9 +499,9 @@ An interface set is also not a single conformance declaration. Implement each
 constituent explicitly; `impl ReadWrite for File` and `struct File: ReadWrite`
 are rejected. Circular interface-set aliases are diagnosed.
 
-The `any` spelling remains significant: `type Boxed = any Readable & Writable`
-aliases one concrete existential type, while `type ReadWrite = Readable &
-Writable` aliases the interface requirements themselves.
+The `any` spelling remains significant: `type Boxed = any ReadWrite` aliases
+one concrete existential type, while `type ReadWrite = Readable[int32] &
+Writable[int32]` aliases the interface requirements themselves.
 
 ---
 
@@ -453,9 +536,9 @@ Extern blocks declare foreign functions (FFI).
 
 ```taro
 extern "C" {
-    func printf(format: *const int8) -> int32;
-    func malloc(size: usize) -> *void;
-    func free(ptr: *void);
+    func puts(_ text: *const uint8) -> int32;
+    func malloc(_ size: usize) -> *mut uint8;
+    func free(_ ptr: *mut uint8);
 }
 ```
 
@@ -515,8 +598,8 @@ explicitly.
 Exports re-export items from the current module.
 
 ```taro
-export std.io.File
-export internal.utils.*
+export std.fs.File
+export std.collections.*
 ```
 
 ---
@@ -543,7 +626,7 @@ function calls are not constant expressions.
 Module and namespace state must use explicit static declarations.
 
 ```taro
-static let globalConfig: Config = Config { }
+static let applicationName: string = "Taro"
 static var counter: int32 = 0
 ```
 
@@ -556,6 +639,11 @@ interface, not with an `operator` declaration. `operator` is reserved but
 unimplemented.
 
 ```taro
+struct Point {
+    x: int32;
+    y: int32;
+}
+
 impl Add for Point {
     func add(self, rhs: Point) -> Point {
         return Point { x: self.x + rhs.x, y: self.y + rhs.y }

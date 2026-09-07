@@ -8,7 +8,9 @@ Taro automatically inserts semicolons, reducing syntactic noise while maintainin
 
 ### How ASI Works
 
-A semicolon is inserted after certain tokens when followed by a newline, unless the next line starts with a continuation token.
+A semicolon is inserted after certain tokens at a newline or end of file,
+unless the next line starts with a continuation token. ASI also runs inside
+parentheses and brackets.
 
 ### Tokens That Can End a Statement
 
@@ -17,7 +19,7 @@ Semicolons are inserted after:
 - Literals: `42`, `"string"`, `true`, `false`, `nil`
 - Keywords: `break`, `continue`, `return`
 - Closing brackets: `)`, `]`, `}`
-- Special: `?`, `!`
+- Special: `?`, `!`, and the import/export suffix `.*`
 
 ### Line Continuation Tokens
 
@@ -29,8 +31,7 @@ let x = a
     + b     // Continues the expression
 
 let y = a
-    - b
-    * c
+    - b * c
 ```
 
 **Comparison operators:**
@@ -61,7 +62,8 @@ x
 **Arrow operators:**
 ```taro
 func process()
-    -> Result {   // Continues
+    -> int32 {   // Continues
+    42
 }
 ```
 
@@ -91,17 +93,26 @@ Unlike some operators, `&` and `*` at line start are treated as unary operators:
 
 ```taro
 let x = value
-&ref = x        // Two statements! &ref is address-of
+&x              // A separate reference expression
 
 let y = value
 *ptr = y        // Two statements! *ptr is dereference
 ```
 
+`else` and `where` are not continuation starters. Keep `else` on the same
+line as the preceding `}`: `} else {` or `} else if condition {`. Likewise,
+start a function's `where` clause on the line containing its return type or
+closing parameter delimiter.
+
 ---
 
 ## Trailing Commas
 
-Trailing commas are allowed in all list contexts:
+Trailing commas are accepted in delimited argument, parameter, field, and
+literal lists. If the closing delimiter starts on a new line, the final
+element needs a comma too, because otherwise ASI inserts a semicolon.
+Enum variants within one `case` are an exception: they do not allow a trailing
+comma.
 
 ```taro
 // Arrays
@@ -140,7 +151,7 @@ Dictionary[
 enum Color {
     case red,
          green,
-         blue,   // OK (per case line)
+         blue    // No trailing comma on an enum case
 }
 ```
 
@@ -287,7 +298,8 @@ enum Status {
 
 ## Comma-Separated Lists and Newlines
 
-For comma-separated lists, **commas are required before newlines** to prevent ASI:
+For delimited comma-separated lists, **commas are required before newlines**,
+including before a closing delimiter on the following line:
 
 ```taro
 // CORRECT: Trailing comma before newline

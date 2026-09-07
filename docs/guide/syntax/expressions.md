@@ -13,7 +13,7 @@ From lowest to highest precedence:
 5. Range: `..`, `..=`
 6. Logical OR: `||`
 7. Logical AND: `&&`
-8. Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`, `===`
+8. Comparison: `<`, `>`, `<=`, `>=`, `==`, `!=`
 9. Bitwise OR: `|`
 10. Bitwise XOR: `^`
 11. Bitwise AND: `&`
@@ -22,8 +22,12 @@ From lowest to highest precedence:
 14. Factor: `*`, `/`, `%`
 15. Cast / Type Assertion: `as`, `as?`, `is`
 16. Prefix: `!`, `-`, `~`, `&`, `*`
-17. Postfix: `.`, `()`, `!`, `?.`
+17. Postfix: `.`, `()`, `[]` (specialization), `!`, `?.`
 18. Primary
+
+`await` consumes the following expression. Parenthesize the awaited operation
+when applying another operator to its result: `(await operation()) + 1` and
+`(await operation())!`.
 
 ---
 
@@ -72,11 +76,15 @@ let out = value;
 
 ### Wildcard
 
-The wildcard expression represents an ignored value.
+`_` discards a value in a binding pattern (`let _ = expression`). As an
+expression, it is only supported as one top-level argument placeholder on the
+right-hand side of a pipe:
 
 ```taro
-_                   // Wildcard
+value |> combine(other, _)   // combine(other, value)
 ```
+
+A standalone `_`, a nested placeholder, or multiple placeholders is rejected.
 
 ### Parenthesized Expression
 
@@ -99,17 +107,20 @@ _                   // Wildcard
 
 ---
 
-## Array Expressions
+## List and Array Expressions
 
 ```taro
-[]                  // Empty array
-[1, 2, 3]           // Array with elements
-[1, 2, 3,]          // Trailing comma allowed
+let list: [int32] = [1, 2, 3]
+let empty: [int32] = []
+let array: [int32; 3] = [1, 2, 3]
 
-// Repeat expression
-[0; 10]             // [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-[default; count]    // Repeat 'default' 'count' times
+// Repeat expressions construct fixed-size arrays, with a constant count.
+let zeros: [int32; 10] = [0; 10]
 ```
+
+Unannotated element literals infer fixed-size arrays. An expected `List[T]`
+type selects list construction. `[value; count]` requires a compile-time count
+and constructs an array; it does not construct a dynamic list.
 
 ---
 
@@ -171,8 +182,9 @@ let result = {
 -value              // Negate
 ~bits               // Bitwise NOT
 
-&value              // Take reference (mutable)
-&const value        // Take const reference
+&value              // Take immutable reference
+&const value        // Explicit immutable reference
+&mut value          // Take mutable reference
 
 *pointer            // Dereference
 ```
@@ -207,7 +219,6 @@ let s = await store.current
 ```taro
 tuple.0             // First element
 tuple.1             // Second element
-point.0             // Access by index
 ```
 
 ### Function Calls
@@ -231,8 +242,9 @@ list.at(0)              // &Element — panics when out of bounds
 dictionary.get(&key)    // Optional[&Value] — keys are passed by reference
 ```
 
-Both forms return references, so reading a value through them requires a
-dereference:
+Mutable receiver overloads can instead return `&mut Element` or
+`Optional[&mut Element]`. To copy a `Copy` element out of a reference,
+dereference it:
 
 ```taro
 let first = *list.at(0)
@@ -264,7 +276,7 @@ resultValue!        // Extract T from Result[T, E], or return .err(error)
   Otherwise, `TargetE` must implement `From[E]`; propagation calls that
   conversion before returning `.err`.
 - `Optional` and `Result` do not mix. You cannot propagate an `Optional` from a `Result` context or vice versa.
-- To propagate an awaited value, write `(await expr)!`. `await expr!` is rejected on purpose because `await` keeps its existing precedence.
+- To propagate an awaited value, write `(await expr)!`. `await expr!` is rejected on purpose because `await` consumes the following expression.
 
 ### Optional Chaining
 
@@ -296,7 +308,6 @@ a < b               // Less than
 a > b               // Greater than
 a <= b              // Less or equal
 a >= b              // Greater or equal
-a === b             // Pointer equality
 ```
 
 ### Logical
@@ -397,12 +408,16 @@ save(validate(transform(data)))
 
 ---
 
+The left value is inserted as the first argument when the right side is a
+call without a placeholder: `value |> transform(extra)` means
+`transform(value, extra)`. One direct `_` argument can select another position.
+
 ## Cast Expression
 
 ```taro
 value as int64
 number as double
-ptr as *void
+unsafe { ptr as *uint8 }
 ```
 
 ---
@@ -415,11 +430,15 @@ If-else as an expression (returns a value).
 let result = if condition { value1 } else { value2 }
 
 // Chained
-let status = if x > 0 { "positive" }
-             else if x < 0 { "negative" }
-             else { "zero" }
+let status = if x > 0 {
+    "positive"
+} else if x < 0 {
+    "negative"
+} else {
+    "zero"
+}
 
-// If without else (returns optional or void)
+// If without else has unit type; the body must produce unit or diverge.
 if condition { doSomething() }
 ```
 
@@ -500,7 +519,10 @@ std.task.spawn(|| {
 |a, b,| a + b
 ```
 
-`move` affects how referenced outer variables enter the closure environment. It captures them by value, but it does not by itself make the closure one-shot: a `move` closure is `FnOnce` only when the body moves a captured value out of the closure.
+`move` captures referenced outer variables by value. For synchronous closures,
+this does not by itself make the closure one-shot: it is `FnOnce` when the body
+moves a captured value out of the closure. An owned capture that is only read
+can remain reusable.
 
 Async closures with only immutable `Copy` or borrowed captures are reusable and
 satisfy `AsyncFn`. Mutable borrowed captures make a closure `AsyncFnMut`, so it

@@ -1,6 +1,8 @@
 # Generics
 
 This chapter covers type parameters, constraints, and generic programming in Taro.
+Each code block is an independent example. Blocks containing only declarations
+can be checked with an empty `func main() {}` appended.
 
 ## Type Parameters
 
@@ -35,8 +37,10 @@ func swap[T, U](pair: (T, U)) -> (U, T) {
 Constraints on what types can be used as arguments.
 
 ```taro
+import std.hash.Hashable
+
 // Single bound
-func sort[T: Comparable](items: [T]) -> [T] { }
+func same[T: Equatable](_ a: T, _ b: T) -> bool { a == b }
 
 // Multiple bounds (intersection)
 func process[T: Hashable & Equatable](item: T) { }
@@ -54,31 +58,42 @@ struct Cache[K: Hashable, V] {
 More complex constraints using where clauses.
 
 ```taro
+import std.hash.Hashable
+
 // Basic conformance
 func compare[T](a: T, b: T) -> bool where T: Equatable {
     return a == b
 }
 
 // Multiple requirements
-func merge[K, V](a: Dictionary[K, V], b: Dictionary[K, V]) -> Dictionary[K, V]
-    where K: Hashable, V: Clone {
-    // ...
+func pair[K, V](_ key: K, _ value: V) -> (K, V) where K: Hashable, V: Clone {
+    return (key, value.clone())
 }
 
 // Same-type requirements
-func process[C](container: C) where C: Container, C.Item == int32 {
-    // C.Item must be int32
+interface Source {
+    type Item;
+    func get(&self) -> Self.Item;
+}
+
+func readInt[C](_ source: C) -> int32 where C: Source, C.Item == int32 {
+    return source.get()
 }
 
 // Complex constraints
 func combine[A, B, R](
     a: A,
     b: B,
-    with f: (A, B) -> R
+    with f: (A, B) -> R,
 ) -> R where A: Clone, B: Clone {
-    // ...
+    return f(a.clone(), b.clone())
 }
 ```
+
+For functions, `where` follows the return type (or the parameter list when no
+return type is written). Keep it on that line: a newline before `where` can
+insert a semicolon and end the declaration. Multiline parameter lists need a
+comma before each newline, including after the final parameter.
 
 ---
 
@@ -88,18 +103,22 @@ Compile-time constant values as generic parameters.
 
 ```taro
 // Array with compile-time size
-struct FixedArray[T, const N: int32] {
+struct FixedArray[T, const N: usize] {
     data: [T; N];
 }
 
-// Usage
-let arr: FixedArray[int32, 10] = FixedArray { }
+func main() {
+    let arr: FixedArray[int32, 3] = FixedArray[int32, 3] { data: [1, 2, 3] }
+}
 
 // Default const values
-struct Buffer[T, const SIZE: int32 = 1024] {
+struct Buffer[T, const SIZE: usize = 1024] {
     data: [T; SIZE];
 }
 ```
+
+Array lengths use `usize`. Supply the const argument when constructing
+`FixedArray`; the result annotation does not infer it for a bare `FixedArray { ... }`.
 
 ---
 
@@ -108,16 +127,20 @@ struct Buffer[T, const SIZE: int32 = 1024] {
 Type parameters can have default types.
 
 ```taro
-struct Table[K: Hashable, V, H: Hasher = DefaultHasher] {
-    // ...
+import std.hash.{Hasher, DefaultHasher}
+
+struct HashState[H: Hasher = DefaultHasher] {
+    hasher: H;
 }
 
-// Can omit defaulted parameters
-let table: Table[string, int32] = Table { }
-// Same as: Table[string, int32, DefaultHasher]
+func main() {
+    // Can omit defaulted parameters: HashState means HashState[DefaultHasher].
+    let state: HashState = HashState { hasher: DefaultHasher() }
+}
 ```
 
-`Hasher` and `DefaultHasher` come from `std.hash`. Note that std's own
+`Hashable`, `Hasher`, and `DefaultHasher` come from `std.hash`; they are not
+part of the prelude. The standard library's
 `Dictionary[Key: Hashable, Value]` does not take a hasher parameter.
 
 ---
@@ -135,9 +158,8 @@ interface Container {
 }
 
 // Constraining associated types
-func firstOrZero[C](container: C) -> int32
-    where C: Container, C.Element == int32 {
-    match container.get(0) {
+func firstOrZero[C](container: C) -> int32 where C: Container, C.Element == int32 {
+    match container.get(index: 0) {
         case .some(value) => *value
         case .none => 0
     }
@@ -236,35 +258,44 @@ are not permitted.
 The compiler can infer type arguments in many contexts.
 
 ```taro
-func make[T]() -> List[T] { return [] }
+func newList[T]() -> List[T] { return [] }
+func consumeInts(_ values: List[int32]) {}
 
-// Explicit
-let ints: List[int32] = make[int32]()
+func main() {
+    // Explicit
+    let ints = newList[int32]()
 
-// Inferred from annotation
-let strings: List[string] = make()
+    // Inferred from annotation
+    let strings: List[string] = newList()
 
-// Inferred from usage
-let nums = make[int32]()
-nums.append(42)  // Type known from append
+    // Inferred from the parameter type in the same expression
+    consumeInts(newList())
+}
 ```
+
+Later statements do not supply this context: `var nums = newList()` needs a
+type annotation or explicit type argument even if a later statement appends an integer.
 
 ---
 
 ## Trailing Commas
 
-Type parameter lists and argument lists allow trailing commas.
+Type parameter lists and argument lists allow trailing commas. Use a comma
+before a newline that precedes the closing bracket, so automatic semicolon
+insertion does not terminate the final element.
 
 ```taro
 struct MultiGeneric[
-    A: SomeBound,
-    B: OtherBound,
+    A: Clone,
+    B: Copy,
     C,  // Trailing comma allowed
 ] { }
 
-let value: MultiGeneric[
-    TypeA,
-    TypeB,
-    TypeC,  // Trailing comma allowed
-] = MultiGeneric { }
+func main() {
+    let value: MultiGeneric[
+        string,
+        int32,
+        bool,  // Trailing comma allowed
+    ] = MultiGeneric { }
+}
 ```
