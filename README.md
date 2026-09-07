@@ -25,7 +25,7 @@ and structured concurrency with automatic garbage collection.
 
 - Latest Rust nightly (required for associated type defaults)
 - LLVM 22.1.x; 22.1.8 is the certified development version
-- A C++17 compiler for the narrow LLVM ThinLTO shim
+- A C++17 compiler for the native LLVM integration shim
 
 `llvm-sys` discovers LLVM through `PATH`, Homebrew, or
 `LLVM_SYS_221_PREFIX`. On macOS:
@@ -149,8 +149,8 @@ attributes and regression directives.
 
 ## Status and Limitations
 
-- Repository workflows currently support Unix-like hosts; Windows is out of
-  scope.
+- Repository workflows require Unix-like hosts. Native linking currently
+  supports Darwin and Linux; Windows is out of scope.
 - Std is an attached toolchain artifact and must be rebuilt after incompatible
   compiler metadata changes.
 - Package management has no public registry.

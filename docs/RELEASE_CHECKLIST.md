@@ -8,9 +8,18 @@ repository root.
 - [ ] Format Rust sources with `cargo fmt --all -- --check`.
 - [ ] Run the complete compiler, distribution, standard-library, and language
       test pipeline with `make all-tests` (or
-      `python3 development/scripts/test_all.py`).
+      `python3 development/scripts/test_all.py`). This uses debug Rust tests, a
+      release compiler/runtime, debug std tests, and both generated-language
+      profiles; it is not the full compiler-profile matrix.
+- [ ] Run `cargo test --workspace --release` and the language suite with a
+      debug compiler/runtime:
+      `python3 development/scripts/language_tests.py --debug --codegen-profile both`.
+- [ ] Run `TARO_HOME="$PWD/dist" dist/bin/taro test std --release` for release
+      standard-library tests.
 - [ ] Run `make runtime-stress` when runtime, async scheduling, GC, or generated
-      runtime calls changed.
+      runtime calls changed; also run
+      `python3 development/scripts/runtime_stress.py --debug` for its debug
+      compiler/runtime and generated-program configuration.
 - [ ] Add a focused regression test for every bug fix. Prefer a test that fails
       on the parent commit and passes with the fix.
 - [ ] Confirm `git diff --check` reports no whitespace errors.

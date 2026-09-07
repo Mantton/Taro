@@ -154,9 +154,10 @@ Point { x, y: 10 }
 Point { x: 1, y: 2, }
 ```
 
-> **Note**: Struct literals are not allowed anywhere inside an `if`, `while`, or
-> `guard` condition, where they would be ambiguous with blocks. Parentheses and
-> call arguments do not lift the restriction — bind the value to a variable
+> **Current parser limitation**: Struct literals are rejected throughout
+> `if`/`while`/`guard` conditions, `for` iterators and filters, and `match`
+> scrutinees. Parentheses and call arguments do not lift the restriction, even
+> when they remove the ambiguity with blocks. Bind the value to a variable
 > first. See [Special Syntax](./special.md#struct-literal-vs-block).
 
 ---

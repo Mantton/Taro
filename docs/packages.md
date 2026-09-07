@@ -47,7 +47,10 @@ tags, branches, commits, aliases, and root-local paths:
 ```
 
 `version`, `tag`, `branch`, and `commit` are mutually exclusive selectors.
-`path` cannot be combined with Git fields.
+`path` cannot be combined with Git fields. An otherwise empty detailed Git
+dependency uses the remote default branch. Semantic-version requests select
+Git tags such as `1.2.3` or `v1.2.3`; the generated manifest
+`[package].version` field is not used by the resolver.
 
 ## Resolution and Locking
 
@@ -60,7 +63,9 @@ hashes, and the requests satisfied by each package.
 
 - `--locked` requires an existing up-to-date lockfile and never rewrites it.
 - `--update-lock` resolves current requests and refreshes the lockfile.
-- `CI=true` enables the same drift checks as `--locked`.
+- A truthy `CI` enables the same drift checks as `--locked`; unset, empty, `0`,
+  `false`, and `no` disable this behavior (case-insensitively). `--update-lock`
+  explicitly permits refreshing the lockfile even in CI.
 
 Locked Git revisions are reused from the local cache and fetched only when
 missing. Installed dependency contents are verified against their locked hash.

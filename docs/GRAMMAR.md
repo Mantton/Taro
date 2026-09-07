@@ -2,8 +2,10 @@
 
 This reference describes the current Taro parser and supported language forms
 in Extended BNF notation. Semantic constraints are stated alongside the rules;
-parsing a form alone does not establish that it is well typed. The
-[syntax guide](guide/syntax/README.md) provides examples.
+parsing a form alone does not establish that it is well typed or that every
+accepted form is an intentional language feature. Where implementation and
+documented intent disagree, implementation limitations are identified explicitly.
+The [syntax guide](guide/syntax/README.md) provides examples.
 
 ## Notation
 
@@ -84,8 +86,9 @@ Unescaped keywords and the standalone `_` token are excluded from identifiers.
 Digits must be valid for their base. Integer suffixes name fixed-width types.
 Unicode escapes contain one to six hexadecimal digits (underscores do not
 count) and must denote a Unicode scalar value; `\xNN` escapes are ASCII only.
-Unescaped source line endings are LF. Strings and f-strings occupy one source
-line.
+The current lexer recognizes LF line endings and rejects raw CR, including
+CRLF; this is an implementation limitation. Strings and f-strings occupy one
+source line.
 
 ### Keywords
 
@@ -115,6 +118,7 @@ opaque return type. These words remain valid identifiers in other contexts.
 
 ```ebnf
 <operator>             ::= '+' | '-' | '*' | '/' | '%'
+                         | '='
                          | '&' | '|' | '^' | '~' | '!'
                          | '<' | '>' | '<<' | '>>'
                          | '==' | '!=' | '<=' | '>='
@@ -428,6 +432,11 @@ and runtime values are not constant expressions. Associated bindings use
 or target; struct/enum clauses follow conformances. Interface clauses precede
 superinterfaces.
 
+Callable shorthand always packs its argument list into a tuple:
+`Fn(A) -> R` means `Fn[(A,), R]`, while `Fn((A, B)) -> R` means
+`Fn[((A, B),), R]`. See [Callable Interface Shorthand](guide/syntax/types.md#callable-interface-shorthand)
+for legacy scalar spelling, generic argument packs, and existential calls.
+
 ## Types
 
 ```ebnf
@@ -536,9 +545,12 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
 Or-patterns belong at the top level of match arms. Rest patterns are accepted
 inside tuple and variant-payload patterns. Explicit `&pattern` removes a
 reference layer; it does not itself make inner bindings references. Qualified
-path patterns resolve enum variants, not arbitrary constants. Literal patterns
-require a literal value; unary negative expressions and f-strings with
-interpolation are rejected. Use a guard for those comparisons.
+path patterns resolve enum variants, not arbitrary constants. Current lowering
+rejects unary negative expressions as literal patterns; this is an
+implementation limitation, not an established rule against negative values.
+F-strings with interpolation are also rejected. Use a guard for those
+comparisons. Local reference-pattern restrictions are described in
+[Reference Pattern](guide/syntax/patterns.md#reference-pattern).
 
 ## Statements
 
@@ -776,7 +788,8 @@ Repeat literals require a compile-time count and construct fixed-size arrays.
 
 Struct literals are restricted throughout `if`/`while`/`guard` conditions,
 `for` iterators/filters, and `match` scrutinees, including nested parentheses
-and call arguments. Bind the value first. Parser recovery may recognize a
+and call arguments. This parser limitation includes otherwise unambiguous
+parenthesized forms. Bind the value first. Parser recovery may recognize a
 literal-like brace sequence to report a more specific error; it does not make
 that source valid.
 
@@ -842,7 +855,8 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 
 ---
 
-Block comments do not nest.
+The current lexer does not implement the nested block comments described in
+earlier documentation; the production above records that implementation gap.
 
 ## Reserved for Future
 

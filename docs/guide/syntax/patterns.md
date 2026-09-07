@@ -4,9 +4,11 @@ This chapter covers all pattern types used in pattern matching, variable binding
 
 ## Where Patterns Are Used
 
-Local `let`/`var` bindings accept an identifier, `_`, or a tuple pattern at
-the outermost level. Match arms and loop/binding conditions accept additional
-patterns. Optional-binding conditions (`if let`, `while let`, `guard let`)
+The current parser restricts local `let`/`var` bindings to an identifier, `_`,
+or a tuple pattern at the outermost level. This is an implementation restriction;
+it does not establish which other irrefutable patterns the language should
+support in local bindings. Match arms and loop/binding conditions accept
+additional patterns. Optional-binding conditions (`if let`, `while let`, `guard let`)
 accept a single identifier; use `case` for destructuring in a condition:
 
 ```taro
@@ -165,9 +167,12 @@ match result {
 
 ## Literal Pattern
 
-Matches specific literal values. Negative expressions (`-1`) and f-strings
-with interpolation are not supported as literal patterns; use a guard such as
-`case n if n == -1 => ...` instead.
+Matches specific literal values. Current lowering rejects negative expressions
+such as `-1` because they are unary expressions rather than literal AST nodes.
+That implementation limitation does not establish an intended language rule
+against matching negative values. A guard such as `case n if n == -1 => ...`
+works around it. F-strings with interpolation are also rejected as literal
+patterns.
 
 ```taro
 match x {
@@ -207,8 +212,14 @@ match &value {
 ```
 
 `&const pattern` is the explicit immutable spelling. `&mut pattern` requires a
-mutable reference. These are match patterns; `let &x = ...` is rejected as a
-local binding.
+mutable reference. These forms work in match patterns. The parser currently
+rejects `let &x = ...` as a local binding; this restriction should not be
+confused with the value-binding semantics of `&pattern` itself.
+
+Nesting a reference pattern in a local tuple binding is not a workaround:
+`let (&x,) = (&value,)` passes parsing but currently fails type checking with
+an unresolved-type diagnostic, even with an explicit tuple type annotation.
+Use a match, as above, or bind the reference and dereference it explicitly.
 
 Without an explicit reference pattern, matching an enum or tuple through a
 reference automatically borrows the payload bindings:

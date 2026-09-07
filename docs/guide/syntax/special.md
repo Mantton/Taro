@@ -130,9 +130,9 @@ func foo(
 
 // Function calls
 foo(
-    1,
-    "hello",
-    true,       // OK
+    a: 1,
+    b: "hello",
+    c: true,    // OK
 )
 
 // Struct literals
@@ -227,9 +227,12 @@ In some positions, `{` is ambiguous between struct literal and block:
 if User { isAdmin: true }.isAdmin { }  // Is `{` a literal or the body?
 ```
 
-Struct literals are rejected anywhere inside an `if`, `while`, or `guard`
-condition — including nested in parentheses or a call argument. All of these
-fail with *struct literals are not allowed in this context*:
+The parser currently rejects struct literals throughout `if`/`while`/`guard`
+conditions, `for` iterators and filters, and `match` scrutinees — including
+nested in parentheses or a call argument. The restriction extends to forms
+whose parentheses already distinguish the literal from the control-flow block;
+it is a parser limitation, not a type-system restriction. These examples fail
+with *struct literals are not allowed in this context*:
 
 ```taro
 if (User { isAdmin: true }).isAdmin { }   // parentheses do not help

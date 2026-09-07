@@ -17,7 +17,8 @@ functions may use GlobalISel on supported AArch64 targets.
 
 Each body has three forms:
 
-1. **Canonical MIR** is locally cleaned and is the input to MIR inlining.
+1. **Canonical MIR** is locally cleaned, with async functions lowered to
+   constructors and synthesized poll/drop bodies, and is the input to MIR inlining.
 2. **Shared MIR** has completed inlining, lowering, propagation, coalescing,
    and cleanup.
 3. **Instance MIR** is finalized for concrete generic arguments with escape
@@ -42,7 +43,10 @@ their base local, and overlapping loop allocations remain managed.
 
 Calls have one GC effect: `NoGc`, `ManagedSafepoint`, `RuntimeSafepoint`, or
 `BlockingSafepoint`. Runtime entries must declare their effect. Managed bodies
-receive an entry poll and enough loop polls to cover every CFG cycle.
+receive an entry poll and enough loop polls to cover every CFG cycle, except
+short, acyclic leaf bodies that the compiler proves safe to execute without a
+poll. Those leaves contain no calls or allocations and return within a bounded
+MIR instruction budget.
 
 Each collecting site records only initialized locals live at that site. Calls
 retain values live across normal and cleanup continuations; runtime and
@@ -81,8 +85,9 @@ address and exact descriptor.
 
 ## Outputs and LTO
 
-`taro build` produces a native executable. `--emit llvm-bc` instead writes
-verified, optimized package bitcode:
+`taro build` produces a native executable for source files and executable
+package targets. Library packages emit object code and metadata without linking
+an executable. `--emit llvm-bc` instead writes verified, optimized package bitcode:
 
 ```bash
 taro build examples/arithmetic.tr --release
@@ -103,9 +108,11 @@ boundaries.
 
 ## Incremental Builds
 
-Incremental reuse is enabled for `build`, `run`, `test`, and `check`. Cache keys
-include profile, target, compiler, options, source, and dependency metadata.
-Artifacts live under `target/<profile>/`; `--no-incremental` bypasses reuse.
+Incremental reuse is enabled for `build`, `run`, `test`, `bench`, and `check`.
+Cache keys include profile, target, compiler, options, source, and dependency
+metadata. Package artifacts live under `target/<profile>/` in the package root;
+single-file artifacts live under the system temporary directory at
+`taro-scripts/<path-hash>/<profile>/`. `--no-incremental` bypasses reuse.
 `.taro_meta` is an internal format and incompatible metadata is rejected.
 
 ## Attached Standard Library
@@ -134,5 +141,12 @@ an adjacent manifest containing their ABI, target, architecture, and checksum.
 python3 development/scripts/build_dist.py --target x86_64-apple-darwin
 ```
 
-Same-OS Darwin cross-architecture links use the host SDK. Linux cross targets
-require a compatible linker or sysroot; cross-OS builds require both.
+The distribution helper keeps the compiler executable on the host and builds
+the runtime and attached std for the requested target. The Rust target must be
+installed before building its runtime (for example,
+`rustup target add x86_64-apple-darwin`).
+
+Native linking currently supports Darwin and Linux. Same-OS Darwin
+cross-architecture links use the host SDK. Cross-architecture Linux links
+require a compatible `--linker` or `--sysroot`; cross-OS links require both.
+LLVM object/bitcode emission does not require a native linker.

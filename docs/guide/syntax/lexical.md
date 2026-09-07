@@ -100,8 +100,9 @@ Strings are enclosed in double quotes and support escape sequences.
 ```
 
 Strings and runes also accept `\r`, `\0`, and ASCII hexadecimal escapes such as
-`\x41`. Unicode escapes must name a Unicode scalar value. Source files use LF
-line endings; raw carriage returns are rejected.
+`\x41`. Unicode escapes must name a Unicode scalar value. The current lexer accepts LF
+line endings but rejects raw carriage returns, including CRLF line endings.
+This is an implementation limitation; use LF when compiling with the current compiler.
 
 ### F-String Literals
 
@@ -277,5 +278,6 @@ return type. They remain valid identifiers elsewhere.
 /* Block comments end at the first closing delimiter. */
 ```
 
-Block comments do not nest. A `/*` inside a block comment does not increase its
-nesting depth; the first `*/` closes it.
+The current lexer does not implement nested block comments: the first `*/`
+closes the comment. Earlier documentation described nesting, so this remains
+a discrepancy between the documented language and its implementation.
