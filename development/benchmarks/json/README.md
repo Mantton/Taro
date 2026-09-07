@@ -3,7 +3,8 @@
 These first-party benchmarks measure the public `std.json` DOM parser without depending on an
 external corpus. Every input is generated deterministically before timing begins, parsed and
 stringified once as a smoke check, and then parsed afresh inside each measured iteration. DOM
-allocation and destruction remain part of the result because callers pay that cost.
+allocation and any GC work triggered during measured batches contribute to the result;
+dropping a result does not synchronously reclaim its garbage-collected storage.
 
 Run all cases in the benchmark harness's default release/O2 configuration:
 
@@ -15,7 +16,16 @@ Forward normal harness options through `BENCH_ARGS`:
 
 ```sh
 make json-benchmark BENCH_ARGS='--filter Wide --time 2s --samples 30'
-make json-benchmark BENCH_ARGS='--format json' > target/json-benchmark.json
+```
+
+For a machine-readable report, build first and invoke the compiler directly so
+Make's recipe output is not mixed into the JSON:
+
+```sh
+make dist
+mkdir -p target
+TARO_HOME="$PWD/dist" dist/bin/taro bench development/benchmarks/json \
+  --std-path std --format json > target/json-benchmark.json
 ```
 
 The workload shapes are deliberately diagnostic rather than a composite score:

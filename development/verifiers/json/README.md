@@ -30,8 +30,8 @@ Prepare every pinned suite once:
 make verify-json-prepare
 ```
 
-Preparation is the only operation that uses the network. It validates each source before
-atomically publishing normalized inputs under
+Preparation downloads the external inputs. It stages and validates each source before
+publishing normalized inputs under
 `target/verifiers/json/<suite>/<revision>/`, which is ignored by Git. `fetch = "files"` downloads
 only selected source files; `fetch = "archive"` validates a bounded in-memory archive and retains
 only selected files. Use `REFRESH=1` to replace a damaged or intentionally stale cache:
@@ -64,7 +64,10 @@ coverage without multiplying the slowest, least adversarial inputs.
 Required documents must be accepted by the RFC profile, and forbidden documents must be rejected
 by both profiles. The safe profile may reject otherwise valid inputs only because of its documented
 duplicate-key, depth, or input-size limits. Implementation-defined inputs record the parser's
-choice while still requiring deterministic one-shot/streaming behavior. Every accepted value must
+choice while still requiring matching one-shot/streaming acceptance and chunk-independent
+streaming diagnostics. A sequence decoder may diagnose malformed trailing data later than the
+one-shot parser, which stops at the first trailing byte; the runner reports this permitted
+difference. Every accepted value must
 survive stringify/parse/stringify canonically, and every error must expose valid byte, line,
 column, and JSON-path diagnostics.
 
@@ -74,6 +77,12 @@ Run one suite or request all implementation decisions with:
 python3 development/verifiers/json/verify.py run --suite json-test-suite
 python3 development/verifiers/json/verify.py run --verbose
 ```
+
+The runner rebuilds its executable and workspace standard library by default, then runs
+the suites sequentially with a 180-second timeout per suite. Compilation time is outside
+that timeout; total runtime depends on the machine. Use `--timeout SECONDS` to change
+the per-suite limit. `--no-build` explicitly reuses an existing executable and therefore
+does not verify that it reflects current sources.
 
 No machine-specific report is committed. Runner regressions use generated fixtures and remain
 offline:

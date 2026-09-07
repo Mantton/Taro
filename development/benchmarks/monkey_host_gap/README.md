@@ -23,9 +23,13 @@ make monkey-host-benchmark QUICK=1
 make monkey-host-benchmark HOST_BENCH_ARGS='--case result_success'
 ```
 
-Taro runs in release mode with one worker and runtime statistics. Go uses its
+Taro runs in release/O2 mode with one worker and runtime statistics. Go uses its
 normal release runtime. The report includes elapsed medians, allocation counts,
-allocated bytes, and collections.
+allocated bytes, collections, and Taro GC pause summaries. Runtime settings
+otherwise inherit the calling environment. Taro allocation counters cover the
+whole process, including startup and reporting work; Go counters cover the
+measured workload. Compare scaling across iteration counts to separate fixed
+overhead from per-iteration allocation.
 
 Compare allocation scaling before interpreting elapsed time. A zero-allocation
 gap points to hashing, probing, calls, or ABI cost; proportional allocation

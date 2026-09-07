@@ -8,15 +8,17 @@ stop-the-world garbage collector.
 Compiler-generated async functions create an opaque handle from a frame, poll
 function, drop function, and mobility flag.
 
-- Poll returns pending or writes the completed value.
-- The frame is a persistent GC root while its handle or task is live.
+- Poll reports pending, completion, or cancellation; successful completion
+  writes the result through the output pointer.
+- The frame is a persistent GC root until its async handle is destroyed.
 - Completion, cancellation, panic, and destruction drop the frame exactly once.
 - Cancellation gives suspended language futures one poll so active cleanup can
   run before destruction.
 - An async root installs an executor session and drives its handle to completion.
 
-The compiler-visible ABI is defined beside the async MIR transform in
-`compiler/src/mir/optimize/async_transform.rs`.
+The compiler-visible ABI is defined in `compiler/src/runtime_abi.rs`.
+`compiler/src/mir/optimize/async_transform.rs` uses those declarations when
+lowering async bodies into frames and poll/drop functions.
 
 ## Tasks
 
@@ -38,7 +40,8 @@ from observing reused slots.
   panics are reported once.
 
 Movable tasks may run on any worker. A frame containing non-`Sendable` state is
-pinned to its owner worker.
+pinned to its owner worker. Async closures with borrowed captures are also
+pinned.
 
 ## Waiting
 
@@ -48,7 +51,8 @@ task's active registration.
 
 `std.task.select`, `race`, and `withTimeout` run owned branches concurrently.
 The first branch wins a simultaneous tie. Losing work is cancelled and drained
-before the operation returns.
+before the operation returns. A panic encountered while draining a loser is
+returned as a task error even if the winning branch succeeded.
 
 Unix I/O sources map readiness to task tokens. Linux uses one-shot epoll and
 macOS uses one-shot kqueue. Closing a source removes its waiters, closes the
@@ -73,17 +77,23 @@ does not terminate the native thread.
 - `TARO_BLOCKING_WARN_MS` warns when one async poll occupies a worker for at
   least the configured duration. It is disabled when absent or zero.
 
+Invalid or zero blocking-thread/queue settings fall back to their defaults.
+Invalid warning durations disable warnings.
+
 Foreign declarations that may block must use `extern "blocking"`. Generated
 code publishes roots before parking the mutator, and the foreign function must
 not call back into Taro.
 
 ## GC Integration
 
-Every executor and I/O thread attaches to the GC. Workers leave the safepoint
+Executor workers and the I/O driver attach to the GC. Workers leave the safepoint
 while polling Taro code and re-enter it immediately afterward; idle workers
 remain parked.
 
-Managed MIR bodies have an entry poll and loop polls covering every CFG cycle.
+Managed MIR bodies normally have an entry poll and loop polls covering every
+CFG cycle. Bounded, acyclic, non-allocating synchronous leaves can omit the
+entry poll when they have no calls or escaping locals; they return to their
+caller's polls instead.
 Calls declare one of four effects: `NoGc`, `ManagedSafepoint`,
 `RuntimeSafepoint`, or `BlockingSafepoint`. Missing runtime classifications are
 compiler errors.
@@ -119,16 +129,27 @@ releases empty segments and advises wholly free page-aligned ranges on Unix.
 - `TARO_GC_STATS=1` prints heap, allocation, collection, cache, scavenging, and
   soft-limit counters.
 
-The heap goal is `max(1 MiB, live + live * percent / 100)`, capped by the soft
-limit. Mutators publish allocation debt in 64 KiB quanta. Invalid runtime
-configuration terminates with `runtime configuration error: ...`.
+With percentage collection enabled, the base heap goal is
+`max(1 MiB, live + live * percent / 100)`. While live data is at or below the
+soft limit, the goal is capped by that limit but kept at least one byte above
+live data. If live data exceeds the limit, the goal backs off to at least
+`live + 1 MiB` to avoid repeatedly collecting an unchanged live heap. Setting
+the percentage to `off` disables this trigger; soft-limit checks before heap
+growth still apply. Mutators publish allocation debt in 64 KiB quanta.
+
+Invalid percentage or memory-limit settings terminate with
+`runtime configuration error: ...`. `TARO_GC_STATS` enables its report only
+for the exact value `1`. `TARO_GC_STRESS` is disabled when absent, empty,
+`0`, or `false` (case-insensitive, with surrounding whitespace ignored);
+other nonempty values enable it.
 
 ## Diagnostics
 
 `std.task.dump()` writes live tasks, source locations, wait reasons, and task
 dependencies to stderr. Panics include the bounded causal spawn chain.
 
-- `TARO_DEADLOCK_TIMEOUT_MS` enables the deadlock watchdog when positive.
+- `TARO_DEADLOCK_TIMEOUT_MS` enables the deadlock watchdog when a positive
+  integer; absent, zero, or invalid values disable it.
 - `taro run --runtime-stats` prints executor and GC totals.
 - `taro run --runtime-trace` prints recent scheduler, I/O, synchronization, and
   GC events.
@@ -136,7 +157,10 @@ dependencies to stderr. Panics include the bounded causal spawn chain.
 - `TARO_WORKERS` sets the positive executor worker count.
 
 The CLI flags set `TARO_RUNTIME_STATS=1` and `TARO_RUNTIME_TRACE=1` for the
-child process. Boolean variables accept `1`/`0`, `true`/`false`, and `yes`/`no`.
+child process. These two variables accept `1`/`0`, `true`/`false`, and
+`yes`/`no`, ignoring case and surrounding whitespace. Invalid values for
+these flags, trace capacity, or worker count terminate with
+`runtime configuration error: ...`.
 
 ## Sessions
 

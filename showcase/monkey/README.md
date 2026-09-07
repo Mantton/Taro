@@ -2,7 +2,9 @@
 
 This package implements both Monkey books by Thorsten Ball: a tree-walking
 evaluator and a bytecode compiler with a stack virtual machine. Both engines
-share the lexer, parser, AST, object model, environments, and builtins.
+share the lexer, parser, AST, object model, and builtins. The evaluator uses
+environments; the VM uses compiler symbols, globals, stack slots, and captured
+free values.
 
 The implementation stays algorithmically comparable to the Go reference while
 using Taro's enums, results, interfaces, collections, and garbage collector.
@@ -54,14 +56,17 @@ indices.
 
 ## REPL
 
-Bindings persist between lines. `:help` lists the available commands:
+Bindings persist between lines separately for each engine. Switching engines
+does not transfer bindings. `:help` lists the available commands:
 
 - `:engine vm|eval` selects the engine.
-- `:bytecode`, `:tokens`, and `:tree` toggle diagnostics.
-- `:reset` clears bindings.
+- `:bytecode` and `:tree` toggle diagnostics.
+- `:tokens <source>` prints tokens for the supplied source.
+- `:reset` clears both engines' bindings.
 
 ## Limits
 
-The parser bounds syntax nesting. The evaluator limits Monkey call depth to 128
-because calls consume native frames. The VM stores frames separately and allows
-up to 1,024 nested calls.
+The parser limits syntax nesting to 256. The evaluator limits Monkey call depth
+to 128 because calls consume native frames. The VM stores up to 1,024 frames,
+including its top-level frame, and has 2,048 value-stack slots; either limit can
+stop a call.
