@@ -1,0 +1,4 @@
+interface CloneChild: Clone {}
+struct Item {}
+impl CloneChild for Item {}
+func main() {}

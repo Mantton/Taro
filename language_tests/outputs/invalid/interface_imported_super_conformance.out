@@ -1,0 +1,4 @@
+error: interface 'CloneChild' requires type 'Item' to conform to 'Clone'
+ -> language_tests/source_files/invalid/interface_imported_super_conformance.tr:3:5
+	impl CloneChild for Item {}
+	     ^^^^^^^^^^

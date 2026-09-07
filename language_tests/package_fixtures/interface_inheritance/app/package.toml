@@ -1,0 +1,6 @@
+[package]
+name = "github.com/example/inheritance-app"
+kind = "executable"
+
+[require]
+"github.com/example/inheritance-dep" = { path = "../dep", alias = "dep" }

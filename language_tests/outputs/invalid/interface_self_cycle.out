@@ -1,0 +1,5 @@
+error: circular interface super-requirements
+	cycle: Recursive -> Recursive
+ -> language_tests/source_files/invalid/interface_self_cycle.tr:1:21
+	interface Recursive: Recursive {}
+	                     ^^^^^^^^^

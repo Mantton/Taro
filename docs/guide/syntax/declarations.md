@@ -174,10 +174,9 @@ interface Collection {
 }
 ```
 
-Current limitation: inheriting from imported standard interfaces with declarations
-such as `interface Derived: Clone {}` or `interface Derived: Equatable {}`
-triggers an internal compiler failure. Inheritance between local interfaces,
-as in the example above, works.
+Superinterfaces may be local or imported, including standard interfaces such
+as `Clone` and `Equatable`. Cyclic superinterface requirements, including direct
+self-inheritance, are rejected.
 
 Interfaces may require computed properties and may provide default accessor
 bodies. A conforming type can satisfy an accessor with a stored field, an
