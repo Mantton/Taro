@@ -1,0 +1,33 @@
+func inspect(_ source: &int32) {
+    let &value = source
+    let copied: int32 = value
+    assert(copied == 42, "reference parameter destructuring")
+}
+
+func identity[T](_ value: T) -> T { value }
+
+func main() {
+    let value = 42
+    let &copy = &value
+    assert(copy == 42, "shared reference binding")
+    let &&twice = &&value
+    assert(twice == 42, "nested reference binding")
+    let (&nested,) = (&value,)
+    assert(nested == 42, "reference inside tuple")
+    let &(first, second) = &(19, 23)
+    assert(first + second == 42, "tuple inside reference")
+    let (&typed,): (&int32,) = (&value,)
+    assert(typed == 42, "annotated tuple")
+    let &fromCall = identity(&value)
+    assert(fromCall == 42, "reference returned by generic call")
+    let (&nestedCall,) = (identity(&value),)
+    assert(nestedCall == 42, "nested reference returned by call")
+    var source = 41
+    let &mut snapshot = &mut source
+    assert(snapshot == 41, "mutable reference still copies pointee")
+    var &mutableCopy = &value
+    mutableCopy += 1
+    assert(mutableCopy == 43 && value == 42, "var controls binding mutability")
+    inspect(&value)
+    print("PASS: reference local bindings\n")
+}

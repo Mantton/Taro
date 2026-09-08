@@ -1,0 +1,5 @@
+func main() {
+    var value = 42
+    let &mut copy = &mut value
+    copy = 43
+}

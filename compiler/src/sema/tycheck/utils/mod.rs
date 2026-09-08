@@ -9,6 +9,7 @@ pub mod callable;
 pub mod const_eval;
 pub mod generics;
 pub mod instantiate;
+pub(crate) mod literal;
 pub mod normalize;
 pub mod normalize_post_mono;
 pub mod param_env;

@@ -106,13 +106,20 @@ impl<'ctx, 'r> PatternLoweringContext<'ctx, 'r> {
                 let patterns = pats.iter().map(|p| self.lower_pattern(p)).collect();
                 PatternKind::Or(patterns)
             }
-            hir::PatternKind::Literal(lit) => {
+            hir::PatternKind::Literal {
+                value: lit,
+                negative,
+            } => {
                 let ty = self.results.node_type(pattern.id);
+                let value = match (self.lower_literal(lit), negative) {
+                    (ConstantKind::Integer(value), true) => {
+                        ConstantKind::Integer(value.wrapping_neg())
+                    }
+                    (ConstantKind::Float(value), true) => ConstantKind::Float(-value),
+                    (value, _) => value,
+                };
                 PatternKind::Constant {
-                    value: Constant {
-                        ty,
-                        value: self.lower_literal(lit),
-                    },
+                    value: Constant { ty, value },
                 }
             }
         };

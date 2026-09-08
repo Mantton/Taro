@@ -1,0 +1,8 @@
+error: integer literal '-129' is out of range for type 'int8'
+ -> language_tests/source_files/invalid/negative_pattern_range.tr:4:13
+	        case -129 => {}
+	             ^^^^
+error: integer literal '-1' is out of range for type 'uint8'
+ -> language_tests/source_files/invalid/negative_pattern_range.tr:9:13
+	        case -1 => {}
+	             ^^

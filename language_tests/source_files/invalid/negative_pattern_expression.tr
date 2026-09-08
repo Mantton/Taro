@@ -1,0 +1,10 @@
+func main() {
+    match 1 {
+        case -(1 + 2) => {}
+        case _ => {}
+    }
+    match true {
+        case -true => {}
+        case _ => {}
+    }
+}

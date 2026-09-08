@@ -32,6 +32,16 @@ impl<'ctx> ExhaustivenessPass<'ctx> {
     }
 
     fn check_function(&mut self, func: &mut ThirFunction<'ctx>) {
+        for statement in &func.stmts {
+            if let thir::StmtKind::Let { pattern, .. } = &statement.kind
+                && !thir::match_tree::is_irrefutable(self.gcx, pattern)
+            {
+                self.gcx.dcx().emit_error(
+                    "local binding requires an irrefutable pattern".into(),
+                    Some(pattern.span),
+                );
+            }
+        }
         let expr_ids: Vec<_> = func.exprs.indices().collect();
         for expr_id in expr_ids {
             let expr = &func.exprs[expr_id];

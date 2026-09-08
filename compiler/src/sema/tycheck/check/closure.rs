@@ -900,7 +900,7 @@ impl<'a, 'ctx> CaptureCollector<'a, 'ctx> {
             hir::PatternKind::Wildcard
             | hir::PatternKind::Rest
             | hir::PatternKind::Member(_)
-            | hir::PatternKind::Literal(_) => {}
+            | hir::PatternKind::Literal { .. } => {}
         }
     }
 }

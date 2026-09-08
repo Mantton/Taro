@@ -1,0 +1,4 @@
+error: cannot assign to an immutable binding
+ -> language_tests/source_files/invalid/reference_local_mutability.tr:4:4
+	    copy = 43
+	    ^^^^

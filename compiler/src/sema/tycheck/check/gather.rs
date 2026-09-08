@@ -14,6 +14,7 @@ pub(super) struct GatherLocalsVisitor<'cs, 'arena> {
     cs: &'cs ConstraintSystem<'arena>,
     checker: &'cs Checker<'arena>,
     pattern_mutable: bool,
+    reference_sets_mutability: bool,
 }
 
 impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
@@ -26,6 +27,7 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
             cs,
             checker,
             pattern_mutable: false,
+            reference_sets_mutability: true,
         };
         v.visit_pattern(pat)
     }
@@ -39,6 +41,7 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
             cs,
             checker,
             pattern_mutable: local.mutability == Mutability::Mutable,
+            reference_sets_mutability: false,
         };
         v.declare(
             local.id,
@@ -84,7 +87,7 @@ impl<'cs, 'arena> GatherLocalsVisitor<'cs, 'arena> {
 impl HirVisitor for GatherLocalsVisitor<'_, '_> {
     fn visit_pattern(&mut self, p: &hir::Pattern) -> Self::Result {
         match &p.kind {
-            hir::PatternKind::Reference { pattern, mutable } => {
+            hir::PatternKind::Reference { pattern, mutable } if self.reference_sets_mutability => {
                 let prev = self.pattern_mutable;
                 self.pattern_mutable = *mutable == Mutability::Mutable;
                 self.visit_pattern(pattern);

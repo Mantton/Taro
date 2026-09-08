@@ -1,0 +1,8 @@
+error: pattern literals must be a literal value
+ -> language_tests/source_files/invalid/negative_pattern_expression.tr:3:13
+	        case -(1 + 2) => {}
+	             ^^^^^^^^
+error: pattern literals must be a literal value
+ -> language_tests/source_files/invalid/negative_pattern_expression.tr:7:13
+	        case -true => {}
+	             ^^^^^

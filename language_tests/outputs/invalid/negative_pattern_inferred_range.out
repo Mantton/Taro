@@ -1,0 +1,8 @@
+error: integer literal '-2147483649' is out of range for type 'int32'
+ -> language_tests/source_files/invalid/negative_pattern_inferred_range.tr:3:13
+	        case -2147483649 => {}
+	             ^^^^^^^^^^^
+error: integer literal '2147483648' is out of range for type 'int32'
+ -> language_tests/source_files/invalid/negative_pattern_inferred_range.tr:4:13
+	        case 2147483648 => {}
+	             ^^^^^^^^^^

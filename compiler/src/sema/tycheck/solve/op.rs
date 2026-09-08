@@ -1,8 +1,9 @@
+use crate::sema::tycheck::utils::literal::integer_literal_fits;
 use crate::{
     hir::{BinaryOperator, Mutability, NodeID, OperatorKind, UnaryOperator},
     sema::{
         error::TypeError,
-        models::{InferTy, IntTy, Ty, TyKind, UIntTy},
+        models::{InferTy, Ty, TyKind},
         tycheck::solve::{
             Adjustment, ApplyArgument, ApplyGoalData, AssignOpGoalData, BinOpGoalData,
             BindOverloadGoalData, ConstraintSolver, DisjunctionBranch, Goal, Obligation,
@@ -70,49 +71,13 @@ fn binary_op_to_assign_operator_kind(op: BinaryOperator) -> Option<OperatorKind>
     }
 }
 
-fn integer_literal_fits<'ctx>(value: u64, ty: Ty<'ctx>) -> bool {
-    let value = value as u128;
-    match ty.kind() {
-        TyKind::UInt(kind) => value <= unsigned_max_u128(kind),
-        TyKind::Int(kind) => value <= signed_nonnegative_max_u128(kind),
-        _ => true,
-    }
-}
-
-fn signed_nonnegative_max_u128(kind: IntTy) -> u128 {
-    let bits = match kind {
-        IntTy::ISize => isize::BITS,
-        IntTy::I8 => 8,
-        IntTy::I16 => 16,
-        IntTy::I32 => 32,
-        IntTy::I64 => 64,
-    };
-    (1u128 << (bits - 1)) - 1
-}
-
-fn unsigned_max_u128(kind: UIntTy) -> u128 {
-    let bits = match kind {
-        UIntTy::USize => usize::BITS,
-        UIntTy::U8 => 8,
-        UIntTy::U16 => 16,
-        UIntTy::U32 => 32,
-        UIntTy::U64 => 64,
-    };
-
-    if bits == 128 {
-        u128::MAX
-    } else {
-        (1u128 << bits) - 1
-    }
-}
-
 impl<'ctx> ConstraintSolver<'ctx> {
     fn check_integer_literal_fit(&self, node_id: NodeID, ty: Ty<'ctx>, span: crate::span::Span) {
         let Some(value) = self.integer_literal_value(node_id) else {
             return;
         };
 
-        if integer_literal_fits(value, ty) {
+        if integer_literal_fits(value, ty, false) {
             return;
         }
 

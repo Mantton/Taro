@@ -1,0 +1,5 @@
+func main() {
+    let value = 42
+    let &mut copy = &value
+    let &other = value
+}

@@ -1,0 +1,4 @@
+func main() {
+    let &0 = &1
+    let (0, value) = (1, 2)
+}

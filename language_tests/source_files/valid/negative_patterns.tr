@@ -1,0 +1,37 @@
+func classify(_ value: int32) -> int32 {
+    match value {
+        case -1 | -2 => 1
+        case -2147483648 => 2
+        case 0 | 5 => 3
+        case _ => 4
+    }
+}
+
+func main() {
+    assert(classify(-1) == 1 && classify(-2) == 1, "negative or patterns")
+    assert(classify(-2147483647 - 1) == 2, "signed minimum pattern")
+    assert(classify(0) == 3 && classify(1) == 4, "positive controls")
+    let small: int8 = -127 - 1
+    match small {
+        case -128_i8 => {}
+        case _ => panic("suffixed minimum")
+    }
+    let wide: int64 = -9223372036854775807_i64 - 1_i64
+    match wide {
+        case -9223372036854775808_i64 => {}
+        case _ => panic("64-bit minimum")
+    }
+    let fraction: double = -1.5
+    match fraction {
+        case -1.5 => {}
+        case _ => panic("negative float")
+    }
+    let payload: int32? = .some(-7)
+    if case .some(-7) = payload {} else { panic("negative payload") }
+    let pair = (-3, 4)
+    match pair {
+        case (-3, 4) => {}
+        case _ => panic("negative tuple field")
+    }
+    print("PASS: negative patterns\n")
+}

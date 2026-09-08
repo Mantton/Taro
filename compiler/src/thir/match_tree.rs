@@ -199,6 +199,21 @@ pub fn compile_match<'ctx>(
     }
 }
 
+/// Local bindings must cover every possible value of their scrutinee.
+pub fn is_irrefutable<'ctx>(gcx: GlobalContext<'ctx>, pattern: &Pattern<'ctx>) -> bool {
+    if matches!(pattern.ty.kind(), TyKind::Error | TyKind::Infer(_)) {
+        return true;
+    }
+    let mut compiler = Compiler::new(gcx);
+    let variable = compiler.new_variable(pattern.ty);
+    let row = Row::new(
+        vec![Column::new(variable, pattern.clone())],
+        None,
+        Body::new(ArmId::from_usize(0)),
+    );
+    !compiler.compile(vec![row]).1.missing
+}
+
 impl<'ctx> MatchReport<'ctx> {
     /// Returns a list of patterns not covered by the match expression.
     pub fn missing_patterns(&self, gcx: GlobalContext<'ctx>) -> Vec<String> {

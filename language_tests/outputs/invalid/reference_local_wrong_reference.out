@@ -1,0 +1,8 @@
+error: cannot match `&mut` pattern against immutable reference
+ -> language_tests/source_files/invalid/reference_local_wrong_reference.tr:3:13
+	    let &mut copy = &value
+	             ^^^^
+error: reference pattern requires reference type, found `int32`
+ -> language_tests/source_files/invalid/reference_local_wrong_reference.tr:4:9
+	    let &other = value
+	         ^^^^^

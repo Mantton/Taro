@@ -333,9 +333,13 @@ standard-library interfaces; see [Operator Overloading](guide/syntax/declaration
 
 <variable_declaration> ::= ( 'let' | 'var' ) <local_pattern> [ ':' <type> ] [ '=' <expression> ]
 <local_pattern>        ::= <identifier_pattern> | <wildcard_pattern> | <tuple_pattern>
+                         | <reference_pattern>
 
 <constant_declaration> ::= 'const' <identifier> ':' <type> [ '=' <expression> ]
 ```
+
+Local binding patterns must be irrefutable, including nested tuple and
+reference patterns.
 
 ### Type Alias Declaration
 
@@ -536,6 +540,7 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
 <match_pattern>        ::= <pattern> { '|' <pattern> }
 
 <literal_pattern>      ::= <literal>
+                         | '-' ( <integer_literal> | <float_literal> )
 
 <reference_pattern>    ::= '&' [ 'const' | 'mut' ] <pattern>
 ```
@@ -545,11 +550,10 @@ positions. `(T as Interface).Member` selects an associated type explicitly.
 Or-patterns belong at the top level of match arms. Rest patterns are accepted
 inside tuple and variant-payload patterns. Explicit `&pattern` removes a
 reference layer; it does not itself make inner bindings references. Qualified
-path patterns resolve enum variants, not arbitrary constants. Current lowering
-rejects unary negative expressions as literal patterns; this is an
-implementation limitation, not an established rule against negative values.
-F-strings with interpolation are also rejected. Use a guard for those
-comparisons. Local reference-pattern restrictions are described in
+path patterns resolve enum variants, not arbitrary constants. Numeric literal
+patterns may have a leading minus sign, and integer patterns must fit their
+type. Arbitrary expressions and f-strings with interpolation are rejected;
+use a guard for those comparisons. Local reference bindings are described in
 [Reference Pattern](guide/syntax/patterns.md#reference-pattern).
 
 ## Statements

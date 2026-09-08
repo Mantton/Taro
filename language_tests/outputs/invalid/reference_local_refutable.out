@@ -1,0 +1,8 @@
+error: local binding requires an irrefutable pattern
+ -> language_tests/source_files/invalid/reference_local_refutable.tr:2:8
+	    let &0 = &1
+	        ^^
+error: local binding requires an irrefutable pattern
+ -> language_tests/source_files/invalid/reference_local_refutable.tr:3:8
+	    let (0, value) = (1, 2)
+	        ^^^^^^^^^^

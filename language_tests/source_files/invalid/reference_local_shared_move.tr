@@ -1,0 +1,4 @@
+func main() {
+    let values = List[int32]()
+    let &moved = &values
+}

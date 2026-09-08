@@ -1,0 +1,12 @@
+func main() {
+    let value: int8 = 0
+    match value {
+        case -129 => {}
+        case _ => {}
+    }
+    let unsigned: uint8 = 0
+    match unsigned {
+        case -1 => {}
+        case _ => {}
+    }
+}

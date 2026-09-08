@@ -61,22 +61,31 @@ impl<'ctx> Checker<'ctx> {
     ) {
         use crate::sema::tycheck::solve::Adjustment;
 
-        let pattern_uses_rest = match &pattern.kind {
-            hir::PatternKind::Tuple(patterns, _) => patterns
-                .iter()
-                .any(|pattern| matches!(pattern.kind, hir::PatternKind::Rest)),
-            hir::PatternKind::PathTuple { fields, .. } => fields
-                .iter()
-                .any(|pattern| matches!(pattern.kind, hir::PatternKind::Rest)),
-            _ => false,
-        };
-        if pattern_uses_rest {
+        // Destructuring needs the initializer's structure before pending
+        // coercions are solved. Do not force unrelated overloads to resolve.
+        if !matches!(
+            pattern.kind,
+            hir::PatternKind::Binding { .. } | hir::PatternKind::Wildcard
+        ) && cs
+            .infer_cx
+            .resolve_vars_if_possible(ctx.adjusted_ty)
+            .is_infer()
+        {
             if let Some(scrutinee_ty) = cs.expr_ty(scrutinee_node_id) {
                 let resolved = cs.infer_cx.resolve_vars_if_possible(scrutinee_ty);
                 if !resolved.is_infer() {
                     ctx.adjusted_ty = resolved;
                 }
             }
+        }
+
+        if matches!(pattern.kind, hir::PatternKind::Reference { .. })
+            && cs
+                .infer_cx
+                .resolve_vars_if_possible(ctx.adjusted_ty)
+                .is_infer()
+        {
+            cs.solve_intermediate();
         }
 
         // Auto-deref loop: if scrutinee is &T and pattern is NOT &pat, auto-deref
@@ -205,10 +214,13 @@ impl<'ctx> Checker<'ctx> {
                     return;
                 }
 
-                let mut elem_tys = Vec::with_capacity(pats.len());
-                for _ in pats {
-                    elem_tys.push(cs.infer_cx.next_ty_var(pattern.span));
-                }
+                let elem_tys = match cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty).kind() {
+                    TyKind::Tuple(items) if items.len() == pats.len() => items.to_vec(),
+                    _ => pats
+                        .iter()
+                        .map(|_| cs.infer_cx.next_ty_var(pattern.span))
+                        .collect(),
+                };
 
                 let tuple_ty = Ty::new(
                     TyKind::Tuple(self.gcx().store.interners.intern_ty_list(elem_tys.clone())),
@@ -292,8 +304,15 @@ impl<'ctx> Checker<'ctx> {
                     self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
                 }
             }
-            hir::PatternKind::Literal(literal) => {
-                let lit_ty = self.synth_expression_literal(literal, pattern.span, None, cs);
+            hir::PatternKind::Literal { value, negative } => {
+                let expected = cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty);
+                let lit_ty = self.synth_expression_literal(
+                    value,
+                    pattern.span,
+                    Some(expected),
+                    cs,
+                    *negative,
+                );
                 cs.equal(ctx.adjusted_ty, lit_ty, pattern.span);
             }
             hir::PatternKind::Reference { pattern, mutable } => {

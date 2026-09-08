@@ -1077,8 +1077,20 @@ impl Actor<'_, '_> {
             ),
             ast::PatternKind::Literal(expr) => {
                 let value = *expr.value;
-                let literal = match value.kind {
-                    ast::ExpressionKind::Literal(lit) => {
+                let (kind, negative) = match value.kind {
+                    ast::ExpressionKind::Unary(ast::UnaryOperator::Negate, operand) => {
+                        (operand.kind, true)
+                    }
+                    kind => (kind, false),
+                };
+                let literal = match kind {
+                    ast::ExpressionKind::Literal(lit)
+                        if !negative
+                            || matches!(
+                                lit,
+                                ast::Literal::Integer { .. } | ast::Literal::Float { .. }
+                            ) =>
+                    {
                         match convert_ast_literal(self.context, lit) {
                             Ok(lit) => lit,
                             Err(err) => {
@@ -1095,7 +1107,10 @@ impl Actor<'_, '_> {
                         hir::Literal::Nil
                     }
                 };
-                hir::PatternKind::Literal(literal)
+                hir::PatternKind::Literal {
+                    value: literal,
+                    negative,
+                }
             }
         };
 

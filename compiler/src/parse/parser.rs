@@ -2325,7 +2325,11 @@ impl Parser {
             }
             Token::Dot | Token::Identifier { .. } => self.parse_pattern_path_kind(),
             _ => {
-                let ac = self.parse_anon_const()?;
+                // A pattern literal may have a unary minus, but `|` separates
+                // alternatives here rather than forming a bitwise expression.
+                let ac = AnonConst {
+                    value: self.parse_prefix_expr()?,
+                };
                 Ok(PatternKind::Literal(ac))
             }
         }
@@ -2507,7 +2511,10 @@ impl Parser {
         let pattern = self.parse_pattern()?;
         if !matches!(
             pattern.kind,
-            PatternKind::Identifier(..) | PatternKind::Wildcard | PatternKind::Tuple(..)
+            PatternKind::Identifier(..)
+                | PatternKind::Wildcard
+                | PatternKind::Tuple(..)
+                | PatternKind::Reference { .. }
         ) {
             return Err(Spanned::new(
                 ParserError::DisallowedLocalBindingPattern,
