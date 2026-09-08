@@ -1,0 +1,6 @@
+error: @bench functions must return unit (`()`)
+ -> language_tests/source_files/invalid/bench_nonunit_return.tr:2:0
+@bench
+^^^^^^
+func value(_ bench: &mut std.bench.Benchmark) -> int32 { 42 }
+                                                             ^

@@ -128,9 +128,11 @@ fn collect_from_declaration(
                 );
                 return Err(crate::error::ReportedError);
             }
-            if function.signature.prototype.output.is_some() {
-                gcx.dcx()
-                    .emit_error("@bench functions must return void".into(), Some(decl.span));
+            if gcx.get_signature(decl.id).output != gcx.types.void {
+                gcx.dcx().emit_error(
+                    "@bench functions must return unit (`()`)".into(),
+                    Some(decl.span),
+                );
                 return Err(crate::error::ReportedError);
             }
             if function.signature.prototype.inputs.len() != 1 {

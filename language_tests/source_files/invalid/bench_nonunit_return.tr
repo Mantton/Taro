@@ -1,0 +1,3 @@
+// BENCH
+@bench
+func value(_ bench: &mut std.bench.Benchmark) -> int32 { 42 }

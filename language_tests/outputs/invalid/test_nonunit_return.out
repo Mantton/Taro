@@ -1,0 +1,6 @@
+error: @test functions must return unit (`()`)
+ -> language_tests/source_files/invalid/test_nonunit_return.tr:2:0
+@test
+^^^^^
+func value() -> int32 { 42 }
+                            ^

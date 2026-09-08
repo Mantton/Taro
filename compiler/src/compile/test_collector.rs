@@ -66,7 +66,7 @@ pub fn filter_tests(mut tests: Vec<TestCase>, selection: &TestSelection) -> Vec<
 }
 
 /// Walk the HIR package and collect all `@test`-annotated functions.
-/// Validates that test functions have `() -> void` signatures.
+/// Validates that test functions take no parameters and return unit.
 pub fn collect_tests(
     package: &hir::Package,
     gcx: GlobalContext<'_>,
@@ -121,10 +121,12 @@ fn collect_from_declaration(
                 return Err(crate::error::ReportedError);
             }
 
-            // Validate: test functions must return void (no return type annotation)
-            if func.signature.prototype.output.is_some() {
-                gcx.dcx()
-                    .emit_error("@test functions must return void".into(), Some(decl.span));
+            // Inspect the resolved type so aliases and explicit unit annotations agree.
+            if gcx.get_signature(decl.id).output != gcx.types.void {
+                gcx.dcx().emit_error(
+                    "@test functions must return unit (`()`)".into(),
+                    Some(decl.span),
+                );
                 return Err(crate::error::ReportedError);
             }
 

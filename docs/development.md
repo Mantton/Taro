@@ -94,12 +94,11 @@ available through `taro run --runtime-stats` and `--runtime-trace`.
 ## Benchmarking
 
 `taro bench` runs synchronous, non-generic `@bench` functions with exactly one
-`&mut std.bench.Benchmark` parameter and a unit result. The current harness
-requires the return-type annotation to be omitted: even an explicit `-> ()`
-is rejected. This is the same annotation restriction as for
-[test functions](testing.md#language-tests). The parameter cannot be defaulted
-or variadic. Benchmarks compile in release/O2 by default and each selected case
-runs in a fresh process.
+`&mut std.bench.Benchmark` parameter and a unit result. As with
+[test functions](testing.md#language-tests), the return-type annotation may be
+omitted, written as `-> ()`, or use a unit type alias. The parameter cannot be
+defaulted or variadic. Benchmarks compile in release/O2 by default and each
+selected case runs in a fresh process.
 
 ```bash
 taro bench my-package

@@ -1,0 +1,12 @@
+// BENCH
+type Unit = ()
+
+@bench
+func explicitUnit(_ bench: &mut std.bench.Benchmark) -> () {
+    while bench.next() { let _ = std.hint.blackBox(42) }
+}
+
+@bench
+func aliasedUnit(_ bench: &mut std.bench.Benchmark) -> Unit {
+    while bench.next() { let _ = std.hint.blackBox(42) }
+}

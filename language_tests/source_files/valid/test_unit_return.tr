@@ -1,0 +1,18 @@
+// TEST
+type Unit = ()
+
+func ordinary() -> () {}
+func ordinaryAlias() -> Unit {}
+func ordinaryAsync() async -> () {}
+
+@test
+func explicitUnit() -> () { ordinary() }
+
+@test
+func aliasedUnit() -> Unit { ordinaryAlias() }
+
+@test
+func asyncUnit() async -> () { await ordinaryAsync() }
+
+@test
+func implicitUnit() {}

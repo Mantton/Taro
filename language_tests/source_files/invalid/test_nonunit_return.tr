@@ -1,0 +1,3 @@
+// TEST
+@test
+func value() -> int32 { 42 }

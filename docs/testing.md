@@ -9,10 +9,9 @@ Mark a non-generic function with `@test` and run its file or package with
 `taro test`. Test functions take no parameters and return unit. Both synchronous
 and `async` tests are supported; async tests execute through the runtime.
 
-Current harness restriction: omit the return-type annotation. An explicit
-`-> ()` is rejected with `@test functions must return void`, even though it
-denotes the same unit result as an omitted annotation. Taro's unit type is `()`;
-`void` in that diagnostic is not a built-in type name.
+The return-type annotation may be omitted, written as `-> ()`, or use a type
+alias for `()`. Other result types are rejected. Taro's unit type is `()`;
+`void` is not a built-in type name.
 
 | Attribute | Behavior |
 | --- | --- |
