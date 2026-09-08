@@ -1,6 +1,9 @@
 import dep.invokeDefault
+import dep.{signedMinimum, unsignedMaximum}
 
 func main() {
     assert(invokeDefault() == 77, "dependency closure default")
+    assert(signedMinimum() == -9223372036854775808_i64, "signed metadata default")
+    assert(unsignedMaximum() == 18446744073709551615_u64, "unsigned metadata default")
     std.print("PASS: cross-package closure default\n")
 }

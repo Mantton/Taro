@@ -1,3 +1,11 @@
 public func invokeDefault(action: () -> int32 = || 77) -> int32 {
     action()
 }
+
+public func signedMinimum(value: int64 = -9223372036854775808) -> int64 {
+    value
+}
+
+public func unsignedMaximum(value: uint64 = 18446744073709551615) -> uint64 {
+    value
+}

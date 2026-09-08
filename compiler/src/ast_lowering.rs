@@ -1083,7 +1083,7 @@ impl Actor<'_, '_> {
                     }
                     kind => (kind, false),
                 };
-                let literal = match kind {
+                let mut literal = match kind {
                     ast::ExpressionKind::Literal(lit)
                         if !negative
                             || matches!(
@@ -1107,10 +1107,10 @@ impl Actor<'_, '_> {
                         hir::Literal::Nil
                     }
                 };
-                hir::PatternKind::Literal {
-                    value: literal,
-                    negative,
+                if negative {
+                    negate_literal(&mut literal);
                 }
+                hir::PatternKind::Literal { value: literal }
             }
         };
 
@@ -1677,7 +1677,17 @@ impl Actor<'_, '_> {
                 self.lower_expression(rhs),
             ),
             ast::ExpressionKind::Unary(op, rhs) => {
-                hir::ExpressionKind::Unary(op, self.lower_expression(rhs))
+                // Fold only one minus directly applied to a numeric literal.
+                // Nested negations remain operations, including overflow checks.
+                let mut rhs = self.lower_expression(rhs);
+                if op == hir::UnaryOperator::Negate
+                    && let hir::ExpressionKind::Literal(ref mut literal) = rhs.kind
+                    && negate_literal(literal)
+                {
+                    hir::ExpressionKind::Literal(literal.clone())
+                } else {
+                    hir::ExpressionKind::Unary(op, rhs)
+                }
             }
             ast::ExpressionKind::TupleAccess(lhs, index) => hir::ExpressionKind::TupleAccess(
                 self.lower_expression(lhs),
@@ -3055,7 +3065,10 @@ fn convert_ast_literal(
                 }
             };
             u64::from_str_radix(digits, base.radix())
-                .map(|value| hir::Literal::Integer { value, suffix })
+                .map(|value| hir::Literal::Integer {
+                    value: value as i128,
+                    suffix,
+                })
                 .map_err(|err| format!("malformed integer literal: {}", err))
         }
         ast::Literal::Float { value } => {
@@ -3066,6 +3079,15 @@ fn convert_ast_literal(
         }
         ast::Literal::Nil => Ok(hir::Literal::Nil),
     }
+}
+
+fn negate_literal(literal: &mut hir::Literal) -> bool {
+    match literal {
+        hir::Literal::Integer { value, .. } if *value >= 0 => *value = -*value,
+        hir::Literal::Float(value) => *value = -*value,
+        _ => return false,
+    }
+    true
 }
 
 mod escape {

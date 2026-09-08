@@ -1,4 +1,4 @@
-use crate::sema::tycheck::utils::literal::integer_literal_fits;
+use crate::sema::tycheck::utils::literal::integer_expression_literal_fits;
 use crate::{
     hir::{BinaryOperator, Mutability, NodeID, OperatorKind, UnaryOperator},
     sema::{
@@ -77,7 +77,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return;
         };
 
-        if integer_literal_fits(value, ty, false) {
+        if integer_expression_literal_fits(value, ty) {
             return;
         }
 

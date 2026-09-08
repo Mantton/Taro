@@ -46,7 +46,7 @@ pub struct ConstraintSystem<'ctx> {
     pub infer_cx: Rc<InferCtx<'ctx>>,
     obligations: VecDeque<Obligation<'ctx>>,
     expr_tys: FxHashMap<NodeID, Ty<'ctx>>,
-    integer_literals: FxHashMap<NodeID, u64>,
+    integer_literals: FxHashMap<NodeID, i128>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
     pub locals: RefCell<FxHashMap<NodeID, Ty<'ctx>>>,
@@ -248,7 +248,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         self.expr_tys.insert(id, ty);
     }
 
-    pub fn record_integer_literal(&mut self, id: NodeID, value: u64) {
+    pub fn record_integer_literal(&mut self, id: NodeID, value: i128) {
         self.integer_literals.insert(id, value);
     }
 
@@ -567,7 +567,7 @@ struct ConstraintSolver<'ctx> {
     obligations: VecDeque<Obligation<'ctx>>,
     adjustments: FxHashMap<NodeID, Vec<Adjustment<'ctx>>>,
     interface_calls: FxHashMap<NodeID, InterfaceCallInfo>,
-    integer_literals: FxHashMap<NodeID, u64>,
+    integer_literals: FxHashMap<NodeID, i128>,
     pub field_indices: FxHashMap<NodeID, usize>,
     pub property_reads: FxHashMap<NodeID, ResolvedPropertyRead<'ctx>>,
     pub property_writes: FxHashMap<NodeID, ResolvedPropertyWrite<'ctx>>,
@@ -614,7 +614,7 @@ impl<'ctx> ConstraintSolver<'ctx> {
         self.interface_calls.insert(node_id, info);
     }
 
-    pub fn integer_literal_value(&self, id: NodeID) -> Option<u64> {
+    pub fn integer_literal_value(&self, id: NodeID) -> Option<i128> {
         self.integer_literals.get(&id).copied()
     }
 }

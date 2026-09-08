@@ -57,6 +57,7 @@ valid/interface_inheritance_cross_package.tr
 valid/interfaces.tr
 
 # Pattern matching and local destructuring
+valid/numeric_boundaries.tr
 valid/negative_patterns.tr
 valid/reference_local_bindings.tr
 

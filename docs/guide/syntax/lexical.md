@@ -75,6 +75,15 @@ Integer suffixes select a fixed-width type: `_i8`, `_i16`, `_i32`, `_i64`,
 For example, `255_u8` and `0xFF_u8` have type `uint8`. Unsuffixed integer
 literals use context, defaulting to `int32` when unconstrained.
 
+An integer literal must fit its final type. A leading minus is included in
+that check, so `-128_i8` and `let x: int8 = -128` are valid, while `128_i8`
+and `-129_i8` are errors. The same boundaries apply to constant initializers
+and patterns. Negating an already negative value remains an operation and
+uses the configured overflow checks.
+Unsigned expression negation also remains an arithmetic operation: its
+positive operand must fit, and the result follows the overflow policy.
+Negative unsigned pattern values are rejected.
+
 ### Float Literals
 
 ```taro

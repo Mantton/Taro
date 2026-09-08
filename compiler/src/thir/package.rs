@@ -941,6 +941,27 @@ impl<'ctx> FunctionLower<'ctx> {
         let span = expr.span;
         let kind = match &expr.kind {
             hir::ExpressionKind::Literal(lit) => {
+                if let hir::Literal::Integer { value, .. } = lit
+                    && *value < 0
+                    && matches!(ty.kind(), TyKind::UInt(_))
+                {
+                    let operand = self.push_expr(
+                        ExprKind::Literal(Constant {
+                            ty,
+                            value: ConstantKind::Integer((-*value) as u64),
+                        }),
+                        ty,
+                        span,
+                    );
+                    return Expr {
+                        kind: ExprKind::Unary {
+                            op: mir::UnaryOperator::Negate,
+                            operand,
+                        },
+                        ty,
+                        span,
+                    };
+                }
                 let value = self.lower_literal(lit);
                 ExprKind::Literal(Constant { ty, value })
             }
@@ -1685,7 +1706,7 @@ impl<'ctx> FunctionLower<'ctx> {
             hir::Literal::Bool(b) => ConstantKind::Bool(*b),
             hir::Literal::Rune(r) => ConstantKind::Rune(*r),
             hir::Literal::String(s) => ConstantKind::String(*s),
-            hir::Literal::Integer { value, .. } => ConstantKind::Integer(*value),
+            hir::Literal::Integer { value, .. } => ConstantKind::Integer(*value as u64),
             hir::Literal::Float(f) => ConstantKind::Float(*f),
             hir::Literal::Nil => ConstantKind::Unit,
         }

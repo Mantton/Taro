@@ -304,15 +304,22 @@ impl<'ctx> Checker<'ctx> {
                     self.check_pattern_with_context(pat, &mut sub_ctx, pat.id, cs);
                 }
             }
-            hir::PatternKind::Literal { value, negative } => {
+            hir::PatternKind::Literal { value } => {
                 let expected = cs.infer_cx.resolve_vars_if_possible(ctx.adjusted_ty);
-                let lit_ty = self.synth_expression_literal(
-                    value,
-                    pattern.span,
-                    Some(expected),
-                    cs,
-                    *negative,
-                );
+                if let hir::Literal::Integer { value, .. } = value
+                    && *value < 0
+                    && matches!(expected.kind(), TyKind::UInt(_))
+                {
+                    self.gcx().dcx().emit_error(
+                        format!(
+                            "integer literal '{}' is out of range for type '{}'",
+                            value,
+                            expected.format(self.gcx())
+                        ),
+                        Some(pattern.span),
+                    );
+                }
+                let lit_ty = self.synth_expression_literal(value, pattern.span, Some(expected), cs);
                 cs.equal(ctx.adjusted_ty, lit_ty, pattern.span);
             }
             hir::PatternKind::Reference { pattern, mutable } => {

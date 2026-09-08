@@ -31,7 +31,7 @@ use crate::{
                     instantiate_const_with_args, instantiate_interface_ref_with_args,
                     instantiate_signature_with_args, instantiate_ty_with_args,
                 },
-                literal::integer_literal_fits,
+                literal::integer_expression_literal_fits,
                 type_head_from_value_ty,
             },
         },

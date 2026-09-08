@@ -860,7 +860,7 @@ pub enum LiteralWire {
     Rune(char),
     String(String),
     Integer {
-        value: u64,
+        value: i128,
         suffix: Option<IntegerTypeSuffixWire>,
     },
     Float(f64),

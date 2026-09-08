@@ -73,7 +73,7 @@ impl<'ctx> Checker<'ctx> {
                 if let hir::Literal::Integer { value, .. } = node {
                     cs.record_integer_literal(expression.id, *value);
                 }
-                self.synth_expression_literal(node, expression.span, expectation, cs, false)
+                self.synth_expression_literal(node, expression.span, expectation, cs)
             }
             hir::ExpressionKind::Path(path) => {
                 self.synth_path_expression(expression, path, expectation, cs)
@@ -1043,14 +1043,13 @@ impl<'ctx> Checker<'ctx> {
         ty
     }
 
-    /// Check a literal, including the signed range of a negated pattern literal.
+    /// Check a literal against an explicit suffix or an expected numeric type.
     pub(super) fn synth_expression_literal(
         &self,
         literal: &hir::Literal,
         span: Span,
         expectation: Option<Ty<'ctx>>,
         cs: &mut Cs<'ctx>,
-        negative: bool,
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
         match literal {
@@ -1070,15 +1069,11 @@ impl<'ctx> Checker<'ctx> {
                         crate::parse::IntegerTypeSuffix::U64 => gcx.types.uint64,
                     };
 
-                    if !integer_literal_fits(*value, ty, negative) {
+                    if !integer_expression_literal_fits(*value, ty) {
                         gcx.dcx().emit_error(
                             format!(
                                 "integer literal '{}' is out of range for type '{}'",
-                                if negative {
-                                    format!("-{value}")
-                                } else {
-                                    value.to_string()
-                                },
+                                value,
                                 ty.format(gcx)
                             )
                             .into(),
@@ -1096,15 +1091,11 @@ impl<'ctx> Checker<'ctx> {
                 });
 
                 if let Some(ty) = opt_ty {
-                    if !integer_literal_fits(*value, ty, negative) {
+                    if !integer_expression_literal_fits(*value, ty) {
                         gcx.dcx().emit_error(
                             format!(
                                 "integer literal '{}' is out of range for type '{}'",
-                                if negative {
-                                    format!("-{value}")
-                                } else {
-                                    value.to_string()
-                                },
+                                value,
                                 ty.format(gcx)
                             )
                             .into(),

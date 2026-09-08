@@ -74,3 +74,9 @@ func negateOverflow() {
     let minimum = (1 as int32) << 31
     let _ = checkedNeg(minimum)
 }
+
+@test
+@expectPanic("attempt to negate with overflow")
+func negateLiteralMinimumOverflow() {
+    let _ = -(-128_i8)
+}

@@ -724,7 +724,8 @@ pub enum Literal {
     Rune(char),
     String(Symbol),
     Integer {
-        value: u64,
+        // Includes a source-level unary minus while retaining every uint64 value.
+        value: i128,
         suffix: Option<IntegerTypeSuffix>,
     },
     Float(f64),
@@ -902,7 +903,6 @@ pub enum PatternKind {
     // Literal value, optionally negated for numeric patterns.
     Literal {
         value: Literal,
-        negative: bool,
     },
 }
 

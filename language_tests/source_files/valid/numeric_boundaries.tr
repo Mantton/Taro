@@ -1,0 +1,32 @@
+// OVERFLOW_CHECKS
+const MIN8: int8 = -128
+const MIN16: int16 = -32768
+const MIN32: int32 = -2147483648
+const MIN64: int64 = -9223372036854775808
+const MAX64: uint64 = 18446744073709551615
+
+func identity[T](_ value: T) -> T { value }
+func small(_ value: int8) -> int8 { value }
+
+func main() {
+    let a: int8 = -128
+    let b = -32768_i16
+    let c = identity(-2147483648_i32)
+    let d: int64 = -(9223372036854775808)
+    let defaultMinimum = -2147483648
+    assert(defaultMinimum == MIN32, "default signed minimum")
+    assert(small(identity(-128)) == MIN8, "generic constraint")
+    assert(a == MIN8 && b == MIN16 && c == MIN32 && d == MIN64, "signed minima")
+    assert(-0x80_i8 == MIN8 && -0b10000000_i8 == MIN8, "literal bases")
+    assert(identity(18446744073709551615_u64) == MAX64, "unsigned maximum")
+    assert(127_i8 == 126_i8 + 1_i8 && 32767_i16 == 32766_i16 + 1_i16, "small signed maxima")
+    assert(2147483647_i32 > 0 && 9223372036854775807_i64 > 0, "large signed maxima")
+    assert(small(-128) == MIN8, "argument expectation")
+    let unsigned: uint8 = -1
+    assert(unsigned == 255_u8 && -128_u8 == 128_u8, "unsigned negation compatibility")
+    match a {
+        case -128 => {}
+        case _ => panic("pattern minimum")
+    }
+    print("PASS\n")
+}

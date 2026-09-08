@@ -1,0 +1,24 @@
+error: integer literal '-129' is out of range for type 'int8'
+ -> language_tests/source_files/invalid/numeric_boundaries.tr:2:18
+	    let a: int8 = -129
+	                  ^^^^
+error: integer literal '-32769' is out of range for type 'int16'
+ -> language_tests/source_files/invalid/numeric_boundaries.tr:3:12
+	    let b = -32769_i16
+	            ^^^^^^^^^^
+error: integer literal '-2147483649' is out of range for type 'int32'
+ -> language_tests/source_files/invalid/numeric_boundaries.tr:4:19
+	    let c: int32 = -2147483649
+	                   ^^^^^^^^^^^
+error: integer literal '-9223372036854775809' is out of range for type 'int64'
+ -> language_tests/source_files/invalid/numeric_boundaries.tr:5:19
+	    let d: int64 = -9223372036854775809
+	                   ^^^^^^^^^^^^^^^^^^^^
+error: integer literal '-256' is out of range for type 'uint8'
+ -> language_tests/source_files/invalid/numeric_boundaries.tr:6:19
+	    let e: uint8 = -256
+	                   ^^^^
+error: integer literal '128' is out of range for type 'int8'
+ -> language_tests/source_files/invalid/numeric_boundaries.tr:7:18
+	    let f: int8 = 128
+	                  ^^^

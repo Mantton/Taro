@@ -1,10 +1,23 @@
 use crate::sema::models::{IntTy, Ty, TyKind, UIntTy};
 
-pub(crate) fn integer_literal_fits<'ctx>(value: u64, ty: Ty<'ctx>, negative: bool) -> bool {
-    let value = value as u128;
+// Unsigned unary negation is an existing arithmetic operation. Its operand
+// must fit; lowering retains the operation and its runtime overflow policy.
+pub(crate) fn integer_expression_literal_fits(value: i128, ty: Ty<'_>) -> bool {
+    let value = if matches!(ty.kind(), TyKind::UInt(_)) {
+        value.abs()
+    } else {
+        value
+    };
+    integer_literal_fits(value, ty)
+}
+
+pub(crate) fn integer_literal_fits<'ctx>(value: i128, ty: Ty<'ctx>) -> bool {
     match ty.kind() {
-        TyKind::UInt(kind) => !negative && value <= unsigned_max_u128(kind),
-        TyKind::Int(kind) => value <= signed_nonnegative_max_u128(kind) + u128::from(negative),
+        TyKind::UInt(kind) => value >= 0 && value as u128 <= unsigned_max_u128(kind),
+        TyKind::Int(kind) => {
+            let max = signed_nonnegative_max_u128(kind) as i128;
+            (-max - 1..=max).contains(&value)
+        }
         _ => true,
     }
 }

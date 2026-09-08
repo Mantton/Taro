@@ -17,7 +17,68 @@ pub fn run<'ctx>(
     let mut actor = Actor::new(context);
     hir::walk_package(&mut actor, package);
     context.dcx().ok()?;
+    let results = actor.results.borrow();
+    hir::walk_package(
+        &mut LiteralValidator {
+            context,
+            results: &results,
+        },
+        package,
+    );
+    context.dcx().ok()?;
+    drop(results);
     Ok(std::mem::take(&mut *actor.results.borrow_mut()))
+}
+
+// Expectations are optional during inference. Validate every literal once its
+// final type is known, including values constrained by a later use.
+struct LiteralValidator<'a, 'ctx> {
+    context: Gcx<'ctx>,
+    results: &'a TypeCheckResults<'ctx>,
+}
+
+impl LiteralValidator<'_, '_> {
+    fn check(
+        &self,
+        literal: &hir::Literal,
+        id: hir::NodeID,
+        span: crate::span::Span,
+        pattern: bool,
+    ) {
+        if let hir::Literal::Integer { value, .. } = literal
+            && let Some(ty) = self.results.try_node_type(id)
+            && !(if pattern {
+                super::utils::literal::integer_literal_fits(*value, ty)
+            } else {
+                super::utils::literal::integer_expression_literal_fits(*value, ty)
+            })
+        {
+            self.context.dcx().emit_error(
+                format!(
+                    "integer literal '{}' is out of range for type '{}'",
+                    value,
+                    ty.format(self.context)
+                ),
+                Some(span),
+            );
+        }
+    }
+}
+
+impl HirVisitor for LiteralValidator<'_, '_> {
+    fn visit_expression(&mut self, expression: &hir::Expression) {
+        if let hir::ExpressionKind::Literal(literal) = &expression.kind {
+            self.check(literal, expression.id, expression.span, false);
+        }
+        hir::walk_expression(self, expression);
+    }
+
+    fn visit_pattern(&mut self, pattern: &hir::Pattern) {
+        if let hir::PatternKind::Literal { value } = &pattern.kind {
+            self.check(value, pattern.id, pattern.span, true);
+        }
+        hir::walk_pattern(self, pattern);
+    }
 }
 
 struct Actor<'ctx> {

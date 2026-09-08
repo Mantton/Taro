@@ -1,0 +1,8 @@
+func main() {
+    let a: int8 = -129
+    let b = -32769_i16
+    let c: int32 = -2147483649
+    let d: int64 = -9223372036854775809
+    let e: uint8 = -256
+    let f: int8 = 128
+}
