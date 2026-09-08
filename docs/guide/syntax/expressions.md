@@ -154,11 +154,12 @@ Point { x, y: 10 }
 Point { x: 1, y: 2, }
 ```
 
-> **Current parser limitation**: Struct literals are rejected throughout
-> `if`/`while`/`guard` conditions, `for` iterators and filters, and `match`
-> scrutinees. Parentheses and call arguments do not lift the restriction, even
-> when they remove the ambiguity with blocks. Bind the value to a variable
-> first. See [Special Syntax](./special.md#struct-literal-vs-block).
+In `if`/`while`/`guard` conditions, `for` iterators and filters, and `match`
+scrutinees, put struct literals inside parentheses or another delimited
+expression, such as a call argument or collection literal. This distinguishes
+the literal's braces from the control-flow body. For example,
+`if (Flag { enabled: true }).enabled { }` is accepted. See
+[Special Syntax](./special.md#struct-literal-vs-block).
 
 ---
 

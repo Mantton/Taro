@@ -1,0 +1,4 @@
+struct Flag { enabled: bool }
+func main() {
+    if Flag { enabled: true }.enabled {}
+}

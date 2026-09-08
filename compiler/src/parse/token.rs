@@ -3,10 +3,6 @@ pub enum Token {
     EOF,
     Semicolon,
 
-    CommentDoc {
-        value: String,
-    },
-
     Identifier {
         value: String,
     },

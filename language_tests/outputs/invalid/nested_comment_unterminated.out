@@ -1,0 +1,5 @@
+error: lexer error: unterminated multiline comment
+ -> language_tests/source_files/invalid/nested_comment_unterminated.tr:2:0
+/* outer /* inner */
+^^^^^^^^^^^^^^^^^^^^
+^

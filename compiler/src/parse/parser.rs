@@ -2417,11 +2417,15 @@ impl Parser {
     fn parse_block(&mut self) -> R<Block> {
         let lo = self.lo_span();
         let mut has_declarations = false;
-        let statements = self.parse_block_sequence(|p| {
-            let s = p.parse_statement()?;
-            has_declarations = has_declarations || matches!(s.kind, StatementKind::Declaration(..));
-            Ok(s)
-        })?;
+        let statements =
+            self.with_restrictions(self.restrictions - Restrictions::NO_STRUCT_LITERALS, |p| {
+                p.parse_block_sequence(|p| {
+                    let s = p.parse_statement()?;
+                    has_declarations =
+                        has_declarations || matches!(s.kind, StatementKind::Declaration(..));
+                    Ok(s)
+                })
+            })?;
 
         Ok(Block {
             id: self.next_id(),
@@ -3280,8 +3284,12 @@ impl Parser {
                 continue;
             }
 
+            let before = self.cursor;
             expr = self.try_parse_struct_literal(expr)?;
-            break;
+            if self.cursor == before {
+                break;
+            }
+            seen_type_arguments = false;
         }
 
         Ok(expr)
@@ -3505,8 +3513,10 @@ impl Parser {
         let lo = self.lo_span();
 
         let (items, trailing) =
-            self.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
-                p.parse_expression()
+            self.with_restrictions(self.restrictions - Restrictions::NO_STRUCT_LITERALS, |p| {
+                p.parse_delimiter_sequence_trailing(Delimiter::Parenthesis, Token::Comma, |p| {
+                    p.parse_expression()
+                })
             })?;
 
         let span = lo.to(self.hi_span());
@@ -3649,7 +3659,10 @@ impl Parser {
             Token::Identifier { .. } => self.parse_identifier_expression(),
             Token::Dot => self.parse_inferred_member_expression(),
             Token::LParen => self.parse_tuple_expr(),
-            Token::LBracket => self.parse_collection_expr(),
+            Token::LBracket => self.with_restrictions(
+                self.restrictions - Restrictions::NO_STRUCT_LITERALS,
+                Self::parse_collection_expr,
+            ),
             Token::Case => self.parse_pattern_binding_condition(),
             Token::Let => self.parse_optional_binding_condition(),
             Token::Return => self.parse_return_expression(),
@@ -3691,7 +3704,9 @@ impl Parser {
     }
 
     fn parse_expression_argument_list(&mut self, delim: Delimiter) -> R<Vec<ExpressionArgument>> {
-        self.parse_delimiter_sequence(delim, Token::Comma, |p| p.parse_expression_argument())
+        self.with_restrictions(self.restrictions - Restrictions::NO_STRUCT_LITERALS, |p| {
+            p.parse_delimiter_sequence(delim, Token::Comma, |p| p.parse_expression_argument())
+        })
     }
 
     fn parse_expression_argument(&mut self) -> R<ExpressionArgument> {
@@ -3927,7 +3942,10 @@ impl Parser {
                     self.bump(); // consume FStringExprStart
 
                     text.push_str("%v");
-                    let expression = self.parse_expression()?;
+                    let expression = self.with_restrictions(
+                        self.restrictions - Restrictions::NO_STRUCT_LITERALS,
+                        Self::parse_expression,
+                    )?;
                     let span = expression.span;
                     arguments.push(ExpressionArgument {
                         label: None,
@@ -4809,7 +4827,7 @@ mod tests {
             "unparsed tokens in {input:?}: {:?}",
             parser.current()
         );
-        assert!(parser.errors.is_empty(), "{:?}", parser.errors);
+        assert!(parser.errors.is_empty(), "{input}: {:?}", parser.errors);
         result
     }
 
@@ -4831,6 +4849,57 @@ mod tests {
 
     fn parse_pattern_str(input: &str) -> Pattern {
         parse_fragment(input, Parser::parse_pattern)
+    }
+
+    #[test]
+    fn control_flow_allows_struct_literals_inside_delimiters() {
+        for source in [
+            "Flag { enabled: true }.enabled",
+            "if (Flag { enabled: true }).enabled {}",
+            "if accept(Flag { enabled: true }) {}",
+            "if [Flag { enabled: true }].at(0).enabled {}",
+            "if values.get(Key { index: 0 }) {}",
+            "if { Flag { enabled: true }.enabled } {}",
+            "if accept(|| { Flag { enabled: true } }) {}",
+            "if f\"{Flag { enabled: true }.enabled}\" == \"true\" {}",
+            "match (Flag { enabled: true }) { case value => {}; }",
+        ] {
+            parse_expr_str(source);
+        }
+        for source in [
+            "func f() { while (Flag { enabled: true }).enabled { break } }",
+            "func f() { for value in [Flag { enabled: true }] {} }",
+            "func f() { guard (Flag { enabled: true }).enabled else { return } }",
+        ] {
+            parse_decls(source).expect(source);
+        }
+    }
+
+    #[test]
+    fn control_flow_still_rejects_bare_struct_literals() {
+        for source in [
+            "if Flag { enabled: true }.enabled {}",
+            "if accept(true) && Flag { enabled: true }.enabled {}",
+            "if (true) && Flag { enabled: true }.enabled {}",
+            "match Flag { enabled: true } { case value => {} }",
+        ] {
+            let mut p = parser(source);
+            let _ = p.parse_expression();
+            assert!(
+                p.errors
+                    .iter()
+                    .any(|e| matches!(e.value, ParserError::DisallowedStructLiteral)),
+                "{source}: {:?}",
+                p.errors
+            );
+        }
+        let errors = parse_decls("func f() { while Flag { enabled: true }.enabled {} }")
+            .expect_err("bare while condition");
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.value, ParserError::DisallowedStructLiteral))
+        );
     }
 
     // ==================== DECLARATION TESTS ====================

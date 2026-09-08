@@ -86,9 +86,9 @@ Unescaped keywords and the standalone `_` token are excluded from identifiers.
 Digits must be valid for their base. Integer suffixes name fixed-width types.
 Unicode escapes contain one to six hexadecimal digits (underscores do not
 count) and must denote a Unicode scalar value; `\xNN` escapes are ASCII only.
-The current lexer recognizes LF line endings and rejects raw CR, including
-CRLF; this is an implementation limitation. Strings and f-strings occupy one
-source line.
+Source files accept LF and CRLF line endings. Each CRLF pair is normalized
+to LF once before tokenization. Remaining bare CR characters are whitespace
+between tokens, not line breaks. Strings and f-strings occupy one source line.
 
 ### Keywords
 
@@ -790,12 +790,11 @@ Repeat literals require a compile-time count and construct fixed-size arrays.
                          | <identifier>   /* shorthand: foo instead of foo: foo */
 ```
 
-Struct literals are restricted throughout `if`/`while`/`guard` conditions,
-`for` iterators/filters, and `match` scrutinees, including nested parentheses
-and call arguments. This parser limitation includes otherwise unambiguous
-parenthesized forms. Bind the value first. Parser recovery may recognize a
-literal-like brace sequence to report a more specific error; it does not make
-that source valid.
+Bare struct literals are restricted in `if`/`while`/`guard` conditions,
+`for` iterators/filters, and `match` scrutinees. Parentheses, call arguments,
+collection literals, block expressions, and f-string interpolations permit
+struct literals inside their delimiters. The surrounding restriction resumes
+after the closing delimiter.
 
 ### Binding Conditions
 
@@ -853,14 +852,15 @@ Taro uses automatic semicolon insertion (ASI). Semicolons are automatically inse
 <line_comment>         ::= '//' { <line_comment_char> } [ <newline> ]
 <line_comment_char>    ::= ? any character except LF ?
 <newline>              ::= ? LF ?
-<block_comment>        ::= '/*' <block_comment_text> '*/'
-<block_comment_text>   ::= ? characters up to the first closing */ delimiter ?
+<block_comment>        ::= '/*' { <block_comment> | <block_comment_char> } '*/'
+<block_comment_char>   ::= ? a character not starting /* or */ ?
 ```
 
 ---
 
-The current lexer does not implement the nested block comments described in
-earlier documentation; the production above records that implementation gap.
+Block comments nest. Every opening delimiter must be closed, including those
+inside apparent quoted text within a comment. An unterminated comment is an
+error. The comment grammar operates after CRLF normalization.
 
 ## Reserved for Future
 
@@ -975,10 +975,13 @@ The same rule applies to patterns: `(p,)` is a one-element tuple pattern and
 
 ### Struct Literal Disambiguation
 
-Struct literals (`Foo { ... }`) can be ambiguous with blocks in certain contexts. In expression positions where blocks are expected (like `if` conditions, `for` iterators), struct literals are disallowed:
+Struct literals (`Foo { ... }`) can be ambiguous with blocks in control-flow
+heads. Bare literals are disallowed there; enclosing delimiters remove the
+ambiguity:
 ```
 if condition { ... }           // block, not struct literal
 let x = Foo { field: value }   // struct literal OK here
+if (Flag { enabled: true }).enabled { } // parentheses distinguish the literal
 ```
 
 Keep `else` on the same line as the preceding `}`. It does not suppress ASI.

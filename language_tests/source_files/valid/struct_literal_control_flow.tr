@@ -1,0 +1,38 @@
+struct Flag { enabled: bool }
+struct Count { value: int32 }
+
+func accept(_ flag: Flag) -> bool { flag.enabled }
+func maybe(_ value: Count) -> Count? { .some(value) }
+
+func guarded() -> int32 {
+    guard (Flag { enabled: true }).enabled else { return 0 }
+    return 42
+}
+
+func main() {
+    assert(Flag { enabled: true }.enabled, "postfix field on literal")
+    if (Flag { enabled: true }).enabled {} else { panic("parenthesized literal") }
+    if accept(Flag { enabled: true }) {} else { panic("call argument") }
+    if [Flag { enabled: true }].at(0).enabled {} else { panic("collection literal") }
+    if { Flag { enabled: true }.enabled } {} else { panic("block expression") }
+    if f"{Flag { enabled: true }.enabled}" == "true" {} else { panic("interpolation") }
+    var iterations = 0
+    while (Flag { enabled: iterations < 2 }).enabled { iterations += 1 }
+    assert(iterations == 2, "while condition")
+    var sum = 0
+    for value in [Count { value: 19 }, Count { value: 23 }] {
+        sum += value.value
+    }
+    assert(sum == 42, "for iterator")
+    match (Count { value: 42 }) {
+        case value => assert(value.value == 42, "match scrutinee")
+    }
+    if case .some(value) = maybe(Count { value: 42 }) {
+        assert(value.value == 42, "case condition")
+    } else { panic("case condition failed") }
+    if let value = maybe(Count { value: 42 }) {
+        assert(value.value == 42, "optional condition")
+    } else { panic("optional condition failed") }
+    assert(guarded() == 42, "guard condition")
+    print("PASS: struct literals in control flow\n")
+}

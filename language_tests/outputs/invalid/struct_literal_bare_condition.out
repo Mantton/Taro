@@ -1,0 +1,4 @@
+error: struct literals are not allowed in this context
+ -> language_tests/source_files/invalid/struct_literal_bare_condition.tr:3:12
+	    if Flag { enabled: true }.enabled {}
+	            ^

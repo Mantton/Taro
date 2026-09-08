@@ -59,3 +59,7 @@ valid/interfaces.tr
 # Pattern matching and local destructuring
 valid/negative_patterns.tr
 valid/reference_local_bindings.tr
+
+# Lexing and struct-literal control flow
+valid/nested_comments.tr
+valid/struct_literal_control_flow.tr

@@ -100,9 +100,12 @@ Strings are enclosed in double quotes and support escape sequences.
 ```
 
 Strings and runes also accept `\r`, `\0`, and ASCII hexadecimal escapes such as
-`\x41`. Unicode escapes must name a Unicode scalar value. The current lexer accepts LF
-line endings but rejects raw carriage returns, including CRLF line endings.
-This is an implementation limitation; use LF when compiling with the current compiler.
+`\x41`. Unicode escapes must name a Unicode scalar value.
+
+Source files accept LF and CRLF line endings. CRLF pairs are normalized to LF
+once before tokenization, so both spellings have the same token positions and
+automatic semicolon insertion. A remaining bare CR is whitespace between
+tokens, not a line break. Strings and f-strings still occupy one source line.
 
 ### F-String Literals
 
@@ -275,9 +278,10 @@ return type. They remain valid identifiers elsewhere.
    block comment
 */
 
-/* Block comments end at the first closing delimiter. */
+/* Outer comment /* nested comment */ still inside the outer comment */
 ```
 
-The current lexer does not implement nested block comments: the first `*/`
-closes the comment. Earlier documentation described nesting, so this remains
-a discrepancy between the documented language and its implementation.
+Block comments nest: every `/*` requires a matching `*/`. Reaching the end of
+the file with an open comment is an error. Delimiters inside a block comment
+count even if they appear within quoted text or after `//`. Newlines inside
+comments participate in automatic semicolon insertion.

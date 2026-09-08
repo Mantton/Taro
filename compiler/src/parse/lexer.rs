@@ -229,7 +229,18 @@ pub struct Lexer {
 impl Lexer {
     pub fn new(source: &str, file: FileID) -> Lexer {
         let position = Position { line: 0, offset: 0 };
-        let source: Vec<char> = source.chars().collect();
+        // Normalize CRLF once, before tokenization, including inside literals.
+        // Spans are line/column positions, so LF and CRLF files agree.
+        let mut chars = source.chars().peekable();
+        let source = std::iter::from_fn(|| {
+            let ch = chars.next()?;
+            if ch == '\r' && chars.peek() == Some(&'\n') {
+                chars.next()
+            } else {
+                Some(ch)
+            }
+        })
+        .collect();
         Lexer {
             anchor: position,
             cursor: 0,
@@ -366,7 +377,7 @@ impl Lexer {
         };
 
         let token = match char {
-            ' ' | '\t' | '\n' => return Ok(TokenCase::Skip),
+            ' ' | '\t' | '\n' | '\r' => return Ok(TokenCase::Skip),
             '(' => Token::LParen,
             ')' => Token::RParen,
             '[' => Token::LBracket,
@@ -876,23 +887,23 @@ impl Lexer {
         }
     }
 
-    fn multi_line_comment(&mut self) -> Result<Token, LexerError> {
-        let lo = self.cursor;
-
-        // Scan until we see "*/" or run out of input.
+    fn multi_line_comment(&mut self) -> Result<(), LexerError> {
+        let mut depth = 1usize;
         while self.has_next() {
-            if self.first() == Some('*') && self.second() == Some('/') {
-                let hi = self.cursor;
-                let content: String = self.read(lo, hi);
+            if self.first() == Some('/') && self.second() == Some('*') {
+                self.next_char();
+                self.next_char();
+                depth += 1;
+            } else if self.first() == Some('*') && self.second() == Some('/') {
                 self.next_char(); // eat '*'
                 self.next_char(); // eat '/'
-
-                let token = Token::CommentDoc {
-                    value: content.into(),
-                };
-                return Ok(token);
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(());
+                }
+            } else {
+                self.next_char();
             }
-            self.next_char();
         }
 
         // EOF without closing "*/"
@@ -1213,13 +1224,13 @@ pub enum TokenCase {
 
 /// Insert semicolons à la Go, *but* allow operator-leading continuations:
 /// - If a newline (or EOF) follows a token that can end a statement, insert `;`.
-/// - **Unless** the next non-comment token is a line-continuation starter
+/// - **Unless** the next token is a line-continuation starter
 ///   (an operator/connector like `+`, `-`, `*`, `.`, `..`, `==`, `=`, `|>`, etc.).
 pub fn automatic_semicolon_insertion(tokens: Vec<Spanned<Token>>) -> Vec<Spanned<Token>> {
     use crate::span::{Span, Spanned};
 
     let mut out = Vec::with_capacity(tokens.len() + 8);
-    // Walking backwards gives comment-skipping lookahead without cloning tokens.
+    // Comments have already been consumed. Walk backwards for lookahead without clones.
     let mut next: Option<(usize, bool, bool)> = None;
     for token in tokens.into_iter().rev() {
         let insert = can_end_statement(&token.value)
@@ -1240,13 +1251,11 @@ pub fn automatic_semicolon_insertion(tokens: Vec<Spanned<Token>>) -> Vec<Spanned
                 },
             ));
         }
-        if !is_comment(&token.value) {
-            next = Some((
-                token.span.start.line,
-                is_eof(&token.value),
-                is_line_continuation_starter(&token.value),
-            ));
-        }
+        next = Some((
+            token.span.start.line,
+            is_eof(&token.value),
+            is_line_continuation_starter(&token.value),
+        ));
         out.push(token);
     }
     out.reverse();
@@ -1282,10 +1291,6 @@ fn can_end_statement(tok: &Token) -> bool {
         | Token::Bang => true,
         _ => false,
     }
-}
-
-fn is_comment(tok: &Token) -> bool {
-    matches!(tok, Token::CommentDoc { .. })
 }
 
 fn is_eof(tok: &Token) -> bool {
@@ -1768,6 +1773,60 @@ mod tests {
         ];
 
         assert_eq!(tokens, expected);
+    }
+
+    #[test]
+    fn nested_comments_balance_delimiters_and_preserve_asi() {
+        assert_eq!(
+            tokenize("1 /* outer /* inner */\n tail */ 2"),
+            tokenize("1\n2")
+        );
+        assert_eq!(tokenize("/* \" /* */ \" */ 42"), tokenize("42"));
+        assert_eq!(
+            tokenize("f\"{1 /* outer /* inner */ tail */ + 2}\""),
+            tokenize("f\"{1 + 2}\"")
+        );
+        let deeply_nested = format!("{}{}42", "/*".repeat(2048), "*/".repeat(2048));
+        assert_eq!(tokenize(&deeply_nested), tokenize("42"));
+    }
+
+    #[test]
+    fn nested_comments_require_every_closing_delimiter() {
+        for source in ["/* outer /* inner */", "/* /* */ /* */", "/*/"] {
+            assert!(
+                matches!(
+                    tokenize_result(source),
+                    Err(LexerError::UnterminatedMultilineComment)
+                ),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn crlf_preserves_tokens_spans_and_lexical_errors() {
+        let file = FileID::new(0);
+        for source in [
+            "//+cfg family(\"unix\")\nlet x = 'é'\n/* comment\nline */\nx\n",
+            "func main() {\n let s = f\"{42}\"\n}\n",
+            "\"first\nsecond\"",
+            "f\"{1\n}\"",
+            "`first\nsecond`",
+        ] {
+            let lf = Lexer::new(source, file).tokenize().map(|f| f.tokens);
+            let crlf = Lexer::new(&source.replace('\n', "\r\n"), file)
+                .tokenize()
+                .map(|f| f.tokens);
+            assert_eq!(format!("{lf:?}"), format!("{crlf:?}"), "{source}");
+        }
+    }
+
+    #[test]
+    fn crlf_normalization_is_single_pass_and_bare_cr_is_whitespace() {
+        let lexer = Lexer::new("\r\r\n\n", FileID::new(0));
+        assert_eq!(lexer.source, vec!['\r', '\n', '\n']);
+        assert_eq!(tokenize("let\rx\r=\r1"), tokenize("let x = 1"));
+        assert_eq!(tokenize("1\r\n2\n3"), tokenize("1\n2\n3"));
     }
 
     #[test]

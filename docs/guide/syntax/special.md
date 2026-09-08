@@ -227,19 +227,19 @@ In some positions, `{` is ambiguous between struct literal and block:
 if User { isAdmin: true }.isAdmin { }  // Is `{` a literal or the body?
 ```
 
-The parser currently rejects struct literals throughout `if`/`while`/`guard`
-conditions, `for` iterators and filters, and `match` scrutinees — including
-nested in parentheses or a call argument. The restriction extends to forms
-whose parentheses already distinguish the literal from the control-flow block;
-it is a parser limitation, not a type-system restriction. These examples fail
-with *struct literals are not allowed in this context*:
+Bare struct literals are rejected in `if`/`while`/`guard` conditions, `for`
+iterators and filters, and `match` scrutinees. Parentheses and other delimited
+expressions lift this restriction within their delimiters:
 
 ```taro
-if (User { isAdmin: true }).isAdmin { }   // parentheses do not help
-if check(User { isAdmin: true }) { }      // nor does a call argument
+if (User { isAdmin: true }).isAdmin { }   // parenthesized literal
+if check(User { isAdmin: true }) { }      // literal inside a call argument
 ```
 
-Bind the value first:
+Collection literals, block expressions, and f-string interpolations also
+provide delimiters. The restriction resumes after the closing delimiter:
+`if check(true) && User { isAdmin: true }.isAdmin { }` is still rejected.
+Alternatively, bind the value first:
 
 ```taro
 let admin = User { isAdmin: true }

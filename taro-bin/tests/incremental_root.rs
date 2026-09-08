@@ -95,6 +95,57 @@ fn assert_success(output: &Output) {
     );
 }
 
+#[test]
+fn crlf_sources_match_lf_execution_and_diagnostics() {
+    let dist = workspace_root().join("dist");
+    assert!(
+        distribution_is_available(&dist),
+        "build dist before CLI integration tests"
+    );
+    let project = TempProject::new();
+    let source_path = project.0.join("src/main.tr");
+    let executable = project.0.join("crlf-test");
+    let source = "//+cfg family(\"unix\")\nfunc main() {\n    let value = 40\n        + 2\n    /* first line\n       second line */\n    assert(value == 42, \"line continuation\")\n    print(\"PASS: source line endings\\n\")\n}\n";
+    fs::write(
+        project.0.join("src/excluded.tr"),
+        "//+cfg os(\"windows\")\r\ninvalid excluded source\r\n",
+    )
+    .unwrap();
+    for input in [&source_path, &project.0.to_path_buf()] {
+        for text in [source.to_string(), source.replace('\n', "\r\n")] {
+            fs::write(&source_path, text).unwrap();
+            let output = run_taro(
+                &dist,
+                &[
+                    "run",
+                    &input.to_string_lossy(),
+                    "--no-incremental",
+                    "-o",
+                    &executable.to_string_lossy(),
+                ],
+            );
+            assert_success(&output);
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "PASS: source line endings\n"
+            );
+        }
+    }
+    let invalid = "func main() {\n    let value: int32 = true\n}\n";
+    let mut diagnostics = Vec::new();
+    for text in [invalid.to_string(), invalid.replace('\n', "\r\n")] {
+        fs::write(&source_path, text).unwrap();
+        let output = run_taro(
+            &dist,
+            &["check", &source_path.to_string_lossy(), "--no-incremental"],
+        );
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains(":2:"));
+        diagnostics.push(output.stderr);
+    }
+    assert_eq!(diagnostics[0], diagnostics[1]);
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
