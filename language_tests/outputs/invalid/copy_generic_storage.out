@@ -1,0 +1,24 @@
+error: type 'T.Value' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_generic_storage.tr:30:30
+	struct Associated[T: Source]: Copy {
+	                              ^^^^
+error: type '(int32, [T; 2])' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_generic_storage.tr:23:19
+	struct Aliased[T]: Copy {
+	                   ^^^^
+error: type 'List[int32]' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_generic_storage.tr:20:14
+	impl[T: Copy] Copy for ConditionalBag[T] {}
+	              ^^^^
+error: type 'B' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_generic_storage.tr:14:17
+	impl[A: Copy, B] Copy for Conditional[A, B] {}
+	                 ^^^^
+error: type 'T' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_generic_storage.tr:8:8
+	impl[T] Copy for UnboundedChoice[T] {}
+	        ^^^^
+error: type 'T' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_generic_storage.tr:1:21
+	struct Unbounded[T]: Copy {
+	                     ^^^^

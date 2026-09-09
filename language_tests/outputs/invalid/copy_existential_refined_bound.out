@@ -1,0 +1,4 @@
+error: type 'any CopyRefinement' does not conform to interface 'CopyRefinement'
+ -> language_tests/source_files/invalid/copy_existential_refined_bound.tr:14:12
+	    let _ = duplicate(erased)
+	            ^^^^^^^^^

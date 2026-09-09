@@ -1,3 +1,7 @@
+use crate::sema::{
+    impl_engine::ref_ops::{InterfaceRefMatch, interface_ref_matches},
+    models::TyKind,
+};
 use crate::{
     sema::tycheck::{
         solve::{
@@ -143,6 +147,17 @@ impl<'ctx> ConstraintSolver<'ctx> {
             instantiation_args,
         } = data;
 
+        let existential_dispatch = instantiation_args
+            .and_then(|args| args.first().copied())
+            .and_then(|arg| arg.ty())
+            .and_then(|ty| match ty.kind() {
+                TyKind::BoxedExistential { interfaces } => interfaces
+                    .get(call_info.table_index)
+                    .copied()
+                    .map(|root| (ty, root)),
+                _ => None,
+            });
+
         // Instantiate interface method generics only for the selected branch.
         // This avoids leaking unconstrained inference vars from rejected candidates.
         let generics = self.gcx().generics_of(call_info.method_id);
@@ -164,8 +179,22 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 self.record_overload_source(node_id, call_info.method_id);
                 self.icx.bind_overload(var_ty, call_info.method_id);
                 self.record_interface_call(node_id, call_info);
-                let obligations =
+                let mut obligations =
                     self.constraints_for_def(call_info.method_id, instantiation_args, location);
+                if let Some((self_ty, root)) = existential_dispatch {
+                    // The witness table proves these receiver requirements for
+                    // the hidden payload. It does not make the owning box Copy.
+                    // Keep associated-type and additional method requirements.
+                    let provided = self.collect_interface_with_supers(root);
+                    obligations.retain(|obligation| match obligation.goal {
+                        Goal::Conforms { ty, interface } if ty == self_ty => {
+                            !provided.iter().any(|bound| {
+                                interface_ref_matches(interface, *bound, InterfaceRefMatch::Logical)
+                            })
+                        }
+                        _ => true,
+                    });
+                }
                 SolverResult::Solved(obligations)
             }
             Err(e) => {

@@ -1,0 +1,15 @@
+interface CopyRefinement: Copy {}
+
+struct Value: Copy {
+    number: int32
+}
+impl CopyRefinement for Value {}
+
+func duplicate[T: CopyRefinement](_ value: T) -> (T, T) {
+    return (value, value)
+}
+
+func main() {
+    let erased: any CopyRefinement = Value { number: 7 }
+    let _ = duplicate(erased)
+}

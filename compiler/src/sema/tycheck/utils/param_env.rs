@@ -1,5 +1,13 @@
-use crate::sema::models::{Constraint, InterfaceReference, Ty};
+use crate::{
+    compile::context::Gcx,
+    sema::{
+        models::{AliasKind, Constraint, InterfaceReference, Ty, TyKind},
+        tycheck::constraints::canonical_constraints_of,
+    },
+};
 use rustc_hash::FxHashSet;
+
+use super::instantiate::instantiate_constraint_with_args;
 
 /// Holds the canonical constraints in scope for a definition.
 /// Used during normalization to resolve projections from generic bounds.
@@ -113,6 +121,42 @@ impl<'ctx> ParamEnv<'ctx> {
         }
 
         out.into_iter().collect()
+    }
+
+    /// Include bounds declared on associated types. Matching stays with the
+    /// caller: the solver owns inference variables, while impl selection must
+    /// compare structurally without resolving variables from another context.
+    pub fn bounds_for_type(
+        &self,
+        gcx: Gcx<'ctx>,
+        ty: Ty<'ctx>,
+        mut matches: impl FnMut(Ty<'ctx>) -> bool,
+    ) -> Vec<InterfaceReference<'ctx>> {
+        let mut bounds = self.bounds_for(ty);
+        if let TyKind::Alias {
+            kind: AliasKind::Projection | AliasKind::Opaque,
+            def_id,
+            args,
+        } = ty.kind()
+        {
+            for constraint in canonical_constraints_of(gcx, def_id) {
+                let Constraint::Bound {
+                    ty: bound_ty,
+                    interface,
+                } = instantiate_constraint_with_args(gcx, constraint.value, args)
+                else {
+                    continue;
+                };
+                if matches(bound_ty) {
+                    bounds.push(interface);
+                }
+            }
+        }
+        let mut seen = FxHashSet::default();
+        bounds
+            .into_iter()
+            .filter(|bound| seen.insert(*bound))
+            .collect()
     }
 
     /// Return the first bound for a specific interface ID, if one exists for `ty`.

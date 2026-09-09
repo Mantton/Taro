@@ -1,0 +1,20 @@
+struct InlineBag: Copy {
+    values: [int32]
+}
+
+enum InlineChoice: Copy {
+    case empty
+    case values([int32])
+}
+
+struct ExplicitBag {
+    values: [int32]
+}
+impl Copy for ExplicitBag {}
+
+enum ExplicitChoice {
+    case values([int32])
+}
+impl Copy for ExplicitChoice {}
+
+func main() {}

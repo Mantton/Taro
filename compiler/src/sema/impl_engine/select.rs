@@ -210,7 +210,7 @@ impl<'ctx> Selector<'ctx> {
             out.push(candidate);
         }
 
-        if let Some(candidate) = self.builtin_copy_candidate(goal) {
+        if let Some(candidate) = self.builtin_copy_candidate(goal, &mut saw_ambiguous_obligation) {
             out.push(candidate);
         }
 
@@ -286,16 +286,14 @@ impl<'ctx> Selector<'ctx> {
     }
 
     fn param_env_candidate(&self, goal: InterfaceGoal<'ctx>) -> Option<ConfirmedCandidate<'ctx>> {
-        for constraint in goal.param_env {
-            let Constraint::Bound { ty, interface } = *constraint else {
-                continue;
-            };
-
-            if ty != goal.self_ty {
-                continue;
-            }
-
-            if interface_ref_matches_goal(self.gcx, interface, goal)
+        if goal.param_env.is_empty() && !matches!(goal.self_ty.kind(), TyKind::Alias { .. }) {
+            return None;
+        }
+        let env = ParamEnv::new(goal.param_env.to_vec());
+        for bound in env.bounds_for_type(self.gcx, goal.self_ty, |ty| ty == goal.self_ty) {
+            if super::ref_ops::collect_interface_with_superfaces(self.gcx, bound)
+                .into_iter()
+                .any(|interface| interface_ref_matches_goal(self.gcx, interface, goal))
                 && self.param_env_satisfies_goal_bindings(goal)
             {
                 return Some(ConfirmedCandidate {
@@ -331,19 +329,40 @@ impl<'ctx> Selector<'ctx> {
     }
 
     fn builtin_copy_candidate(
-        &self,
+        &mut self,
         goal: InterfaceGoal<'ctx>,
+        saw_ambiguous_obligation: &mut bool,
     ) -> Option<ConfirmedCandidate<'ctx>> {
         let copy_id = self.gcx.std_item_def(StdItem::Copy)?;
-        if goal.interface_id != copy_id || !self.gcx.is_type_builtin_copyable(goal.self_ty) {
+        if goal.interface_id != copy_id {
             return None;
+        }
+        // Aggregate Copy depends on its elements under the caller's bounds,
+        // not on context-free copyability of still-generic element types.
+        let elements = match goal.self_ty.kind() {
+            TyKind::Tuple(elements) => elements.to_vec(),
+            TyKind::Array { element, .. } => vec![element],
+            _ if self.gcx.is_type_builtin_copyable(goal.self_ty) => Vec::new(),
+            _ => return None,
+        };
+        let obligations: Vec<_> = elements
+            .into_iter()
+            .map(|self_ty| InterfaceGoal { self_ty, ..goal })
+            .collect();
+        match self.obligations_satisfied(&obligations) {
+            GoalSatisfaction::Satisfied => {}
+            GoalSatisfaction::Ambiguous => {
+                *saw_ambiguous_obligation = true;
+                return None;
+            }
+            GoalSatisfaction::Unsatisfied => return None,
         }
         Some(ConfirmedCandidate {
             source: CandidateSource::BuiltinCopy,
             extension_id: None,
             record_id: None,
             subst: GenericArguments::empty(),
-            obligations: Vec::new(),
+            obligations,
         })
     }
 

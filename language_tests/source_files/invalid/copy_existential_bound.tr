@@ -1,0 +1,12 @@
+struct Value: Copy {
+    number: int32
+}
+
+func duplicate[T: Copy](_ value: T) -> (T, T) {
+    return (value, value)
+}
+
+func main() {
+    let erased: any Copy = Value { number: 7 }
+    let _ = duplicate(erased)
+}

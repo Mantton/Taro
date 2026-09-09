@@ -1,0 +1,4 @@
+error: type 'any Copy' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_existential_storage.tr:1:15
+	struct Erased: Copy {
+	               ^^^^

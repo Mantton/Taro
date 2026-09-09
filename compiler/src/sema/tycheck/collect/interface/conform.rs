@@ -4,10 +4,13 @@ use crate::{
     hir,
     sema::{
         models::{
-            ConformanceRecord, Constraint, GenericArguments, InterfaceGoal, InterfaceReference,
-            SelectionError, SelectionMode,
+            AdtKind, ConformanceRecord, Constraint, EnumVariantKind, GenericArgument,
+            GenericArguments, InterfaceGoal, InterfaceReference, SelectionError, SelectionMode,
+            TyKind,
         },
+        tycheck::solve::{ConstraintSystem, Goal},
         tycheck::utils::{
+            instantiate::instantiate_ty_with_args,
             type_head_from_value_ty,
             unresolved::{
                 goal_contains_unresolved_inference, interface_ref_contains_unresolved_inference,
@@ -45,6 +48,7 @@ impl<'ctx> Actor<'ctx> {
         });
 
         for record in &records {
+            self.validate_copy_storage(*record);
             self.validate_direct(
                 record.interface,
                 record.location,
@@ -104,6 +108,69 @@ impl<'ctx> Actor<'ctx> {
                 }
             }
         }
+    }
+
+    fn validate_copy_storage(&self, record: ConformanceRecord<'ctx>) {
+        let gcx = self.context;
+        if gcx.std_item_def(hir::StdItem::Copy) != Some(record.interface.id) {
+            return;
+        }
+        let Some(self_ty) = record.interface.self_ty() else {
+            return;
+        };
+        let mut cs = ConstraintSystem::new(gcx, record.extension);
+        let self_ty = cs.structurally_resolve(self_ty);
+        let TyKind::Adt(def, args) = self_ty.kind() else {
+            // Builtin Copy types already have a representation guarantee. A
+            // blanket assertion on an arbitrary type cannot establish one.
+            if !gcx.is_type_builtin_copyable(self_ty) {
+                gcx.dcx().emit_error(
+                    "Copy can only be implemented for structs, enums, or intrinsically copyable types"
+                        .into(),
+                    Some(record.location),
+                );
+            }
+            return;
+        };
+
+        // Check the representation even for unused generic declarations and
+        // conditional impls. Instantiation maps nominal field parameters into
+        // the impl's parameter environment (including specialized impl heads).
+        let mut require_copy = |ty| {
+            let ty = instantiate_ty_with_args(gcx, ty, args);
+            let arguments = gcx
+                .store
+                .interners
+                .intern_generic_args(vec![GenericArgument::Type(ty)]);
+            cs.add_goal(
+                Goal::Conforms {
+                    ty,
+                    interface: InterfaceReference {
+                        id: record.interface.id,
+                        arguments,
+                        bindings: &[],
+                    },
+                },
+                record.location,
+            );
+        };
+        match def.kind {
+            AdtKind::Struct => {
+                for field in gcx.get_struct_definition(def.id).fields {
+                    require_copy(field.ty);
+                }
+            }
+            AdtKind::Enum => {
+                for variant in gcx.get_enum_definition(def.id).variants {
+                    if let EnumVariantKind::Tuple(fields) = variant.kind {
+                        for field in fields {
+                            require_copy(field.ty);
+                        }
+                    }
+                }
+            }
+        }
+        cs.solve_all();
     }
 
     fn validate_direct(

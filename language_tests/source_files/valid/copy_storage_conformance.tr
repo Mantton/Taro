@@ -1,0 +1,103 @@
+struct Owner {
+    values: [int32]
+}
+
+struct References[T]: Copy {
+    read: &T
+    write: &mut T
+}
+
+struct Inline[T: Copy]: Copy {
+    value: T
+}
+
+type Payload[T] = (T, [T; 2])
+struct Aggregate[T] {
+    payload: Payload[T]
+    optional: T?
+    nested: Payload[T]?
+}
+impl[T: Copy] Copy for Aggregate[T] {}
+
+enum Choice[T] {
+    case empty
+    case pair(T, T)
+}
+impl[T: Copy] Copy for Choice[T] {}
+
+interface CopySource {
+    type Value: Copy
+}
+struct IntegerSource {}
+impl CopySource for IntegerSource {
+    type Value = int32
+}
+struct Associated[T: CopySource]: Copy {
+    value: T.Value
+    nested: (T.Value, [T.Value; 2])?
+}
+
+struct Specialized[A, B] {
+    first: A
+    second: B
+}
+impl[T: Copy] Copy for Specialized[int32, T] {}
+
+struct Phantom[T]: Copy {
+    tag: int32
+}
+
+interface CopyRefinement: Copy {
+    func read(&self) -> int32
+}
+struct ErasedValue: Copy {
+    number: int32
+}
+impl CopyRefinement for ErasedValue {
+    func read(&self) -> int32 { return self.number }
+}
+struct Refined[T: CopyRefinement]: Copy {
+    value: T
+    nested: (T, [T; 2])?
+}
+
+func duplicate[T: Copy](_ value: T) -> (T, T) {
+    return (value, value)
+}
+
+func main() {
+    let copies = duplicate(Inline[int32] { value: 7 })
+    assert(copies.0.value == copies.1.value, "inline generic Copy")
+
+    let aggregate = Aggregate[int32] { payload: (3, [4, 5]), optional: .some(6), nested: .none }
+    let aggregates = duplicate(aggregate)
+    assert(aggregates.0.payload.0 == aggregates.1.payload.0, "tuple, array, alias and conditional Copy")
+    assert(aggregates.0.optional.unwrap() == 6, "nested conditional conformance")
+
+    let choices = duplicate(Choice[int32].pair(8, 9))
+    match choices.1 {
+        case .pair(first, second) => assert(first + second == 17, "enum payload Copy")
+        case .empty => assert(false, "expected payload")
+    }
+
+    let associated = duplicate(Associated[IntegerSource] { value: 10, nested: .some((11, [12, 13])) })
+    assert(associated.1.value == 10, "associated type bound")
+    assert(associated.1.nested.unwrap().0 == 11, "nested associated type bound")
+
+    let specialized = duplicate(Specialized[int32, int32] { first: 11, second: 12 })
+    assert(specialized.1.second == 12, "specialized impl substitutes field parameters")
+
+    let phantom = duplicate(Phantom[Owner] { tag: 13 })
+    assert(phantom.1.tag == 13, "unused type parameter need not implement Copy")
+
+    let refined = duplicate(Refined[ErasedValue] { value: ErasedValue { number: 14 }, nested: .none })
+    assert(refined.1.value.read() == 14, "inherited Copy bound")
+    let erased: any CopyRefinement = ErasedValue { number: 15 }
+    assert(erased.read() == 15, "virtual calls use the payload's conformance")
+
+    var owner = Owner { values: [1, 2] }
+    let refs = duplicate(References[Owner] { read: &owner, write: &mut owner })
+    refs.0.write.values.set(0, 99)
+    assert(refs.1.read.values.len() == 2, "references copy without requiring pointee Copy")
+    assert(*owner.values.at(0) == 99, "copied mutable reference updates pointee")
+}

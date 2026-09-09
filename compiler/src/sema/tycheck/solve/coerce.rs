@@ -7,7 +7,7 @@ use crate::{
             Ty, TyKind,
         },
         resolve::models::TypeHead,
-        tycheck::utils::type_head_from_value_ty,
+        tycheck::utils::{type_head_from_value_ty, unresolved::ty_contains_unresolved_inference},
     },
     span::{Span, Spanned},
 };
@@ -733,7 +733,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 kind: AliasKind::Projection | AliasKind::Opaque,
                 ..
             } => {
-                if ty.contains_inference() {
+                // A projection on a generic parameter is ready for a bound
+                // check. Only actual inference variables justify deferring.
+                if ty_contains_unresolved_inference(ty) {
                     return SolverResult::Deferred;
                 }
 
@@ -756,6 +758,21 @@ impl<'ctx> ConstraintSolver<'ctx> {
                 }
             }
             TyKind::BoxedExistential { interfaces } => {
+                // The payload may implement Copy, but the owning existential
+                // box itself is not Copy. Do not let dynamic interface
+                // membership bypass representation checks or generic bounds,
+                // including bounds on interfaces that inherit Copy.
+                let copy_id = self.gcx().std_item_def(crate::hir::StdItem::Copy);
+                if self
+                    .collect_interface_with_supers(interface)
+                    .iter()
+                    .any(|required| Some(required.id) == copy_id)
+                {
+                    return SolverResult::Error(vec![Spanned::new(
+                        TypeError::NonConformance { ty, interface },
+                        location,
+                    )]);
+                }
                 let mut satisfied = interfaces
                     .iter()
                     .any(|source| self.existential_interface_ref_matches(interface, *source));

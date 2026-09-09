@@ -1,0 +1,4 @@
+error: type 'any Copy' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_existential_bound.tr:11:12
+	    let _ = duplicate(erased)
+	            ^^^^^^^^^

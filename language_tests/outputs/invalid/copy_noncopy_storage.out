@@ -1,0 +1,16 @@
+error: type 'List[int32]' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_noncopy_storage.tr:18:5
+	impl Copy for ExplicitChoice {}
+	     ^^^^
+error: type 'List[int32]' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_noncopy_storage.tr:13:5
+	impl Copy for ExplicitBag {}
+	     ^^^^
+error: type 'List[int32]' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_noncopy_storage.tr:5:19
+	enum InlineChoice: Copy {
+	                   ^^^^
+error: type 'List[int32]' does not conform to interface 'Copy'
+ -> language_tests/source_files/invalid/copy_noncopy_storage.tr:1:18
+	struct InlineBag: Copy {
+	                  ^^^^

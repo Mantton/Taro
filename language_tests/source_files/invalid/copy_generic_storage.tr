@@ -1,0 +1,34 @@
+struct Unbounded[T]: Copy {
+    value: T
+}
+
+enum UnboundedChoice[T] {
+    case value(T)
+}
+impl[T] Copy for UnboundedChoice[T] {}
+
+struct Conditional[A, B] {
+    first: A
+    second: B
+}
+impl[A: Copy, B] Copy for Conditional[A, B] {}
+
+struct ConditionalBag[T] {
+    tag: T
+    values: [int32]
+}
+impl[T: Copy] Copy for ConditionalBag[T] {}
+
+type Payload[T] = (int32, [T; 2])
+struct Aliased[T]: Copy {
+    payload: Payload[T]
+}
+
+interface Source {
+    type Value
+}
+struct Associated[T: Source]: Copy {
+    value: T.Value
+}
+
+func main() {}

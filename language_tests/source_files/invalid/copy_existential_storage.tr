@@ -1,0 +1,5 @@
+struct Erased: Copy {
+    value: any Copy
+}
+
+func main() {}
