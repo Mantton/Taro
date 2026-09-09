@@ -1,0 +1,4 @@
+error: expected List[int32], found [int32; 1]
+ -> language_tests/source_files/invalid/collection_literal_context_array_value.tr:4:43
+	    let old = std.mem.replace(&mut values, array)
+	                                           ^^^^^

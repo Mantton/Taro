@@ -953,6 +953,12 @@ impl<'ctx> ConstraintSolver<'ctx> {
             return SolverResult::Deferred;
         }
 
+        // As with binary operators, wait for unresolved RHS expressions while
+        // allowing numeric literal variables to be constrained by intrinsics.
+        if rhs.is_ty_var() {
+            return SolverResult::Deferred;
+        }
+
         // Try intrinsic resolution first (primitives: a += b becomes a = a + b)
         if let Some(obligations) = self.solve_assign_op_intrinsic(&data, lhs, rhs) {
             return SolverResult::Solved(obligations);

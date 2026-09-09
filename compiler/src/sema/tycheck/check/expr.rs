@@ -1,4 +1,5 @@
 use super::*;
+use crate::sema::models::AliasKind;
 
 impl<'ctx> Checker<'ctx> {
     pub(super) fn add_type_constraints(&self, ty: Ty<'ctx>, span: Span, cs: &mut Cs<'ctx>) {
@@ -2323,6 +2324,19 @@ impl<'ctx> Checker<'ctx> {
         }
 
         let recv_ty = self.synth(receiver, cs);
+        // Collection literals need the receiver's parameter types even when
+        // it was inferred from an earlier expression, such as a pointer cast.
+        // Keep closure inference on its existing path: its speculative callable
+        // expectations use variables separate from the selected method's args.
+        let has_collection_argument = arguments.iter().any(|arg| {
+            matches!(
+                arg.expression.kind,
+                hir::ExpressionKind::Array(_) | hir::ExpressionKind::Tuple(_)
+            )
+        });
+        if has_collection_argument && cs.infer_cx.resolve_vars_if_possible(recv_ty).is_infer() {
+            cs.solve_intermediate();
+        }
         let receiver_can_mut_borrow = self.can_mutably_borrow_receiver(receiver, cs);
         let arg_expectations = if recv_ty.is_error() {
             None
@@ -3738,6 +3752,7 @@ impl<'ctx> Checker<'ctx> {
     ) -> Ty<'ctx> {
         let gcx = self.gcx();
         let list_def_id = gcx.std_item_def(hir::StdItem::List);
+        let expectation = expectation.map(|ty| cs.structurally_resolve(ty));
         let (expected_elem, expected_array, expected_list) = if let Some(expectation) = expectation
         {
             match expectation.kind() {
@@ -3783,6 +3798,27 @@ impl<'ctx> Checker<'ctx> {
             ty: gcx.types.uint,
             kind: ConstKind::Value(ConstValue::Integer(elements.len() as i128)),
         };
+
+        // A generic parameter may become a List or an array only after the
+        // other call arguments/result have been constrained. Keep its literal
+        // representation open until then, including nested element literals.
+        if let Some(ty) = expectation.filter(|ty| {
+            ty.is_infer()
+                || matches!(
+                    ty.kind(),
+                    TyKind::Alias { kind: AliasKind::Projection, .. }
+                )
+        }) {
+            cs.add_goal(
+                Goal::CollectionLiteral {
+                    ty,
+                    element: element_ty,
+                    len: len_const,
+                },
+                expression.span,
+            );
+            return ty;
+        }
 
         if let Some(expect) = expected_array {
             let arr_ty = Ty::new(

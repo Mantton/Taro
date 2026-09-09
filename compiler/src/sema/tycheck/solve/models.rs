@@ -3,7 +3,7 @@ use crate::{
     hir::{BinaryOperator, NodeID, UnaryOperator},
     sema::{
         error::SpannedErrorList,
-        models::{GenericArgument, GenericArguments, InterfaceReference, Ty},
+        models::{Const, GenericArgument, GenericArguments, InterfaceReference, Ty},
         resolve::models::DefinitionID,
     },
     span::Span,
@@ -72,6 +72,11 @@ pub enum Goal<'ctx> {
     InferredStaticMember(InferredStaticMemberGoalData<'ctx>),
     MethodCall(MethodCallData<'ctx>),
     StructLiteral(StructLiteralGoalData<'ctx>),
+    CollectionLiteral {
+        ty: Ty<'ctx>,
+        element: Ty<'ctx>,
+        len: Const<'ctx>,
+    },
     TupleAccess(TupleAccessGoalData<'ctx>),
     Deref(DerefGoalData<'ctx>),
     DefaultFallback(DefaultFallbackGoalData<'ctx>),

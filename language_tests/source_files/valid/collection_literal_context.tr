@@ -1,0 +1,59 @@
+func replaceReversed[T](_ value: T, _ dest: &mut T) -> T {
+    std.mem.replace(dest, value)
+}
+func identity[T](_ value: T) -> T { value }
+func defaultedIdentity[T = [uint8]](_ value: T) -> T { value }
+func classify(_ value: [int32; 2]) -> int32 { 1 }
+func classify(_ value: [int32]) -> int32 { 2 }
+func withCallback[T, F: Fn() -> int32](_ dest: &mut T, _ value: T, _ callback: F) -> T {
+    assert(callback() == 42, "callback")
+    std.mem.replace(dest, value)
+}
+
+interface CollectionSource {
+    type Items
+}
+struct ByteSource {}
+impl CollectionSource for ByteSource {
+    type Items = [uint8]
+}
+func associated[S: CollectionSource](_ source: S, _ items: S.Items) -> S.Items { items }
+
+func main() {
+    var values: [int32] = [1, 2]
+    let old = std.mem.replace(&mut values, [])
+    assert(values.isEmpty() && old.len() == 2, "empty generic argument")
+    let empty = replaceReversed([3, 4], &mut values)
+    assert(empty.isEmpty() && values.len() == 2, "context flows from later arguments")
+    let returned: [int32] = identity([])
+    assert(returned.isEmpty(), "context flows from call result")
+    let previous = withCallback(&mut values, [], || 42)
+    assert(values.isEmpty() && previous.len() == 2, "closure inference does not default the literal early")
+    var bytes: [uint8] = []
+    let number = 10
+    let oldBytes = withCallback(&mut bytes, [255], || {
+        let snapshot = number
+        42
+    })
+    assert(number == 10 && oldBytes.isEmpty() && *bytes.at(0) == 255, "element context preserves numeric defaults and Copy captures")
+    unsafe {
+        let pointer = &mut values as *mut [int32]
+        pointer.write([])
+        assert(values.isEmpty(), "resolved method receiver supplies context")
+    }
+    var nested: [[int32]] = [[1]]
+    let prior = std.mem.replace(&mut nested, [[], [2, 3]])
+    assert(prior.len() == 1 && nested.at(0).isEmpty() && nested.at(1).len() == 2, "nested literal context")
+    var array: [int32; 0] = []
+    let arrayCopy = std.mem.replace(&mut array, [])
+    assert(arrayCopy.len() == 0, "fixed arrays keep their representation")
+    let inferred = identity([19, 23])
+    let fixed: [int32; 2] = inferred
+    assert(*fixed.at(0) + *fixed.at(1) == 42, "unconstrained literals still default to fixed arrays")
+    let defaulted = defaultedIdentity([255])
+    let arrayFromDefault: [int32; 1] = defaulted
+    assert(*arrayFromDefault.at(0) == 255, "literal inference precedes generic type defaults")
+    assert(classify([19, 23]) == 1, "uncontextual overload arguments keep their array interpretation")
+    let projected: [uint8] = associated(ByteSource {}, [255])
+    assert(*projected.at(0) == 255, "associated collection context")
+}

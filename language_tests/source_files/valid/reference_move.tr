@@ -7,7 +7,7 @@ impl std.default.Default for Owner {
 }
 
 func takeList(_ values: &mut [int32]) -> [int32] {
-    replace(values, std.collections.List[int32]())
+    replace(values, [])
 }
 
 func read[T: Copy](_ value: &T) -> T { *value }
@@ -75,7 +75,7 @@ func main() {
     unsafe {
         let pointer = &mut other as *mut [int32]
         let old = pointer.read()
-        pointer.write(std.collections.List[int32]())
+        pointer.write([])
         assert(*old.at(0) == 99 && other.isEmpty(), "raw pointer replacement")
         let storage = PointerStorage { pointer: &mut original as *mut [int32] }
         let previous = *storage.pointer

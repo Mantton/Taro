@@ -1,0 +1,4 @@
+error: expected [int32; 2], found [{integer(0)}; 1]
+ -> language_tests/source_files/invalid/collection_literal_context_length.tr:3:43
+	    let old = std.mem.replace(&mut values, [3])
+	                                           ^^^

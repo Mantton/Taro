@@ -1,0 +1,4 @@
+func main() {
+    var values: [uint8] = []
+    let old = std.mem.replace(&mut values, [256])
+}

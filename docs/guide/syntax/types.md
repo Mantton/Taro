@@ -80,7 +80,7 @@ the referenced storage initialized:
 
 ```taro
 func takeList(_ values: &mut [int32]) -> [int32] {
-    std.mem.replace(values, std.collections.List[int32]())
+    std.mem.replace(values, [])
 }
 ```
 

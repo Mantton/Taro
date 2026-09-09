@@ -2,17 +2,38 @@ use super::ConstraintSolver;
 use crate::{
     sema::{
         error::TypeError,
-        models::TyKind,
+        models::{Const, Ty, TyKind},
         resolve::models::DefinitionKind,
         tycheck::{
             solve::{Goal, Obligation, SolverResult, StructLiteralGoalData},
             utils::instantiate::instantiate_struct_definition_with_args,
         },
     },
-    span::Spanned,
+    span::{Span, Spanned},
 };
 
 impl<'ctx> ConstraintSolver<'ctx> {
+    pub(super) fn solve_collection_literal(
+        &mut self,
+        span: Span,
+        ty: Ty<'ctx>,
+        element: Ty<'ctx>,
+        len: Const<'ctx>,
+    ) -> SolverResult<'ctx> {
+        let ty = self.structurally_resolve(ty);
+        if ty.is_infer() {
+            return SolverResult::Deferred;
+        }
+        if let TyKind::Adt(def, args) = ty.kind()
+            && Some(def.id) == self.gcx().std_item_def(crate::hir::StdItem::List)
+            && let Some(expected) = args.get(0).and_then(|arg| arg.ty())
+        {
+            return self.solve_constraint_equality(span, expected, element);
+        }
+        let array = Ty::new(TyKind::Array { element, len }, self.gcx());
+        self.solve_constraint_equality(span, ty, array)
+    }
+
     pub fn solve_struct_literal(
         &mut self,
         data: StructLiteralGoalData<'ctx>,

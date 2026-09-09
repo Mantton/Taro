@@ -429,6 +429,7 @@ impl<'ctx> ConstraintSystem<'ctx> {
         };
 
         let mut driver = SolverDriver::new(solver);
+        driver.default_collection_literals = check_unresolved;
         let result = driver.solve_to_fixpoint();
 
         // Pull collected outputs back out of the solver/driver.
@@ -894,6 +895,9 @@ impl<'ctx> ConstraintSolver<'ctx> {
             Goal::InferredStaticMember(data) => self.solve_inferred_static_member(data.clone()),
             Goal::MethodCall(data) => self.solve_method_call(data.clone()),
             Goal::StructLiteral(data) => self.solve_struct_literal(data.clone()),
+            Goal::CollectionLiteral { ty, element, len } => {
+                self.solve_collection_literal(location, *ty, *element, *len)
+            }
             Goal::TupleAccess(data) => self.solve_tuple_access(data.clone()),
             Goal::Deref(data) => self.solve_deref(data.clone()),
             Goal::DefaultFallback(_) => SolverResult::Deferred,
@@ -1042,6 +1046,7 @@ struct SolverDriver<'ctx> {
     deferred: VecDeque<Obligation<'ctx>>,
     errors: SpannedErrorList<'ctx>,
     defaulted: bool,
+    default_collection_literals: bool,
 }
 
 impl<'ctx> SolverDriver<'ctx> {
@@ -1051,6 +1056,7 @@ impl<'ctx> SolverDriver<'ctx> {
             deferred: VecDeque::new(),
             errors: vec![],
             defaulted: false,
+            default_collection_literals: false,
         }
     }
 
@@ -1092,8 +1098,24 @@ impl<'ctx> SolverDriver<'ctx> {
             }
 
             if !self.defaulted {
+                // Use constraints learned during this round before choosing
+                // defaults. A deferred literal may now have a concrete context.
+                if made_progress && !self.deferred.is_empty() {
+                    self.solver.obligations.append(&mut self.deferred);
+                    continue;
+                }
                 self.defaulted = true;
-                self.solver.icx.default_numeric_vars();
+                // Closure checking and overload probes can run before the
+                // enclosing call has supplied a collection's element type.
+                let awaiting_collection_context = !self.default_collection_literals
+                    && self.deferred.iter().any(|obligation| {
+                        matches!(obligation.goal, Goal::CollectionLiteral { ty, .. }
+                            if self.solver.icx.resolve_vars_if_possible(ty).is_infer()
+                                || has_unresolvable_projection(&self.solver.icx, ty))
+                    });
+                if !awaiting_collection_context {
+                    self.solver.icx.default_numeric_vars();
+                }
                 self.apply_default_fallbacks();
                 if !self.deferred.is_empty() {
                     self.solver.obligations.append(&mut self.deferred);
@@ -1138,7 +1160,19 @@ impl<'ctx> SolverDriver<'ctx> {
         while let Some(obligation) = self.deferred.pop_front() {
             let goal = obligation.goal;
             let location = obligation.location;
-            if let Goal::DefaultFallback(data) = goal {
+            if self.default_collection_literals
+                && let Goal::CollectionLiteral { ty, element, len } = &goal
+                && self.solver.icx.resolve_vars_if_possible(*ty).is_infer()
+            {
+                let array = Ty::new(
+                    TyKind::Array { element: *element, len: *len },
+                    self.solver.gcx(),
+                );
+                if let SolverResult::Error(errors) = self.solver.solve_equality(location, *ty, array) {
+                    self.errors.extend(errors);
+                }
+                remaining.push_back(Obligation { goal, location });
+            } else if let Goal::DefaultFallback(data) = goal {
                 self.attempt_default_fallback(data, location);
             } else {
                 remaining.push_back(Obligation { goal, location });

@@ -118,9 +118,19 @@ let array: [int32; 3] = [1, 2, 3]
 let zeros: [int32; 10] = [0; 10]
 ```
 
-Unannotated element literals infer fixed-size arrays. An expected `List[T]`
-type selects list construction. `[value; count]` requires a compile-time count
-and constructs an array; it does not construct a dynamic list.
+Element literals default to fixed-size arrays when no collection type is
+determined by context. An expected `List[T]` type selects list construction,
+including when a generic call's other arguments or result determine that type:
+
+```taro
+var values: [int32] = [1, 2, 3]
+let previous = std.mem.replace(&mut values, [])
+// values is now an empty list; previous owns the original list.
+```
+
+This applies to literals, not to existing array values: passing an array does
+not implicitly convert it into a list. `[value; count]` requires a compile-time
+count and constructs an array; it does not construct a dynamic list.
 
 ---
 
