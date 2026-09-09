@@ -1,0 +1,42 @@
+import std.cmp.{Ordering, Ord, PartialOrd}
+import std.ops.PartialEq
+import std.range.Step
+
+// Step does not require Copy, including when the bound owns a collection.
+struct Bound { value: [int32] }
+impl Bound {
+    func new(_ n: int32) -> Self { Bound { value: [n] } }
+    func number(&self) -> int32 { *self.value.at(0) }
+}
+impl PartialEq for Bound {
+    func eq(&self, _ other: &Self) -> bool { self.number() == other.number() }
+}
+impl PartialOrd for Bound {
+    func partialCmp(&self, _ other: &Self) -> Ordering? { .some(self.cmp(other)) }
+}
+impl Ord for Bound {
+    func cmp(&self, _ other: &Self) -> Ordering { self.number().cmp(&other.number()) }
+}
+impl Step for Bound {
+    func stepForward(&self) -> Self { Bound.new(self.number() + 1) }
+}
+
+func main() {
+    var exclusive = Range.new(Bound.new(1), Bound.new(3)).iter()
+    let first = exclusive.next().unwrap()
+    assert(first.number() == 1, "exclusive range transfers the current bound")
+    assert(exclusive.next().unwrap().number() == 2, "exclusive range retains the next bound")
+    assert(exclusive.next().isNone() && exclusive.next().isNone(), "exclusive exhaustion")
+    assert(first.number() == 1, "advancing does not mutate previously yielded storage")
+
+    var closed = ClosedRange.new(Bound.new(1), Bound.new(2)).iter()
+    assert(closed.next().unwrap().number() == 1, "closed range advances")
+    assert(closed.next().unwrap().number() == 2, "closed range transfers its last bound")
+    assert(closed.next().isNone() && closed.next().isNone(), "closed exhaustion")
+
+    var singleton = ClosedRange.new(Bound.new(3), Bound.new(3)).iter()
+    assert(singleton.next().unwrap().number() == 3, "non-Copy singleton")
+    assert(singleton.next().isNone(), "singleton exhaustion")
+    var descending = ClosedRange.new(Bound.new(3), Bound.new(1)).iter()
+    assert(descending.next().isNone() && descending.next().isNone(), "descending closed range")
+}

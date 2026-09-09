@@ -1143,7 +1143,6 @@ fn is_place_mutable<'ctx>(_: Gcx<'ctx>, body: &Body<'ctx>, place: &Place<'ctx>) 
 struct MoveState {
     moved_locals: FxHashSet<LocalId>,
     partial_moves: FxHashMap<LocalId, FxHashSet<FieldIndex>>,
-    moved_borrowed_contents: FxHashSet<LocalId>,
 }
 
 impl MoveState {
@@ -1165,12 +1164,6 @@ impl MoveState {
             }
         }
 
-        for &local in &other.moved_borrowed_contents {
-            if self.moved_borrowed_contents.insert(local) {
-                changed = true;
-            }
-        }
-
         changed
     }
 
@@ -1189,7 +1182,6 @@ impl MoveState {
     fn reinitialize(&mut self, local: LocalId) {
         self.moved_locals.remove(&local);
         self.partial_moves.remove(&local);
-        self.moved_borrowed_contents.remove(&local);
     }
 
     fn is_moved(&self, local: LocalId) -> bool {
@@ -1203,18 +1195,6 @@ impl MoveState {
         self.partial_moves
             .get(&local)
             .is_some_and(|fields| fields.contains(&field))
-    }
-
-    fn mark_borrowed_content_moved(&mut self, local: LocalId) {
-        self.moved_borrowed_contents.insert(local);
-    }
-
-    fn reinitialize_borrowed_content(&mut self, local: LocalId) {
-        self.moved_borrowed_contents.remove(&local);
-    }
-
-    fn is_borrowed_content_moved(&self, local: LocalId) -> bool {
-        self.moved_borrowed_contents.contains(&local)
     }
 }
 
@@ -1238,12 +1218,11 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                 StatementKind::Assign(dest, rvalue) => {
                     check_rvalue_uses(gcx, body, &state, rvalue, stmt.span)?;
                     state.reinitialize(dest.local);
-                    reinitialize_borrowed_content_if_needed(body, dest, &mut state);
-                    collect_moves_from_rvalue(body, rvalue, &mut state);
+                    collect_moves_from_rvalue(rvalue, &mut state);
                 }
                 StatementKind::KeepAlive(operand) => {
                     check_operand(gcx, body, &state, operand, stmt.span)?;
-                    collect_move_from_operand(body, operand, &mut state);
+                    collect_move_from_operand(operand, &mut state);
                 }
                 StatementKind::SourceScope(_)
                 | StatementKind::SetDiscriminant { .. }
@@ -1254,7 +1233,7 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
 
         if let Some(term) = &block.terminator {
             check_terminator_uses(gcx, body, &state, term)?;
-            collect_moves_from_terminator(body, term, &mut state);
+            collect_moves_from_terminator(term, &mut state);
 
             match &term.kind {
                 TerminatorKind::Call {
@@ -1265,7 +1244,6 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                 } => {
                     let mut normal_state = state.clone();
                     normal_state.reinitialize(destination.local);
-                    reinitialize_borrowed_content_if_needed(body, destination, &mut normal_state);
                     propagate_move_state(&mut block_states, &mut worklist, *target, &normal_state);
 
                     if let CallUnwindAction::Cleanup(cleanup) = unwind {
@@ -1281,7 +1259,6 @@ pub fn validate_moves<'ctx>(gcx: Gcx<'ctx>, body: &Body<'ctx>) -> CompileResult<
                 } => {
                     let mut resume_state = state.clone();
                     resume_state.reinitialize(resume_arg.local);
-                    reinitialize_borrowed_content_if_needed(body, resume_arg, &mut resume_state);
                     propagate_move_state(&mut block_states, &mut worklist, *resume, &resume_state);
                     propagate_move_state(&mut block_states, &mut worklist, *cancel, &state);
                     if let CallUnwindAction::Cleanup(cleanup) = unwind {
@@ -1412,18 +1389,20 @@ fn check_borrow_move<'ctx>(
 
     let local_decl = &body.locals[place.local];
     let mut current_ty = local_decl.ty;
-    let mut moved_out_of_immutable_reference = false;
+    let mut moved_out_of_reference = false;
 
     for elem in &place.projection {
         match elem {
             PlaceElem::Deref => match current_ty.kind() {
-                TyKind::Reference(inner, mutability) => {
-                    if mutability == Mutability::Immutable {
-                        moved_out_of_immutable_reference = true;
-                    }
+                TyKind::Reference(inner, _) => {
+                    moved_out_of_reference = true;
                     current_ty = inner;
                 }
                 TyKind::Pointer(inner, _) => {
+                    // A raw pointer addresses separate storage, even when the
+                    // pointer itself was read through a reference. A subsequent
+                    // reference dereference reestablishes borrowed access.
+                    moved_out_of_reference = false;
                     current_ty = inner;
                 }
                 _ => {
@@ -1437,8 +1416,7 @@ fn check_borrow_move<'ctx>(
         }
     }
 
-    if moved_out_of_immutable_reference && !is_type_copyable_in_body_context(gcx, body, current_ty)
-    {
+    if moved_out_of_reference && !is_type_copyable_in_body_context(gcx, body, current_ty) {
         gcx.dcx().emit_error(
             "cannot move out of borrowed content".to_string(),
             Some(span),
@@ -1472,16 +1450,6 @@ fn check_place_not_moved<'ctx>(
     span: crate::span::Span,
 ) -> CompileResult<()> {
     let local_decl = &body.locals[place.local];
-
-    if let Some(root_local) = mutable_reference_deref_root(body, place) {
-        if state.is_borrowed_content_moved(root_local) {
-            gcx.dcx().emit_error(
-                "use of moved value behind mutable reference".to_string(),
-                Some(span),
-            );
-            return gcx.dcx().ok();
-        }
-    }
 
     if state.is_moved(place.local) {
         let name = local_decl
@@ -1524,24 +1492,23 @@ fn check_place_not_moved<'ctx>(
 }
 
 fn collect_moves_from_rvalue<'ctx>(
-    body: &Body<'ctx>,
     rvalue: &Rvalue<'ctx>,
     state: &mut MoveState,
 ) {
     match rvalue {
-        Rvalue::Use(op) => collect_move_from_operand(body, op, state),
-        Rvalue::UnaryOp { operand, .. } => collect_move_from_operand(body, operand, state),
+        Rvalue::Use(op) => collect_move_from_operand(op, state),
+        Rvalue::UnaryOp { operand, .. } => collect_move_from_operand(operand, state),
         Rvalue::BinaryOp { lhs, rhs, .. } => {
-            collect_move_from_operand(body, lhs, state);
-            collect_move_from_operand(body, rhs, state);
+            collect_move_from_operand(lhs, state);
+            collect_move_from_operand(rhs, state);
         }
-        Rvalue::Cast { operand, .. } => collect_move_from_operand(body, operand, state),
+        Rvalue::Cast { operand, .. } => collect_move_from_operand(operand, state),
         Rvalue::Aggregate { fields, .. } => {
             for op in fields.iter() {
-                collect_move_from_operand(body, op, state);
+                collect_move_from_operand(op, state);
             }
         }
-        Rvalue::Repeat { operand, .. } => collect_move_from_operand(body, operand, state),
+        Rvalue::Repeat { operand, .. } => collect_move_from_operand(operand, state),
         Rvalue::Ref { .. }
         | Rvalue::Discriminant { .. }
         | Rvalue::Alloc { .. }
@@ -1550,19 +1517,18 @@ fn collect_moves_from_rvalue<'ctx>(
 }
 
 fn collect_moves_from_terminator<'ctx>(
-    body: &Body<'ctx>,
     term: &crate::mir::Terminator<'ctx>,
     state: &mut MoveState,
 ) {
     match &term.kind {
-        TerminatorKind::SwitchInt { discr, .. } => collect_move_from_operand(body, discr, state),
+        TerminatorKind::SwitchInt { discr, .. } => collect_move_from_operand(discr, state),
         TerminatorKind::Call { func, args, .. } => {
-            collect_move_from_operand(body, func, state);
+            collect_move_from_operand(func, state);
             for arg in args {
-                collect_move_from_operand(body, arg, state);
+                collect_move_from_operand(arg, state);
             }
         }
-        TerminatorKind::Yield { value, .. } => collect_move_from_operand(body, value, state),
+        TerminatorKind::Yield { value, .. } => collect_move_from_operand(value, state),
         TerminatorKind::Goto { .. }
         | TerminatorKind::Return
         | TerminatorKind::ResumeUnwind
@@ -1572,7 +1538,6 @@ fn collect_moves_from_terminator<'ctx>(
 }
 
 fn collect_move_from_operand<'ctx>(
-    body: &Body<'ctx>,
     operand: &Operand<'ctx>,
     state: &mut MoveState,
 ) {
@@ -1583,8 +1548,10 @@ fn collect_move_from_operand<'ctx>(
         return;
     }
 
-    if let Some(root_local) = mutable_reference_deref_root(body, place) {
-        state.mark_borrowed_content_moved(root_local);
+    // Moving a pointee does not move the pointer/reference stored in the local
+    // or its fields. Reference moves are rejected by check_borrow_move; raw
+    // pointer operations remain the caller's responsibility.
+    if place.projection.contains(&PlaceElem::Deref) {
         return;
     }
 
@@ -1592,27 +1559,6 @@ fn collect_move_from_operand<'ctx>(
         state.mark_moved(place.local);
     } else if let Some(PlaceElem::Field(idx, _)) = place.projection.first() {
         state.mark_field_moved(place.local, *idx);
-    }
-}
-
-fn mutable_reference_deref_root<'ctx>(body: &Body<'ctx>, place: &Place<'ctx>) -> Option<LocalId> {
-    if !matches!(place.projection.first(), Some(PlaceElem::Deref)) {
-        return None;
-    }
-
-    match body.locals[place.local].ty.kind() {
-        TyKind::Reference(_, Mutability::Mutable) => Some(place.local),
-        _ => None,
-    }
-}
-
-fn reinitialize_borrowed_content_if_needed<'ctx>(
-    body: &Body<'ctx>,
-    place: &Place<'ctx>,
-    state: &mut MoveState,
-) {
-    if let Some(root_local) = mutable_reference_deref_root(body, place) {
-        state.reinitialize_borrowed_content(root_local);
     }
 }
 

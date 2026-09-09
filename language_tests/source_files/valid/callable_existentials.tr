@@ -80,7 +80,9 @@ func updateCallable(_ f: &mut any FnMut(int32) -> int32) -> int32 {
 }
 
 func consumeCallable(_ f: &mut any FnOnce() -> int32) -> int32 {
-    f()
+    let replacement: any FnOnce() -> int32 = || 7
+    let previous = std.mem.replace(f, replacement)
+    previous()
 }
 
 func makeCaptured() -> any Fn() -> int32 {
@@ -171,7 +173,8 @@ func main() {
     std.runtime.collect()
     assert(once() == 2, "FnOnce owns and traces consumed capture")
     var borrowedOnce: any FnOnce() -> int32 = || 42
-    assert(consumeCallable(&mut borrowedOnce) == 42, "mutable borrow allows consuming its callable content")
+    assert(consumeCallable(&mut borrowedOnce) == 42, "replacement transfers the owned callable")
+    assert(borrowedOnce() == 7, "caller retains the replacement callable")
     let promotedOnce: any FnOnce(int32) -> int32 = |x: int32| x * 2
     assert(promotedOnce(21) == 42, "Fn closure satisfies FnOnce")
 

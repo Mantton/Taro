@@ -1,0 +1,4 @@
+func takeGeneric[T](_ value: &mut T) -> T {
+    return *value
+}
+func main() {}

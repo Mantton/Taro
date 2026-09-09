@@ -75,8 +75,7 @@ impl[Bound: Step] Iterator for RangeIterator[Bound] {
         }
 
         let next = self.current.stepForward()
-        let value = self.current
-        self.current = next
+        let value = std.mem.replace(&mut self.current, next)
         return .some(value)
     }
 }
@@ -105,34 +104,30 @@ impl[Bound: Step] ClosedRange[Bound] {
 }
 
 public struct ClosedRangeIterator[Bound: Step] {
-    current: Bound
+    current: Optional[Bound]
     end: Bound
-    done: bool
 }
 
 impl[Bound: Step] Iterator for ClosedRangeIterator[Bound] {
     type Element = Bound
 
     public func next(&mut self) -> Optional[Self.Element] {
-        if self.done {
-            return .none
-        }
+        match &self.current {
+            case .none => .none
+            case .some(current) => {
+                if *current > self.end {
+                    self.current = .none
+                    return .none
+                }
 
-        if self.current > self.end {
-            self.done = true
-            return .none
+                let next: Optional[Bound] = if *current < self.end {
+                    .some(current.stepForward())
+                } else {
+                    .none
+                }
+                std.mem.replace(&mut self.current, next)
+            }
         }
-
-        if self.current < self.end {
-            let next = self.current.stepForward()
-            let value = self.current
-            self.current = next
-            return .some(value)
-        }
-
-        let value = self.current
-        self.done = true
-        return .some(value)
     }
 }
 
@@ -142,9 +137,8 @@ impl[Bound: Step] Iterable for ClosedRange[Bound] {
 
     public func iter(self) -> Self.Iterator {
         ClosedRangeIterator[Bound] {
-            current: self.start,
+            current: .some(self.start),
             end: self.end,
-            done: false,
         }
     }
 }

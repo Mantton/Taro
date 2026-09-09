@@ -1,0 +1,5 @@
+func takePattern(_ values: &mut [int32]) -> [int32] {
+    let &mut owned = values
+    return owned
+}
+func main() {}

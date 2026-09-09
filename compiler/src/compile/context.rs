@@ -1290,28 +1290,45 @@ impl<'arena> GlobalContext<'arena> {
     }
 
     /// Checks if a type implements `Copy` in the context of a specific definition,
-    /// consulting the definition's constraints for type parameter bounds.
+    /// consulting the definition's constraints, including for aggregate elements
+    /// and conditional conformances.
     pub fn is_type_copyable_in_def(self, ty: Ty<'arena>, owner: hir::DefinitionID) -> bool {
-        let TyKind::Parameter(param) = ty.kind() else {
-            return self.is_type_copyable(ty);
-        };
+        if self.is_type_copyable(ty) {
+            return true;
+        }
+        // An owning existential does not become Copy because its payload has a
+        // Copy bound. Only these types can gain copyability from the environment.
+        if !matches!(
+            ty.kind(),
+            TyKind::Parameter(_)
+                | TyKind::Adt(..)
+                | TyKind::Tuple(_)
+                | TyKind::Array { .. }
+                | TyKind::Alias { .. }
+        ) {
+            return false;
+        }
 
         let Some(copy_def) = self.std_item_def(StdItem::Copy) else {
             return false;
         };
 
-        let param_ty = Ty::new(TyKind::Parameter(param), self);
-        self.canonical_constraints_of(owner)
+        let constraints: Vec<_> = self
+            .canonical_constraints_of(owner)
             .iter()
-            .any(|constraint| match constraint.value {
-                Constraint::Bound { ty, interface } => {
-                    if ty != param_ty {
-                        return false;
-                    }
-                    self.interface_transitively_requires(interface.id, copy_def)
-                }
-                Constraint::TypeEquality(_, _) => false,
-            })
+            .map(|constraint| constraint.value)
+            .collect();
+        let goal = InterfaceGoal {
+            interface_id: copy_def,
+            self_ty: ty,
+            interface_args: GenericArguments::empty(),
+            bindings: &[],
+            param_env: self.store.arenas.global.alloc_slice_clone(&constraints),
+        };
+        matches!(
+            self.prove_interface_goal(goal, SelectionMode::Typecheck),
+            GoalResult::Proven
+        )
     }
 
     /// Returns true if `interface_id` is `target_id` or transitively extends it.

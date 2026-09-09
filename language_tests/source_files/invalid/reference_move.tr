@@ -1,0 +1,4 @@
+func takeList(_ values: &mut [int32]) -> [int32] {
+    return *values
+}
+func main() {}

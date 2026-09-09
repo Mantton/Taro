@@ -1,0 +1,6 @@
+func takeThroughPointer(_ value: *mut &mut [int32]) -> [int32] {
+    unsafe {
+        return **value
+    }
+}
+func main() {}

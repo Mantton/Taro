@@ -1,0 +1,4 @@
+func takeNestedReference(_ values: &mut &mut [int32]) -> [int32] {
+    return **values
+}
+func main() {}

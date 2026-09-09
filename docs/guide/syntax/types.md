@@ -69,6 +69,21 @@ References provide borrowed access to values. They are immutable by default;
 &*int32          // Reference to pointer
 ```
 
+Both reference kinds are copyable. `&mut T` grants write access; it does not
+promise exclusive access. A read-only reference can observe writes through
+another alias, and references to local values can escape with GC-backed storage.
+
+Reading a `Copy` value through either reference copies it. Moving a non-`Copy`
+value out through either reference is rejected, including field reads and
+consuming method calls. Use replacement to transfer the old value while leaving
+the referenced storage initialized:
+
+```taro
+func takeList(_ values: &mut [int32]) -> [int32] {
+    std.mem.replace(values, std.collections.List[int32]())
+}
+```
+
 ---
 
 ## Tuple Types
@@ -159,10 +174,10 @@ func main() {
 ```
 
 `Fn` calls borrow the receiver immutably; `FnMut` calls require mutable access;
-`FnOnce` calls consume the receiver. Taro also permits consuming through a
-mutable reference and tracks the referenced contents as moved. A second call
-without reinitialization is rejected. Shared references cannot provide that
-consuming access.
+`FnOnce` calls consume the receiver. An owning callable existential cannot be
+consumed through either reference kind. To consume one stored behind `&mut`,
+first use `std.mem.replace` to install a replacement, then call the returned
+owned value.
 
 The corresponding `AsyncFn`, `AsyncFnMut`, and `AsyncFnOnce` calls require
 `await`. Closure parameter and result types can be inferred from the expected

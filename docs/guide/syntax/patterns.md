@@ -229,7 +229,7 @@ func main() {
 `let` or `var` controls whether the new bindings can be reassigned. The `mut`
 in `let &mut x = ...` describes the reference being matched; it does not make
 `x` a mutable binding. Copying a pointee does not modify the referenced value,
-and a non-`Copy` value cannot be moved through an immutable reference.
+and a non-`Copy` value cannot be moved through either reference kind.
 
 Match arms and `case` conditions retain a different binding rule: an explicit
 `&mut pattern` makes its inner bindings mutable. The `let`/`var` rule above

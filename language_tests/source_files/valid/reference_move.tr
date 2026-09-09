@@ -1,0 +1,95 @@
+import std.mem.{replace, swap, take}
+
+struct Owner { values: [int32] }
+struct PointerStorage { pointer: *mut [int32] }
+impl std.default.Default for Owner {
+    func default() -> Self { Owner { values: [] } }
+}
+
+func takeList(_ values: &mut [int32]) -> [int32] {
+    replace(values, std.collections.List[int32]())
+}
+
+func read[T: Copy](_ value: &T) -> T { *value }
+func readPair[T: Copy](_ pair: &mut (T, T)) -> (T, T) { *pair }
+func readSharedPair[T: Copy](_ pair: &(T, T)) -> (T, T) { *pair }
+func readArray[T: Copy](_ array: &mut [T; 2]) -> [T; 2] { *array }
+func readOptional[T: Copy](_ optional: &mut T?) -> T? { *optional }
+func readPattern[T: Copy](_ pair: &mut (T, T)) -> (T, T) {
+    let &mut copy = pair
+    (copy.0, copy.1)
+}
+
+interface Source {
+    type Value: Copy
+}
+struct IntSource {}
+impl Source for IntSource {
+    type Value = int32
+}
+func readAssociated[S: Source](_ value: &S.Value) -> S.Value { *value }
+
+func escapingReference() -> &mut int32 {
+    var local = 41
+    &mut local
+}
+
+func main() {
+    var original: [int32] = [1, 2]
+    let shared = &original
+    let writable = &mut original
+    let taken = takeList(writable)
+    assert(shared.isEmpty(), "replacement leaves valid storage visible to aliases")
+    writable.append(99)
+    assert(*shared.at(0) == 99, "read-only aliases observe writes")
+    assert(*taken.at(0) == 1, "replacement transfers the old list independently")
+
+    var owner = Owner { values: [3] }
+    let previous = take(&mut owner)
+    assert(owner.values.isEmpty() && *previous.values.at(0) == 3, "take installs the default")
+    var other: [int32] = [4]
+    swap(&mut original, &mut other)
+    assert(*original.at(0) == 4 && *other.at(0) == 99, "swap preserves both lists")
+
+    var pair = (19, 23)
+    let first = readPair(&mut pair)
+    let second = readSharedPair(&pair)
+    let third = readPattern(&mut pair)
+    assert(first.0 + second.1 == 42 && third.0 == 19, "generic Copy tuple and pattern reads")
+    var array: [int32; 2] = [19, 23]
+    let copied = readArray(&mut array)
+    let again = readArray(&mut array)
+    assert(*copied.at(0) + *again.at(1) == 42, "generic Copy array reads")
+    var optional: int32? = .some(42)
+    assert(readOptional(&mut optional).unwrap() == 42, "conditional Copy conformance")
+    assert(readOptional(&mut optional).unwrap() == 42, "optional remains initialized")
+    assert(readAssociated[IntSource](&pair.0) == 19, "associated Copy bound")
+
+    let escaped = escapingReference()
+    let alias = read(&escaped)
+    *alias += 1
+    std.runtime.collect()
+    assert(*escaped == 42, "references remain copyable and may escape through GC storage")
+
+    // Raw pointer reads retain their explicit storage-management behavior.
+    unsafe {
+        let pointer = &mut other as *mut [int32]
+        let old = pointer.read()
+        pointer.write(std.collections.List[int32]())
+        assert(*old.at(0) == 99 && other.isEmpty(), "raw pointer replacement")
+        let storage = PointerStorage { pointer: &mut original as *mut [int32] }
+        let previous = *storage.pointer
+        storage.pointer.write(std.collections.List[int32]())
+        assert(*previous.at(0) == 4 && original.isEmpty(), "moving a pointee does not move the pointer field")
+
+        var pointer = &mut other as *mut [int32]
+        let borrowedPointer = &mut pointer
+        let movedThroughPointer = **borrowedPointer
+        pointer.write(std.collections.List[int32]())
+        assert(movedThroughPointer.isEmpty(), "raw pointer read through a mutable reference")
+        let sharedPointer = &pointer
+        let movedThroughSharedPointer = **sharedPointer
+        pointer.write(std.collections.List[int32]())
+        assert(movedThroughSharedPointer.isEmpty(), "raw pointer read through a shared reference")
+    }
+}

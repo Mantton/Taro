@@ -1,0 +1,6 @@
+struct Owner { values: [int32] }
+struct Borrower { owner: &mut Owner }
+func takeNestedField(_ borrower: Borrower) -> [int32] {
+    return borrower.owner.values
+}
+func main() {}
